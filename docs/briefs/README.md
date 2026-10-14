@@ -1,0 +1,63 @@
+# Build briefs
+
+Detailed, per-area requirements for finishing the app. Read [`../../SPEC.md`](../../SPEC.md)
+first; it is the binding contract. Status of every file is in [`../HANDOFF.md`](../HANDOFF.md).
+
+| Brief | Area |
+|---|---|
+| [backend-auth-admin.md](backend-auth-admin.md) | `bootstrap.py`, `/api/auth/*`, `/api/models`, `/api/admin/*` |
+| [backend-ingestion.md](backend-ingestion.md) | parsing, chunking, ingestion, worker, `/api/documents/*` |
+| [backend-chat.md](backend-chat.md) | retrieval + prompt, `/api/conversations/*`, `/api/chat/stream` |
+| [frontend-chat.md](frontend-chat.md) | chat page: sidebar, streaming chat, composer |
+| [frontend-documents.md](frontend-documents.md) | right-hand document panel |
+| [frontend-admin.md](frontend-admin.md) | admin page |
+| [backend-integration-tests.md](backend-integration-tests.md) | test plan for the backend (no Docker needed) |
+| [frontend-verification.md](frontend-verification.md) | typecheck/build + API contract cross-check |
+| [review-checklist.md](review-checklist.md) | security and correctness review before calling it done |
+
+## Rules that apply to every area
+
+- `SPEC.md` is the contract: API paths, JSON field names, SSE event names, data model. If you
+  must change it, change `SPEC.md`, `frontend/src/api/types.ts` and the backend schemas together.
+- Write production code in the style of the existing foundation files: typed, clear names,
+  concise docstrings only where they add information, no comment noise, no dead code, no TODOs.
+- Security: authorization on every endpoint; other users' resources return 404 (never reveal they
+  exist); validate all client input; never log secrets; the Qdrant search must always carry the
+  access filter (`vectorstore.access_filter`).
+- Frontend: no `alert`/`confirm`/`prompt`; use inline confirmation or `<Modal>`. Plain CSS only,
+  with each area's own class prefix (`chat-`, `docs-`, `admin-`) and only the CSS variables from
+  `global.css`, so light and dark themes both work.
+
+## Backend foundation (already written; build on it)
+
+Under `backend/app/`: `config.py` (Settings), `db.py` (async engine, `SessionLocal`, `Base`,
+`get_db`, `init_db`), `models.py` (ORM), `schemas.py` (shared response models: `Me`,
+`UserLimits`, `UsageSummary`, `DocumentItem`, `Source`), `security.py` (argon2 + JWT),
+`deps.py` (`get_current_user`, `get_current_admin`, session cookie helpers), `redis_client.py`
+(`get_redis`, `INGEST_QUEUE`), `main.py` (router wiring), and `services/`: `llm.py` (LiteLLM:
+`stream_chat`, `embed_texts`, `test_model`, `compute_cost`, `LLMError`, `Usage`), `usage.py`
+(rate limit, budget, `record_usage`, `usage_summary`, `user_limits`, `month_bounds`),
+`vectorstore.py` (Qdrant), `model_registry.py` (model lookups), `storage.py` (upload paths,
+`document_item`, `delete_document_completely`).
+
+Pinned libs: FastAPI 0.142, SQLAlchemy 2.0 async (asyncpg in prod, aiosqlite in tests, so
+keep queries portable, with no Postgres-only SQL), pydantic v2, redis-py asyncio, qdrant-client 1.19
+(`AsyncQdrantClient`, `query_points`), litellm 1.103. All DB access is async. Relationship
+loading: `User.allowed_models` and `Document.owner` are `selectin`; `Conversation.messages` is
+`noload` (query messages explicitly).
+
+## Frontend foundation (already written; build on it)
+
+Under `frontend/`: `src/App.tsx` (routes `/login`, `/`, `/c/:conversationId`, `/admin`),
+`src/api/types.ts` (all API types; import from here and don't redeclare them), `src/api/client.ts`
+(`api.get/post/patch/del`, `postSSE`, `ApiError`, `errorMessageFromBody`, `notifyUnauthorized`),
+`src/auth/AuthContext.tsx` (`useAuth`: `user`, `refresh`, `logout`), `src/styles/global.css`
+(tokens + primitives: `.btn .btn-primary .btn-ghost .btn-danger .btn-sm .btn-icon .input .select
+.textarea .field .field-label .field-hint .switch .card .badge .badge-{neutral,info,success,warning,danger}
+.table .table-wrap .spinner .muted .error-text .stack .row .spacer .sr-only`), `src/components/ui/Modal.tsx`,
+`src/components/ui/Spinner.tsx`, `src/lib/format.ts`, `src/pages/LoginPage.tsx`.
+
+Stack: React 19.3, react-router-dom 7, react-markdown 10 + remark-gfm 4, TypeScript 5.9 (strict,
+`noUnusedLocals/Parameters`), Vite 8, plain CSS. Don't add other npm packages without a good
+reason. The UI should look polished and modern, with empty, loading and error states. It must be
+accessible (labels, aria, keyboard) and responsive.

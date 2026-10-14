@@ -1,0 +1,13 @@
+# Development override: exposes the infrastructure ports on localhost so you can run
+# the backend (uvicorn) and frontend (vite) directly on your machine.
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d postgres redis qdrant
+services:
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+  qdrant:
+    ports:
+      - "127.0.0.1:6333:6333"
