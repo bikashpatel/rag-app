@@ -6,7 +6,9 @@ from app.db import get_db
 from app.models import User
 from app.security import create_access_token, decode_access_token
 
-_UNAUTHORIZED = HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+def _unauthorized() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
 
 def _extract_token(request: Request) -> str | None:
@@ -23,17 +25,17 @@ def _extract_token(request: Request) -> str | None:
 async def get_current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
     token = _extract_token(request)
     if not token:
-        raise _UNAUTHORIZED
+        raise _unauthorized()
     payload = decode_access_token(token)
     if payload is None:
-        raise _UNAUTHORIZED
+        raise _unauthorized()
     try:
         user_id = int(payload["sub"])
     except (KeyError, ValueError):
-        raise _UNAUTHORIZED
+        raise _unauthorized() from None
     user = await db.get(User, user_id)
     if user is None or not user.is_active or payload.get("tv") != user.token_version:
-        raise _UNAUTHORIZED
+        raise _unauthorized()
     return user
 
 

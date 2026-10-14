@@ -1,0 +1,27 @@
+# Top-level dependencies: exact versions released at least two weeks before adoption.
+# requirements.txt is the hashed lock generated from this file; never edit it by hand. After a change
+# here or in requirements-dev.in, regenerate both locks from backend/ with a cutoff at least 14 days
+# back (and after the newest pin here was uploaded):
+#   uv pip compile requirements.in --universal --python-version 3.13 --generate-hashes --exclude-newer <cutoff> -o requirements.txt
+#   uv pip compile requirements-dev.in -c requirements.txt --universal --python-version 3.13 --generate-hashes --exclude-newer <cutoff> -o requirements-dev.txt
+fastapi==0.142.2
+uvicorn[standard]==0.54.0
+sqlalchemy[asyncio]==2.0.54
+asyncpg==0.31.0
+redis==8.1.0
+qdrant-client==1.19.1
+litellm==1.103.1
+pydantic-settings==2.15.0
+pyjwt==2.15.1
+argon2-cffi==25.1.0
+python-multipart==0.0.32
+pypdf==6.19.0
+pypdfium2==5.13.0  # renders PDF pages for the vision model (child process)
+cryptography==50.0.1  # pypdf needs it to read AES-encrypted PDFs
+python-docx==1.2.0
+python-pptx==1.0.2
+openpyxl==3.1.5
+beautifulsoup4==4.15.0
+lxml==6.1.3
+defusedxml==0.7.1
+pillow==12.3.0  # page images for the vision model (python-pptx needs it too)

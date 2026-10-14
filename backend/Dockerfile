@@ -1,4 +1,5 @@
-FROM python:3.13-slim
+# Pinned by digest to a build at least two weeks old; bump it deliberately.
+FROM python:3.13.15-slim@sha256:7c61056e61ac89e852de05f3dc6fa51a6dd2181797bceed46aa725dd7cb2cd3b
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -7,8 +8,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# requirements.txt is a hashed lock generated from requirements.in, so nothing is resolved at build time.
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --require-hashes --no-deps -r requirements.txt && pip check
 
 COPY app ./app
 
@@ -18,4 +20,5 @@ RUN useradd --create-home --uid 10001 appuser \
 USER appuser
 
 EXPOSE 8000
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
+# On SIGTERM, open answer streams get 15 s, then uvicorn cancels them (instead of waiting indefinitely).
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-graceful-shutdown", "15"]

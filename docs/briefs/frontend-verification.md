@@ -6,12 +6,16 @@ Goal: the frontend type-checks, builds, and matches the backend exactly.
 
 ```bash
 cd frontend
-npm install          # creates package-lock.json; commit it (the Docker build runs `npm ci`)
+npm ci               # installs exactly package-lock.json, as the Docker build does
 npx tsc --noEmit
 npx vite build
 ```
 
 Fix until both pass with zero errors.
+
+To change dependencies, edit `package.json` and regenerate the lock with a cutoff at least two
+weeks back, so no transitive package is newer than that:
+`rm -rf node_modules package-lock.json && npm install --before=<YYYY-MM-DDTHH:MM:SSZ>`, then `npm audit`.
 
 ## Contract cross-check
 

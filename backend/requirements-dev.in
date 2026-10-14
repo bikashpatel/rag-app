@@ -1,0 +1,7 @@
+# Test dependencies; requirements-dev.txt is the hashed lock (see requirements.in).
+-r requirements.in
+pytest==8.4.2
+pytest-asyncio==1.2.0
+httpx==0.28.1
+aiosqlite==0.21.0
+fakeredis==2.32.0

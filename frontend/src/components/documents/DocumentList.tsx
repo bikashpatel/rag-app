@@ -6,6 +6,11 @@ import { isDocumentSelected, readyDocumentIds, toggleDocument } from "./selectio
 
 type DocumentListProps = {
   documents: DocumentItem[];
+  /**
+   * An upload is queued or running. Its row above already stands in for the document until the server returns it,
+   * so the "No documents yet" empty state would contradict it. (Failed uploads don't count: nothing is coming.)
+   */
+  uploadsActive: boolean;
   selection: DocumentSelection;
   onSelectionChange: (selection: DocumentSelection) => void;
   /** Admin: may upload to the shared knowledge base, so its section is shown even when empty. */
@@ -27,6 +32,7 @@ function useMinuteTick(): void {
 
 export default function DocumentList({
   documents,
+  uploadsActive,
   selection,
   onSelectionChange,
   canShare,
@@ -35,7 +41,9 @@ export default function DocumentList({
   onReprocess,
 }: DocumentListProps) {
   useMinuteTick();
-  if (documents.length === 0) return <EmptyState canShare={canShare} supportedTypes={supportedTypes} />;
+  if (documents.length === 0) {
+    return uploadsActive ? null : <EmptyState canShare={canShare} supportedTypes={supportedTypes} />;
+  }
 
   const readyIds = readyDocumentIds(documents);
   const mine = documents.filter((doc) => doc.scope === "private");

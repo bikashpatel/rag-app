@@ -5,7 +5,17 @@ import type { Me } from "../api/types";
 type AuthContextValue = {
   user: Me | null;
   loading: boolean;
+  /**
+   * Set when the session check on boot failed for a reason other than 401 (server unreachable, 5xx). The session
+   * cookie may still be valid, so the app shows a retry screen instead of the login form.
+   */
+  bootError: string | null;
+  /** Re-run the boot session check (after `bootError`). */
+  retry: () => void;
+  /** True after an explicit logout: the login page then doesn't send the next sign-in back to the previous page. */
+  signedOut: boolean;
   login: (username: string, password: string) => Promise<void>;
+  /** Rejects (and keeps the user signed in) when the server couldn't clear the session cookie. */
   logout: () => Promise<void>;
   /** Re-fetch /auth/me (e.g. to update the usage meter after a chat). */
   refresh: () => Promise<void>;
@@ -16,6 +26,8 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<Me | null>(null);
   const [loading, setLoading] = useState(true);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [signedOut, setSignedOut] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -26,27 +38,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  useEffect(() => {
-    setUnauthorizedHandler(() => setUser(null));
+  const boot = useCallback(() => {
+    setLoading(true);
+    setBootError(null);
+    // refresh() already handles 401 (signed out); anything else means the session couldn't be checked.
     refresh()
-      .catch(() => setUser(null))
+      .catch((err: unknown) => {
+        setUser(null);
+        setBootError(err instanceof ApiError ? err.message : "Couldn't reach the server. Please try again.");
+      })
       .finally(() => setLoading(false));
-    return () => setUnauthorizedHandler(null);
   }, [refresh]);
 
+  useEffect(() => {
+    setUnauthorizedHandler(() => setUser(null));
+    boot();
+    return () => setUnauthorizedHandler(null);
+  }, [boot]);
+
   const login = useCallback(async (username: string, password: string) => {
-    setUser(await api.post<Me>("/auth/login", { username, password }));
+    const me = await api.post<Me>("/auth/login", { username, password });
+    setBootError(null);
+    setSignedOut(false);
+    setUser(me);
   }, []);
 
   const logout = useCallback(async () => {
-    try {
-      await api.post<void>("/auth/logout");
-    } finally {
-      setUser(null);
-    }
+    // The session is an httpOnly cookie only the server can clear: if the request fails (network error, 5xx) the
+    // browser still holds a valid session, so stay signed in and let the caller report it.
+    await api.post<void>("/auth/logout");
+    setSignedOut(true);
+    setUser(null);
   }, []);
 
-  const value = useMemo(() => ({ user, loading, login, logout, refresh }), [user, loading, login, logout, refresh]);
+  const value = useMemo(
+    () => ({ user, loading, bootError, retry: boot, signedOut, login, logout, refresh }),
+    [user, loading, bootError, boot, signedOut, login, logout, refresh],
+  );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 

@@ -4,7 +4,7 @@ import { BYTES_PER_MB } from "./fileTypes";
 
 export default function QuotaFooter({ config }: { config: DocumentConfig }) {
   return (
-    <footer className="docs-footer" aria-label="Your document quota">
+    <footer className="docs-footer" role="group" aria-label="Your document quota">
       <QuotaMeter
         label="Documents"
         used={config.document_count}

@@ -16,7 +16,11 @@ confirm it with a concrete failure scenario before fixing it.
 - Prompt injection: retrieved passages are delimited and treated as untrusted data.
 - `api_key_env` can only name `*_API_KEY` variables; `api_base` is an admin-only setting.
 - No secrets in logs or error messages (LiteLLM errors are mapped by `llm.friendly_error`).
-- nginx: security headers, CSP compatible with the built app, `client_max_body_size`.
+- nginx: security headers, CSP compatible with the built app, `client_max_body_size` (1 MB except
+  `POST /api/documents`, which checks the session before the body reaches the backend), cross-site
+  writes refused (`Sec-Fetch-Site`).
+- Supply chain: Python locks with hashes, npm lock, and base images pinned by digest, all at least
+  two weeks old.
 
 ## Correctness and robustness
 

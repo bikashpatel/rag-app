@@ -29,7 +29,7 @@ export default function SelectionBar({ documents, selection, onSelectionChange }
           ref={checkboxRef}
           type="checkbox"
           checked={state === "all"}
-          disabled={readyIds.length === 0}
+          disabled={readyIds.length === 0 && selection === null}
           onChange={() => onSelectionChange(state === "all" ? [] : null)}
           aria-label="Use all documents in chat"
           aria-describedby={summaryId}

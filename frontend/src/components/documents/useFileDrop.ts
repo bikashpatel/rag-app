@@ -23,7 +23,8 @@ function readDrop(data: DataTransfer): { files: File[]; folders: string[] } {
 
 /**
  * Drag-and-drop handlers for a whole region. Only file drags are handled, so text and link drags behave normally;
- * file drops are always intercepted so the browser never navigates away to the dropped file.
+ * file drops on the region are always intercepted, even while uploads are disabled. Drops anywhere else are
+ * blocked by the app-wide guard in lib/blockStrayFileDrops, so the browser never navigates away to the file.
  */
 export function useFileDrop(onDrop: (files: File[], folders: string[]) => void, enabled: boolean) {
   const [dragActive, setDragActive] = useState(false);

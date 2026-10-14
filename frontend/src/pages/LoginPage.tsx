@@ -1,12 +1,14 @@
 import { useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { postLoginPath } from "../auth/loginRedirect";
 import Spinner from "../components/ui/Spinner";
 
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -18,7 +20,8 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       await login(username.trim(), password);
-      navigate("/", { replace: true });
+      // Back to the page that sent us here (e.g. a bookmarked conversation after the session expired).
+      navigate(postLoginPath(location.state), { replace: true });
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Login failed. Please try again.");
     } finally {

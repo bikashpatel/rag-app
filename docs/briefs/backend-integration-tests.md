@@ -9,10 +9,15 @@ Postgres-vs-SQLite portability).
 
 ```bash
 cd backend
-python3.13 -m venv .venv   # 3.12+ works; the Docker image uses 3.13
+python3.13 -m venv .venv   # the Docker image uses 3.13 too
 source .venv/bin/activate
 pip install -r requirements-dev.txt
+# or with uv (its venvs have no pip): uv venv --python 3.13 .venv && uv pip sync requirements-dev.txt
 ```
+
+`requirements.txt` and `requirements-dev.txt` are hashed locks generated from `requirements.in` and
+`requirements-dev.in` (the regeneration commands are at the top of `requirements.in`). Edit the
+`.in` files, never the locks.
 
 Everything runs in-process:
 

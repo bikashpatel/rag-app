@@ -5,10 +5,11 @@ import re
 from dataclasses import dataclass, field
 from itertools import dropwhile
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import Message, User
+from app.models import Document, Message, User
 from app.schemas import Source
 from app.services import llm, vectorstore
 from app.services.model_registry import get_active_embedding_model
@@ -44,6 +45,12 @@ _NO_PASSAGES_NOTE = (
     "If they are asking about their documents, say plainly that you couldn't find the answer there, and "
     "make it clear when you answer from general knowledge instead."
 )
+_SEARCH_FAILED_NOTE = (
+    "The user's documents could not be searched for their latest message (document search is unavailable "
+    "right now), so no passages are included. If they are asking about their documents, tell them their "
+    "documents couldn't be searched this time rather than saying the answer isn't there, and make it clear "
+    "when you answer from general knowledge instead."
+)
 
 
 @dataclass
@@ -68,6 +75,9 @@ async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[
         model = await get_active_embedding_model(db)
         if model is None:
             return RetrievalResult(warning=_NO_EMBEDDING_MODEL)
+        # End the read transaction: no pooled connection may sit idle in a transaction during the provider call.
+        # A commit, not a rollback, keeps `model` loaded (SessionLocal doesn't expire on commit).
+        await db.commit()
         try:
             embedding = await llm.embed_texts(model, [query])
         except llm.LLMError as exc:
@@ -80,6 +90,10 @@ async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[
             top_k=settings.rag_top_k,
             document_ids=document_ids,
         )
+        if hits:
+            # Vectors can briefly outlive their document (a delete racing ingestion); never cite deleted content.
+            existing = set(await db.scalars(select(Document.id).where(Document.id.in_({hit.doc_id for hit in hits}))))
+            hits = [hit for hit in hits if hit.doc_id in existing]
     except Exception:
         logger.exception("Document search failed for user %s", user.id)
         await db.rollback()
@@ -111,11 +125,17 @@ def build_messages(
     history: list[Message],
     user_message: str,
     documents_requested: bool,
+    search_failed: bool = False,
 ) -> list[dict]:
-    """OpenAI-style messages for LiteLLM: system prompt with the passages, the history, then the new message."""
+    """OpenAI-style messages for LiteLLM: system prompt with the passages, the history, then the new message.
+
+    `search_failed`: the search couldn't run (the retrieval warning), which isn't the same as finding nothing.
+    """
     system = _SYSTEM_PROMPT
     if sources:
         system += "\n\n" + _context_block(sources, contexts)
+    elif search_failed:
+        system += "\n\n" + _SEARCH_FAILED_NOTE
     elif documents_requested:
         system += "\n\n" + _NO_PASSAGES_NOTE
 

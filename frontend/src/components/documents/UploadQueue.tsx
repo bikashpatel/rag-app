@@ -20,6 +20,12 @@ export default function UploadQueue({ items, onRemove }: UploadQueueProps) {
   );
 }
 
+function progressLabel(item: UploadItem): string {
+  if (item.status === "queued") return "Waiting…";
+  // The whole body has been sent; the server is still storing and checking the file.
+  return item.progress >= 100 ? "Finishing…" : `Uploading ${item.progress}%`;
+}
+
 function UploadQueueItem({ item, onRemove }: { item: UploadItem; onRemove: (id: number) => void }) {
   const failed = item.status === "failed";
   return (
@@ -46,7 +52,10 @@ function UploadQueueItem({ item, onRemove }: { item: UploadItem; onRemove: (id: 
               <div className="docs-progress-fill" style={{ width: `${item.progress}%` }} />
             </div>
             <div className="docs-upload-status">
-              <span>{item.status === "queued" ? "Waiting…" : `Uploading ${item.progress}%`}</span>
+              <span>
+                {progressLabel(item)}
+                {item.scope === "shared" ? " · Shared" : null}
+              </span>
               <span>{formatBytes(item.size)}</span>
             </div>
           </>

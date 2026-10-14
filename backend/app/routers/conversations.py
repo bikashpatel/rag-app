@@ -11,15 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db import get_db
 from app.deps import get_current_user
 from app.models import Conversation, Message, User
-from app.schemas import Source
+from app.schemas import MAX_INT, Source
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
-# Largest Postgres INTEGER: no row can have a bigger id, and the driver would reject it with a 500.
-MAX_ID = 2_147_483_647
 _LIST_LIMIT = 200
 
-ConversationId = Annotated[int, Path(ge=1, le=MAX_ID)]
+ConversationId = Annotated[int, Path(ge=1, le=MAX_INT)]
 
 
 class ConversationSummary(BaseModel):

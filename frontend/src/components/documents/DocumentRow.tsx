@@ -19,13 +19,14 @@ function countLabel(count: number, noun: string): string {
   return `${formatNumber(count)} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-function metaLine(doc: DocumentItem): string {
+function metaParts(doc: DocumentItem): string[] {
   const parts = [formatBytes(doc.size_bytes)];
   if (doc.status === "ready") parts.push(countLabel(doc.num_chunks, "chunk"));
   if (doc.num_pages) parts.push(countLabel(doc.num_pages, "page"));
+  if (doc.status === "ready" && doc.vision_pages > 0) parts.push(`${countLabel(doc.vision_pages, "page")} read by vision`);
   const uploaded = formatRelativeTime(doc.created_at);
   if (uploaded) parts.push(uploaded);
-  return parts.join(" · ");
+  return parts;
 }
 
 function checkboxHint(doc: DocumentItem): string {
@@ -41,7 +42,7 @@ function statusBadge(doc: DocumentItem): ReactNode {
     case "processing":
       return (
         <span className="badge badge-info">
-          <span className="spinner" aria-hidden="true" />
+          <span className="spinner docs-spinner" aria-hidden="true" />
           Processing
         </span>
       );
@@ -67,6 +68,7 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
   const ready = doc.status === "ready";
   const canReprocess = doc.can_delete && (doc.status === "failed" || (ready && doc.is_stale));
   const badge = statusBadge(doc);
+  const meta = metaParts(doc);
 
   function closeConfirm() {
     setConfirming(false);
@@ -103,7 +105,15 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
           {doc.filename}
         </div>
         <div className="docs-row-meta" title={`Uploaded ${formatDateTime(doc.created_at)}`}>
-          {metaLine(doc)}
+          {/* Parts wrap whole, so the upload time is never cut off; the "·" separators are CSS (see documents.css). */}
+          <span className="docs-row-meta-parts" aria-hidden="true">
+            {meta.map((part, i) => (
+              <span key={i} className="docs-row-meta-part">
+                {part}
+              </span>
+            ))}
+          </span>
+          <span className="sr-only">{meta.join(", ")}</span>
         </div>
         {badge || canReprocess ? (
           <div className="docs-status">

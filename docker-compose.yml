@@ -9,9 +9,10 @@ x-backend-env: &backend-env
   # Use LiteLLM's bundled price/context map instead of fetching it from GitHub at startup.
   LITELLM_LOCAL_MODEL_COST_MAP: "True"
 
+# Images are pinned by digest to builds at least two weeks old; bump them deliberately.
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-rag}
@@ -26,7 +27,7 @@ services:
       retries: 20
 
   redis:
-    image: redis:7.4-alpine
+    image: redis:7.4.11-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     restart: unless-stopped
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
     volumes:
@@ -38,7 +39,7 @@ services:
       retries: 20
 
   qdrant:
-    image: qdrant/qdrant:v1.19.1
+    image: qdrant/qdrant:v1.19.1@sha256:12364fe851b9f17356fc88189fc06d1b521262e04659ec7345975b00c9246a10
     restart: unless-stopped
     volumes:
       - qdrantdata:/qdrant/storage
@@ -51,6 +52,9 @@ services:
   backend:
     build: ./backend
     restart: unless-stopped
+    # uvicorn cancels open answer streams 15 s after SIGTERM (Dockerfile); the rest is time for them
+    # to save their partial answers. Docker's default of 10 s would kill it first.
+    stop_grace_period: 30s
     env_file: .env
     environment: *backend-env
     volumes:
@@ -73,6 +77,12 @@ services:
     build: ./backend
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
+    # Running jobs get up to 60 s to finish on shutdown (app/worker.py); Docker's default is 10 s.
+    stop_grace_period: 75s
+    # PDF pages are rendered in child processes limited to 1 GiB each (app/services/pdf_images.py); this caps
+    # the whole worker, so anything else that runs away is OOM-killed inside the container.
+    mem_limit: ${WORKER_MEM_LIMIT:-4g}
+    memswap_limit: ${WORKER_MEM_LIMIT:-4g}
     env_file: .env
     environment: *backend-env
     volumes:
@@ -84,8 +94,16 @@ services:
   frontend:
     build: ./frontend
     restart: unless-stopped
+    environment:
+      # nginx's upload body limit follows it (frontend/upload-limit.envsh); pass nothing else from .env.
+      MAX_UPLOAD_MB_HARD: ${MAX_UPLOAD_MB_HARD:-100}
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
     depends_on:
       backend:
         condition: service_healthy

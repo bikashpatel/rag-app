@@ -19,8 +19,15 @@ const TAGS = new Map<string, FileTypeTag>([
   [".txt", { label: "TXT", tone: "neutral" }],
 ]);
 
+/** Old binary Office formats the server rejects, with the format to save them as instead. */
+const LEGACY_FORMATS = new Map([
+  [".doc", ".docx"],
+  [".ppt", ".pptx"],
+  [".xls", ".xlsx"],
+]);
+
 /** Lower-case extension including the dot (".pdf"), or "" when the name has none. */
-export function fileExtension(filename: string): string {
+function fileExtension(filename: string): string {
   const dot = filename.lastIndexOf(".");
   return dot > 0 && dot < filename.length - 1 ? filename.slice(dot).toLowerCase() : "";
 }
@@ -51,9 +58,8 @@ export function uploadRules(config: DocumentConfig): UploadRules {
 export function validateUpload(file: File, rules: UploadRules): string | null {
   const extension = fileExtension(file.name);
   if (!rules.extensions.includes(extension)) {
-    if (extension && rules.extensions.includes(`${extension}x`)) {
-      return `Legacy ${extension} files aren't supported. Save it as ${extension}x and upload that instead.`;
-    }
+    const modern = LEGACY_FORMATS.get(extension);
+    if (modern) return `Legacy ${extension} files aren't supported. Save it as ${modern} and upload that instead.`;
     return extension ? `${extension} files aren't supported.` : "Files without an extension aren't supported.";
   }
   if (file.size === 0) return "This file is empty.";

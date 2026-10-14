@@ -126,10 +126,20 @@ class UploadManager {
         this.emitSettled(created);
       },
       (err: unknown) => {
-        this.finish(id, controller.signal.aborted ? null : uploadErrorMessage(err));
+        if (err instanceof ApiError && err.status === 401) this.reset();
+        else this.finish(id, controller.signal.aborted ? null : uploadErrorMessage(err));
         this.emitSettled(null);
       },
     );
+  }
+
+  /** Cancel and forget everything: the session ended, so every remaining upload would be refused. */
+  private reset(): void {
+    const controllers = [...this.running.values()];
+    this.running.clear();
+    this.pending = [];
+    this.setItems([]);
+    for (const controller of controllers) controller.abort();
   }
 
   /** Drop a finished upload from the list, or keep it as failed when there is an error to show. */

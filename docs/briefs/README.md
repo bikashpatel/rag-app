@@ -14,6 +14,7 @@ first; it is the binding contract. Status of every file is in [`../HANDOFF.md`](
 | [backend-integration-tests.md](backend-integration-tests.md) | test plan for the backend (no Docker needed) |
 | [frontend-verification.md](frontend-verification.md) | typecheck/build + API contract cross-check |
 | [review-checklist.md](review-checklist.md) | security and correctness review before calling it done |
+| [vision-pdf.md](vision-pdf.md) | vision model for PDFs: scanned pages and image descriptions (backend, admin UI, tests) |
 
 ## Rules that apply to every area
 

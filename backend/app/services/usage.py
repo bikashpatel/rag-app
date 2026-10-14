@@ -1,5 +1,7 @@
 """Usage controls: rate limiting, monthly budgets and usage accounting."""
 
+import logging
+import secrets
 import time
 from datetime import datetime, timezone
 
@@ -11,6 +13,13 @@ from app.config import settings
 from app.models import LLMModel, UsageEvent, User
 from app.redis_client import get_redis
 from app.services.llm import Usage
+
+logger = logging.getLogger(__name__)
+
+# Answers a user with a monthly budget may have generating at once. The budget is checked before an answer and
+# charged after it, so without this every request started in parallel would pass the check.
+MAX_CHATS_IN_FLIGHT = 2
+_CHAT_IN_FLIGHT = "Another answer is still being generated. Wait for it to finish, then try again."
 
 
 def month_start(now: datetime | None = None) -> datetime:
@@ -72,15 +81,24 @@ async def check_rate_limit(user: User) -> None:
         )
 
 
-async def chat_tokens_this_month(db: AsyncSession, user_id: int) -> int:
+async def _tokens_this_month(db: AsyncSession, user_id: int, kind: str) -> int:
     result = await db.execute(
         select(func.coalesce(func.sum(UsageEvent.total_tokens), 0)).where(
             UsageEvent.user_id == user_id,
-            UsageEvent.kind == "chat",
+            UsageEvent.kind == kind,
             UsageEvent.created_at >= month_start(),
         )
     )
     return int(result.scalar_one() or 0)
+
+
+async def chat_tokens_this_month(db: AsyncSession, user_id: int) -> int:
+    return await _tokens_this_month(db, user_id, "chat")
+
+
+async def vision_tokens_this_month(db: AsyncSession, user_id: int) -> int:
+    """Checked against VISION_MONTHLY_TOKEN_LIMIT when an ingestion run starts."""
+    return await _tokens_this_month(db, user_id, "vision")
 
 
 async def check_budget(db: AsyncSession, user: User) -> None:
@@ -98,14 +116,62 @@ async def check_budget(db: AsyncSession, user: User) -> None:
         )
 
 
+async def acquire_chat_slot(user: User) -> str | None:
+    """Take one of the user's MAX_CHATS_IN_FLIGHT answer slots (429 when all are taken). Returns the slot to pass
+    to release_chat_slot, or None for users without a monthly budget."""
+    if user.is_admin or user.monthly_token_limit <= 0:
+        return None
+    redis = get_redis()
+    key, slot, now = _slots_key(user.id), secrets.token_hex(8), time.time()
+    ttl = _slot_ttl()
+    async with redis.pipeline(transaction=True) as pipe:
+        pipe.zremrangebyscore(key, "-inf", now - ttl)  # slots of streams that never ran, so were never released
+        pipe.zadd(key, {slot: now})
+        pipe.zcard(key)
+        pipe.expire(key, ttl)
+        _, _, taken, _ = await pipe.execute()
+    if taken > MAX_CHATS_IN_FLIGHT:
+        await redis.zrem(key, slot)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=_CHAT_IN_FLIGHT, headers={"Retry-After": "5"}
+        )
+    return slot
+
+
+async def release_chat_slot(user_id: int, slot: str | None) -> None:
+    if slot is None:
+        return
+    try:
+        await get_redis().zrem(_slots_key(user_id), slot)
+    except Exception as exc:  # the slot expires on its own
+        logger.warning("Could not release a chat slot of user %s: %s", user_id, exc)
+
+
+def _slots_key(user_id: int) -> str:
+    return f"chat:inflight:{user_id}"
+
+
+def _slot_ttl() -> int:
+    """Longer than any answer can take."""
+    return settings.llm_timeout_seconds * 2 + 60
+
+
 async def record_usage(
-    db: AsyncSession, *, user_id: int, model: LLMModel | None, kind: str, usage: Usage, commit: bool = True
+    db: AsyncSession,
+    *,
+    user_id: int,
+    model: LLMModel | None,
+    kind: str,
+    usage: Usage,
+    commit: bool = True,
+    model_name: str | None = None,
 ) -> None:
+    """`model_name` names a model that was deleted meanwhile (`model` None: a new row can't reference it)."""
     db.add(
         UsageEvent(
             user_id=user_id,
             model_id=model.id if model is not None else None,
-            model_name=model.litellm_model if model is not None else "unknown",
+            model_name=model_name or (model.litellm_model if model is not None else "unknown"),
             kind=kind,
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
@@ -129,13 +195,14 @@ async def usage_summary(db: AsyncSession, user: User) -> dict:
         .where(UsageEvent.user_id == user.id, UsageEvent.created_at >= start)
         .group_by(UsageEvent.kind)
     )
-    totals = {"chat": (0, 0.0), "embedding": (0, 0.0)}
+    totals = {"chat": (0, 0.0), "embedding": (0, 0.0), "vision": (0, 0.0)}
     for kind, tokens, cost in rows.all():
         totals[kind] = (int(tokens or 0), float(cost or 0.0))
     return {
         "month": start.strftime("%Y-%m"),
         "chat_tokens": totals["chat"][0],
         "embedding_tokens": totals["embedding"][0],
-        "cost_usd": round(totals["chat"][1] + totals["embedding"][1], 6),
+        "vision_tokens": totals["vision"][0],
+        "cost_usd": round(sum(cost for _, cost in totals.values()), 6),
         "monthly_token_limit": 0 if user.is_admin else user.monthly_token_limit,
     }

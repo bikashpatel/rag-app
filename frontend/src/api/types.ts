@@ -12,8 +12,9 @@ export type UsageSummary = {
   month: string; // "YYYY-MM"
   chat_tokens: number;
   embedding_tokens: number;
-  cost_usd: number;
-  monthly_token_limit: number; // 0 = unlimited
+  vision_tokens: number;
+  cost_usd: number; // every kind
+  monthly_token_limit: number; // 0 = unlimited; counts chat_tokens only
 };
 
 export type Me = {
@@ -48,6 +49,7 @@ export type DocumentItem = {
   owner_username: string;
   can_delete: boolean;
   is_stale: boolean;
+  vision_pages: number; // pages read with the vision model; 0 unless status is "ready"
   created_at: string;
   updated_at: string;
 };
@@ -98,9 +100,9 @@ export type ConversationDetail = ConversationSummary & { messages: ChatMessage[]
 
 export type ChatStreamRequest = {
   conversation_id: number | null;
-  message: string;
-  model_id: number | null;
-  document_ids: DocumentSelection;
+  message: string; // 1..20000 chars
+  model_id: number | null; // null = default chat model
+  document_ids: DocumentSelection; // at most 10000 ids
 };
 
 export type TokenUsage = {
@@ -143,7 +145,7 @@ export type AdminUser = {
   allowed_model_ids: number[];
   created_at: string;
   last_login_at: string | null;
-  usage: { chat_tokens: number; embedding_tokens: number; cost_usd: number };
+  usage: { chat_tokens: number; embedding_tokens: number; vision_tokens: number; cost_usd: number };
   document_count: number;
   storage_bytes: number;
 };
@@ -163,7 +165,8 @@ export type AdminUserCreate = {
 
 export type AdminUserUpdate = Partial<Omit<AdminUserCreate, "username">>;
 
-export type ModelKind = "chat" | "embedding";
+/** "vision": reads PDF pages for ingestion (the active one is the enabled default); never offered for chat. */
+export type ModelKind = "chat" | "embedding" | "vision";
 
 export type AdminModel = {
   id: number;
@@ -218,17 +221,25 @@ export type AdminStats = {
   stale_documents: number;
   failed_documents: number;
   active_embedding_model: { id: number; display_name: string } | null;
+  active_vision_model: { id: number; display_name: string } | null;
   queue_length: number;
 };
 
 export type UsageReport = {
   month: string;
-  totals: { chat_tokens: number; embedding_tokens: number; cost_usd: number; requests: number };
+  totals: {
+    chat_tokens: number;
+    embedding_tokens: number;
+    vision_tokens: number;
+    cost_usd: number;
+    requests: number; // chat requests only
+  };
   by_user: {
     user_id: number;
     username: string;
     chat_tokens: number;
     embedding_tokens: number;
+    vision_tokens: number;
     cost_usd: number;
     requests: number;
   }[];
@@ -240,5 +251,11 @@ export type UsageReport = {
     cost_usd: number;
     requests: number;
   }[];
-  daily: { date: string; chat_tokens: number; embedding_tokens: number; cost_usd: number }[];
+  daily: {
+    date: string;
+    chat_tokens: number;
+    embedding_tokens: number;
+    vision_tokens: number;
+    cost_usd: number;
+  }[];
 };

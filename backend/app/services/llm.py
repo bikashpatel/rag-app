@@ -1,10 +1,13 @@
 """Thin LiteLLM wrappers. All model calls in the app go through this module."""
 
 import logging
+import math
 import os
 import time
-from collections.abc import AsyncIterator
+from base64 import b64encode
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 import litellm
@@ -18,10 +21,31 @@ litellm.drop_params = True  # silently drop params a provider doesn't support
 litellm.suppress_debug_info = True
 if hasattr(litellm, "telemetry"):
     litellm.telemetry = False
+# LiteLLM logs every call at INFO through a handler of its own and again through the root logger.
+logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+logging.getLogger("LiteLLM").propagate = False
+
+# Sent to a custom api_base without a configured key: OpenAI-compatible clients need a non-empty one, and servers
+# without authentication ignore it.
+_NO_API_KEY = "unused"
 
 
 class LLMError(Exception):
     """A provider call failed. str(exc) is safe to show to end users."""
+
+
+class VisionCallError(LLMError):
+    """A vision call failed. `retryable`: worth retrying (rate limits, overloaded or unavailable provider, dropped
+    connections, but not timeouts), after `retry_after` seconds if the provider said so. `fatal`: every other page
+    would fail the same way (the key or the model is wrong)."""
+
+    def __init__(
+        self, message: str, *, retryable: bool = False, retry_after: float | None = None, fatal: bool = False
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
+        self.fatal = fatal
 
 
 @dataclass
@@ -40,6 +64,13 @@ class Usage:
 class EmbeddingResult:
     vectors: list[list[float]]
     usage: Usage
+
+
+@dataclass
+class VisionReply:
+    text: str
+    usage: Usage
+    truncated: bool  # the model stopped at max_tokens
 
 
 def _get(obj: Any, key: str, default: Any = None) -> Any:
@@ -76,14 +107,45 @@ def friendly_error(exc: BaseException) -> str:
 
 
 def _base_kwargs(model: LLMModel) -> dict[str, Any]:
+    """LiteLLM arguments for the model. Only the key named in api_key_env ever goes to a custom api_base: left to
+    itself, LiteLLM falls back to the provider's default key (OPENAI_API_KEY, ...) and sends it to that host."""
     kwargs: dict[str, Any] = {"model": model.litellm_model, "timeout": settings.llm_timeout_seconds}
     if model.api_base:
         kwargs["api_base"] = model.api_base
     if model.api_key_env:
         key = os.environ.get(model.api_key_env)
-        if key:
-            kwargs["api_key"] = key
+        if not key:  # never fall back to another key
+            raise LLMError(
+                f"This model's API key ({model.api_key_env}) is not set on the server. "
+                "Add it to .env and run docker compose up -d."
+            )
+        kwargs["api_key"] = key
+    elif model.api_base:
+        kwargs["api_key"] = _NO_API_KEY
     return kwargs
+
+
+def resolve_max_tokens(model: LLMModel, default: int | None = None) -> int:
+    """The model's own max_output_tokens, else `default` (DEFAULT_MAX_OUTPUT_TOKENS when None) lowered to the model's
+    known output cap (providers reject a larger max_tokens outright)."""
+    if model.max_output_tokens:
+        return model.max_output_tokens
+    cap = _known_output_cap(model.litellm_model)
+    if default is None:
+        default = settings.default_max_output_tokens
+    return min(default, cap) if cap else default
+
+
+def _known_output_cap(litellm_model: str) -> int | None:
+    """The output-token cap in LiteLLM's bundled model map. A plain lookup: litellm.get_model_info() can make
+    blocking calls to some providers' servers."""
+    provider, _, name = litellm_model.partition("/") if "/" in litellm_model else ("openai", "", litellm_model)
+    for key in (litellm_model, name):
+        info = litellm.model_cost.get(key)
+        if isinstance(info, dict) and info.get("litellm_provider") == provider:
+            cap = info.get("max_output_tokens")
+            return int(cap) if isinstance(cap, int | float) and cap > 0 else None
+    return None
 
 
 def compute_cost(model: LLMModel, prompt_tokens: int, completion_tokens: int) -> float:
@@ -125,7 +187,7 @@ def _fill_usage(
     usage.cost_usd = compute_cost(model, usage.prompt_tokens, usage.completion_tokens)
 
 
-async def stream_chat(model: LLMModel, messages: list[dict], usage: Usage) -> AsyncIterator[str]:
+async def stream_chat(model: LLMModel, messages: list[dict], usage: Usage) -> AsyncGenerator[str]:
     """Stream text deltas from a chat model.
 
     `usage` is filled in when the generator finishes — normally, on error, or when the
@@ -137,13 +199,14 @@ async def stream_chat(model: LLMModel, messages: list[dict], usage: Usage) -> As
         messages=messages,
         stream=True,
         stream_options={"include_usage": True},
-        max_tokens=model.max_output_tokens or settings.default_max_output_tokens,
+        max_tokens=resolve_max_tokens(model),
     )
     if model.temperature is not None:
         kwargs["temperature"] = model.temperature
 
     parts: list[str] = []
     reported: tuple[int, int] | None = None
+    response: Any = None
     try:
         response = await litellm.acompletion(**kwargs)
         async for chunk in response:
@@ -165,6 +228,18 @@ async def stream_chat(model: LLMModel, messages: list[dict], usage: Usage) -> As
         raise LLMError(friendly_error(exc)) from exc
     finally:
         _fill_usage(usage, model, messages, "".join(parts), reported)
+        await _close_stream(response)
+
+
+async def _close_stream(stream: Any) -> None:
+    """Release the provider connection, so a stream the consumer abandoned stops generating (and billing)."""
+    close = getattr(stream, "aclose", None)
+    if close is None:
+        return
+    try:
+        await close()
+    except Exception as exc:
+        logger.warning("Could not close the chat stream: %s", exc)
 
 
 async def embed_texts(model: LLMModel, texts: list[str]) -> EmbeddingResult:
@@ -203,8 +278,126 @@ async def embed_texts(model: LLMModel, texts: list[str]) -> EmbeddingResult:
     return EmbeddingResult(vectors=vectors, usage=usage)
 
 
+# Claude 5.x reads an image as about one token per 28x28-pixel patch.
+_IMAGE_PIXELS_PER_TOKEN = 784
+_RETRYABLE = (
+    litellm.RateLimitError,
+    litellm.InternalServerError,  # including Anthropic's "overloaded"
+    litellm.ServiceUnavailableError,
+    litellm.APIConnectionError,
+)
+_FATAL = (litellm.AuthenticationError, litellm.PermissionDeniedError, litellm.NotFoundError)
+_MAX_RETRY_AFTER_SECONDS = 3600.0
+
+
+async def read_image(
+    model: LLMModel, jpeg: bytes, *, system: str, instruction: str, image_size: tuple[int, int]
+) -> VisionReply:
+    """One vision call (no retries): the image, then the instruction. Thinking is kept low, since it counts toward
+    max_tokens and is billed as output. Failures are raised as VisionCallError."""
+    try:
+        kwargs = _base_kwargs(model)
+    except LLMError as exc:  # the model's key isn't set: every page would fail
+        raise VisionCallError(str(exc), fatal=True) from exc
+    kwargs.update(
+        messages=[
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64encode(jpeg).decode()}},
+                    {"type": "text", "text": instruction},
+                ],
+            },
+        ],
+        max_tokens=resolve_max_tokens(model, settings.vision_max_output_tokens),
+        reasoning_effort="low",
+    )
+    if model.temperature is not None:  # null by default: Claude 5.5 models reject a non-default temperature
+        kwargs["temperature"] = model.temperature
+    _allow_effort(model.litellm_model)
+    try:
+        response = await litellm.acompletion(**kwargs)
+    except Exception as exc:
+        logger.warning("Vision call failed for %s: %s", model.litellm_model, _short(str(exc), 300))
+        raise _vision_error(exc) from exc
+
+    choices = _get(response, "choices") or []
+    choice = choices[0] if choices else None
+    content = _get(_get(choice, "message"), "content")
+    text = content if isinstance(content, str) else ""
+    reported = _get(response, "usage")
+    usage = Usage(
+        prompt_tokens=int(_get(reported, "prompt_tokens", 0) or 0),
+        completion_tokens=int(_get(reported, "completion_tokens", 0) or 0),
+    )
+    if not usage.total_tokens:
+        # Never hand the image to token_counter, which decodes images: the text parts plus the image's patches.
+        width, height = image_size
+        prompt = [{"role": "system", "content": system}, {"role": "user", "content": instruction}]
+        usage.prompt_tokens = count_tokens(model, messages=prompt) + math.ceil(width * height / _IMAGE_PIXELS_PER_TOKEN)
+        usage.completion_tokens = count_tokens(model, text=text) if text else 0
+        usage.estimated = True
+    usage.cost_usd = compute_cost(model, usage.prompt_tokens, usage.completion_tokens)
+    return VisionReply(text=text, usage=usage, truncated=_get(choice, "finish_reason") == "length")
+
+
+def _vision_error(exc: Exception) -> VisionCallError:
+    retryable = isinstance(exc, _RETRYABLE) and not isinstance(exc, litellm.Timeout)
+    return VisionCallError(
+        friendly_error(exc),
+        retryable=retryable,
+        retry_after=_retry_after(exc) if retryable else None,
+        fatal=isinstance(exc, _FATAL),
+    )
+
+
+def _retry_after(exc: Exception) -> float | None:
+    """Seconds from the provider's Retry-After header (LiteLLM keeps the vendor's response on the exception)."""
+    headers = getattr(getattr(exc, "response", None), "headers", None)
+    if headers is None:
+        return None
+    try:
+        if (milliseconds := headers.get("retry-after-ms")) is not None:
+            seconds = float(milliseconds) / 1000
+        elif (value := headers.get("retry-after")) is not None:
+            try:
+                seconds = float(value)
+            except ValueError:  # an HTTP date
+                seconds = parsedate_to_datetime(value).timestamp() - time.time()
+        else:
+            return None
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return min(max(seconds, 0.0), _MAX_RETRY_AFTER_SECONDS) if math.isfinite(seconds) else None
+
+
+def _allow_effort(litellm_model: str) -> None:
+    """Let reasoning_effort reach Claude models that think adaptively but are missing from LiteLLM's model map
+    (claude-sonnet-5-5 in LiteLLM 1.103.1). LiteLLM sends their effort as output_config.effort only when the map
+    says they support it, and drop_params removes it otherwise, so they would think at their default effort (high).
+    Every adaptive-thinking Claude model accepts the effort setting."""
+    provider, _, name = litellm_model.partition("/")
+    if provider != "anthropic" or not name or name in litellm.model_cost or litellm_model in litellm.model_cost:
+        return
+    try:
+        from litellm.llms.anthropic.common_utils import AnthropicModelInfo
+
+        if AnthropicModelInfo._is_adaptive_thinking_model(name, "anthropic"):
+            litellm.register_model(
+                {name: {"litellm_provider": "anthropic", "mode": "chat", "supports_output_config": True}},
+                persist_across_reloads=False,
+            )
+    except Exception as exc:  # a LiteLLM upgrade moved this: the effort is dropped, nothing else changes
+        logger.warning("Could not enable reasoning_effort for %s: %s", litellm_model, exc)
+
+
 async def test_model(model: LLMModel) -> dict[str, Any]:
     """Make a tiny real call. Returns the ModelTestResult shape from SPEC.md."""
+    if model.kind == "vision":
+        from app.services.vision import test_vision_model  # vision imports this module
+
+        return await test_vision_model(model)
     start = time.perf_counter()
     try:
         if model.kind == "embedding":
@@ -217,7 +410,9 @@ async def test_model(model: LLMModel) -> dict[str, Any]:
                 "embedding_dim": dim,
             }
         kwargs = _base_kwargs(model)
-        kwargs.update(messages=[{"role": "user", "content": "Reply with the single word: OK"}], max_tokens=256)
+        # The max_tokens chats send, so the test fails when the provider would reject it (the reply is one word).
+        prompt = [{"role": "user", "content": "Reply with the single word: OK"}]
+        kwargs.update(messages=prompt, max_tokens=resolve_max_tokens(model))
         if model.temperature is not None:
             kwargs["temperature"] = model.temperature
         response = await litellm.acompletion(**kwargs)

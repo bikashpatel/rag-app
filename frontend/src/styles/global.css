@@ -153,6 +153,9 @@ h4 {
   color: var(--danger);
   font-size: 13px;
 }
+/* position: absolute, so every overflow container that can hold .sr-only text must itself be positioned
+   (the containing block). Otherwise the text escapes the scroller's clipping and gives an outer
+   element scrollable overflow (a sideways-scrolling page, or a column that can be scrolled out of view). */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -364,6 +367,7 @@ h4 {
 }
 
 .table-wrap {
+  position: relative; /* containing block for .sr-only cells, so they can't widen the page */
   overflow-x: auto;
 }
 .table {
@@ -417,6 +421,28 @@ h4 {
   padding: var(--space-5);
 }
 
+/* ---------- Full-page status (server unreachable, unexpected error) ---------- */
+.status-card {
+  width: 100%;
+  max-width: 420px;
+  padding: var(--space-6);
+  text-align: center;
+}
+.status-card h1 {
+  font-size: 18px;
+}
+.status-card p {
+  margin: 0;
+  color: var(--text-2);
+}
+.status-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
 /* ---------- Modal ---------- */
 .modal-backdrop {
   position: fixed;
@@ -451,6 +477,7 @@ h4 {
   flex: 1;
 }
 .modal-body {
+  position: relative; /* containing block for .sr-only content */
   padding: var(--space-5);
   overflow-y: auto;
 }

@@ -13,7 +13,9 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    TypeDecorator,
 )
+from sqlalchemy.engine import Dialect
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -21,6 +23,19 @@ from app.db import Base
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+class UTCDateTime(TypeDecorator[datetime]):
+    """Timezone-aware UTC timestamps on every backend (SQLite on its own returns naive datetimes)."""
+
+    impl = DateTime(timezone=True)
+    cache_ok = True
+
+    def process_bind_param(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        return value.astimezone(timezone.utc) if value is not None and value.tzinfo is not None else value
+
+    def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
+        return value.replace(tzinfo=timezone.utc) if value is not None and value.tzinfo is None else value
 
 
 user_allowed_models = Table(
@@ -49,9 +64,9 @@ class User(Base):
     max_storage_mb: Mapped[int] = mapped_column(Integer, default=0)
     restrict_models: Mapped[bool] = mapped_column(Boolean, default=False)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
-    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
     allowed_models: Mapped[list["LLMModel"]] = relationship(secondary=user_allowed_models, lazy="selectin")
 
@@ -62,7 +77,7 @@ class LLMModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     display_name: Mapped[str] = mapped_column(String(100))
     litellm_model: Mapped[str] = mapped_column(String(200))
-    kind: Mapped[str] = mapped_column(String(16), index=True)  # "chat" | "embedding"
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # "chat" | "embedding" | "vision"
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     api_base: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -72,8 +87,8 @@ class LLMModel(Base):
     input_cost_per_mtok: Mapped[float | None] = mapped_column(Float, nullable=True)
     output_cost_per_mtok: Mapped[float | None] = mapped_column(Float, nullable=True)
     embedding_dim: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
 class Document(Base):
@@ -94,8 +109,8 @@ class Document(Base):
     embedding_model_id: Mapped[int | None] = mapped_column(
         ForeignKey("llm_models.id", ondelete="SET NULL"), nullable=True
     )
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
     owner: Mapped[User] = relationship(lazy="selectin")
 
@@ -106,8 +121,8 @@ class Conversation(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(200), default="New chat")
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
-    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
 
     messages: Mapped[list["Message"]] = relationship(
         back_populates="conversation",
@@ -131,7 +146,7 @@ class Message(Base):
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages", lazy="noload")
 
@@ -144,9 +159,35 @@ class UsageEvent(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     model_id: Mapped[int | None] = mapped_column(ForeignKey("llm_models.id", ondelete="SET NULL"), nullable=True)
     model_name: Mapped[str] = mapped_column(String(200))
-    kind: Mapped[str] = mapped_column(String(16))  # "chat" | "embedding"
+    kind: Mapped[str] = mapped_column(String(16))  # "chat" | "embedding" | "vision"
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, index=True)
+
+
+class VisionPage(Base):
+    """The vision model's cleaned output for one page of a document, reused while the fingerprint matches.
+
+    No ORM relationship from Document: the database's ON DELETE CASCADE removes the rows.
+    """
+
+    __tablename__ = "vision_pages"
+
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True)
+    page: Mapped[int] = mapped_column(Integer, primary_key=True)
+    mode: Mapped[str] = mapped_column(String(16), primary_key=True)  # "transcribe" | "describe"
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class AppState(Base):
+    """Server flags, e.g. "vision_seeded"."""
+
+    __tablename__ = "app_state"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, default="")
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)

@@ -11,13 +11,20 @@ def provider_of(litellm_model: str) -> str:
     return litellm_model.split("/", 1)[0] if "/" in litellm_model else "openai"
 
 
-async def get_active_embedding_model(db: AsyncSession) -> LLMModel | None:
+async def _active_model(db: AsyncSession, kind: str) -> LLMModel | None:
     result = await db.execute(
-        select(LLMModel)
-        .where(LLMModel.kind == "embedding", LLMModel.enabled.is_(True), LLMModel.is_default.is_(True))
-        .limit(1)
+        select(LLMModel).where(LLMModel.kind == kind, LLMModel.enabled.is_(True), LLMModel.is_default.is_(True)).limit(1)
     )
     return result.scalar_one_or_none()
+
+
+async def get_active_embedding_model(db: AsyncSession) -> LLMModel | None:
+    return await _active_model(db, "embedding")
+
+
+async def get_active_vision_model(db: AsyncSession) -> LLMModel | None:
+    """The enabled default vision model, which ingestion uses to read PDF pages; None turns that off."""
+    return await _active_model(db, "vision")
 
 
 async def list_chat_models_for_user(db: AsyncSession, user: User) -> list[LLMModel]:
@@ -44,7 +51,7 @@ async def resolve_chat_model(db: AsyncSession, user: User, model_id: int | None)
     for model in models:
         if model.id == model_id:
             return model
-    model = await db.get(LLMModel, model_id)
-    if model is not None and model.kind == "chat" and model.enabled:
+    requested = await db.get(LLMModel, model_id)
+    if requested is not None and requested.kind == "chat" and requested.enabled:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not allowed to use this model.")
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This model is not available.")

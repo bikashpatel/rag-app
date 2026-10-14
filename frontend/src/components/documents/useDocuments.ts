@@ -36,8 +36,9 @@ function upsert(list: DocumentItem[] | null, doc: DocumentItem): DocumentItem[] 
 }
 
 /**
- * Loads GET /documents and GET /documents/config. The list is polled while any document is pending or processing,
- * or while `uploading` is true. A response is ignored when a newer request for the same resource has started.
+ * Loads GET /documents and GET /documents/config, and reloads both when the tab becomes visible again. The list is
+ * polled while any document is pending or processing, or while `uploading` is true. A response is ignored when a
+ * newer request for the same resource has started.
  */
 export function useDocuments(uploading: boolean): DocumentsState {
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
@@ -86,6 +87,16 @@ export function useDocuments(uploading: boolean): DocumentsState {
     void reloadDocuments();
     void reloadConfig();
     return () => controller.abort();
+  }, [reloadDocuments, reloadConfig]);
+
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.hidden) return;
+      void reloadDocuments();
+      void reloadConfig();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
   }, [reloadDocuments, reloadConfig]);
 
   const processing = documents?.some((doc) => doc.status === "pending" || doc.status === "processing") ?? false;

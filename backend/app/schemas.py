@@ -5,6 +5,9 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+# Largest Postgres INTEGER: no id or INTEGER column can hold more, and bigger values make the driver fail (a 500).
+MAX_INT = 2_147_483_647
+
 
 class UserLimits(BaseModel):
     monthly_token_limit: int
@@ -18,6 +21,7 @@ class UsageSummary(BaseModel):
     month: str
     chat_tokens: int
     embedding_tokens: int
+    vision_tokens: int
     cost_usd: float
     monthly_token_limit: int
 
@@ -44,6 +48,7 @@ class DocumentItem(BaseModel):
     owner_username: str
     can_delete: bool
     is_stale: bool
+    vision_pages: int  # pages read with the vision model (vision_pages rows); 0 unless status is "ready"
     created_at: datetime
     updated_at: datetime
 
