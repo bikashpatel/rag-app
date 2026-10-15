@@ -1,7 +1,11 @@
 """Uploaded-file storage and whole-document lifecycle helpers."""
 
+import asyncio
 import logging
 import uuid
+from collections import Counter
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -10,13 +14,16 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import Document, User, VisionPage
+from app.models import Document, GeneratedDocument, User, VisionPage
 from app.redis_client import forget_ingest_attempts
 from app.schemas import DocumentItem
 from app.services import vectorstore
 from app.services.model_registry import get_active_embedding_model
 
 logger = logging.getLogger(__name__)
+
+_upload_locks: dict[int, asyncio.Lock] = {}
+_upload_lock_users: Counter[int] = Counter()
 
 
 def upload_dir() -> Path:
@@ -36,11 +43,18 @@ def stored_path(stored_name: str) -> Path:
     return upload_dir() / stored_name
 
 
+def source_name(stored_name: str) -> str:
+    """The Markdown source stored next to a PDF the assistant created (indexed instead of the PDF's text)."""
+    return f"{stored_name}.source.md"
+
+
 def remove_file(stored_name: str) -> None:
-    try:
-        stored_path(stored_name).unlink(missing_ok=True)
-    except Exception:
-        logger.exception("Could not remove uploaded file %s", stored_name)
+    """Remove a stored file and its Markdown source, if any."""
+    for name in (stored_name, source_name(stored_name)):
+        try:
+            stored_path(name).unlink(missing_ok=True)
+        except Exception:
+            logger.exception("Could not remove uploaded file %s", name)
 
 
 def document_item(
@@ -50,9 +64,11 @@ def document_item(
     active_embedding_model_id: int | None,
     admin_view: bool = False,
     vision_pages: int = 0,
+    generated: bool = False,
 ) -> DocumentItem:
     """Build the DocumentItem response. `doc.owner` must be loaded (it is selectin by default).
-    `vision_pages`: the document's vision_pages rows (see vision_page_counts)."""
+    `vision_pages`: the document's vision_pages rows (see vision_page_counts); `generated`: it has a
+    generated_documents row (see generated_ids)."""
     if admin_view:
         can_delete = viewer.is_admin
     else:
@@ -74,6 +90,7 @@ def document_item(
         can_delete=can_delete,
         is_stale=doc.status == "ready" and doc.embedding_model_id != active_embedding_model_id,
         vision_pages=vision_pages if doc.status == "ready" else 0,
+        generated=generated,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
@@ -87,6 +104,60 @@ async def vision_page_counts(db: AsyncSession, documents: Select[tuple[int]]) ->
         .group_by(VisionPage.document_id)
     )
     return {doc_id: count for doc_id, count in rows.tuples()}
+
+
+async def generated_ids(db: AsyncSession, documents: Select[tuple[int]]) -> set[int]:
+    """The ids among those `documents` selects that the assistant created (one query)."""
+    return set(
+        await db.scalars(select(GeneratedDocument.document_id).where(GeneratedDocument.document_id.in_(documents)))
+    )
+
+
+async def is_generated(db: AsyncSession, doc_id: int) -> bool:
+    row = await db.scalar(select(GeneratedDocument.document_id).where(GeneratedDocument.document_id == doc_id))
+    return row is not None
+
+
+@asynccontextmanager
+async def serialized_uploads(db: AsyncSession, user_id: int) -> AsyncIterator[None]:
+    """One new document per user at a time (uploads and files the assistant creates), from the quota and duplicate
+    checks to the commit.
+
+    The asyncio lock covers this process (and SQLite, which has no row locks); the lock on the user's row
+    covers several backend processes on Postgres and is held until the transaction ends.
+    """
+    lock = _upload_locks.setdefault(user_id, asyncio.Lock())
+    _upload_lock_users[user_id] += 1
+    try:
+        async with lock:
+            # FOR NO KEY UPDATE: doesn't block inserts that reference the user (e.g. their chat usage).
+            await db.execute(select(User.id).where(User.id == user_id).with_for_update(key_share=True))
+            yield
+    finally:
+        _upload_lock_users[user_id] -= 1
+        if not _upload_lock_users[user_id]:
+            del _upload_lock_users[user_id], _upload_locks[user_id]
+
+
+def check_document_count(limits: dict, document_count: int) -> None:
+    if limits["max_documents"] and document_count >= limits["max_documents"]:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"You've reached your limit of {limits['max_documents']} documents. "
+            "Delete a document to upload another.",
+        )
+
+
+async def owned_totals(db: AsyncSession, user_id: int) -> tuple[int, int]:
+    """(document count, total bytes) of the documents the user owns."""
+    row = (
+        await db.execute(
+            select(func.count(Document.id), func.coalesce(func.sum(Document.size_bytes), 0)).where(
+                Document.owner_id == user_id
+            )
+        )
+    ).one()
+    return int(row[0]), int(row[1])
 
 
 async def remove_document_vectors(db: AsyncSession, doc: Document) -> None:

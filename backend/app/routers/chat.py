@@ -3,7 +3,9 @@
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator
+import re
+from collections import defaultdict
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Annotated, Any
@@ -17,16 +19,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import SessionLocal, get_db
 from app.deps import get_current_user
-from app.models import Conversation, LLMModel, Message, User, utcnow
+from app.models import Conversation, Document, LLMModel, Message, MessageFile, User, utcnow
 from app.routers.conversations import get_owned_conversation
-from app.schemas import MAX_INT, Source
-from app.services import llm, rag
+from app.schemas import MAX_INT, GeneratedFile, Source
+from app.services import document_tool, llm, rag
 from app.services.model_registry import resolve_chat_model
 from app.services.usage import (
     acquire_chat_slot,
     check_budget,
     check_rate_limit,
     record_usage,
+    refresh_chat_slot,
     release_chat_slot,
 )
 
@@ -40,9 +43,25 @@ _MAX_QUERY_CHARS = 4000
 _STOPPED = "Stopped before completion"
 _FAILED = "Something went wrong while generating the answer."
 _NOT_SAVED = "The answer could not be saved."
+_BUDGET_SPENT = (
+    "Your monthly token budget ran out while this answer was being written, so it stops here. Files created above "
+    "are in your documents."
+)
+_DECLINED = "The model declined to continue, so the file wasn't created."
+_INCOMPLETE = "The model's response ended before the file was complete, so it wasn't created."
+# An SSE comment after this much silence: proxies (a Cloudflare tunnel drops a response silent for about 100 s) must
+# not cut an answer that is thinking, writing a long file or rendering it.
+_KEEPALIVE_SECONDS = 15.0
+_KEEPALIVE = ": keepalive\n\n"
+_SLOT_REFRESH_SECONDS = 60.0
 _SSE_HEADERS = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
 # A narrowed selection lists every other ready document, so it grows with the knowledge base.
 _MAX_DOCUMENT_IDS = 10_000
+# A provider's complaint about the output size asked for: max_tokens, max_completion_tokens, max_output_tokens,
+# maxOutputTokens, max_new_tokens, "maximum tokens", "output tokens", "completion tokens".
+_OUTPUT_LIMIT = re.compile(
+    r"max(?:imum)?[\s_-]*(?:new|output|completion)?[\s_-]*tokens|(?:output|completion)[\s_-]*tokens", re.IGNORECASE
+)
 
 _Id = Annotated[int, Field(ge=1, le=MAX_INT)]
 
@@ -74,6 +93,9 @@ class _Turn:
     retrieval_query: str
     document_ids: list[int] | None
     slot: str | None = None  # see usage.acquire_chat_slot; released once the answer is saved
+    file_plan: document_tool.FilePlan = field(default_factory=lambda: document_tool.FilePlan([], None, None))
+    history_files: dict[int, list[rag.HistoryFile]] = field(default_factory=dict)  # message id -> its files
+    budget_left: int | None = None  # chat tokens left this month when the answer started (None: no budget)
 
 
 @dataclass
@@ -82,12 +104,16 @@ class _Answer:
     sources: list[Source] = field(default_factory=list)
     usage: llm.Usage = field(default_factory=llm.Usage)
     error: str | None = None
+    files: list[GeneratedFile] = field(default_factory=list)  # created this answer, in order (see document_tool)
+    storing: "asyncio.Task[Any] | None" = None  # a file being stored; Stop waits for it
 
 
 # Strong references to in-flight saves: the event loop only keeps weak ones.
 _pending_saves: set[asyncio.Task[int | None]] = set()
 # One future per answer stream still running, resolved when it ends (see drain_answers).
 _open_streams: set[asyncio.Future[None]] = set()
+# Strong references to the tasks that produce answers (see _sse_with_keepalive).
+_answer_tasks: set[asyncio.Task[None]] = set()
 
 
 def _event(name: str, data: dict[str, Any]) -> str:
@@ -119,11 +145,16 @@ async def _recent_messages(db: AsyncSession, conversation_id: int) -> list[Messa
 
 
 async def _save_answer(turn: _Turn, answer: _Answer) -> int | None:
-    """Record the chat usage, then store the assistant message. Returns the message id, or None if it wasn't stored.
+    """Record the chat usage, then store the assistant message with the files it created. Returns the message id, or
+    None if it wasn't stored.
 
     Frees the turn's answer slot afterwards, so the user's next budget check sees this answer's tokens.
     """
     try:
+        if (storing := answer.storing) is not None:  # a file was being stored at Stop: it links itself to the answer
+            await asyncio.wait({storing})
+            if not storing.cancelled():
+                storing.exception()  # retrieved: a file that couldn't be stored just isn't linked
         async with SessionLocal() as db:
             if answer.usage.total_tokens > 0:
                 # Committed on its own: the answer is billed even if storing the message fails.
@@ -152,6 +183,19 @@ async def _save_answer(turn: _Turn, answer: _Answer) -> int | None:
             )
             db.add(message)
             conversation.updated_at = utcnow()
+            if answer.files:
+                await db.flush()
+                existing = await _existing_document_ids(db, [file.document_id for file in answer.files])
+                db.add_all(
+                    MessageFile(
+                        message_id=message.id,
+                        document_id=file.document_id if file.document_id in existing else None,
+                        filename=file.filename,
+                        format=file.format,
+                        size_bytes=file.size_bytes,
+                    )
+                    for file in answer.files
+                )
             await db.commit()
             return message.id
     except Exception:
@@ -166,6 +210,17 @@ async def _existing_model_id(db: AsyncSession, model_id: int) -> int | None:
     can't reference it then). FOR KEY SHARE keeps it from being deleted until the transaction ends."""
     return await db.scalar(
         select(LLMModel.id).where(LLMModel.id == model_id).with_for_update(read=True, key_share=True)
+    )
+
+
+async def _existing_document_ids(db: AsyncSession, ids: list[int | None]) -> set[int]:
+    """The documents that still exist (one may be deleted while the answer streams); FOR KEY SHARE keeps them until
+    the message is stored."""
+    wanted = [doc_id for doc_id in ids if doc_id is not None]
+    if not wanted:
+        return set()
+    return set(
+        await db.scalars(select(Document.id).where(Document.id.in_(wanted)).with_for_update(read=True, key_share=True))
     )
 
 
@@ -211,29 +266,13 @@ async def _stream_answer(turn: _Turn) -> AsyncIterator[str]:
             yield _event("sources", {"sources": [source.model_dump() for source in retrieval.sources]})
             if retrieval.warning:
                 yield _event("warning", {"message": retrieval.warning})
-
-            messages = rag.build_messages(
-                sources=retrieval.sources,
-                contexts=retrieval.contexts,
-                history=turn.history,
-                user_message=turn.message,
-                documents_requested=turn.document_ids != [],
-                search_failed=retrieval.warning is not None,
-            )
             # aclosing: if this generator is closed mid-answer, the model stream is closed (and its usage
             # filled in) before the answer is saved.
-            async with aclosing(llm.stream_chat(turn.model, messages, answer.usage)) as deltas:
-                async for delta in deltas:
-                    delta = delta.replace("\x00", "")  # Postgres text can't hold NUL characters; models can emit them
-                    if not delta:
-                        continue
-                    answer.parts.append(delta)
-                    yield _event("delta", {"content": delta})
+            async with aclosing(_generate(turn, retrieval, answer)) as events:
+                async for event in events:
+                    yield event
         except llm.LLMError as exc:
             answer.error = str(exc)
-            if not answer.parts and answer.usage.estimated:
-                # Failed before producing any output and the provider reported no usage: nothing was billed.
-                answer.usage = llm.Usage()
         except (asyncio.CancelledError, GeneratorExit):
             # The client went away (e.g. the Stop button). Keep the partial answer, then stop without yielding.
             answer.error = _STOPPED
@@ -265,22 +304,220 @@ async def _stream_answer(turn: _Turn) -> AsyncIterator[str]:
         ended.set_result(None)
 
 
+async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer) -> AsyncGenerator[str]:
+    """The model calls of one answer: text deltas, and while the model creates files, the calls that run its tool
+    and the follow-up calls with the results (docs/briefs/document-generation.md, section 7). Raises LLMError when
+    a call fails; budget, refusal and cut-off endings set answer.error instead."""
+    plan = turn.file_plan
+
+    def prompt(file_instructions: str | None) -> list[dict]:
+        return rag.build_messages(
+            sources=retrieval.sources,
+            contexts=retrieval.contexts,
+            history=turn.history,
+            user_message=turn.message,
+            documents_requested=turn.document_ids != [],
+            search_failed=retrieval.warning is not None,
+            generated=retrieval.generated,
+            file_instructions=file_instructions,
+            history_files=turn.history_files,
+        )
+
+    messages = prompt(plan.instructions)
+    tools = plan.tools
+    file_max_tokens = plan.max_tokens  # sent by the calls that offer the tool; the max_tokens recovery lowers it
+    default_max_tokens = llm.resolve_max_tokens(turn.model)  # what a call without the tool sends
+    session = document_tool.FileSession(turn.user, retrieval.sources, answer, file_max_tokens)
+    all_calls = settings.generated_files_per_answer + 2 if tools else 1
+    max_calls = all_calls
+    first_added = len(messages)  # the messages this answer appends start here
+    recovered: set[str] = set()  # each recovery at most once per answer
+    retrying: str | None = None  # call 1 is being retried by this recovery: "max_tokens", "context" or "tools"
+    rejection = ""  # the provider's message that started the retry (for the log)
+    call_no = 0
+    while call_no < max_calls:
+        call_no += 1
+        if call_no > 1 and turn.budget_left is not None and answer.usage.total_tokens >= turn.budget_left:
+            answer.error = _BUDGET_SPENT
+            return
+        offer = bool(tools) and session.can_create() and call_no < max_calls
+        step, call_usage = llm.ChatStep(), llm.Usage()
+        session.begin_call()
+        separate = bool(answer.parts)  # a blank line before this call's text
+        try:
+            async with aclosing(
+                llm.stream_chat(
+                    turn.model,
+                    messages,
+                    call_usage,
+                    step=step,
+                    tools=tools or None,
+                    tool_choice=("auto" if offer else "none") if tools else None,
+                    parallel_tool_calls=False if offer else None,
+                    # The retry without the tool keeps the max_tokens of the call it retries: only the tool changes.
+                    max_tokens=file_max_tokens if (offer or retrying == "tools") else None,
+                )
+            ) as items:
+                async for item in items:
+                    if isinstance(item, llm.ToolCallStarted):
+                        if offer and item.name == document_tool.TOOL_NAME:
+                            yield _event("file", session.started(item.index))
+                        continue
+                    if isinstance(item, llm.ToolCallProgress):
+                        if offer and (progress := session.progress(item.index, step)) is not None:
+                            yield _event("file", progress)
+                        continue
+                    text = item.replace("\x00", "")  # Postgres text can't hold NUL characters; models can emit them
+                    if not text:
+                        continue
+                    if separate:
+                        answer.parts.append("\n\n")
+                        yield _event("delta", {"content": "\n\n"})
+                        separate = False
+                    answer.parts.append(text)
+                    yield _event("delta", {"content": text})
+        except llm.LLMError as exc:
+            if step.received or not call_usage.estimated:  # a call that failed before any output costs nothing
+                answer.usage.add(call_usage)
+            first_call = call_no == 1 and bool(plan.tools) and not step.received
+            can_lower = (
+                "max_tokens" not in recovered and file_max_tokens is not None and default_max_tokens < file_max_tokens
+            )
+            output_rejected = exc.bad_request and (retrying == "tools" or _OUTPUT_LIMIT.search(exc.detail) is not None)
+            if first_call and can_lower and (exc.context_window or output_rejected):
+                # The output reserved for a file is more than the endpoint takes (or than the context window has room
+                # for): retry with the tool and the usual max_tokens. Also when the retry without the tool failed
+                # too, since that didn't show the tool was the problem.
+                recovered.add("max_tokens")
+                recovered.discard("tools")  # the tool may still be rejected at the lower max_tokens
+                file_max_tokens = session.max_tokens = default_max_tokens
+                tools, max_calls = plan.tools, all_calls
+                retrying, rejection = ("context" if exc.context_window else "max_tokens"), exc.detail
+                messages = prompt(document_tool.file_instructions(file_max_tokens))
+                call_no -= 1
+                continue
+            if first_call and exc.bad_request and tools and "tools" not in recovered:
+                # The endpoint rejects the tool (e.g. its schema): answer without it, as models without tools do.
+                # Nothing else changes, so when this works the tool was the problem.
+                recovered.add("tools")
+                tools, max_calls = [], 1
+                retrying, rejection = "tools", exc.detail
+                messages = prompt(document_tool.NO_FILE_TOOLS_NOTE)
+                call_no -= 1
+                continue
+            signature_rejected = "thinking" in exc.detail.lower() and "signature" in exc.detail.lower()
+            if exc.bad_request and signature_rejected and call_no > 1 and "thinking" not in recovered:
+                logger.warning("%s rejected a replayed thinking block; retrying without them", turn.model.litellm_model)
+                recovered.add("thinking")
+                added = messages[first_added:]
+                llm.strip_thinking(added)
+                messages[first_added:] = added
+                call_no -= 1
+                continue
+            for event in session.open_calls(document_tool.CALL_FAILED):
+                yield _event("file", event)
+            raise
+        except BaseException:  # Stop: the call's usage is billed
+            answer.usage.add(call_usage)
+            raise
+        answer.usage.add(call_usage)
+        if retrying is not None and step.received:
+            if retrying == "tools":
+                llm.mark_tools_rejected(turn.model, rejection)
+            elif retrying == "max_tokens":
+                logger.warning(
+                    "%s rejected max_tokens=%s with the file tool (%s) and accepted %s; set the model's Max output "
+                    "tokens in the admin page",
+                    turn.model.litellm_model,
+                    plan.max_tokens,
+                    rejection,
+                    file_max_tokens,
+                )
+            retrying = None
+        if not offer or not step.tool_calls:
+            if step.tool_calls:
+                logger.info("Ignored %d tool call(s) of a response sent without tools", len(step.tool_calls))
+            return
+        if step.finish_reason not in ("tool_calls", "length"):
+            error = _DECLINED if step.finish_reason == "content_filter" else _INCOMPLETE
+            for event in session.open_calls(error):
+                yield _event("file", event)
+            answer.error = error
+            return
+        ids = [call.id or f"call_{call_no}_{call.index}" for call in step.tool_calls]
+        messages.extend(llm.assistant_turn(step, ids))
+        for call, call_id in zip(step.tool_calls, ids, strict=True):
+            runner = session.run(call) if step.finish_reason == "tool_calls" else session.cut_off(call)
+            result: dict[str, Any] = {"ok": False, "error": document_tool.SERVER_ERROR}
+            async with aclosing(runner) as outcomes:
+                async for outcome in outcomes:
+                    if isinstance(outcome, document_tool.ToolResult):
+                        result = outcome.content
+                    else:
+                        yield _event("file", outcome)
+            messages.append(llm.tool_result_message(call_id, result))
+
+
+async def _produce(events: AsyncIterator[str], queue: "asyncio.Queue[str | None]") -> None:
+    try:
+        async for event in events:  # no await outside the generator: a cancel always lands inside it
+            queue.put_nowait(event)
+    finally:
+        queue.put_nowait(None)
+
+
+def _answer_task_done(task: "asyncio.Task[None]") -> None:
+    _answer_tasks.discard(task)
+    if not task.cancelled() and (exc := task.exception()) is not None:
+        logger.error("An answer stream failed", exc_info=exc)
+
+
+async def _sse_with_keepalive(turn: _Turn) -> AsyncIterator[str]:
+    """The answer's events, produced by a task of its own, with a keepalive comment after _KEEPALIVE_SECONDS of
+    silence. Closing this generator (the client went away) cancels the producer once, which then saves the partial
+    answer; the task isn't inside the server's cancel scope, so nothing interrupts that save."""
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[str | None] = asyncio.Queue()
+    producer = asyncio.create_task(_produce(_stream_answer(turn), queue))
+    _answer_tasks.add(producer)
+    producer.add_done_callback(_answer_task_done)
+    refreshed = loop.time()
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), _KEEPALIVE_SECONDS)
+            except TimeoutError:
+                yield _KEEPALIVE
+            else:
+                if event is None:
+                    return
+                yield event
+            if turn.slot is not None and loop.time() - refreshed >= _SLOT_REFRESH_SECONDS:
+                refreshed = loop.time()
+                await refresh_chat_slot(turn.user.id, turn.slot)
+    finally:
+        producer.cancel()  # a no-op once it finished; otherwise this is Stop
+
+
 @router.post("/stream")
 async def chat_stream(
     body: ChatRequest, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> StreamingResponse:
     await check_rate_limit(user)
-    await check_budget(db, user)
+    budget_left = await check_budget(db, user)
     slot = await acquire_chat_slot(user)
     try:
-        return await _start_turn(body, user, db, slot)
+        return await _start_turn(body, user, db, slot, budget_left)
     except BaseException:
         await release_chat_slot(user.id, slot)
         raise
 
 
-async def _start_turn(body: ChatRequest, user: User, db: AsyncSession, slot: str | None) -> StreamingResponse:
+async def _start_turn(
+    body: ChatRequest, user: User, db: AsyncSession, slot: str | None, budget_left: int | None
+) -> StreamingResponse:
     model = await resolve_chat_model(db, user, body.model_id)
+    file_plan = await document_tool.plan(db, user, model)
 
     history: list[Message] = []
     if body.conversation_id is None:
@@ -291,6 +528,7 @@ async def _start_turn(body: ChatRequest, user: User, db: AsyncSession, slot: str
         conversation = await get_owned_conversation(db, user, body.conversation_id)
         history = await _recent_messages(db, conversation.id)
         conversation.updated_at = utcnow()
+    history_files = await _history_files(db, history)
     user_message = Message(conversation_id=conversation.id, role="user", content=body.message)
     db.add(user_message)
     await db.commit()
@@ -308,5 +546,25 @@ async def _start_turn(body: ChatRequest, user: User, db: AsyncSession, slot: str
         retrieval_query=_retrieval_query(history, body.message),
         document_ids=body.document_ids,
         slot=slot,
+        file_plan=file_plan,
+        history_files=history_files,
+        budget_left=budget_left,
     )
-    return StreamingResponse(_stream_answer(turn), media_type="text/event-stream", headers=_SSE_HEADERS)
+    return StreamingResponse(_sse_with_keepalive(turn), media_type="text/event-stream", headers=_SSE_HEADERS)
+
+
+async def _history_files(db: AsyncSession, history: list[Message]) -> dict[int, list[rag.HistoryFile]]:
+    """message id -> the files that answer created, in creation order, each marked deleted once its document is gone
+    (the link's document_id is then NULL). One query."""
+    ids = [message.id for message in history if message.role == "assistant"]
+    if not ids:
+        return {}
+    rows = await db.execute(
+        select(MessageFile.message_id, MessageFile.filename, MessageFile.document_id)
+        .where(MessageFile.message_id.in_(ids))
+        .order_by(MessageFile.id)
+    )
+    files: defaultdict[int, list[rag.HistoryFile]] = defaultdict(list)
+    for message_id, filename, document_id in rows.tuples():
+        files[message_id].append(rag.HistoryFile(filename, deleted=document_id is None))
+    return dict(files)

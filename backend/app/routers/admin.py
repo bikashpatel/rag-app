@@ -41,6 +41,7 @@ from app.services.model_registry import get_active_embedding_model, get_active_v
 from app.services.storage import (
     delete_document_completely,
     document_item,
+    generated_ids,
     lock_documents,
     remove_document_vectors,
     remove_file,
@@ -499,6 +500,7 @@ async def list_documents(
     active = await get_active_embedding_model(db)
     documents = await db.scalars(select(Document).order_by(Document.created_at.desc(), Document.id.desc()))
     vision_pages = await vision_page_counts(db, select(Document.id).where(Document.status == "ready"))
+    generated = await generated_ids(db, select(Document.id))
     return [
         document_item(
             doc,
@@ -506,6 +508,7 @@ async def list_documents(
             active_embedding_model_id=active.id if active else None,
             admin_view=True,
             vision_pages=vision_pages.get(doc.id, 0),
+            generated=doc.id in generated,
         )
         for doc in documents
     ]

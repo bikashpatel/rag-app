@@ -28,6 +28,8 @@ type ComposerProps = {
   /** Why the composer is unavailable (shown as its placeholder), or null. */
   disabledReason: string | null;
   selection: DocumentSelection;
+  /** The selected model can create files: the hint says so. */
+  canCreateFiles: boolean;
   onSend: (text: string) => void;
   onStop: () => void;
   /** When given, the document-scope chip becomes a button (opens the documents slide-over). */
@@ -45,6 +47,7 @@ export default function Composer({
   streaming,
   disabledReason,
   selection,
+  canCreateFiles,
   onSend,
   onStop,
   onScopeClick,
@@ -165,6 +168,11 @@ export default function Composer({
       </form>
       <p id={hintId} className="chat-composer-hint">
         <kbd>Enter</kbd> to send, <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
+        {canCreateFiles ? (
+          <span className="chat-composer-hint-files">
+            <span className="chat-composer-hint-sep"> · </span>You can ask for a PDF, Word, Excel or Markdown file
+          </span>
+        ) : null}
       </p>
     </div>
   );

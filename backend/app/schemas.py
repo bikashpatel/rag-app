@@ -49,8 +49,22 @@ class DocumentItem(BaseModel):
     can_delete: bool
     is_stale: bool
     vision_pages: int  # pages read with the vision model (vision_pages rows); 0 unless status is "ready"
+    generated: bool  # the assistant created this file in a chat (generated_documents row)
     created_at: datetime
     updated_at: datetime
+
+
+GeneratedFileFormat = Literal["pdf", "docx", "xlsx", "md"]
+
+
+class GeneratedFile(BaseModel):
+    """A file the assistant created in an answer (message_files row); it is one of the user's private documents."""
+
+    document_id: int | None  # None once the document was deleted
+    filename: str
+    format: GeneratedFileFormat
+    size_bytes: int
+    status: Literal["pending", "processing", "ready", "failed"] | None  # the document's status now; None when deleted
 
 
 class Source(BaseModel):

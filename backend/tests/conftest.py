@@ -6,6 +6,7 @@ import the plain helpers from here, e.g. `from conftest import chat, ingest, pdf
 """
 
 import asyncio
+import copy
 import csv
 import functools
 import hashlib
@@ -23,7 +24,7 @@ from dataclasses import dataclass, field
 from html import escape
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 
 # app.config reads the environment when it is first imported, so configure it before any app import.
 _ROOT = Path(tempfile.mkdtemp(prefix="rag-tests-"))
@@ -67,7 +68,7 @@ from app.config import settings  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
 from app.models import Document  # noqa: E402
 from app.redis_client import INGEST_QUEUE, close_redis, get_redis, set_redis  # noqa: E402
-from app.services import pdf_images, vision  # noqa: E402
+from app.services import document_tool, llm, pdf_images, vision  # noqa: E402
 from app.services.ingestion import process_document  # noqa: E402
 from app.services.vectorstore import close_qdrant  # noqa: E402
 
@@ -127,6 +128,84 @@ def default_vision_reply(page: int, mode: str) -> str:
 
 
 @dataclass
+class ScriptedCall:
+    """One scripted streaming chat call, in the chunk shapes LiteLLM 1.103 produces (see FakeLLM.script).
+
+    `blocks` in stream order: ("thinking", (text deltas, signature)) is a signed thinking block (one chunk per delta,
+    then one with the whole signed block), ("redacted", data) a redacted one, ("text", str) one text chunk, and
+    ("tool", (name, arguments as JSON text or a dict)) a tool call whose arguments arrive `fragment` characters per
+    chunk. `finish_reason` defaults to "tool_calls" with tool blocks, else "stop"; "" sends no finish chunk. `usage`
+    is reported after the finish (None: not reported). `error` is raised after the chunks, or by the call itself
+    (before any output) with `before_output`.
+    """
+
+    blocks: list[tuple[str, Any]] = field(default_factory=list)
+    shape: Literal["anthropic", "openai"] = "anthropic"
+    finish_reason: str | None = None
+    usage: tuple[int, int] | None = (100, 20)
+    fragment: int = 17
+    error: BaseException | None = None
+    before_output: bool = False
+
+
+def tool_call(name: str = "create_document", **arguments: Any) -> tuple[str, tuple[str, Any]]:
+    """A ("tool", ...) block for ScriptedCall.blocks."""
+    return ("tool", (name, arguments))
+
+
+def _tool_item(index: int, call_id: str | None, name: str | None, arguments: str) -> Any:
+    function = SimpleNamespace(name=name, arguments=arguments)
+    return SimpleNamespace(index=index, id=call_id, type="function" if call_id else None, function=function)
+
+
+def _scripted_chunks(call: ScriptedCall) -> list[Any]:
+    chunks: list[Any] = []
+    tools = 0
+    if call.shape == "openai":
+        chunks.append(_stream_chunk(content=""))
+    for kind, value in call.blocks:
+        if kind == "thinking":
+            deltas, signature = value
+            for text in deltas:
+                block = {"type": "thinking", "thinking": text}
+                chunks.append(_stream_chunk(content=None, reasoning_content=text, thinking_blocks=[block]))
+            whole = {"type": "thinking", "thinking": "".join(deltas), "signature": signature}
+            chunks.append(_stream_chunk(content=None, thinking_blocks=[whole]))
+        elif kind == "redacted":
+            chunks.append(_stream_chunk(content=None, thinking_blocks=[{"type": "redacted_thinking", "data": value}]))
+        elif kind == "text":
+            chunks.append(_stream_chunk(content=value))
+        elif kind == "tool":
+            name, arguments = value
+            raw = arguments if isinstance(arguments, str) else json.dumps(arguments)
+            index = tools
+            tools += 1
+            if call.shape == "openai":
+                whole = raw if index else ""  # later calls arrive whole in their start chunk
+                chunks.append(_stream_chunk(content=None, tool_calls=[_tool_item(index, f"call_{index}", name, whole)]))
+                if index:
+                    continue
+            else:
+                chunks.append(_stream_chunk(content="", tool_calls=[_tool_item(index, f"toolu_{index}", name, "")]))
+            for start in range(0, len(raw), max(1, call.fragment)):
+                fragment = raw[start : start + call.fragment]
+                chunks.append(_stream_chunk(content=None, tool_calls=[_tool_item(index, None, None, fragment)]))
+        else:
+            raise AssertionError(f"Unknown scripted block {kind!r}")
+    finish = call.finish_reason
+    if finish is None:
+        finish = "tool_calls" if tools else "stop"
+    if finish:
+        chunks.append(_stream_chunk(content=None, finish_reason=finish))
+    if call.usage is not None:
+        prompt_tokens, completion_tokens = call.usage
+        total = prompt_tokens + completion_tokens
+        usage = SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total)
+        chunks.append(SimpleNamespace(choices=[], usage=usage))
+    return chunks
+
+
+@dataclass
 class FakeLLM:
     """Stand-in for `litellm.acompletion` and `litellm.aembedding`; change its attributes inside a test.
 
@@ -134,7 +213,9 @@ class FakeLLM:
     `delta.reasoning_content` holds the text), then one delta per `chunks` item (sleeping `chunk_delay`
     seconds before each), then a usage-only chunk reporting `usage` = (prompt_tokens, completion_tokens);
     with `usage=None` nothing is reported and the app estimates. `fail_after=n` raises `error` after n
-    content chunks; `fail_after=0` makes the call itself raise. Non-streaming calls (the admin model
+    content chunks; `fail_after=0` makes the call itself raise. `stall_after=n` makes the stream wait forever
+    before its n-th content chunk. While `script` holds ScriptedCall items, each streaming call takes the first one
+    and streams it instead (its chunks also wait `chunk_delay`). Non-streaming calls (the admin model
     test) answer `reply`. Embeddings return `fake_embedding(text, embedding_dim)` per input with
     `prompt_tokens` = word count (no usage when `embedding_usage` is False); `embedding_error` makes every
     embedding call raise it. Keyword arguments of every call are kept in `chat_calls` / `embedding_calls`
@@ -152,6 +233,8 @@ class FakeLLM:
     reasoning: list[str] = field(default_factory=list)
     chunk_delay: float = 0.0
     fail_after: int | None = None
+    stall_after: int | None = None
+    script: list[ScriptedCall] = field(default_factory=list)
     error: BaseException = field(default_factory=lambda: RuntimeError("The provider stream broke"))
     reply: str = "OK"
     embedding_dim: int = 64
@@ -170,7 +253,13 @@ class FakeLLM:
     async def acompletion(self, **kwargs: Any) -> Any:
         if not kwargs.get("stream") and vision_part(kwargs, "image_url") is not None:
             return await self._vision(kwargs)
-        self.chat_calls.append(kwargs)
+        # A snapshot: the app keeps extending (and may strip) the same message list across the calls of an answer.
+        self.chat_calls.append({**kwargs, "messages": copy.deepcopy(kwargs.get("messages"))})
+        if kwargs.get("stream") and self.script:
+            scripted = self.script.pop(0)
+            if scripted.error is not None and scripted.before_output:
+                raise scripted.error
+            return self._scripted(scripted)
         if self.fail_after == 0:
             raise self.error
         if not kwargs.get("stream"):
@@ -212,6 +301,8 @@ class FakeLLM:
         for sent, text in enumerate(self.chunks):
             if self.fail_after is not None and sent >= self.fail_after:
                 raise self.error
+            if self.stall_after is not None and sent >= self.stall_after:
+                await asyncio.Event().wait()
             if self.chunk_delay:
                 await asyncio.sleep(self.chunk_delay)
             yield _stream_chunk(content=text)
@@ -227,6 +318,14 @@ class FakeLLM:
                     total_tokens=prompt_tokens + completion_tokens,
                 ),
             )
+
+    async def _scripted(self, call: ScriptedCall) -> AsyncIterator[Any]:
+        for chunk in _scripted_chunks(call):
+            if self.chunk_delay:
+                await asyncio.sleep(self.chunk_delay)
+            yield chunk
+        if call.error is not None:
+            raise call.error
 
     async def aembedding(self, **kwargs: Any) -> Any:
         self.embedding_calls.append(kwargs)
@@ -273,18 +372,82 @@ def vision_pages(fake: "FakeLLM", mode: str | None = None) -> list[int]:
     return [page for page, call_mode in calls if mode is None or call_mode == mode]
 
 
-def _stream_chunk(*, content: str | None, reasoning_content: str | None = None) -> Any:
-    delta = SimpleNamespace(role="assistant", content=content, reasoning_content=reasoning_content)
-    return SimpleNamespace(choices=[SimpleNamespace(index=0, delta=delta, finish_reason=None)], usage=None)
+def _stream_chunk(
+    *,
+    content: str | None,
+    reasoning_content: str | None = None,
+    thinking_blocks: list[dict[str, Any]] | None = None,
+    tool_calls: list[Any] | None = None,
+    finish_reason: str | None = None,
+) -> Any:
+    delta = SimpleNamespace(
+        role="assistant",
+        content=content,
+        reasoning_content=reasoning_content,
+        thinking_blocks=thinking_blocks,
+        tool_calls=tool_calls,
+    )
+    return SimpleNamespace(choices=[SimpleNamespace(index=0, delta=delta, finish_reason=finish_reason)], usage=None)
 
 
 @pytest.fixture(autouse=True)
 def fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
-    """The FakeLLM installed for this test (always active; request it to configure or inspect it)."""
+    """The FakeLLM installed for this test (always active; request it to configure or inspect it). Also forgets
+    which models rejected tools and LiteLLM's function-calling answers, which the app keeps for its lifetime."""
     fake = FakeLLM()
     monkeypatch.setattr(litellm, "acompletion", fake.acompletion)
     monkeypatch.setattr(litellm, "aembedding", fake.aembedding)
+    monkeypatch.setattr(llm, "_tools_rejected", set())
+    monkeypatch.setattr(llm, "_tool_support", {})
     return fake
+
+
+@dataclass
+class FileChild:
+    """The fake file render child installed by the `file_child` fixture; `pids` lists the children started."""
+
+    directory: Path
+
+    @property
+    def pids(self) -> list[int]:
+        path = self.directory / "starts"
+        return [int(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+_FAKE_FILE_CHILD = """
+import json, os, sys, time
+config = json.loads(sys.argv[1])
+with open(os.path.join(config["directory"], "starts"), "a") as log:
+    log.write(str(os.getpid()) + "\\n")
+mode = config["mode"]
+if mode == "sleep":
+    time.sleep(600)
+elif mode == "crash":
+    print(json.dumps({"crash": config.get("crash", "MemoryError")}))
+elif mode == "silent":
+    sys.stderr.write("SECRET STDERR CONTENT\\n")
+    sys.exit(3)
+elif mode == "wait":
+    while not os.path.exists(os.path.join(config["directory"], "go")):
+        time.sleep(0.02)
+"""
+
+
+@pytest.fixture
+def file_child(monkeypatch: pytest.MonkeyPatch, isolated_state: Path) -> Callable[..., FileChild]:
+    """Factory: `file_child("sleep" | "crash" | "silent" | "wait", crash="MemoryError")` replaces the file render
+    child with a script that sleeps 10 minutes, prints a crash result, exits without output (writing to stderr), or
+    waits for a file named "go" in its directory and then exits without output."""
+
+    def install(mode: str, *, crash: str = "MemoryError") -> FileChild:
+        directory = Path(tempfile.mkdtemp(dir=isolated_state))
+        script = directory / "fake_file_child.py"
+        script.write_text(_FAKE_FILE_CHILD)
+        config = json.dumps({"directory": str(directory), "mode": mode, "crash": crash})
+        monkeypatch.setattr(document_tool, "_child_command", lambda: [sys.executable, "-I", str(script), config])
+        return FileChild(directory)
+
+    return install
 
 
 @pytest.fixture(autouse=True)
@@ -529,7 +692,7 @@ async def ingest(client: ApiClient, filename: str, data: bytes, scope: str = "pr
 
 
 def sse_events(response: httpx.Response) -> list[SseEvent]:
-    """Parse a text/event-stream body into (event name, JSON data) pairs, in order."""
+    """Parse a text/event-stream body into (event name, JSON data) pairs, in order; comment lines are ignored."""
     events: list[SseEvent] = []
     for block in response.text.split("\n\n"):
         if not block.strip():
@@ -540,7 +703,8 @@ def sse_events(response: httpx.Response) -> list[SseEvent]:
                 name = line.removeprefix("event:").strip()
             elif line.startswith("data:"):
                 data.append(line.removeprefix("data:").removeprefix(" "))
-        events.append((name, json.loads("\n".join(data))))
+        if data:  # comment-only blocks (": keepalive") carry no event
+            events.append((name, json.loads("\n".join(data))))
     return events
 
 

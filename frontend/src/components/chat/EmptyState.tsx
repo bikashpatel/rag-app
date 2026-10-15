@@ -5,15 +5,19 @@ const EXAMPLE_PROMPTS = [
   "Which dates, deadlines or figures are mentioned?",
   "Explain the main topic in simple terms",
 ];
+const FILE_PROMPT = "Create a PDF report summarizing my documents";
 
 type EmptyStateProps = {
   username: string | null;
   disabled: boolean;
+  /** The selected model can create files: adds an example that asks for one. */
+  canCreateFiles: boolean;
   onPick: (prompt: string) => void;
 };
 
 /** Start screen of a new chat with clickable example prompts. */
-export default function EmptyState({ username, disabled, onPick }: EmptyStateProps) {
+export default function EmptyState({ username, disabled, canCreateFiles, onPick }: EmptyStateProps) {
+  const prompts = canCreateFiles ? [...EXAMPLE_PROMPTS, FILE_PROMPT] : EXAMPLE_PROMPTS;
   return (
     <div className="chat-empty">
       <div className="chat-empty-logo" aria-hidden="true">
@@ -24,7 +28,7 @@ export default function EmptyState({ username, disabled, onPick }: EmptyStatePro
         Ask about your documents or anything else. Answers cite the passages they draw on, so you can check them.
       </p>
       <ul className="chat-examples" aria-label="Example questions">
-        {EXAMPLE_PROMPTS.map((prompt) => (
+        {prompts.map((prompt) => (
           <li key={prompt}>
             <button type="button" className="chat-example" onClick={() => onPick(prompt)} disabled={disabled}>
               <span>{prompt}</span>

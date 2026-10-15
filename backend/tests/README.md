@@ -9,6 +9,8 @@ Integration tests that run the whole backend in-process, with no Docker and no n
 | Qdrant | the in-memory client (`QDRANT_URL=:memory:`), a new one per test |
 | LiteLLM | `FakeLLM` in `conftest.py` replaces `litellm.acompletion` and `litellm.aembedding` (vision calls included) |
 | PDFium | the real render child (`app/services/pdf_render_child.py`) runs as a subprocess; a fake child script simulates crashes and timeouts |
+| File rendering | the real file render child (`app/services/filegen/child.py`) runs as a subprocess; fake children simulate timeouts, crashes and silent exits |
+| A provider for the real LiteLLM | `test_llm_tools.py` starts a local Starlette server that speaks the Anthropic Messages and OpenAI chat-completions SSE, and checks the request bodies the real LiteLLM sends |
 
 ## Run
 
@@ -19,7 +21,7 @@ uv venv --python 3.13 .venv && uv pip sync requirements-dev.txt
 # or with a python3.13 on PATH:
 python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
-.venv/bin/python -m pytest -q                    # everything: about 860 tests, about 90 s
+.venv/bin/python -m pytest -q                    # everything: about 1,170 tests, about 2.5 minutes
 .venv/bin/python -m pytest tests/test_smoke.py   # one file
 .venv/bin/python -m pytest -k chat -x            # by name, stop at the first failure
 ```
@@ -43,8 +45,19 @@ not the locking). The advisory lock in `db.init_db` and the UTC session time zon
 `db.make_engine` are Postgres-only too. What was checked by hand against Postgres 17 is listed in
 `docs/HANDOFF.md`.
 
+Files from chat are tested by parsing the generated files back (pypdf, pypdfium2, python-docx, openpyxl),
+in-process and through the render child; `test_document_tool.py` drives whole answers through
+`POST /api/chat/stream` (and `_stream_answer` for Stop), and `test_llm_tools.py` checks the replay of thinking
+blocks and tool calls against the real LiteLLM. `test_document_generation.py` is an independent pass written from
+SPEC.md and the brief: every stream is checked against the SSE contract (`check_stream`) and every answer's model
+calls against the replay rules (`check_replays`), files are parsed back from the download endpoint, and Stop goes
+through the keepalive wrapper (`_sse_with_keepalive`). The speed guards in `test_filegen.py` (a 30,000-character mixed
+document under 10 s, the largest allowed PDF table under 30 s) each took under a second here.
+
 The vision tests call no real model and need no network: `FakeLLM` answers vision calls, and the PDFs are
-built in code. Rendering is real (pypdfium2 in a child process), so they need the `pypdfium2` wheel from the
+built in code. `test_vision_independent.py` is an independent pass written from the vision brief
+(classification, cap and priority, the allowance, the page cache, usage, retries, stop checks, render child
+failures, seeding). Rendering is real (pypdfium2 in a child process), so they need the `pypdfium2` wheel from the
 lock. `RLIMIT_AS` isn't enforced on macOS, so the render child's memory limit is only checked in the Linux
 worker image (see `docs/HANDOFF.md`).
 
@@ -71,7 +84,22 @@ Read `conftest.py` before adding tests. It provides:
   error on the given pages (lower `pdf_images._RENDER_PAGE_SECONDS` for `hang`); the returned object lists
   the children's PIDs and the environment variable names they saw. `child_starts` counts real children
   started (e.g. to assert that a refused PDF never reaches PDFium).
-- **Helpers:** `upload`, `process`, `process_queue`, `ingest`, `chat`, `sse_events`.
+- **Scripted chat streams (files from chat):** `fake_llm.script` is a list of `ScriptedCall`s; each streaming
+  call takes the first one (then FakeLLM behaves as usual). A `ScriptedCall` lists `blocks` in stream order:
+  `("thinking", (text deltas, signature))`, `("redacted", data)`, `("text", str)` and `("tool", (name,
+  arguments))`, where `tool_call(title=..., format=..., content=...)` builds a `create_document` call. The
+  chunks have the shapes LiteLLM 1.103 produces (`shape="anthropic"` or `"openai"`): signed thinking blocks
+  after their deltas, tool calls started by one chunk and continued `fragment` characters at a time, then the
+  finish reason (`finish_reason`, default `"tool_calls"` with tools, else `"stop"`; `""` sends none) and the
+  usage. `error` is raised after the chunks, or by the call itself with `before_output=True` (a 400). Every
+  call's kwargs are kept in `chat_calls`, with a copy of its messages (the app extends one list across the
+  calls of an answer). `stall_after=n` makes the plain stream wait forever before its n-th chunk. The
+  `fake_llm` fixture also resets which models rejected tools (`llm._tools_rejected`).
+- **File render child:** `file_child("sleep" | "crash" | "silent" | "wait", crash="MemoryError")` replaces
+  `document_tool._child_command` with a script that sleeps, prints a crash result, exits without output after
+  writing to stderr, or waits for a file named `go`; the returned object lists the children's PIDs.
+- **Helpers:** `upload`, `process`, `process_queue`, `ingest`, `chat`, `sse_events` (it ignores SSE comment
+  lines such as `: keepalive`).
 - **File builders:** `pdf_bytes`, `docx_bytes`, `pptx_bytes`, `xlsx_bytes`, `html_bytes`, `md_bytes`,
   `txt_bytes`, `csv_bytes`, `json_bytes`, `sample_file(extension, text)`. For PDFs with images:
   `image_pdf_bytes((text, area), ...)` (US Letter pages with a text layer and a Pillow chart over the bottom

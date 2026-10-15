@@ -123,7 +123,7 @@ class PageMeasurer:
         del operations, contents  # only the kept operators stay in memory while forms are parsed
         renderable = walk.operators <= _MAX_RENDER_OPS
         try:
-            self._walk(kept, _dictionary(page, "/Resources"), _IDENTITY, 0, walk, ())
+            self._walk(kept, _dictionary(page, "/Resources"), _IDENTITY, 0, 0, walk, ())
         except _TooLarge:
             return None
         except _TooComplex:
@@ -135,13 +135,15 @@ class PageMeasurer:
         operations: list[tuple[Any, bytes]],
         resources: DictionaryObject | None,
         ctm: Matrix,
+        mode: int,
         depth: int,
         walk: _Walk,
         active: tuple[tuple[int, int], ...],
     ) -> None:
+        """`ctm` and `mode` (text render mode) are the state the stream starts with: a form inherits them from its
+        `Do`, so an OCR layer drawn as a form after `3 Tr` is invisible, as PDFium renders it."""
         xobjects = _dictionary(resources, "/XObject") if resources is not None else None
         stack: list[tuple[Matrix, int]] = []
-        mode = 0
         for operands, operator in operations:
             if operator == b"q":
                 stack.append((ctm, mode))
@@ -171,13 +173,14 @@ class PageMeasurer:
                 if walk.do_visits > _MAX_DO_VISITS:
                     raise _TooComplex
                 if xobjects is not None:
-                    self._draw(xobjects, operands[0], ctm, resources, depth, walk, active)
+                    self._draw(xobjects, operands[0], ctm, mode, resources, depth, walk, active)
 
     def _draw(
         self,
         xobjects: DictionaryObject,
         name: Any,
         ctm: Matrix,
+        mode: int,
         resources: DictionaryObject | None,
         depth: int,
         walk: _Walk,
@@ -208,7 +211,7 @@ class PageMeasurer:
             matrix = _matrix(_get(form_object, "/Matrix"))
             form_ctm = _multiply(matrix, ctm) if matrix is not None else ctm
             form_resources = _dictionary(form_object, "/Resources") or resources
-            self._walk(form.operations, form_resources, form_ctm, depth + 1, walk, (*active, key))
+            self._walk(form.operations, form_resources, form_ctm, mode, depth + 1, walk, (*active, key))
 
     def _xobject(self, key: tuple[int, int], reference: IndirectObject) -> tuple[str, int]:
         if key not in self._xobjects:

@@ -10,16 +10,15 @@ import logging
 import mimetypes
 import re
 import unicodedata
-from collections import Counter
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
 from pathlib import Path as FilePath
 from pathlib import PurePosixPath
 from typing import Annotated, BinaryIO, Literal
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -39,14 +38,23 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 _MIB = 1024 * 1024
 _MAX_FILENAME_CHARS = 255
-# Control, format (e.g. bidi overrides) and surrogate code points never belong in a display name.
+# Control, format (e.g. bidi overrides) and surrogate code points never belong in a display name, nor U+FFFE and
+# U+FFFF, which XML can't hold (the name can be listed in the Sources of a generated Word or Excel file).
 _HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+_NONCHARACTERS = frozenset("\ufffe\uffff")
 _MIME_TYPE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}")
 
 DocumentId = Annotated[int, Path(ge=1, le=MAX_INT)]
 
-_upload_locks: dict[int, asyncio.Lock] = {}
-_upload_lock_users: Counter[int] = Counter()
+# Downloads are typed by extension, never by the type an upload declared.
+_DOWNLOAD_TYPES = {
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+}
+_ASCII_FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9 ._()-]")
+_MAX_ASCII_FILENAME_CHARS = 150
 
 
 class DocumentConfig(BaseModel):
@@ -59,17 +67,27 @@ class DocumentConfig(BaseModel):
     can_upload_shared: bool
 
 
+def _visible_to(user: User) -> ColumnElement[bool]:
+    """The caller's private documents and every shared one."""
+    return or_((Document.scope == "private") & (Document.owner_id == user.id), Document.scope == "shared")
+
+
 @router.get("")
 async def list_documents(
     user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> list[DocumentItem]:
-    visible = or_((Document.scope == "private") & (Document.owner_id == user.id), Document.scope == "shared")
+    visible = _visible_to(user)
     result = await db.execute(select(Document).where(visible).order_by(Document.created_at.desc(), Document.id.desc()))
     active_id = await _active_embedding_model_id(db)
     vision_pages = await storage.vision_page_counts(db, select(Document.id).where(visible, Document.status == "ready"))
+    generated = await storage.generated_ids(db, select(Document.id).where(visible))
     return [
         storage.document_item(
-            doc, viewer=user, active_embedding_model_id=active_id, vision_pages=vision_pages.get(doc.id, 0)
+            doc,
+            viewer=user,
+            active_embedding_model_id=active_id,
+            vision_pages=vision_pages.get(doc.id, 0),
+            generated=doc.id in generated,
         )
         for doc in result.scalars()
     ]
@@ -78,7 +96,7 @@ async def list_documents(
 @router.get("/config")
 async def document_config(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> DocumentConfig:
     limits = user_limits(user)
-    document_count, storage_bytes = await _owned_totals(db, user.id)
+    document_count, storage_bytes = await storage.owned_totals(db, user.id)
     return DocumentConfig(
         supported_extensions=sorted(SUPPORTED_EXTENSIONS),
         max_upload_mb=limits["max_upload_mb"],
@@ -107,7 +125,7 @@ async def upload_document(
     limits = user_limits(user)
     enforce_quotas = not user.is_admin
     if enforce_quotas and limits["max_documents"]:  # fail fast; checked again before the insert
-        _check_document_count(limits, (await _owned_totals(db, user.id))[0])
+        storage.check_document_count(limits, (await storage.owned_totals(db, user.id))[0])
     max_bytes = limits["max_upload_mb"] * _MIB
     if file.size is not None and file.size > max_bytes:
         raise _too_large(limits["max_upload_mb"])
@@ -122,7 +140,7 @@ async def upload_document(
         if size_bytes == 0:
             raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="The file is empty.")
         # Checked under the lock: the user's uploads running in parallel would all pass checks made before it.
-        async with _serialized_uploads(db, user.id):
+        async with storage.serialized_uploads(db, user.id):
             duplicate = await db.scalar(
                 select(Document.id)
                 .where(Document.owner_id == user.id, Document.scope == scope, Document.sha256 == sha256)
@@ -131,8 +149,8 @@ async def upload_document(
             if duplicate is not None:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="This file has already been uploaded.")
             if enforce_quotas and (limits["max_documents"] or limits["max_storage_mb"]):
-                document_count, storage_bytes = await _owned_totals(db, user.id)
-                _check_document_count(limits, document_count)
+                document_count, storage_bytes = await storage.owned_totals(db, user.id)
+                storage.check_document_count(limits, document_count)
                 if limits["max_storage_mb"] and storage_bytes + size_bytes > limits["max_storage_mb"] * _MIB:
                     raise HTTPException(
                         status_code=status.HTTP_409_CONFLICT,
@@ -175,16 +193,41 @@ async def reprocess_document(
     active = await get_active_embedding_model(db)
     if active is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=NO_EMBEDDING_MODEL)
+    generated = await storage.is_generated(db, doc.id)
     if doc.status == "pending":
         # Already queued, and that run uses the active model: another queue entry would only be a duplicate run.
         # (One lost from the queue is re-queued by the worker's sweep.)
-        return storage.document_item(doc, viewer=user, active_embedding_model_id=active.id)
+        return storage.document_item(doc, viewer=user, active_embedding_model_id=active.id, generated=generated)
     doc.status = "pending"
     doc.error = None
     await db.commit()
     await forget_ingest_attempts([doc.id])
     await _enqueue(doc.id)
-    return storage.document_item(doc, viewer=user, active_embedding_model_id=active.id)
+    return storage.document_item(doc, viewer=user, active_embedding_model_id=active.id, generated=generated)
+
+
+@router.get("/{doc_id}/download", response_class=FileResponse)
+async def download_document(
+    doc_id: DocumentId, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> FileResponse:
+    doc = await db.scalar(select(Document).where(Document.id == doc_id, _visible_to(user)))
+    if doc is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+    path = storage.stored_path(doc.stored_name)
+    if not await asyncio.to_thread(path.is_file):
+        logger.warning("Document %s has no stored file %s", doc.id, doc.stored_name)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The file is missing from storage.")
+    extension = PurePosixPath(doc.filename).suffix.lower()
+    return FileResponse(
+        path,
+        media_type=_DOWNLOAD_TYPES.get(extension, "application/octet-stream"),
+        headers={
+            "Content-Disposition": _attachment(doc.filename),
+            "X-Content-Type-Options": "nosniff",
+            "Cache-Control": "private, no-store",
+            "Content-Security-Policy": "sandbox",
+        },
+    )
 
 
 async def _get_manageable_document(db: AsyncSession, user: User, doc_id: int) -> Document:
@@ -195,47 +238,6 @@ async def _get_manageable_document(db: AsyncSession, user: User, doc_id: int) ->
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
     return doc
-
-
-@asynccontextmanager
-async def _serialized_uploads(db: AsyncSession, user_id: int) -> AsyncIterator[None]:
-    """One upload per user at a time, from the quota and duplicate checks to the commit.
-
-    The asyncio lock covers this process (and SQLite, which has no row locks); the lock on the user's row
-    covers several backend processes on Postgres and is held until the transaction ends.
-    """
-    lock = _upload_locks.setdefault(user_id, asyncio.Lock())
-    _upload_lock_users[user_id] += 1
-    try:
-        async with lock:
-            # FOR NO KEY UPDATE: doesn't block inserts that reference the user (e.g. their chat usage).
-            await db.execute(select(User.id).where(User.id == user_id).with_for_update(key_share=True))
-            yield
-    finally:
-        _upload_lock_users[user_id] -= 1
-        if not _upload_lock_users[user_id]:
-            del _upload_lock_users[user_id], _upload_locks[user_id]
-
-
-def _check_document_count(limits: dict, document_count: int) -> None:
-    if limits["max_documents"] and document_count >= limits["max_documents"]:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"You've reached your limit of {limits['max_documents']} documents. "
-            "Delete a document to upload another.",
-        )
-
-
-async def _owned_totals(db: AsyncSession, user_id: int) -> tuple[int, int]:
-    """(document count, total bytes) of the documents the user owns."""
-    row = (
-        await db.execute(
-            select(func.count(Document.id), func.coalesce(func.sum(Document.size_bytes), 0)).where(
-                Document.owner_id == user_id
-            )
-        )
-    ).one()
-    return int(row[0]), int(row[1])
 
 
 async def _active_embedding_model_id(db: AsyncSession) -> int | None:
@@ -281,12 +283,27 @@ def _too_large(max_upload_mb: int) -> HTTPException:
 def _display_filename(filename: str | None, extension: str) -> str:
     """Basename without control/format characters, whitespace collapsed, at most 255 chars keeping the extension."""
     name = unicodedata.normalize("NFC", _basename(filename))
-    visible = "".join(ch for ch in name if ch.isspace() or unicodedata.category(ch) not in _HIDDEN_CATEGORIES)
+    visible = "".join(
+        ch
+        for ch in name
+        if ch.isspace() or (unicodedata.category(ch) not in _HIDDEN_CATEGORIES and ch not in _NONCHARACTERS)
+    )
     name = " ".join(visible.split())
     stem, suffix = name[: len(name) - len(extension)], name[len(name) - len(extension) :]
     if not stem or suffix.lower() != extension:
         return f"document{extension}"
     return stem[: _MAX_FILENAME_CHARS - len(suffix)] + suffix
+
+
+def _attachment(filename: str) -> str:
+    """Content-Disposition for a download: an ASCII fallback (unsafe characters as "_", at most 150 characters
+    keeping the extension) and the exact name in RFC 5987 form."""
+    decomposed = unicodedata.normalize("NFKD", filename)
+    ascii_name = _ASCII_FILENAME_UNSAFE.sub("_", "".join(ch for ch in decomposed if not unicodedata.combining(ch)))
+    if len(ascii_name) > _MAX_ASCII_FILENAME_CHARS:
+        suffix = PurePosixPath(ascii_name).suffix[:20]
+        ascii_name = ascii_name[: _MAX_ASCII_FILENAME_CHARS - len(suffix)] + suffix
+    return f"attachment; filename=\"{ascii_name or 'download'}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 def _content_type(declared: str | None, filename: str) -> str:

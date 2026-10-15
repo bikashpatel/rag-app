@@ -85,6 +85,7 @@ DOCUMENT_ITEM_KEYS = {
     "can_delete",
     "is_stale",
     "vision_pages",
+    "generated",
     "created_at",
     "updated_at",
 }
@@ -1198,6 +1199,7 @@ async def test_making_a_model_the_default_clears_the_previous_default(
         "display_name": "House model",
         "provider": "openai",
         "is_default": True,
+        "can_create_files": False,  # LiteLLM doesn't know the model
     }
 
 
@@ -1941,7 +1943,7 @@ async def test_admin_lists_every_document_newest_first(
     documents = response.json()
     assert [doc["id"] for doc in documents] == [failed_doc["id"], shared_doc["id"], bob_doc["id"], alice_doc["id"]]
     assert all(set(doc) == DOCUMENT_ITEM_KEYS for doc in documents)
-    assert all(doc["can_delete"] for doc in documents)
+    assert all(doc["can_delete"] and not doc["generated"] for doc in documents)
     assert [(doc["owner_username"], doc["scope"], doc["status"], doc["is_stale"]) for doc in documents] == [
         ("bob", "private", "failed", False),
         (ADMIN_USERNAME, "shared", "ready", True),

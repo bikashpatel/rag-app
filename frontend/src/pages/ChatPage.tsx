@@ -186,6 +186,7 @@ export default function ChatPage() {
   const listed = routeId === null ? undefined : conversations.conversations?.find((item) => item.id === routeId);
   const title = listed?.title ?? thread.title ?? (routeId === null ? "New chat" : "Conversation");
   const noModels = models.models !== null && models.models.length === 0;
+  const canCreateFiles = models.models?.find((model) => model.id === modelId)?.can_create_files ?? false;
   const disabledReason =
     thread.status === "loading"
       ? "Loading conversation…"
@@ -206,6 +207,7 @@ export default function ChatPage() {
         <EmptyState
           username={user?.username ?? null}
           disabled={disabledReason !== null || thread.streaming}
+          canCreateFiles={canCreateFiles}
           onPick={handleSend}
         />
       </div>
@@ -284,6 +286,7 @@ export default function ChatPage() {
             streaming={thread.streaming}
             disabledReason={disabledReason}
             selection={selection}
+            canCreateFiles={canCreateFiles}
             onSend={handleSend}
             onStop={thread.stop}
             onScopeClick={documentsIsSlideOver ? () => setDocumentsOpen(true) : undefined}

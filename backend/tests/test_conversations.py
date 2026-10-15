@@ -25,6 +25,7 @@ MESSAGE_FIELDS = {
     "prompt_tokens",
     "completion_tokens",
     "error",
+    "files",
     "created_at",
 }
 
@@ -117,6 +118,7 @@ async def test_get_returns_the_messages_oldest_first_with_sources(create_user: C
         "prompt_tokens": 0,
         "completion_tokens": 0,
         "error": None,
+        "files": [],
     }
     sources = next(data["sources"] for name, data in first if name == "sources")
     assert [source["document_id"] for source in sources] == [document["id"]]
@@ -129,6 +131,7 @@ async def test_get_returns_the_messages_oldest_first_with_sources(create_user: C
         "prompt_tokens": 42,
         "completion_tokens": 5,
         "error": None,
+        "files": [],
     }
     assert (follow_up["role"], follow_up["content"]) == ("user", "Thanks, anything else?")
     assert (second_answer["role"], second_answer["sources"]) == ("assistant", [])

@@ -191,3 +191,30 @@ class AppState(Base):
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class MessageFile(Base):
+    """A file the assistant created in an answer. The filename, format and size are kept when the document is
+    deleted (document_id becomes NULL), so the card can say so."""
+
+    __tablename__ = "message_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    message_id: Mapped[int] = mapped_column(ForeignKey("messages.id", ondelete="CASCADE"), index=True)
+    document_id: Mapped[int | None] = mapped_column(
+        ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    filename: Mapped[str] = mapped_column(String(255))
+    format: Mapped[str] = mapped_column(String(8))  # "pdf" | "docx" | "xlsx" | "md"
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class GeneratedDocument(Base):
+    """Marks a document the assistant created in a chat. Lives as long as the document, also after the
+    conversation that created it is deleted."""
+
+    __tablename__ = "generated_documents"
+
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)

@@ -25,3 +25,6 @@ beautifulsoup4==4.15.0
 lxml==6.1.3
 defusedxml==0.7.1
 pillow==12.3.0  # page images for the vision model (python-pptx needs it too)
+fpdf2==2.8.9  # PDF files the chat assistant creates (services/filegen)
+uharfbuzz==0.56.2  # text shaping for fpdf2 (Indian scripts); fpdf2 imports it when shaping is on
+markdown-it-py==4.2.0  # parses the Markdown of the files the chat assistant creates

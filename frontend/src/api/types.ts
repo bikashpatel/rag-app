@@ -30,6 +30,8 @@ export type ChatModel = {
   display_name: string;
   provider: string;
   is_default: boolean;
+  /** The assistant can create files with this model (CHAT_FILE_TOOLS on and the model supports function calling). */
+  can_create_files: boolean;
 };
 
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
@@ -50,6 +52,7 @@ export type DocumentItem = {
   can_delete: boolean;
   is_stale: boolean;
   vision_pages: number; // pages read with the vision model; 0 unless status is "ready"
+  generated: boolean; // the assistant created this file in a chat
   created_at: string;
   updated_at: string;
 };
@@ -84,6 +87,17 @@ export type ConversationSummary = {
   updated_at: string;
 };
 
+export type GeneratedFileFormat = "pdf" | "docx" | "xlsx" | "md";
+
+/** A file the assistant created in an answer; it is one of the user's private documents. */
+export type GeneratedFile = {
+  document_id: number | null; // null once the document was deleted
+  filename: string;
+  format: GeneratedFileFormat;
+  size_bytes: number;
+  status: DocumentStatus | null; // the document's status now; null when deleted
+};
+
 export type ChatMessage = {
   id: number;
   role: "user" | "assistant";
@@ -93,6 +107,7 @@ export type ChatMessage = {
   prompt_tokens: number;
   completion_tokens: number;
   error: string | null;
+  files: GeneratedFile[]; // in creation order; [] for user messages
   created_at: string;
 };
 
@@ -112,6 +127,32 @@ export type TokenUsage = {
   cost_usd: number;
 };
 
+/** Data of the `file` event: progress of one create_document call. `call_id` is "f1", "f2", … per answer. */
+export type FileEventData =
+  | {
+      // The call started (chars 0, title and format null); then at most every 2 s while it is written (title and
+      // format as soon as they appear); once more with the validated title and format just before rendering.
+      call_id: string;
+      status: "writing";
+      title: string | null;
+      format: GeneratedFileFormat | null;
+      chars: number; // characters of the file written so far (approximate)
+    }
+  | {
+      call_id: string;
+      status: "created";
+      file: GeneratedFile;
+      document: DocumentItem;
+      already_existed: boolean; // an identical private document existed and is linked instead
+    }
+  | {
+      call_id: string;
+      status: "failed";
+      title: string | null;
+      format: GeneratedFileFormat | null;
+      error: string;
+    };
+
 // Server-sent events of POST /api/chat/stream
 export type ChatStreamEvent =
   | {
@@ -126,7 +167,8 @@ export type ChatStreamEvent =
   | { event: "sources"; data: { sources: Source[] } }
   | { event: "warning"; data: { message: string } }
   | { event: "delta"; data: { content: string } }
-  | { event: "done"; data: { assistant_message_id: number; usage: TokenUsage } }
+  | { event: "file"; data: FileEventData }
+  | { event: "done"; data: { assistant_message_id: number; usage: TokenUsage } } // usage sums every model call
   | { event: "error"; data: { message: string; assistant_message_id: number | null } };
 
 // ---------------- Admin ----------------

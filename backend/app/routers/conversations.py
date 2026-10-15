@@ -1,5 +1,7 @@
 """The caller's conversations. Other users' conversations are reported as not found."""
 
+from collections import defaultdict
+from collections.abc import Collection
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -10,8 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user
-from app.models import Conversation, Message, User
-from app.schemas import MAX_INT, Source
+from app.models import Conversation, Document, Message, MessageFile, User
+from app.schemas import MAX_INT, GeneratedFile, Source
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -36,6 +38,7 @@ class ChatMessage(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     error: str | None
+    files: list[GeneratedFile]  # in creation order; [] for user messages
     created_at: datetime
 
 
@@ -70,7 +73,31 @@ def _summary(conversation: Conversation) -> ConversationSummary:
     )
 
 
-def _chat_message(message: Message) -> ChatMessage:
+async def message_files(db: AsyncSession, message_ids: Collection[int]) -> dict[int, list[GeneratedFile]]:
+    """message id -> the files that answer created, in creation order, with each document's status now."""
+    if not message_ids:
+        return {}
+    rows = await db.execute(
+        select(MessageFile, Document.status)
+        .outerjoin(Document, Document.id == MessageFile.document_id)
+        .where(MessageFile.message_id.in_(message_ids))
+        .order_by(MessageFile.id)
+    )
+    files: defaultdict[int, list[GeneratedFile]] = defaultdict(list)
+    for row, status_now in rows.tuples():
+        files[row.message_id].append(
+            GeneratedFile(
+                document_id=row.document_id,
+                filename=row.filename,
+                format=row.format,  # type: ignore[arg-type]
+                size_bytes=row.size_bytes,
+                status=status_now if row.document_id is not None else None,  # type: ignore[arg-type]
+            )
+        )
+    return files
+
+
+def _chat_message(message: Message, files: list[GeneratedFile]) -> ChatMessage:
     return ChatMessage(
         id=message.id,
         role=message.role,  # type: ignore[arg-type]
@@ -80,6 +107,7 @@ def _chat_message(message: Message) -> ChatMessage:
         prompt_tokens=message.prompt_tokens,
         completion_tokens=message.completion_tokens,
         error=message.error,
+        files=files,
         created_at=message.created_at,
     )
 
@@ -105,12 +133,14 @@ async def get_conversation(
     result = await db.execute(
         select(Message).where(Message.conversation_id == conversation.id).order_by(Message.id)
     )
+    messages = list(result.scalars())
+    files = await message_files(db, [message.id for message in messages if message.role == "assistant"])
     return ConversationDetail(
         id=conversation.id,
         title=conversation.title,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
-        messages=[_chat_message(message) for message in result.scalars()],
+        messages=[_chat_message(message, files.get(message.id, [])) for message in messages],
     )
 
 

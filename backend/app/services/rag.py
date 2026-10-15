@@ -2,14 +2,17 @@
 
 import logging
 import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from itertools import dropwhile
+from typing import NamedTuple
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import Document, Message, User
+from app.models import Document, GeneratedDocument, Message, User
 from app.schemas import Source
 from app.services import llm, vectorstore
 from app.services.model_registry import get_active_embedding_model
@@ -21,6 +24,12 @@ _SNIPPET_CHARS = 500
 _NO_EMBEDDING_MODEL = "Document search is unavailable: no embedding model is configured."
 _SEARCH_FAILED = "Document search failed; answering without documents."
 _CONTEXT_TAG = re.compile(r"<\s*(/?)\s*context\s*>", re.IGNORECASE)
+# Citation markers inside a passage of a file the assistant created (also as the Markdown writer escapes them). A run
+# of adjacent markers ([1][3]) is rewritten whole; one glued to a word or a closing bracket (m[0][1], [label][1]) or
+# followed by "(" (a link) is left alone.
+_ESCAPED_MARKER = re.compile(r"\\\[(\d{1,4})\\\]")
+_MARKER_RUN = re.compile(r"(?<![\w\]])((?:\[\d{1,4}\])+)(?!\()")
+_ONE_MARKER = re.compile(r"\[(\d{1,4})\]")
 
 _SYSTEM_PROMPT = """\
 You are a helpful assistant that answers questions about the user's documents as well as general questions.
@@ -45,12 +54,24 @@ _NO_PASSAGES_NOTE = (
     "If they are asking about their documents, say plainly that you couldn't find the answer there, and "
     "make it clear when you answer from general knowledge instead."
 )
+_GENERATED_PASSAGES_NOTE = (
+    'Some passages come from files the assistant created in earlier chats (marked "a file the assistant created"). '
+    "They are earlier answers, not original sources: prefer the user's original documents, and say so when you rely "
+    "on such a file."
+)
 _SEARCH_FAILED_NOTE = (
     "The user's documents could not be searched for their latest message (document search is unavailable "
     "right now), so no passages are included. If they are asking about their documents, tell them their "
     "documents couldn't be searched this time rather than saying the answer isn't there, and make it clear "
     "when you answer from general knowledge instead."
 )
+
+
+class HistoryFile(NamedTuple):
+    """A file an earlier answer created, for the note in the history: `deleted` once its document is gone."""
+
+    name: str
+    deleted: bool = False
 
 
 @dataclass
@@ -60,6 +81,7 @@ class RetrievalResult:
     sources: list[Source] = field(default_factory=list)
     contexts: list[str] = field(default_factory=list)
     warning: str | None = None
+    generated: dict[int, datetime] = field(default_factory=dict)  # document id -> when the assistant created it
 
 
 async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[int] | None) -> RetrievalResult:
@@ -90,9 +112,19 @@ async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[
             top_k=settings.rag_top_k,
             document_ids=document_ids,
         )
+        generated: dict[int, datetime] = {}
         if hits:
             # Vectors can briefly outlive their document (a delete racing ingestion); never cite deleted content.
-            existing = set(await db.scalars(select(Document.id).where(Document.id.in_({hit.doc_id for hit in hits}))))
+            rows = await db.execute(
+                select(Document.id, GeneratedDocument.created_at)
+                .outerjoin(GeneratedDocument, GeneratedDocument.document_id == Document.id)
+                .where(Document.id.in_({hit.doc_id for hit in hits}))
+            )
+            existing = set()
+            for doc_id, created_at in rows.tuples():
+                existing.add(doc_id)
+                if created_at is not None:
+                    generated[doc_id] = created_at
             hits = [hit for hit in hits if hit.doc_id in existing]
     except Exception:
         logger.exception("Document search failed for user %s", user.id)
@@ -103,6 +135,7 @@ async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[
     return RetrievalResult(
         sources=[_source(index, hit) for index, hit in enumerate(hits, start=1)],
         contexts=[hit.text for hit in hits],
+        generated=generated,
     )
 
 
@@ -126,14 +159,26 @@ def build_messages(
     user_message: str,
     documents_requested: bool,
     search_failed: bool = False,
+    generated: Mapping[int, datetime] | None = None,
+    file_instructions: str | None = None,
+    history_files: Mapping[int, Sequence[HistoryFile]] | None = None,
 ) -> list[dict]:
     """OpenAI-style messages for LiteLLM: system prompt with the passages, the history, then the new message.
 
     `search_failed`: the search couldn't run (the retrieval warning), which isn't the same as finding nothing.
+    `generated`: document id -> creation time of the passages' documents the assistant created. `file_instructions`:
+    what the system prompt says about creating files (document_tool.plan). `history_files`: message id -> the files
+    that answer created, noted in the history so the model knows them (and which of them were deleted since).
     """
+    generated = generated or {}
+    history_files = history_files or {}
     system = _SYSTEM_PROMPT
+    if file_instructions:
+        system += "\n\n" + file_instructions
+    if any(source.document_id in generated for source in sources):
+        system += "\n\n" + _GENERATED_PASSAGES_NOTE
     if sources:
-        system += "\n\n" + _context_block(sources, contexts)
+        system += "\n\n" + _context_block(sources, contexts, generated)
     elif search_failed:
         system += "\n\n" + _SEARCH_FAILED_NOTE
     elif documents_requested:
@@ -141,20 +186,52 @@ def build_messages(
 
     messages: list[dict] = [{"role": "system", "content": system}]
     # Some providers (e.g. Anthropic) reject a conversation whose first turn isn't the user's.
-    turns = dropwhile(lambda message: message.role != "user", (m for m in history if m.content))
-    messages.extend({"role": message.role, "content": message.content} for message in turns)
+    kept = (m for m in history if m.content or (m.role == "assistant" and history_files.get(m.id)))
+    turns = dropwhile(lambda message: message.role != "user", kept)
+    messages.extend({"role": message.role, "content": _history_content(message, history_files)} for message in turns)
     messages.append({"role": "user", "content": user_message})
     return messages
 
 
-def _context_block(sources: list[Source], contexts: list[str]) -> str:
+def _history_content(message: Message, history_files: Mapping[int, Sequence[HistoryFile]]) -> str:
+    files = history_files.get(message.id) if message.role == "assistant" else None
+    if not files:
+        return message.content
+    kept = ", ".join(f'"{file.name}"' for file in files if not file.deleted)
+    gone = ", ".join(f'"{file.name}"' for file in files if file.deleted)
+    # "since deleted", not "deleted by the user": an admin can delete the document too.
+    deleted = "which have since been deleted from the user's documents"
+    if not gone:
+        note = f"(App note: this answer created these files, which are in the user's documents: {kept}.)"
+    elif not kept:
+        note = f"(App note: this answer created these files, {deleted}: {gone}.)"
+    else:
+        note = (
+            f"(App note: this answer created these files, which are in the user's documents: {kept}. It also created "
+            f"these files, {deleted}: {gone}.)"
+        )
+    return f"{message.content}\n\n{note}" if message.content else note
+
+
+def _context_block(sources: list[Source], contexts: list[str], generated: Mapping[int, datetime]) -> str:
     passages = []
     for source, text in zip(sources, contexts, strict=True):
         origin = f"source: {_defuse(' '.join(source.filename.split()))}"
         if source.page is not None:
             origin += f", page {source.page}"
-        passages.append(f"[{source.index}] ({origin})\n{_defuse(text.strip())}")
+        text = text.strip()
+        if (created := generated.get(source.document_id)) is not None:
+            origin += f", a file the assistant created on {created.date().isoformat()}"
+            # Its own citation markers would read as the current passage numbers.
+            text = _neutralize_markers(text)
+        passages.append(f"[{source.index}] ({origin})\n{_defuse(text)}")
     return "<context>\n" + "\n\n".join(passages) + "\n</context>"
+
+
+def _neutralize_markers(text: str) -> str:
+    """[n] and \\[n\\] citation markers as (ref n)."""
+    text = _ESCAPED_MARKER.sub(r"(ref \1)", text)
+    return _MARKER_RUN.sub(lambda found: _ONE_MARKER.sub(r"(ref \1)", found.group(1)), text)
 
 
 def _defuse(text: str) -> str:

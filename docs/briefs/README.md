@@ -14,7 +14,8 @@ first; it is the binding contract. Status of every file is in [`../HANDOFF.md`](
 | [backend-integration-tests.md](backend-integration-tests.md) | test plan for the backend (no Docker needed) |
 | [frontend-verification.md](frontend-verification.md) | typecheck/build + API contract cross-check |
 | [review-checklist.md](review-checklist.md) | security and correctness review before calling it done |
-| [vision-pdf.md](vision-pdf.md) | vision model for PDFs: scanned pages and image descriptions (backend, admin UI, tests) |
+| [vision-pdf.md](vision-pdf.md) | vision model for PDFs (revision 2, built; commit `9fb8be6`): scanned pages and image descriptions (backend, admin UI, tests) |
+| [document-generation.md](document-generation.md) | files from chat (revision 2, built and verified live on 2026-10-16): the `create_document` tool loop with ordered thinking replay, keepalives and progress, PDF/DOCX/XLSX/MD rendering in a child process, storage and provenance as documents, download endpoint, file cards. Decisions D1-D24 are in its section 0; what is left is in `../HANDOFF.md` |
 
 ## Rules that apply to every area
 
@@ -39,7 +40,9 @@ Under `backend/app/`: `config.py` (Settings), `db.py` (async engine, `SessionLoc
 `stream_chat`, `embed_texts`, `test_model`, `compute_cost`, `LLMError`, `Usage`), `usage.py`
 (rate limit, budget, `record_usage`, `usage_summary`, `user_limits`, `month_bounds`),
 `vectorstore.py` (Qdrant), `model_registry.py` (model lookups), `storage.py` (upload paths,
-`document_item`, `delete_document_completely`).
+`document_item`, `delete_document_completely`). Later features added services of their own, described in their
+briefs: `pdf_images.py`, `pdf_render_child.py` and `vision.py` (vision), and `document_tool.py` plus the `filegen/`
+package (files from chat).
 
 Pinned libs: FastAPI 0.142, SQLAlchemy 2.0 async (asyncpg in prod, aiosqlite in tests, so
 keep queries portable, with no Postgres-only SQL), pydantic v2, redis-py asyncio, qdrant-client 1.19

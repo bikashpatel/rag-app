@@ -6,7 +6,21 @@ import type {
   ChatStreamRequest,
   ConversationDetail,
   DocumentSelection,
+  FileEventData,
+  GeneratedFile,
+  GeneratedFileFormat,
 } from "../../api/types";
+import { announceDocument, requestDocumentsReload } from "../documents/documentEvents";
+
+/**
+ * A file the answer created or tried to create. `key` is `c<call_id>` while streaming, and `d<document_id>` (`s<index>`
+ * once the document was deleted) when loaded with the conversation.
+ */
+export type FileCard =
+  | { key: string; kind: "writing"; title: string | null; format: GeneratedFileFormat | null; chars: number }
+  | { key: string; kind: "created"; file: GeneratedFile; alreadyExisted: boolean }
+  | { key: string; kind: "failed"; title: string | null; format: GeneratedFileFormat | null; error: string }
+  | { key: string; kind: "stopped"; title: string | null; format: GeneratedFileFormat | null };
 
 export type ThreadMessage = ChatMessage & {
   /** Stable React key that survives the swap from a temporary id to the server id. */
@@ -14,6 +28,7 @@ export type ThreadMessage = ChatMessage & {
   streaming: boolean;
   stopped: boolean;
   warnings: string[];
+  cards: FileCard[];
 };
 
 export type ThreadStatus = "ready" | "loading" | "error";
@@ -64,6 +79,8 @@ type ActiveStream = {
   finished: boolean;
   /** Set when the thread was replaced while streaming: the stream must no longer touch the state. */
   detached: boolean;
+  /** call_ids of files still being written (no `created` or `failed` event yet). */
+  writing: Set<string>;
 };
 
 const INTERRUPTED = "The connection was lost before the answer finished.";
@@ -86,7 +103,32 @@ function toThreadMessage(message: ChatMessage): ThreadMessage {
     streaming: false,
     stopped,
     warnings: [],
+    cards: message.files.map((file, i) => ({
+      key: file.document_id === null ? `s${i}` : `d${file.document_id}`,
+      kind: "created",
+      file,
+      alreadyExisted: false,
+    })),
   };
+}
+
+/** Inserts or updates the card of one create_document call; an event without a title or format keeps the known one. */
+function applyFileEvent(cards: FileCard[], data: FileEventData): FileCard[] {
+  const key = `c${data.call_id}`;
+  const previous = cards.find((card) => card.key === key);
+  let card: FileCard;
+  if (data.status === "created") {
+    card = { key, kind: "created", file: data.file, alreadyExisted: data.already_existed };
+  } else {
+    const known = previous?.kind === "created" ? undefined : previous;
+    const title = data.title ?? known?.title ?? null;
+    const format = data.format ?? known?.format ?? null;
+    card =
+      data.status === "writing"
+        ? { key, kind: "writing", title, format, chars: data.chars }
+        : { key, kind: "failed", title, format, error: data.error };
+  }
+  return previous ? cards.map((item) => (item === previous ? card : item)) : [...cards, card];
 }
 
 /**
@@ -177,7 +219,16 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
     const assistantId = --tempIdRef.current;
     const userKey = `t${userId}`;
     const assistantKey = `t${assistantId}`;
-    const blank = { sources: [], model_name: null, prompt_tokens: 0, completion_tokens: 0, error: null, created_at: now };
+    const blank = {
+      sources: [],
+      model_name: null,
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      error: null,
+      files: [],
+      cards: [],
+      created_at: now,
+    };
     setMessages((list) => [
       ...list,
       { ...blank, id: userId, key: userKey, role: "user", content: message, streaming: false, stopped: false, warnings: [] },
@@ -194,6 +245,7 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
       title: null,
       finished: false,
       detached: false,
+      writing: new Set(),
     };
     streamRef.current = stream;
 
@@ -242,6 +294,15 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
           stream.content += sse.data.content;
           if (stream.frame === null && !stream.detached) stream.frame = requestAnimationFrame(flush);
           break;
+        case "file": {
+          const data = sse.data;
+          if (data.status === "writing") stream.writing.add(data.call_id);
+          else stream.writing.delete(data.call_id);
+          // The document exists whatever happens to this thread, so the panel hears about it even when detached.
+          if (data.status === "created") announceDocument(data.document);
+          update((item) => ({ cards: applyFileEvent(item.cards, data) }));
+          break;
+        }
         case "done":
           stream.finished = true;
           flush();
@@ -315,6 +376,17 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
       }
     } finally {
       if (stream.frame !== null) cancelAnimationFrame(stream.frame);
+      // Stop or a lost connection while a file was being written: the server may still have saved it (it finishes a
+      // file it was storing), so the card can't tell, and the panel looks again.
+      if (stream.writing.size > 0) {
+        stream.writing.clear();
+        update((item) => ({
+          cards: item.cards.map((card) =>
+            card.kind === "writing" ? { key: card.key, kind: "stopped", title: card.title, format: card.format } : card,
+          ),
+        }));
+        requestDocumentsReload();
+      }
       if (streamRef.current === stream) {
         streamRef.current = null;
         setStreaming(false);

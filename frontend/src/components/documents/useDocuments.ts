@@ -1,8 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../../api/client";
 import type { DocumentConfig, DocumentItem } from "../../api/types";
+import { publishDocuments, subscribeToAnnouncements, subscribeToReloadRequests } from "./documentEvents";
 
 const POLL_INTERVAL_MS = 2500;
+/**
+ * A reload request mostly follows a stream that ended mid-file; the server may commit that file a moment later. (A
+ * file card catching up on a document this list doesn't know also asks; the extra reloads are harmless there.)
+ */
+const LATE_RELOAD_MS = [1500, 5000];
 
 export type DocumentsState = {
   /** null until the first successful load. */
@@ -38,7 +44,8 @@ function upsert(list: DocumentItem[] | null, doc: DocumentItem): DocumentItem[] 
 /**
  * Loads GET /documents and GET /documents/config, and reloads both when the tab becomes visible again. The list is
  * polled while any document is pending or processing, or while `uploading` is true. A response is ignored when a
- * newer request for the same resource has started.
+ * newer request for the same resource has started. The list is published to `documentEvents`, and documents
+ * announced there (files the assistant created) are inserted at once.
  */
 export function useDocuments(uploading: boolean): DocumentsState {
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
@@ -110,6 +117,37 @@ export function useDocuments(uploading: boolean): DocumentsState {
   }, [shouldPoll, reloadDocuments]);
 
   const upsertDocument = useCallback((doc: DocumentItem) => setDocuments((list) => upsert(list, doc)), []);
+
+  useEffect(() => publishDocuments(documents), [documents]);
+  useEffect(() => () => publishDocuments(null), []);
+
+  useEffect(
+    () =>
+      subscribeToAnnouncements((doc) => {
+        upsertDocument(doc);
+        // Starts a newer request, so a list fetched before the document existed can no longer replace this one.
+        void reloadDocuments();
+        void reloadConfig();
+      }),
+    [upsertDocument, reloadDocuments, reloadConfig],
+  );
+
+  useEffect(() => {
+    const timers: number[] = [];
+    const unsubscribe = subscribeToReloadRequests(() => {
+      timers.splice(0).forEach((timer) => window.clearTimeout(timer));
+      const reload = () => {
+        void reloadDocuments();
+        void reloadConfig();
+      };
+      reload();
+      timers.push(...LATE_RELOAD_MS.map((ms) => window.setTimeout(reload, ms)));
+    });
+    return () => {
+      unsubscribe();
+      timers.forEach((timer) => window.clearTimeout(timer));
+    };
+  }, [reloadDocuments, reloadConfig]);
 
   const deleteDocument = useCallback(
     async (id: number) => {

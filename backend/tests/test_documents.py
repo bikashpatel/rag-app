@@ -43,6 +43,7 @@ DOCUMENT_ITEM_KEYS = {
     "can_delete",
     "is_stale",
     "vision_pages",
+    "generated",
     "created_at",
     "updated_at",
 }
@@ -127,6 +128,7 @@ async def test_upload_creates_a_pending_document_and_queues_it(create_user: Crea
         "can_delete": True,
         "is_stale": False,
         "vision_pages": 0,
+        "generated": False,
     }
     assert item["created_at"].endswith("Z") and item["updated_at"].endswith("Z")
     assert await queued() == [str(item["id"])]
@@ -443,6 +445,7 @@ async def test_document_routes_require_login(client: ApiClient) -> None:
         ("re\x00po\x07rt\x7f.txt", "report.txt"),
         ("invoice\u202etxt.exe.txt", "invoicetxt.exe.txt"),
         ("zero\u200bwidth\ufeff.txt", "zerowidth.txt"),
+        ("odd\ufffe name\uffff.txt", "odd name.txt"),
         ("quarterly\t\treport   2026.txt", "quarterly report 2026.txt"),
         ("   padded   name.txt", "padded name.txt"),
         ("Cafe\u0301 menu.txt", "Caf\u00e9 menu.txt"),
@@ -495,6 +498,7 @@ async def test_listing_shows_own_private_and_all_shared_documents_newest_first(
     assert [item["id"] for item in bob_view] == [shared, bob_doc]
     assert [item["id"] for item in admin_view] == [admin_private, shared]
     assert all(set(item) == DOCUMENT_ITEM_KEYS for item in alice_view + bob_view + admin_view)
+    assert not any(item["generated"] for item in alice_view + bob_view + admin_view)
     shared_for_alice = alice_view[0]
     assert shared_for_alice == {
         **shared_for_alice,
@@ -678,6 +682,7 @@ async def test_reprocess_resets_the_document_and_queues_it(create_user: CreateUs
     body = response.json()
     assert set(body) == DOCUMENT_ITEM_KEYS
     assert body == {**item, "status": "pending", "error": None, "updated_at": body["updated_at"]}
+    assert body["generated"] is False
     assert await queued() == [str(item["id"])]
     [row] = await document_rows()
     assert (row.status, row.error) == ("pending", None)
@@ -719,3 +724,99 @@ async def test_reprocess_without_an_active_embedding_model_is_refused(create_use
     [row] = await document_rows()
     assert row.status == "ready"
     assert await queued() == []
+
+
+# ---------------- Download ----------------
+
+
+async def test_the_owner_downloads_the_exact_bytes_with_safe_headers(create_user: CreateUser) -> None:
+    alice = await create_user("alice")
+    data = pdf_bytes("Quarterly figures for the board.")
+    created = await raw_upload(alice, 'Q3 "final"\nreport ✓.pdf', data)
+    assert created.status_code == 201, created.text
+    assert created.json()["filename"] == 'Q3 "final" report ✓.pdf'
+
+    response = await alice.get(f"/api/documents/{created.json()['id']}/download")
+
+    assert response.status_code == 200
+    assert response.content == data
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["content-disposition"] == (
+        "attachment; filename=\"Q3 _final_ report _.pdf\"; filename*=UTF-8''Q3%20%22final%22%20report%20%E2%9C%93.pdf"
+    )
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "private, no-store"
+    assert response.headers["content-security-policy"] == "sandbox"
+
+
+@pytest.mark.parametrize(
+    ("filename", "declared", "expected"),
+    [
+        ("page.pdf", "text/html", "application/pdf"),
+        ("notes.txt", "text/plain", "application/octet-stream"),
+        ("index.html", "text/html", "application/octet-stream"),
+        ("sheet.xlsx", None, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    ],
+)
+async def test_downloads_are_typed_by_extension_not_by_the_upload(
+    create_user: CreateUser, filename: str, declared: str | None, expected: str
+) -> None:
+    from conftest import sample_file
+
+    alice = await create_user("alice")
+    data = sample_file(Path(filename).suffix, "Some text for the file.")
+    created = await upload(alice, filename, data, content_type=declared)
+    assert created.status_code == 201, created.text
+
+    response = await alice.get(f"/api/documents/{created.json()['id']}/download")
+
+    assert response.status_code == 200 and response.content == data
+    assert response.headers["content-type"].split(";")[0] == expected
+
+
+async def test_long_names_get_a_shortened_ascii_fallback(create_user: CreateUser) -> None:
+    alice = await create_user("alice")
+    created = await upload(alice, "é" * 200 + ".txt", txt_bytes("accented"))
+
+    response = await alice.get(f"/api/documents/{created.json()['id']}/download")
+
+    fallback = re.search(r'filename="([^"]*)"', response.headers["content-disposition"])
+    assert fallback is not None
+    assert len(fallback.group(1)) == 150 and fallback.group(1) == "e" * 146 + ".txt"
+
+
+async def test_downloads_follow_the_listing_rules(
+    create_user: CreateUser, admin_client: ApiClient, client: ApiClient
+) -> None:
+    alice = await create_user("alice")
+    bob = await create_user("bob")
+    private = (await upload(alice, "private.txt", txt_bytes("Alice only."))).json()["id"]
+    shared = (await upload(admin_client, "policy.txt", txt_bytes("Everyone."), "shared")).json()["id"]
+
+    assert (await bob.get(f"/api/documents/{private}/download")).json() == NOT_FOUND
+    assert (await bob.get(f"/api/documents/{private}/download")).status_code == 404
+    assert (await admin_client.get(f"/api/documents/{private}/download")).status_code == 404
+    assert (await bob.get(f"/api/documents/{shared}/download")).content == txt_bytes("Everyone.")
+    assert (await bob.get("/api/documents/999999/download")).json() == NOT_FOUND
+    assert (await client.get(f"/api/documents/{shared}/download")).status_code == 401
+
+
+async def test_a_document_whose_file_is_gone_reports_it(create_user: CreateUser) -> None:
+    alice = await create_user("alice")
+    created = (await upload(alice, "notes.txt", txt_bytes("Soon gone."))).json()
+    [row] = await document_rows()
+    (Path(settings.upload_dir) / row.stored_name).unlink()
+
+    response = await alice.get(f"/api/documents/{created['id']}/download")
+
+    assert (response.status_code, response.json()) == (404, {"detail": "The file is missing from storage."})
+
+
+async def test_documents_download_in_every_status(create_user: CreateUser) -> None:
+    alice = await create_user("alice")
+    pending = (await upload(alice, "pending.txt", txt_bytes("Not processed yet."))).json()
+    failed = await ingest(alice, "scan.pdf", pdf_bytes(""))
+    assert (pending["status"], failed["status"]) == ("pending", "failed")
+
+    for doc in (pending, failed):
+        assert (await alice.get(f"/api/documents/{doc['id']}/download")).status_code == 200

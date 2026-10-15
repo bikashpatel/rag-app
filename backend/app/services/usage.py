@@ -101,10 +101,10 @@ async def vision_tokens_this_month(db: AsyncSession, user_id: int) -> int:
     return await _tokens_this_month(db, user_id, "vision")
 
 
-async def check_budget(db: AsyncSession, user: User) -> None:
-    """Raises 429 when the user's monthly chat-token budget is used up."""
+async def check_budget(db: AsyncSession, user: User) -> int | None:
+    """The chat tokens left this month (None: no budget, or the admin). Raises 429 when none are left."""
     if user.is_admin or user.monthly_token_limit <= 0:
-        return
+        return None
     used = await chat_tokens_this_month(db, user.id)
     if used >= user.monthly_token_limit:
         raise HTTPException(
@@ -114,6 +114,7 @@ async def check_budget(db: AsyncSession, user: User) -> None:
                 "Ask the admin to raise your limit."
             ),
         )
+    return user.monthly_token_limit - used
 
 
 async def acquire_chat_slot(user: User) -> str | None:
@@ -145,6 +146,20 @@ async def release_chat_slot(user_id: int, slot: str | None) -> None:
         await get_redis().zrem(_slots_key(user_id), slot)
     except Exception as exc:  # the slot expires on its own
         logger.warning("Could not release a chat slot of user %s: %s", user_id, exc)
+
+
+async def refresh_chat_slot(user_id: int, slot: str | None) -> None:
+    """Re-score a slot with the current time while its answer still streams (an answer that writes files can outlast
+    the slot's TTL). XX: a slot released meanwhile isn't created again. Best effort."""
+    if slot is None:
+        return
+    try:
+        async with get_redis().pipeline(transaction=True) as pipe:
+            pipe.zadd(_slots_key(user_id), {slot: time.time()}, xx=True)
+            pipe.expire(_slots_key(user_id), _slot_ttl())
+            await pipe.execute()
+    except Exception as exc:
+        logger.warning("Could not refresh a chat slot of user %s: %s", user_id, exc)
 
 
 def _slots_key(user_id: int) -> str:

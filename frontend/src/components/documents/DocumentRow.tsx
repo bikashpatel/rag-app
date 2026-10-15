@@ -1,9 +1,9 @@
 import { useRef, useState, type ReactNode } from "react";
-import { ApiError } from "../../api/client";
+import { ApiError, documentDownloadUrl } from "../../api/client";
 import type { DocumentItem } from "../../api/types";
 import { formatBytes, formatDateTime, formatNumber, formatRelativeTime } from "../../lib/format";
 import FileTag from "./FileTag";
-import { TrashIcon } from "./icons";
+import { DownloadIcon, TrashIcon } from "./icons";
 
 type RowAction = "delete" | "reprocess";
 
@@ -21,11 +21,12 @@ function countLabel(count: number, noun: string): string {
 
 function metaParts(doc: DocumentItem): string[] {
   const parts = [formatBytes(doc.size_bytes)];
+  if (doc.generated) parts.unshift("Created in chat");
   if (doc.status === "ready") parts.push(countLabel(doc.num_chunks, "chunk"));
   if (doc.num_pages) parts.push(countLabel(doc.num_pages, "page"));
   if (doc.status === "ready" && doc.vision_pages > 0) parts.push(`${countLabel(doc.vision_pages, "page")} read by vision`);
-  const uploaded = formatRelativeTime(doc.created_at);
-  if (uploaded) parts.push(uploaded);
+  const added = formatRelativeTime(doc.created_at);
+  if (added) parts.push(added);
   return parts;
 }
 
@@ -69,6 +70,7 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
   const canReprocess = doc.can_delete && (doc.status === "failed" || (ready && doc.is_stale));
   const badge = statusBadge(doc);
   const meta = metaParts(doc);
+  const added = `${doc.generated ? "Created" : "Uploaded"} ${formatDateTime(doc.created_at)}`;
 
   function closeConfirm() {
     setConfirming(false);
@@ -104,8 +106,8 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
         <div className="docs-row-name" title={doc.filename}>
           {doc.filename}
         </div>
-        <div className="docs-row-meta" title={`Uploaded ${formatDateTime(doc.created_at)}`}>
-          {/* Parts wrap whole, so the upload time is never cut off; the "·" separators are CSS (see documents.css). */}
+        <div className="docs-row-meta" title={added}>
+          {/* Parts wrap whole, so the time is never cut off; the "·" separators are CSS (see documents.css). */}
           <span className="docs-row-meta-parts" aria-hidden="true">
             {meta.map((part, i) => (
               <span key={i} className="docs-row-meta-part">
@@ -141,19 +143,30 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
           </p>
         ) : null}
       </div>
-      {doc.can_delete ? (
-        <button
-          ref={deleteButtonRef}
-          type="button"
-          className="docs-icon-btn docs-icon-btn-danger"
-          onClick={() => setConfirming((open) => !open)}
-          aria-label={`Delete ${doc.filename}`}
-          aria-expanded={confirming}
-          title="Delete"
+      <div className="docs-row-actions">
+        <a
+          className="docs-icon-btn"
+          href={documentDownloadUrl(doc.id)}
+          download
+          aria-label={`Download ${doc.filename}`}
+          title="Download"
         >
-          <TrashIcon size={15} />
-        </button>
-      ) : null}
+          <DownloadIcon size={15} />
+        </a>
+        {doc.can_delete ? (
+          <button
+            ref={deleteButtonRef}
+            type="button"
+            className="docs-icon-btn docs-icon-btn-danger"
+            onClick={() => setConfirming((open) => !open)}
+            aria-label={`Delete ${doc.filename}`}
+            aria-expanded={confirming}
+            title="Delete"
+          >
+            <TrashIcon size={15} />
+          </button>
+        ) : null}
+      </div>
       {confirming ? (
         <div
           className="docs-confirm"

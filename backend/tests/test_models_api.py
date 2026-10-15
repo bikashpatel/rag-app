@@ -61,12 +61,13 @@ async def test_unrestricted_user_gets_every_enabled_chat_model_default_first(
 
     models = await listed(user)
 
+    files = {"can_create_files": True}  # every seeded chat model supports function calling
     assert models == [
-        {"id": model_ids[OPUS], "display_name": OPUS, "provider": "anthropic", "is_default": True},
-        {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": False},
-        {"id": model_ids[SONNET], "display_name": SONNET, "provider": "anthropic", "is_default": False},
-        {"id": model_ids[GPT_MINI], "display_name": GPT_MINI, "provider": "openai", "is_default": False},
-        {"id": model_ids[GPT], "display_name": GPT, "provider": "openai", "is_default": False},
+        {"id": model_ids[OPUS], "display_name": OPUS, "provider": "anthropic", "is_default": True, **files},
+        {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": False, **files},
+        {"id": model_ids[SONNET], "display_name": SONNET, "provider": "anthropic", "is_default": False, **files},
+        {"id": model_ids[GPT_MINI], "display_name": GPT_MINI, "provider": "openai", "is_default": False, **files},
+        {"id": model_ids[GPT], "display_name": GPT, "provider": "openai", "is_default": False, **files},
     ]
 
 
@@ -103,16 +104,16 @@ async def test_default_model_comes_first_and_the_rest_sort_by_name_ignoring_case
 
 
 @pytest.mark.parametrize(
-    ("litellm_model", "provider"),
+    ("litellm_model", "provider", "can_create_files"),
     [
-        ("ollama/llama3.1", "ollama"),
-        ("gpt-4o-mini", "openai"),
-        ("azure/my-deployment/v2", "azure"),
-        ("openrouter/anthropic/claude-sonnet", "openrouter"),
+        ("ollama/llama3.1", "ollama", True),  # LiteLLM's model map says these two support function calling
+        ("gpt-4o-mini", "openai", True),
+        ("azure/my-deployment/v2", "azure", False),
+        ("openrouter/anthropic/claude-sonnet", "openrouter", False),
     ],
 )
 async def test_provider_is_the_prefix_of_the_litellm_model(
-    litellm_model: str, provider: str, admin_client: ApiClient, create_user: CreateUser
+    litellm_model: str, provider: str, can_create_files: bool, admin_client: ApiClient, create_user: CreateUser
 ) -> None:
     user = await create_user()
     created = await admin_client.post(
@@ -122,7 +123,13 @@ async def test_provider_is_the_prefix_of_the_litellm_model(
 
     custom = next(model for model in await listed(user) if model["display_name"] == "Custom")
 
-    assert custom == {"id": created.json()["id"], "display_name": "Custom", "provider": provider, "is_default": False}
+    assert custom == {
+        "id": created.json()["id"],
+        "display_name": "Custom",
+        "provider": provider,
+        "is_default": False,
+        "can_create_files": can_create_files,
+    }
 
 
 async def test_restricted_user_gets_only_allowed_enabled_models(
@@ -132,9 +139,10 @@ async def test_restricted_user_gets_only_allowed_enabled_models(
     user = await create_user(restrict_models=True, allowed_model_ids=allowed)
     await patch_model(admin_client, model_ids[SONNET], enabled=False)
 
+    files = {"can_create_files": True}
     assert await listed(user) == [
-        {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": False},
-        {"id": model_ids[GPT], "display_name": GPT, "provider": "openai", "is_default": False},
+        {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": False, **files},
+        {"id": model_ids[GPT], "display_name": GPT, "provider": "openai", "is_default": False, **files},
     ]
 
     await patch_model(admin_client, model_ids[GPT], is_default=True)

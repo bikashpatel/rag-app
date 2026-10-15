@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from weakref import WeakKeyDictionary
 
+from pypdf import PdfReader
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -549,13 +550,26 @@ async def _vision_checkpoint(job: _Job) -> None:
 
 def _parse(stored_name: str, request: VisionRequest | None) -> ParsedDocument:
     path = storage.stored_path(stored_name)
+    source = storage.stored_path(storage.source_name(stored_name))
     try:
+        if path.suffix.lower() == ".pdf" and source.is_file() and (pages := _pdf_page_count(path)) is not None:
+            # A PDF the assistant created: its text layer is lossy for shaped Indian scripts, so it is indexed from
+            # the Markdown it was rendered from (no page numbers, no vision model).
+            return ParsedDocument(segments=parse_file(source, ".md", None).segments, num_pages=pages, page_images=[])
         return parse_file(path, path.suffix, request)
     except FileNotFoundError as exc:
         raise _IngestionError(_MISSING_FILE) from exc
     except OSError as exc:
         logger.warning("Could not read %s: %r", stored_name, exc)
         raise _IngestionError("The uploaded file could not be read.") from exc
+
+
+def _pdf_page_count(path: Path) -> int | None:
+    """None when the PDF can't be read (it is then parsed like any upload, which reports why)."""
+    try:
+        return len(PdfReader(path).pages)
+    except Exception:
+        return None
 
 
 def _chunk(segments: Sequence[Segment]) -> list[Chunk]:

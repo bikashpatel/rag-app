@@ -74,6 +74,15 @@ class Settings(BaseSettings):
     vision_max_image_px: int = Field(default=1568, ge=256, le=2576)  # long edge of a rendered page
     vision_max_output_tokens: int = Field(default=8192, ge=256, le=128_000)  # per page, when the model has none
 
+    # --- Files from chat (services/document_tool.py, services/filegen) ---
+    chat_file_tools: bool = True  # offer create_document to chat models that support function calling
+    generated_files_per_answer: int = Field(default=3, ge=1, le=10)  # an answer makes at most this + 2 model calls
+    generated_file_max_chars: int = Field(default=100_000, ge=1_000, le=1_000_000)  # content (or xlsx cell text)
+    # max_tokens of a call that offers the tool, unless the model has its own; lowered to LiteLLM's known cap
+    generated_file_max_output_tokens: int = Field(default=48_000, ge=1_000, le=128_000)
+    generated_file_timeout_seconds: int = Field(default=60, ge=5, le=600)  # per render, waiting for a slot included
+    generated_file_concurrency: int = Field(default=2, ge=1, le=16)  # renders (child processes) at once
+
     @field_validator("admin_username")
     @classmethod
     def _lower_admin(cls, v: str) -> str:

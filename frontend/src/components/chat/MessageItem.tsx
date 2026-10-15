@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useId, useState } from "react";
 import { formatNumber } from "../../lib/format";
+import GeneratedFileCard from "./GeneratedFileCard";
 import { AlertIcon, CheckIcon, ChevronDownIcon, CopyIcon, RetryIcon, SparkleIcon } from "./icons";
 import Markdown from "./Markdown";
 import SourcesList, { type SourceHighlight } from "./SourcesList";
@@ -45,7 +46,7 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
     setHighlight({ index });
   }, []);
 
-  const { content, sources, streaming } = message;
+  const { content, sources, streaming, cards } = message;
   const tokens = message.prompt_tokens + message.completion_tokens;
   const retry =
     prompt !== null ? (
@@ -61,16 +62,27 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
         <SparkleIcon size={15} />
       </div>
       <div className="chat-message-body">
-        {streaming && !content ? (
+        {content ? (
+          <div className={streaming ? "chat-md chat-md-streaming" : "chat-md"}>
+            <Markdown content={content} sources={sources} onCite={onCite} />
+          </div>
+        ) : null}
+        {cards.length > 0 ? (
+          <ul className="chat-files" aria-label="Files">
+            {cards.map((card) => (
+              <li key={card.key}>
+                <GeneratedFileCard card={card} />
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {/* Below the cards, so they also cover the follow-up call after a file is created or fails. A card being written
+            shows its own spinner, and once text streams the cursor at its end takes over. */}
+        {streaming && !content && !cards.some((card) => card.kind === "writing") ? (
           <div className="chat-typing" aria-hidden="true">
             <span />
             <span />
             <span />
-          </div>
-        ) : null}
-        {content ? (
-          <div className={streaming ? "chat-md chat-md-streaming" : "chat-md"}>
-            <Markdown content={content} sources={sources} onCite={onCite} />
           </div>
         ) : null}
 

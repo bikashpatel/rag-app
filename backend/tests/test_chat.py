@@ -82,6 +82,8 @@ async def _conversation_count(client: ApiClient) -> int:
 
 
 async def _finish_pending_saves() -> None:
+    """Wait for the answers still being produced (requests through the app) and for their saves."""
+    await asyncio.gather(*list(chat_router._answer_tasks), return_exceptions=True)
     await asyncio.gather(*list(chat_router._pending_saves))
 
 
@@ -1010,6 +1012,7 @@ async def test_disconnect_reported_by_the_server_saves_the_partial_answer(
     incoming = [{"type": "http.request", "body": body.encode(), "more_body": False}]
     disconnected = asyncio.Event()
     received: list[str] = []
+    fake_llm.stall_after = 2  # the answer is produced by a task of its own, which would otherwise finish first
 
     async def receive() -> dict[str, Any]:
         if incoming:
@@ -1021,7 +1024,6 @@ async def test_disconnect_reported_by_the_server_saves_the_partial_answer(
         if message["type"] == "http.response.body" and message["body"]:
             received.append(message["body"].decode())
             if _names(_parse(received)).count("delta") == 2:
-                fake_llm.chunk_delay = 3600
                 disconnected.set()
 
     await app(scope, receive, send)

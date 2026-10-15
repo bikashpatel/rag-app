@@ -85,8 +85,14 @@ export const api = {
   del: <T = void>(path: string) => request<T>("DELETE", path),
 };
 
+/** Same-origin link to a document's file; the server sends it as an attachment, so a plain link downloads it. */
+export function documentDownloadUrl(id: number): string {
+  return `/api/documents/${id}/download`;
+}
+
 export type SSEMessage = { event: string; data: unknown };
 
+/** One event block; comment lines (": keepalive") are skipped, so a block of only comments yields null. */
 function parseSSEBlock(block: string): SSEMessage | null {
   let event = "message";
   const dataLines: string[] = [];

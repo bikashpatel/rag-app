@@ -23,6 +23,7 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
                                │           ├──> Redis     ingest queue, login/rate limits, answer slots
                                │           ├──> Qdrant    one vector collection per embedding model
                                │           └──> LiteLLM ─> OpenAI / Anthropic / Ollama / …
+                               │           └──> file render child (create_document: PDF/DOCX/XLSX/MD)
                                └── uploads volume (shared)
               worker (same image) <── Redis list rag:ingest_queue
                  parse ─> [PDF pages: render (child process) ─> vision model (LiteLLM)] ─> chunk ─> embed (LiteLLM) ─> Qdrant
@@ -39,8 +40,14 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
 - **Chat:** `POST /api/chat/stream` checks the rate limit, budget and model access, saves the
   user message, retrieves passages from the user's private documents plus the shared knowledge
   base (every Qdrant search carries this access filter), and streams the answer as Server-Sent
-  Events (`meta`, `sources`, `warning`, `delta`, `done` or `error`). The answer and its token
-  usage are saved at the end, including partial answers after Stop or an error.
+  Events (`meta`, `sources`, `warning`, `delta`, `file`, `done` or `error`, plus `: keepalive` comments
+  during silences). The answer and its token usage are saved at the end, including partial answers after
+  Stop or an error.
+- **Files from chat:** chat models with function calling get a `create_document` tool. When the user
+  asks for a PDF, Word, Excel or Markdown file, the backend validates the tool call, renders the file in a
+  time- and memory-limited child process (fpdf2 with bundled Noto fonts for PDFs, python-docx, openpyxl),
+  stores it as one of the user's private documents (quotas apply), queues it for indexing like an upload,
+  and calls the model again with the result. The answer shows a file card with a Download button.
 - **Admin:** one admin account, defined in `.env`. Users exist only if the admin creates them.
 
 Code layout:
@@ -49,7 +56,8 @@ Code layout:
 |---|---|
 | `backend/app/main.py`, `config.py`, `db.py`, `models.py` | app factory, settings, async SQLAlchemy, ORM |
 | `backend/app/routers/` | `auth`, `models`, `documents`, `conversations`, `chat`, `admin` (all under `/api`) |
-| `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
+| `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `document_tool` (the chat's `create_document` tool) + `filegen/` (PDF, DOCX, XLSX and MD rendering, run by `filegen/child.py`), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
+| `backend/app/fonts/` | Noto Sans fonts for generated PDFs (SIL Open Font License, `OFL.txt`) |
 | `backend/app/worker.py` | ingestion worker (`python -m app.worker`) |
 | `backend/tests/` | integration tests, no Docker needed ([README](backend/tests/README.md)) |
 | `frontend/src/pages/` | `LoginPage`, `ChatPage`, `AdminPage` |
@@ -110,6 +118,16 @@ Notes:
   (1568, at most 2576) pixels, and `VISION_MAX_OUTPUT_TOKENS` (8192) caps each page's output when the model's
   "Max output tokens" is blank. `VISION_MIN_TEXT_CHARS` (40) and `VISION_MIN_IMAGE_RATIO` (0.1) decide which
   pages count as scanned and which images are large enough to describe.
+- **Files from chat** (`CHAT_FILE_TOOLS` and `GENERATED_FILE*` in `.env.example`): `CHAT_FILE_TOOLS=false`
+  turns the feature off. One answer may create `GENERATED_FILES_PER_ANSWER` (3) files, each with at most
+  `GENERATED_FILE_MAX_CHARS` (100,000) characters of content; model calls that may write a file request
+  `GENERATED_FILE_MAX_OUTPUT_TOKENS` (48,000) output tokens unless the model has its own "Max output tokens".
+  Each file gets `GENERATED_FILE_TIMEOUT_SECONDS` (60) to render, waiting for a render slot included, and
+  `GENERATED_FILE_CONCURRENCY` (2) files render at once per backend process.
+  - Offering the tool adds about 1,550 input tokens to every model call of a capable chat model, whether or not
+    a file is requested (measured: about $0.006 per Claude Opus 5.5 call).
+  - Generated files count toward the user's document, storage and per-file limits (the admin is exempt). A user
+    with no room isn't offered the tool, and the assistant says so.
 - `WORKER_MEM_LIMIT` (default `4g`) is the worker container's memory limit (Compose `mem_limit` and
   `memswap_limit`); PDF pages are rendered in child processes limited to 1 GiB each.
 
@@ -149,6 +167,28 @@ file is parsed, chunked and embedded in the background. Answers cite the passage
 document panel to limit which documents a question searches. **Stop** keeps the partial answer.
 Users change their own password from the account menu (the admin's password lives in `.env`).
 
+**Files from chat:** ask for a file in your own words, for example "make a PDF report of the Q3 figures from
+my documents", "put these numbers in a spreadsheet", "draft a Word letter" or "export this as markdown". The
+assistant creates PDF, Word (`.docx`), Excel (`.xlsx`) and Markdown (`.md`) files (with chat models that
+support function calling; on desktop, the composer hint says when the selected model can). A card under the answer
+shows the file being written, then its name, type, size and indexing status, with a **Download** button.
+Every file is saved to your private documents ("Created in chat" in the document panel), counts toward your
+document and storage limits, and is indexed, so later chats can search it; passages from such files are
+marked as earlier answers rather than sources. When the content uses your documents, the file ends with a
+Sources section. Every document in the panel, uploads included, has a Download button.
+
+- **What each format holds:**
+  - PDF and Word: headings, paragraphs, bold and italic, lists, tables, code blocks and links. PDFs also get page
+    numbers.
+  - Excel: one or more sheets with a bold, frozen header row and an auto-filter. Numbers and dates are stored as
+    real values, and text that looks like a formula stays text.
+  - Markdown: the same content as a `.md` file that loads nothing (images become text, HTML is escaped).
+- **Limits (defaults):** up to 3 files per answer, at most 100,000 characters each.
+- **When it fails:** a file that fails (for example, over your document limit) shows a card with the reason, and
+  the assistant explains it.
+- **Stop:** pressing Stop while a file is being written cancels it; if it was already being saved, it is still in
+  your documents.
+
 **Admin page** (`/admin`, admin only). An overview at the top shows users, documents, failed
 and stale documents, the ingestion queue and the active embedding and vision models ("Off" when no
 vision model is active), and offers a re-index when documents are stale or failed.
@@ -175,7 +215,8 @@ vision model is active), and offers a re-index when documents are stale or faile
 - **Usage:** chat, embedding and vision tokens and the estimated cost per user, per model and per day, for
   any month. Only chat tokens count toward user budgets; vision tokens have their own monthly allowance
   (`VISION_MONTHLY_TOKEN_LIMIT`).
-- **Documents:** every uploaded document, with re-index and delete actions, and **Re-index all documents**.
+- **Documents:** every document (uploads and files created in chat), with re-index and delete actions, and
+  **Re-index all documents**.
   Documents read with the vision model show how many pages it read ("pages read by vision"). PDFs that
   failed as scanned before the vision model was enabled can be retried (Retry in the document panel, or
   "Retry failed" in the admin overview).
@@ -239,7 +280,7 @@ cd backend
 uv venv --python 3.13 .venv            # once (uv downloads Python 3.13 if needed)
 uv pip sync requirements-dev.txt       # again whenever the locks change
 #   or, with python3.13 on PATH: python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # about 860 tests, about 90 s
+.venv/bin/python -m pytest -q          # about 1,170 tests, about 2.5 minutes
 
 # Lint and type-check (tools not in the requirements; run through uvx)
 uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests
@@ -323,6 +364,20 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
 - PDF pages for the vision model are rendered in a separate process with no API keys in its environment,
   a 1 GiB memory limit (enforced on Linux, so in Docker) and 30 s per page. Page images of users' private
   PDFs go to the active vision model's provider.
+- Files the assistant creates are rendered in a child process with an empty environment and memory, CPU
+  and file-size limits, killed after `GENERATED_FILE_TIMEOUT_SECONDS`. They land only in the requesting
+  user's private documents and contain no active content:
+  - PDFs have no JavaScript, actions or forms.
+  - DOCX files have no macros.
+  - XLSX files have no formulas. Text that starts with `=`, `+`, `-`, `@`, a tab or a carriage return is stored as
+    quote-prefixed text.
+  - Markdown files are rewritten so they load nothing: images become text and HTML is escaped.
+
+  Links show their host. The prompt allows the tool only when the user's own message asks for a file, never
+  because a document does.
+- Downloads (`GET /api/documents/{id}/download`) follow the listing's visibility rules (anything else is a 404)
+  and are sent as attachments with `nosniff`, `no-store` and a sandbox CSP. PDF and Office files get their own
+  content type; everything else, Markdown and HTML included, is `application/octet-stream`.
 - Secrets are never logged; provider errors are turned into user-facing messages (`llm.friendly_error`).
 
 ## 8. Known limitations
@@ -335,6 +390,20 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
   images are. Pages whose content is over 2 MiB aren't checked for images.
 - Only PDFs go to the vision model: images in DOCX and PPTX files aren't read yet. Password-protected PDFs
   aren't supported.
+- Generated PDFs support Latin, Greek, Cyrillic and ten Indian scripts (Noto fonts are bundled). A few
+  characters of another script (Chinese, Arabic, Hebrew, Thai, …) appear as □ with a note; more than 2 % of
+  the letters and the PDF is refused with a hint to create a docx or md file, which keep every script. Emoji
+  are left out of PDFs.
+- Generated files have no images or charts, and an earlier file can't be converted to another format: "make
+  it a Word document too" writes the content again from the documents, which costs another file's tokens.
+  Citations of a generated PDF have no page number, because it is indexed from its Markdown source.
+- One answer that writes files makes up to `GENERATED_FILES_PER_ANSWER` + 2 model calls, each re-sending the
+  context; with a monthly budget, no further call starts once the answer has used what was left, but up to two
+  answers running at once can still go past the budget.
+- The file tool costs tokens even when no file is asked for: about 1,550 input tokens per model call with a
+  capable model. Its calls may also use up to 48,000 output tokens instead of 16,000. Set `CHAT_FILE_TOOLS=false`
+  if you don't need files.
+- The admin can't download users' private documents; downloads follow the same visibility as the document list.
 - Deleting a user deletes their usage history too (chat, embedding and vision), so their costs leave the
   usage report.
 - Legacy `.doc`, `.ppt` and `.xls` files must be saved in the modern format first.

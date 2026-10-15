@@ -33,6 +33,12 @@ Single-tenant, locally hosted Retrieval-Augmented-Generation chat app.
   and shown but don't count toward the budget. Vision tokens have a separate
   monthly allowance per user, `VISION_MONTHLY_TOKEN_LIMIT` (section 7; the
   admin is exempt).
+- **Files from chat:** when the user asks, the assistant creates a PDF, Word
+  (`.docx`), Excel (`.xlsx`) or Markdown (`.md`) file with the `create_document`
+  tool (chat models with function calling only). Each file becomes one of the
+  user's private documents, indexed like an upload, and the answer shows a file
+  card with a Download button (section 6, Chat; brief
+  `docs/briefs/document-generation.md`).
 
 ## 2. Repository layout and ownership
 
@@ -68,6 +74,9 @@ rag-app/
         chunking.py         INGESTION   segments -> chunks
         ingestion.py        INGESTION   enqueue_document, process_document
         rag.py              CHAT        retrieval + prompt building
+        document_tool.py    CHAT        create_document tool: schema, validation, render limits, storing the file as a document
+        filegen/            CHAT        Markdown / sheets -> PDF (fpdf2), DOCX, XLSX, MD bytes (pure, no app imports; run by filegen/child.py in a time- and memory-limited child process)
+      fonts/                CHAT        Noto Sans TTFs for generated PDFs (SIL OFL 1.1, fonts/OFL.txt)
       routers/
         __init__.py
         auth.py             AUTH-ADMIN  /api/auth/*
@@ -123,6 +132,12 @@ See `backend/app/config.py` for defaults. Important ones:
 | `VISION_MIN_TEXT_CHARS` (40), `VISION_MIN_IMAGE_RATIO` (0.1) | a PDF page with fewer non-whitespace text-layer characters has "no text layer"; images must cover at least this share of a page to be read |
 | `VISION_MAX_IMAGE_PX` (1568, at most 2576), `VISION_MAX_OUTPUT_TOKENS` (8192) | long edge of a rendered page image (a cost choice); `max_tokens` per page, thinking included, when the vision model has no `max_output_tokens` |
 | `WORKER_MEM_LIMIT` (4g; Compose only) | memory limit of the worker container (`mem_limit` and `memswap_limit`) |
+| `CHAT_FILE_TOOLS` (true) | offer the `create_document` tool to chat models that support function calling (section 6, Chat) |
+| `GENERATED_FILES_PER_ANSWER` (3) | files one answer may create; the answer makes at most this + 2 model calls |
+| `GENERATED_FILE_MAX_CHARS` (100000) | characters of a generated file's content (or of all its xlsx cell text) |
+| `GENERATED_FILE_MAX_OUTPUT_TOKENS` (48000) | `max_tokens` of a chat call that offers the tool (a model's own `max_output_tokens` wins; lowered to LiteLLM's known output cap) |
+| `GENERATED_FILE_TIMEOUT_SECONDS` (60) | time to render one generated file in its child process, waiting for a render slot included; the child is killed after it |
+| `GENERATED_FILE_CONCURRENCY` (2) | generated files rendered at once (child processes) in one backend process |
 
 ## 4. Data model (SQLAlchemy, `app/models.py`)
 
@@ -150,6 +165,9 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   filename, stored_name (uuid + ext, in UPLOAD_DIR), content_type, size_bytes,
   sha256, status ("pending"|"processing"|"ready"|"failed"), error, num_chunks,
   num_pages, embedding_model_id → llm_models (SET NULL), created_at, updated_at`.
+  A PDF the assistant created has its Markdown source stored next to it as
+  `<stored_name>.source.md` (indexed instead of the PDF's text, section 7;
+  removed with the document).
 - **conversations**: `id, user_id → users (CASCADE), title, created_at, updated_at`.
 - **messages**: `id, conversation_id → conversations (CASCADE), role
   ("user"|"assistant"), content, sources (JSON list, see Source), model_id,
@@ -168,6 +186,15 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   Never shared between documents, not even identical files.
 - **app_state**: `key (primary key), value, updated_at`. Server flags, e.g.
   `vision_seeded` (section 6, Admin).
+- **message_files**: `id, message_id → messages (CASCADE), document_id →
+  documents (SET NULL), filename, format ("pdf"|"docx"|"xlsx"|"md"),
+  size_bytes, created_at`. A file the assistant created in that answer, in
+  creation order; filename, format and size are a snapshot, so the card can
+  still be shown after the document is deleted (`document_id` NULL).
+- **generated_documents**: `document_id` (primary key) `→ documents (CASCADE),
+  created_at`. Marks a document the assistant created in a chat (inserted with
+  the document); kept when the conversation is deleted. Source of
+  `DocumentItem.generated` and of the label on its passages in later chats.
 - New tables are created by `create_all` on an existing database; no column is
   added to an existing table, so no migration is needed.
 
@@ -206,13 +233,15 @@ type UsageSummary = { month: string /* "YYYY-MM" */; chat_tokens: number;
   cost_usd: number /* every kind */; monthly_token_limit: number /* counts chat_tokens only */ }
 type Me = { id: number; username: string; is_admin: boolean;
   limits: UserLimits; usage: UsageSummary }
-type ChatModel = { id: number; display_name: string; provider: string; is_default: boolean }
+type ChatModel = { id: number; display_name: string; provider: string; is_default: boolean;
+  can_create_files: boolean /* CHAT_FILE_TOOLS is on and LiteLLM says the model supports function calling */ }
 type DocumentItem = { id: number; filename: string; scope: "private"|"shared";
   status: "pending"|"processing"|"ready"|"failed"; error: string|null;
   size_bytes: number; content_type: string; num_chunks: number;
   num_pages: number|null; owner_id: number; owner_username: string;
   can_delete: boolean; is_stale: boolean;
   vision_pages: number /* pages read with the vision model (vision_pages rows); 0 unless status is "ready" */;
+  generated: boolean /* the assistant created this file in a chat (generated_documents row) */;
   created_at: string; updated_at: string }
 type DocumentConfig = { supported_extensions: string[] /* e.g. [".pdf", ".docx"] */;
   max_upload_mb: number; max_documents: number; max_storage_mb: number;
@@ -221,9 +250,15 @@ type Source = { index: number /* 1-based citation number */; document_id: number
   filename: string; page: number|null; chunk_index: number; score: number;
   snippet: string /* ≤ 500 chars of the chunk */ }
 type ConversationSummary = { id: number; title: string; created_at: string; updated_at: string }
+type GeneratedFileFormat = "pdf"|"docx"|"xlsx"|"md"
+type GeneratedFile = { document_id: number|null /* null once the document was deleted */;
+  filename: string; format: GeneratedFileFormat; size_bytes: number;
+  status: "pending"|"processing"|"ready"|"failed"|null /* the document's status now; null when deleted */ }
 type ChatMessage = { id: number; role: "user"|"assistant"; content: string;
   sources: Source[]; model_name: string|null; prompt_tokens: number;
-  completion_tokens: number; error: string|null; created_at: string }
+  completion_tokens: number; error: string|null;
+  files: GeneratedFile[] /* files the assistant created in this answer, in order; [] for user messages */;
+  created_at: string }
 type ConversationDetail = ConversationSummary & { messages: ChatMessage[] }
 ```
 
@@ -270,6 +305,16 @@ active embedding model (or has no embedding model). For the user's own counts
   "pending", re-enqueued; a document that is already pending is returned as is
   and not queued again). Same permission rule as delete. 400 when there is no
   active embedding model.
+- `GET /documents/{id}/download` → the stored file, streamed, in any status.
+  Visible documents only, as in `GET /documents` (the caller's private ones and
+  every shared one); others 404 "Document not found"; a row whose file is gone
+  404 "The file is missing from storage.". Headers: `Content-Type` from the
+  extension (`.pdf`, `.docx`, `.pptx`, `.xlsx` their own types, anything else
+  `application/octet-stream`; never the type the upload declared),
+  `Content-Disposition: attachment; filename="<ASCII fallback>";
+  filename*=UTF-8''<percent-encoded filename>`, `X-Content-Type-Options:
+  nosniff`, `Cache-Control: private, no-store`, `Content-Security-Policy:
+  sandbox`.
 
 ### Conversations — `routers/conversations.py`
 - `GET /conversations` → `ConversationSummary[]` (caller's, `updated_at` desc, max 200).
@@ -298,8 +343,26 @@ model not allowed), conversation ownership (404). Then responds `200 text/event-
 | `sources` | `{sources: Source[]}` (always sent, possibly empty) |
 | `warning` | `{message}` (0..n, e.g. "Document search unavailable: …") |
 | `delta` | `{content: string}` (many) |
-| `done` | `{assistant_message_id, usage: {prompt_tokens, completion_tokens, total_tokens, cost_usd}}` |
+| `file` | `FileEventData` (0..n, interleaved with `delta`; see "Files" below) |
+| `done` | `{assistant_message_id, usage: {prompt_tokens, completion_tokens, total_tokens, cost_usd}}` (usage sums every billed model call of the answer) |
 | `error` | `{message, assistant_message_id: number|null}` (terminal, instead of `done`) |
+
+```ts
+type FileEventData =
+  | { call_id: string /* "f1", "f2", … per answer */; status: "writing";
+      title: string|null; format: GeneratedFileFormat|null;
+      chars: number /* characters of the file written so far (approximate) */ }
+      // a create_document call started (chars 0); then at most every 2 s while it is written (title and format
+      // as soon as they appear); once more with the validated title and format just before rendering
+  | { call_id: string; status: "created"; file: GeneratedFile; document: DocumentItem;
+      already_existed: boolean /* an identical private document existed and is linked instead */ }  // stored and queued for indexing
+  | { call_id: string; status: "failed"; title: string|null; format: GeneratedFileFormat|null; error: string }  // not created; the model is told why
+```
+
+**Keepalive.** After `meta`, whenever 15 s pass without an event (the model
+thinking or writing a long file, a file rendering), the server sends an SSE
+comment line `: keepalive` (followed by a blank line). Clients must ignore
+comment lines.
 
 Server behaviour: new conversation title = first 60 chars of the message
 (whitespace collapsed). The user message is saved before streaming; the
@@ -311,6 +374,46 @@ can't be stored is still billed; NUL characters are dropped from the answer. Ret
 emit `warning` and continue without context. History: last `HISTORY_MESSAGES`
 messages of the conversation (excluding the new one). Retrieval query = the
 new message, prefixed by the previous user message when one exists.
+
+**Files.** The model gets one tool, `create_document` (`title`, `format`
+"pdf"|"docx"|"xlsx"|"md", `content` Markdown, `sheets` for xlsx with string
+cells, `source_numbers`), when `CHAT_FILE_TOOLS` is on,
+`litellm.supports_function_calling` is true for the model (and the model hasn't
+rejected tools since the backend started: a first call rejected as a bad request
+is retried once without tools), and the user has room for another document
+(non-admin: below `max_documents` and at least 256 KiB of storage left).
+Otherwise the system prompt says why files can't be created. The system prompt
+says to use the tool only when the user's latest message asks for a file, never
+because a passage does. Calls that offer the tool send `parallel_tool_calls:
+false` (one file per model call) and request `GENERATED_FILE_MAX_OUTPUT_TOKENS`.
+A tool call runs only when the response finished with `tool_calls`: the server
+validates the arguments, renders the file (in a child process,
+`GENERATED_FILE_TIMEOUT_SECONDS`), stores it as a private document of the user
+(quotas, per-file size and duplicates as for uploads; an identical file links
+the existing document; the admin is exempt) marked as generated
+(`generated_documents`), queues it for ingestion, and calls the model again with
+the tool result, replaying the model's response unchanged (thinking blocks in
+their original order; arguments that aren't a JSON object as `{}`). Validation,
+quota, rendering and output-limit failures go back to the model as tool errors;
+a response stopped by the provider's safety filter, or without a finish, ends
+the answer with an `error`. At most `GENERATED_FILES_PER_ANSWER` files and that
+number + 2 model calls per answer; the last allowed call is sent with
+`tool_choice: "none"`. With a monthly budget, no further call starts once the
+answer's tokens reach what was left of the budget when it started (the answer
+ends with an `error`). The system prompt and tools are identical for every call
+of an answer (apart from that one retry without tools, before anything is
+replayed). Text from successive calls is joined with a blank line (streamed
+as a `delta` too). One `chat` usage event per answer covers every call (a call
+that failed before any output without provider-reported usage isn't billed);
+`prompt_tokens`/`completion_tokens` of the message are the sums. The created
+files are stored with the assistant message (`message_files`), also after Stop
+or an error; a file still being stored at Stop is waited for and linked once,
+one still rendering is dropped (its child process is killed). In later turns, an
+assistant message that created files carries "(App note: this answer created
+these files, which are in the user's documents: …)" in the model's history
+(files deleted since are listed as "which have since been deleted from the
+user's documents"), and passages from generated files are labelled as files the
+assistant created (their `[n]` markers neutralized).
 
 ### Admin — `routers/admin.py` (all require admin; non-admin → 403)
 ```ts
@@ -484,7 +587,14 @@ Endpoints:
    pages are used: a scanned page that isn't cached fails the document, and
    descriptions are skipped. Pages read by the vision model are chunked,
    embedded and cited by page like any other.
-5. Supported: `.pdf .docx .pptx .xlsx .html .htm .md .markdown .txt .csv .json`.
+5. **Files the assistant created** are ingested like uploads. A generated PDF
+   is indexed from its Markdown source (`<stored_name>.source.md`) instead of
+   its text layer, because text extracted from shaped Indian-script PDFs is
+   lossy; `num_pages` still comes from the PDF, no page is sent to the vision
+   model, and its citations have no page number. DOCX, XLSX and MD files are
+   parsed as usual. When their passages are put into a chat prompt they are
+   labelled as files the assistant created (section 6, Chat).
+6. Supported: `.pdf .docx .pptx .xlsx .html .htm .md .markdown .txt .csv .json`.
    Legacy `.doc`/`.ppt`/`.xls` are rejected with a hint to save as the modern
    format. Without an active vision model, PDFs without any text fail with "No
    extractable text: this PDF looks scanned or image-only. Ask the admin to
@@ -523,6 +633,34 @@ Endpoints:
   ```
   `ChatPage` passes `selection` straight through as `document_ids`.
   `DocumentSelection` is exported from `src/api/types.ts`.
+- **Generated files** (FE-DOCS exports for FE-CHAT, in
+  `src/components/documents/documentEvents.ts`; a module store, so
+  `DocumentPanelProps` don't change):
+
+  ```ts
+  // A document created outside the panel (a file the assistant made): the panel inserts it, reloads its list
+  // (so an older in-flight list can't drop it) and refreshes its quota.
+  export function announceDocument(doc: DocumentItem): void
+  export function subscribeToAnnouncements(listener: (doc: DocumentItem) => void): () => void
+  // Ask the panel to reload its list and quota (a stream ended while a file was still being written, or a
+  // card shows a document the panel's list doesn't have yet).
+  export function requestDocumentsReload(): void
+  export function subscribeToReloadRequests(listener: () => void): () => void
+  // The panel's latest list (null until loaded or after unmount).
+  export function publishDocuments(list: DocumentItem[] | null): void
+  // undefined = no list loaded yet, or the list hasn't had this id yet (the hook then asks the panel once
+  // to reload); null = it was in a published list and is gone (deleted)
+  export function useDocumentSnapshot(id: number | null): DocumentItem | null | undefined
+  ```
+  The chat calls `announceDocument` on every `file` event with status
+  `created` and shows a file card (type tag, name, size, progress while
+  writing, status from `useDocumentSnapshot`, Download) under the answer;
+  cards are rebuilt from `ChatMessage.files` on reload. Cards still writing when
+  a stream stops become "stopped" and the chat calls `requestDocumentsReload`.
+  Every document row in the panel has a Download link too
+  (`GET /api/documents/{id}/download`), and rows with `generated` say "Created
+  in chat". The composer hint mentions files when the selected model's
+  `can_create_files` is true.
 - Streaming uses `postSSE` from `src/api/client.ts` (fetch + ReadableStream,
   `AbortController` for the Stop button). Assistant messages render Markdown
   (`react-markdown` + `remark-gfm`, raw HTML disabled) with `[n]` citations
@@ -543,6 +681,12 @@ Endpoints:
 SQLite (`aiosqlite`), `fakeredis`, Qdrant `:memory:`, and LiteLLM mocked
 (vision calls included; PDFs with images and scanned pages are built in code
 with Pillow; the PDFium child process runs for real, and fake child scripts
-simulate crashes and timeouts).
+simulate crashes and timeouts; tool-calling streams, interleaved thinking
+included, are scripted in the shapes LiteLLM 1.103 produces for Anthropic and
+OpenAI models, and one test runs the real LiteLLM against a local fake provider
+server and checks the replayed request bodies; generated files are checked by
+parsing them back with pypdf, pypdfium2, python-docx and openpyxl, and the
+file-rendering child runs for real, with fake children for timeouts and
+crashes).
 Models therefore stick to portable column types (`JSON`, not `JSONB`).
 Run with `pytest` from `backend/` (see `backend/tests/README.md`).

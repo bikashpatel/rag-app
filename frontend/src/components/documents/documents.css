@@ -525,6 +525,10 @@
   color: var(--text-2);
 }
 
+.docs-row-actions {
+  display: flex;
+  gap: 2px;
+}
 .docs-icon-btn {
   display: grid;
   flex: none;
