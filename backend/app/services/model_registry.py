@@ -13,7 +13,9 @@ def provider_of(litellm_model: str) -> str:
 
 async def _active_model(db: AsyncSession, kind: str) -> LLMModel | None:
     result = await db.execute(
-        select(LLMModel).where(LLMModel.kind == kind, LLMModel.enabled.is_(True), LLMModel.is_default.is_(True)).limit(1)
+        select(LLMModel)
+        .where(LLMModel.kind == kind, LLMModel.enabled.is_(True), LLMModel.is_default.is_(True))
+        .limit(1)
     )
     return result.scalar_one_or_none()
 

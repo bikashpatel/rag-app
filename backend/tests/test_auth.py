@@ -117,6 +117,7 @@ def zero_usage(monthly_token_limit: int) -> dict[str, Any]:
         "month": this_month(),
         "chat_tokens": 0,
         "embedding_tokens": 0,
+        "vision_tokens": 0,
         "cost_usd": 0.0,
         "monthly_token_limit": monthly_token_limit,
     }
@@ -462,6 +463,7 @@ async def test_me_reports_the_users_limits_and_this_months_usage(create_user: Cr
                 UsageEvent(user_id=alice.user_id, model_name="m", kind="chat", total_tokens=120, cost_usd=0.25),
                 UsageEvent(user_id=alice.user_id, model_name="m", kind="chat", total_tokens=80, cost_usd=0.5),
                 UsageEvent(user_id=alice.user_id, model_name="e", kind="embedding", total_tokens=40, cost_usd=0.01),
+                UsageEvent(user_id=alice.user_id, model_name="v", kind="vision", total_tokens=3000, cost_usd=0.02),
                 UsageEvent(
                     user_id=alice.user_id,
                     model_name="m",
@@ -490,9 +492,15 @@ async def test_me_reports_the_users_limits_and_this_months_usage(create_user: Cr
             "max_documents": settings.default_max_documents,
             "max_storage_mb": settings.default_max_storage_mb,
         },
-        "usage": {**body["usage"], "month": this_month(), "chat_tokens": 200, "embedding_tokens": 40},
+        "usage": {
+            **body["usage"],
+            "month": this_month(),
+            "chat_tokens": 200,
+            "embedding_tokens": 40,
+            "vision_tokens": 3000,
+        },
     }
-    assert body["usage"]["cost_usd"] == pytest.approx(0.76)
+    assert body["usage"]["cost_usd"] == pytest.approx(0.78)  # every kind
     assert body["usage"]["monthly_token_limit"] == 5000
 
 

@@ -6,11 +6,11 @@ import logging
 import re
 import time
 import zipfile
-from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Sequence
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from bs4 import BeautifulSoup, CData, NavigableString, Tag
 from docx import Document as open_docx
@@ -24,13 +24,27 @@ from pypdf.errors import DependencyError
 from pypdf.generic import ArrayObject, IndirectObject
 
 from app.config import settings
+from app.services.pdf_images import (
+    PageMeasure,
+    PageMeasurer,
+    Rect,
+    Rendered,
+    RenderJob,
+    page_rotation,
+    render_pages,
+    union_share,
+    visible_box,
+)
 
 logger = logging.getLogger(__name__)
 
 SUPPORTED_EXTENSIONS = (".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm", ".md", ".markdown", ".txt", ".csv", ".json")
 LEGACY_EXTENSIONS = {".doc": ".docx", ".ppt": ".pptx", ".xls": ".xlsx"}
 
-_NO_PDF_TEXT = "No extractable text (scanned PDFs need OCR, which isn't supported yet)."
+_NO_PDF_TEXT = (
+    "No extractable text: this PDF looks scanned or image-only. Ask the admin to enable a vision model to read it."
+)
+_NO_PDF_TEXT_VISION = "No extractable text: this PDF has neither a text layer nor page images to read."
 _NO_TEXT = "The document contains no text."
 _TOO_COMPLEX = "The file is too large or complex to process."
 _UNSUPPORTED_PDF_ENCRYPTION = (
@@ -63,6 +77,15 @@ _CONTROL_CHARS = {code: None for code in (*range(0x00, 0x09), *range(0x0E, 0x20)
 }
 _BLANK_LINES = re.compile(r"\n{3,}")
 
+# Vision model (SPEC section 7, step 4). Images under this share of the page are bullets and icons.
+_MIN_IMAGE_SHARE = 0.01
+# An image drawn on this many units, or on every unit of a multi-unit PDF, is a letterhead, watermark or template.
+_REPEATED_MIN_UNITS = 3
+_PAGE_IMAGE_SHARE = 0.9  # images covering this much of a page make it a page image (a scan)
+_OCR_LAYER_SHARE = 0.5  # a page image whose text is mostly invisible has an OCR layer
+_OVERLAY_CHARS = 200  # less visible text on a page image is an overlay (envelope IDs, Bates numbers, fax headers)
+_MAX_SOURCE_PIXELS = 100_000_000
+
 
 class DocumentParseError(Exception):
     """The file can't be turned into text. str(exc) is safe to show to end users."""
@@ -74,10 +97,30 @@ class Segment:
     page: int | None
 
 
+VisionMode = Literal["transcribe", "describe"]
+
+
+@dataclass(frozen=True)
+class VisionRequest:
+    out_dir: Path  # page JPEGs; the caller owns and removes it
+    cached: frozenset[tuple[int, str]]  # (page, mode) already read with the current fingerprint
+    blocked: str | None = None  # the error for an uncached scanned page (the owner's allowance is used up)
+
+
+@dataclass(frozen=True)
+class PageImage:
+    page: int  # 1-based representative page of the unit
+    pages: tuple[int, ...]  # every page of the unit, `page` first
+    mode: VisionMode
+    image: Path | None  # None when cached
+    size: tuple[int, int] | None
+
+
 @dataclass
 class ParsedDocument:
     segments: list[Segment]
     num_pages: int | None
+    page_images: list[PageImage] = field(default_factory=list)
 
 
 class _TextBudget:
@@ -104,28 +147,42 @@ class _TextBudget:
 _Reader = Callable[[Path, _TextBudget], tuple[list[Segment], int | None]]
 
 
-def parse_file(path: Path, extension: str) -> ParsedDocument:
-    """Extract normalized text segments (one per page, slide or sheet where the format has them)."""
+def parse_file(path: Path, extension: str, vision: VisionRequest | None = None) -> ParsedDocument:
+    """Extract normalized text segments (one per page, slide or sheet where the format has them).
+
+    With `vision`, PDF pages without a usable text layer and pages with significant images are selected for the
+    vision model (rendered to `vision.out_dir` unless cached); scanned pages selected that way have no segment.
+    """
     extension = extension.lower()
     reader = _READERS.get(extension)
-    if reader is None:
+    if reader is None and extension != ".pdf":
         raise DocumentParseError(f"Unsupported file type: {extension or '(none)'}.")
     if extension in _ZIP_FORMATS:
         _check_zip(path, extension)
+    page_images: list[PageImage] = []
     try:
-        raw_segments, num_pages = reader(path, _TextBudget())
+        if reader is None:
+            raw_segments, num_pages, page_images = _read_pdf(path, _TextBudget(), vision)
+        else:
+            raw_segments, num_pages = reader(path, _TextBudget())
     except (DocumentParseError, OSError):
         raise
     except Exception as exc:
         logger.warning("Could not parse %s: %r", path.name, exc)
         raise DocumentParseError(f"The file is corrupted or not a valid {extension} file.") from exc
 
-    segments = [Segment(text=text, page=s.page) for s in raw_segments if (text := _normalize(s.text))]
-    if not segments:
-        raise DocumentParseError(_NO_PDF_TEXT if extension == ".pdf" else _NO_TEXT)
+    segments = [Segment(text=text, page=s.page) for s in raw_segments if (text := normalize_text(s.text))]
+    if not segments and not any(image.mode == "transcribe" for image in page_images):
+        if extension != ".pdf":
+            raise DocumentParseError(_NO_TEXT)
+        raise DocumentParseError(_NO_PDF_TEXT if vision is None else _NO_PDF_TEXT_VISION)
+    check_total_text(segments)
+    return ParsedDocument(segments=segments, num_pages=num_pages, page_images=page_images)
+
+
+def check_total_text(segments: Sequence[Segment]) -> None:
     if sum(len(s.text) for s in segments) > settings.max_extracted_chars:
         raise _too_much_text()
-    return ParsedDocument(segments=segments, num_pages=num_pages)
 
 
 def _too_much_text() -> DocumentParseError:
@@ -154,14 +211,37 @@ def _check_zip(path: Path, extension: str) -> None:
         raise DocumentParseError(_TOO_COMPLEX)
 
 
-def _normalize(text: str) -> str:
+def normalize_text(text: str) -> str:
     text = text.encode("utf-8", "replace").decode("utf-8")  # lone surrogates can't be stored or sent
     text = text.replace("\r\n", "\n").replace("\r", "\n").translate(_CONTROL_CHARS)
     text = "\n".join(line.rstrip() for line in text.split("\n"))
     return _BLANK_LINES.sub("\n\n", text).strip()
 
 
-def _read_pdf(path: Path, budget: _TextBudget) -> tuple[list[Segment], int | None]:
+@dataclass
+class _Unit:
+    """Pages that draw the same content: read, measured, rendered and sent to the vision model once."""
+
+    pages: list[int]
+    text: str | None  # None: the page's text couldn't be extracted
+
+
+@dataclass
+class _Candidate:
+    unit: _Unit
+    measure: PageMeasure
+    mode: VisionMode
+    tier: int  # 1: scan covered by images, 2: other page without text, 3: figures on a page with text
+    figure_share: float  # union of the content images that individually cover less than _PAGE_IMAGE_SHARE
+
+    @property
+    def page(self) -> int:
+        return self.unit.pages[0]
+
+
+def _read_pdf(
+    path: Path, budget: _TextBudget, vision: VisionRequest | None
+) -> tuple[list[Segment], int | None, list[PageImage]]:
     try:
         reader = PdfReader(path)  # checks the empty password of AES-256 files already
     except DependencyError as exc:
@@ -174,12 +254,14 @@ def _read_pdf(path: Path, budget: _TextBudget) -> tuple[list[Segment], int | Non
     segments: list[Segment] = []
     # Text by content streams and resources: pages that draw the same ones (a crafted file can repeat one
     # costly stream on thousands of pages) are read once.
-    seen: dict[tuple[object, ...], str | None] = {}
+    seen: dict[tuple[object, ...], _Unit] = {}
+    units: list[_Unit] = []
     for number, page in enumerate(reader.pages, start=1):
         budget.check_time()
         key = _pdf_content_key(page)
         if key is not None and key in seen:
-            text = seen[key]
+            unit = seen[key]
+            unit.pages.append(number)
         else:
             try:
                 text = page.extract_text() or ""
@@ -188,11 +270,186 @@ def _read_pdf(path: Path, budget: _TextBudget) -> tuple[list[Segment], int | Non
             except Exception as exc:
                 logger.warning("Skipping unreadable page %d of %s: %r", number, path.name, exc)
                 text = None
+            unit = _Unit(pages=[number], text=text)
+            units.append(unit)
             if key is not None:
-                seen[key] = text
-        if text is not None:
-            segments.append(Segment(text=budget.take(text), page=number))
-    return segments, num_pages
+                seen[key] = unit
+        if unit.text is not None:
+            segments.append(Segment(text=budget.take(unit.text), page=number))
+    if vision is None:
+        return segments, num_pages, []
+    page_images = _vision_pages(path, reader, units, budget, vision)
+    transcribed = {page for image in page_images if image.mode == "transcribe" for page in image.pages}
+    return [s for s in segments if s.page not in transcribed], num_pages, page_images
+
+
+def _vision_pages(
+    path: Path, reader: PdfReader, units: list[_Unit], budget: _TextBudget, vision: VisionRequest
+) -> list[PageImage]:
+    """Classify the units, select at most VISION_MAX_PAGES of them and render the ones not cached (SPEC section 7,
+    step 4). Raises DocumentParseError when a scanned page can't be read."""
+    measures = _measure_units(path, reader, units, budget)
+    candidates = _classify(units, measures)
+    selected = _select(path, candidates)
+    cached = [c for c in selected if (c.page, c.mode) in vision.cached]
+    uncached = [c for c in selected if (c.page, c.mode) not in vision.cached]
+    if vision.blocked is not None and uncached:
+        if any(c.mode == "transcribe" for c in uncached):
+            raise DocumentParseError(vision.blocked)
+        logger.info(
+            "%s: %d page(s) not described: the owner's vision allowance is used up", path.name, len(uncached)
+        )
+        uncached = []
+    rendered = _render(path, reader, uncached, budget, vision.out_dir)
+    images = [PageImage(c.page, tuple(c.unit.pages), c.mode, None, None) for c in cached]
+    for candidate in uncached:
+        result = rendered.get(candidate.page)
+        if isinstance(result, Rendered):
+            images.append(
+                PageImage(candidate.page, tuple(candidate.unit.pages), candidate.mode, result.path, result.size)
+            )
+    return sorted(images, key=lambda image: image.page)
+
+
+def _measure_units(
+    path: Path, reader: PdfReader, units: list[_Unit], budget: _TextBudget
+) -> dict[int, tuple[PageMeasure, Rect]]:
+    """Representative page -> (measure, visible box), for the units that may draw images and could be measured."""
+    measurer = PageMeasurer(reader)
+    measures: dict[int, tuple[PageMeasure, Rect]] = {}
+    too_large = 0
+    for unit in units:
+        budget.check_time()
+        number = unit.pages[0]
+        page = reader.pages[number - 1]
+        try:
+            if not measurer.is_candidate(page):
+                continue
+            measure = measurer.measure(page)
+            box = visible_box(page)
+        except Exception as exc:
+            logger.warning("Could not measure the images on page %d of %s: %r", number, path.name, exc)
+            continue
+        if measure is None:
+            too_large += 1
+        else:
+            measures[number] = (measure, box)
+    if too_large:
+        logger.info("%s: %d page(s) too large to check for images; read as text", path.name, too_large)
+    return measures
+
+
+def _classify(units: list[_Unit], measures: dict[int, tuple[PageMeasure, Rect]]) -> list[_Candidate]:
+    """The units for the vision model, by the rules in SPEC section 7, step 4 (first match wins)."""
+    drawn_on: dict[tuple[int, int], int] = {}
+    for measure, _ in measures.values():
+        for key in {image.key for image in measure.images if image.key is not None}:
+            drawn_on[key] = drawn_on.get(key, 0) + 1
+    repeated = {
+        key
+        for key, count in drawn_on.items()
+        if count >= _REPEATED_MIN_UNITS or (len(units) >= 2 and count == len(units))
+    }
+    candidates: list[_Candidate] = []
+    for unit in units:
+        if unit.pages[0] not in measures:
+            continue  # no images, or unmeasured: text
+        measure, box = measures[unit.pages[0]]
+        content = [
+            image
+            for image in measure.images
+            if image.share >= _MIN_IMAGE_SHARE and (image.key is None or image.key not in repeated)
+        ]
+        cover = union_share((image.rect for image in content), box)
+        if cover < settings.vision_min_image_ratio:
+            continue
+        text_chars = len("".join(normalize_text(unit.text or "").split()))
+        shown = measure.visible_bytes + measure.invisible_bytes
+        invisible = measure.invisible_bytes / shown if shown else 0.0
+        page_image = cover >= _PAGE_IMAGE_SHARE
+        figures = union_share((image.rect for image in content if image.share < _PAGE_IMAGE_SHARE), box)
+        if text_chars < settings.vision_min_text_chars:
+            candidates.append(_Candidate(unit, measure, "transcribe", 1 if page_image else 2, figures))
+        elif page_image and invisible >= _OCR_LAYER_SHARE:
+            continue  # an OCR'd scan: its hidden text layer is the text
+        elif page_image and text_chars * (1 - invisible) < _OVERLAY_CHARS:
+            candidates.append(_Candidate(unit, measure, "transcribe", 1, figures))
+        else:
+            candidates.append(_Candidate(unit, measure, "describe", 3, figures))
+    return candidates
+
+
+def _select(path: Path, candidates: list[_Candidate]) -> list[_Candidate]:
+    """At most VISION_MAX_PAGES units: scans covered by images first (more of them fail the document), then the
+    other pages without text in page order, then figure pages, largest figures first. Pages that can't be rendered
+    fail the document if they are scanned, and give their slot to the next figure page otherwise."""
+    cap = settings.vision_max_pages
+    scans = [c for c in candidates if c.tier == 1]
+    if len(scans) > cap:
+        raise DocumentParseError(
+            f"This PDF has {len(scans):,} scanned pages, but at most {cap:,} pages per document can be read with the "
+            "vision model (VISION_MAX_PAGES). Split it into smaller files and upload them separately."
+        )
+    ordered = [
+        *scans,
+        *(c for c in candidates if c.tier == 2),
+        *sorted((c for c in candidates if c.tier == 3), key=lambda c: (-c.figure_share, c.page)),
+    ]
+    selected: list[_Candidate] = []
+    refused: list[tuple[int, str]] = []
+    left_out = 0
+    for candidate in ordered:
+        if len(selected) >= cap:
+            left_out += len(candidate.unit.pages)
+            continue
+        reason = _render_refusal(candidate)
+        if reason is None:
+            selected.append(candidate)
+        elif candidate.mode == "transcribe":
+            refused.append((candidate.page, reason))
+        else:
+            logger.info("%s page %d: image description skipped: %s", path.name, candidate.page, reason)
+    if refused:
+        raise DocumentParseError(min(refused)[1])
+    if left_out:
+        logger.info("%s: %d page(s) not read with the vision model (VISION_MAX_PAGES=%d)", path.name, left_out, cap)
+    return selected
+
+
+def _render_refusal(candidate: _Candidate) -> str | None:
+    """Why the page must not reach PDFium: too many operators, or a source image too large to decode."""
+    if not candidate.measure.renderable:
+        return f"Page {candidate.page} is too complex to render for the vision model."
+    if max((image.pixels for image in candidate.measure.images), default=0) > _MAX_SOURCE_PIXELS:
+        return f"Page {candidate.page} contains an image too large to process."
+    return None
+
+
+def _render(
+    path: Path, reader: PdfReader, candidates: list[_Candidate], budget: _TextBudget, out_dir: Path
+) -> dict[int, Rendered | str]:
+    """Render the candidates' pages. A scanned page that fails fails the document; a figure page is skipped."""
+    if not candidates:
+        return {}
+    jobs = []
+    for candidate in candidates:
+        page = reader.pages[candidate.page - 1]
+        box = visible_box(page)  # what PDFium renders, so the child's size check matches valid pages
+        jobs.append(
+            RenderJob(page=candidate.page, width=box[2] - box[0], height=box[3] - box[1], rotate=page_rotation(page))
+        )
+    results = render_pages(path, jobs, len(reader.pages), out_dir, settings.vision_max_image_px, budget)
+    failed = []
+    for candidate in candidates:
+        result = results.get(candidate.page, "missing")
+        if isinstance(result, Rendered):
+            continue
+        logger.warning("%s page %d couldn't be rendered for the vision model: %s", path.name, candidate.page, result)
+        if candidate.mode == "transcribe":
+            failed.append(candidate.page)
+    if failed:
+        raise DocumentParseError(f"Page {min(failed)} couldn't be rendered for the vision model.")
+    return results
 
 
 def _pdf_content_key(page: PageObject) -> tuple[object, ...] | None:
@@ -405,8 +662,8 @@ def _decode(data: bytes) -> str:
     return data.decode("latin-1", errors="replace")
 
 
+# PDFs are read by _read_pdf, which also selects pages for the vision model.
 _READERS: dict[str, _Reader] = {
-    ".pdf": _read_pdf,
     ".docx": _read_docx,
     ".pptx": _read_pptx,
     ".xlsx": _read_xlsx,

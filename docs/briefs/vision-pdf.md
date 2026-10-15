@@ -126,9 +126,10 @@ Runs only while a vision model is active (`parse_file(..., vision=VisionRequest)
     operations: stop walking and mark the unit `renderable=False`, keeping the images seen so far.
   - At most `_MAX_IMAGES_PER_PAGE = 500` placements per unit.
 - `budget.check_time()` runs before each unit. If pypdf raises while measuring, the unit is unmeasured (warning).
-- **Share** of an image is `area(box ∩ cropbox) / area(cropbox)` (pypdf `page.cropbox`). A cropbox of zero area
-  gives 0. **Coverage** is the union of the boxes (a small sweep over x-slabs), so a scan stored as strips counts
-  as one page-covering layer.
+- **Share** of an image is `area(box ∩ visible) / area(visible)`, where the visible box is what PDFium renders
+  (`pdf_images.visible_box`): pypdf's `page.cropbox` clipped to `page.mediabox` (an empty media box is US Letter, an
+  empty crop box is the media box). A visible box of zero area gives 0. **Coverage** is the union of the boxes (a
+  small sweep over x-slabs), so a scan stored as strips counts as one page-covering layer.
 - Prototype (scratchpad `wf3/designer2/walker.py`, pypdf 6.19):
 
   | Page | Images | Cover | Text bytes (visible / invisible) | Time |
@@ -220,9 +221,9 @@ child process, which is single-threaded, so no lock is needed and two documents 
 @dataclass(frozen=True)
 class RenderJob:
     page: int                                   # 1-based
-    width: float                                # pypdf cropbox size, points
+    width: float                                # visible_box() size, points
     height: float
-    rotate: int                                 # page.rotation % 360
+    rotate: int                                 # page_rotation(): /Rotate in whole quarter turns toward zero, 0-270
 
 @dataclass(frozen=True)
 class Rendered:
@@ -247,8 +248,8 @@ def render_pages(pdf: Path, jobs: Sequence[RenderJob], page_count: int, out_dir:
   - Open `PdfDocument(pdf)`; if `len(pdf) != page_count`, print `{"error": "page_count"}` and exit.
   - Per page, in order:
     1. Print `{"start": page}`.
-    2. Load the page. If its cropbox size differs from the request by more than 1 pt (absolute values), or its
-       `get_rotation()` differs, report `"mismatch"`. This guards against pairing the wrong page on malformed
+    2. Load the page. If its size (`get_size()`, PDFium's crop box clipped to the media box) differs from the
+       request by more than 1 pt (absolute values), or its `get_rotation()` differs, report `"mismatch"`. This guards against pairing the wrong page on malformed
        files.
     3. Render with scale `min(max_dpi / 72, max_px / max(w, h))` and `may_draw_forms=False`; annotations are drawn
        and `/Rotate` is applied.
@@ -491,8 +492,11 @@ response = await litellm.acompletion(**kwargs)     # not streamed
 
 - **Thinking.** Claude Sonnet 5.5 runs adaptive thinking at effort `high` when `thinking` is omitted, and its
   thinking tokens count toward `max_tokens` and are billed as output. (`{type: "disabled"}` is a 400 on Sonnet 5.5.)
-  `reasoning_effort="low"` is the portable knob. LiteLLM 1.103.1 maps it to adaptive thinking plus
-  `output_config.effort: "low"` for `claude-sonnet-5-5`, and to `reasoning_effort` for gpt-5.x. Don't use `"none"`:
+  `reasoning_effort="low"` is the portable knob. LiteLLM 1.103.1 maps it to `reasoning_effort` for gpt-5.x and to a
+  1024-token `thinkingBudget` for Gemini 2.5. For Claude it sends adaptive thinking plus `output_config.effort:
+  "low"` only when its model map lists the model as supporting effort; `claude-sonnet-5-5` isn't in the map, so
+  with `drop_params=True` the effort was dropped (found when verifying). `llm._allow_effort` therefore registers
+  `supports_output_config` for adaptive-thinking Claude models missing from the map. Don't use `"none"`:
   for Anthropic it means "omit thinking", which is adaptive at `high`. `drop_params=True` drops the parameter for
   providers without reasoning (Ollama). Verify the mapped request for `anthropic/claude-sonnet-5-5`,
   `openai/gpt-5.4-mini` and `gemini/gemini-2.5-flash` with LiteLLM's request transformation (no network); if a
@@ -634,7 +638,7 @@ Reading pages is network wait (minutes), so it shouldn't stall other users' inge
 | Parse deadline while measuring or rendering | the existing "too large or complex … over N seconds" error |
 | Call fails on a scanned page (after retries) | `failed`: "Page {n} couldn't be read with the vision model: {friendly}". Calls in flight finish; usage recorded; pages read so far are cached for Retry |
 | Reply starts with `NO_IMAGE` | as above, reason "The model didn't receive the page image; check that it supports images." |
-| Call fails on a figure page | page keeps its text, warning; a `fatal` error stops further calls |
+| Call fails on a figure page | page keeps its text, warning; a `fatal` error stops further calls, and scanned pages not read yet fail the document: "Page {n} couldn't be read with the vision model: {friendly}" (lowest unread scanned page) |
 | `VISION_TIMEOUT_SECONDS` passed | unread scanned pages: `failed` with the deadline message; unread figure pages skipped |
 | Output hit `max_tokens` | text kept with the truncation marker, warning |
 | Document deleted or reprocessed during the vision phase | stops before the next call; no error stored; usage recorded |

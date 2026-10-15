@@ -12,7 +12,7 @@ from sqlalchemy import delete, select, update
 from app.bootstrap import bootstrap
 from app.config import Settings, settings
 from app.db import SessionLocal, init_db
-from app.models import LLMModel, User
+from app.models import AppState, LLMModel, User
 from app.security import verify_password
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
@@ -22,18 +22,24 @@ OPUS = "anthropic/claude-opus-5-5"
 GPT_MINI = "openai/gpt-5.4-mini"
 SMALL_EMBEDDING = "openai/text-embedding-3-small"
 LARGE_EMBEDDING = "openai/text-embedding-3-large"
-ANTHROPIC_CHAT = {OPUS, "anthropic/claude-sonnet-5-5", "anthropic/claude-haiku-5-5"}
+SONNET = "anthropic/claude-sonnet-5-5"
+ANTHROPIC_CHAT = {OPUS, SONNET, "anthropic/claude-haiku-5-5"}
 
-# litellm_model -> (display_name, kind, provider key env var, input and output USD per 1M tokens)
+# litellm_model -> (display_name, kind, provider key env var, input and output USD per 1M tokens): the chat and
+# embedding models seeded into an empty table.
 CATALOGUE: dict[str, tuple[str, str, str, float | None, float | None]] = {
     OPUS: ("Claude Opus 5.5", "chat", "ANTHROPIC_API_KEY", 4.0, 20.0),
-    "anthropic/claude-sonnet-5-5": ("Claude Sonnet 5.5", "chat", "ANTHROPIC_API_KEY", 2.0, 10.0),
+    SONNET: ("Claude Sonnet 5.5", "chat", "ANTHROPIC_API_KEY", 2.0, 10.0),
     "anthropic/claude-haiku-5-5": ("Claude Haiku 5.5", "chat", "ANTHROPIC_API_KEY", 0.10, 0.50),
     "openai/gpt-5.5": ("GPT-5.5", "chat", "OPENAI_API_KEY", None, None),
     GPT_MINI: ("GPT-5.4 mini", "chat", "OPENAI_API_KEY", None, None),
     SMALL_EMBEDDING: ("OpenAI text-embedding-3-small", "embedding", "OPENAI_API_KEY", None, None),
     LARGE_EMBEDDING: ("OpenAI text-embedding-3-large", "embedding", "OPENAI_API_KEY", None, None),
 }
+# The vision model seeded once per database (recorded as app_state "vision_seeded"): (litellm_model, display_name,
+# input and output USD per 1M tokens), by which provider keys are set.
+SONNET_VISION = (SONNET, "Claude Sonnet 5.5 (vision)", 2.0, 10.0)
+GPT_MINI_VISION = (GPT_MINI, "GPT-5.4 mini (vision)", None, None)
 
 
 @pytest.fixture
@@ -235,14 +241,20 @@ async def test_existing_user_named_in_env_becomes_the_admin_with_fresh_sessions(
 # ---------------- Model catalogue ----------------
 
 
+async def vision_marker() -> str | None:
+    async with SessionLocal() as session:
+        marker = await session.get(AppState, "vision_seeded")
+    return marker.value if marker is not None else None
+
+
 @pytest.mark.parametrize(
-    ("openai_key", "anthropic_key", "default_chat"),
+    ("openai_key", "anthropic_key", "default_chat", "vision", "vision_enabled"),
     [
-        ("sk-test-openai", "sk-test-anthropic", OPUS),
-        ("sk-test-openai", None, GPT_MINI),
-        ("sk-test-openai", "   ", GPT_MINI),
-        (None, "sk-test-anthropic", OPUS),
-        ("", None, OPUS),
+        ("sk-test-openai", "sk-test-anthropic", OPUS, SONNET_VISION, True),
+        ("sk-test-openai", None, GPT_MINI, GPT_MINI_VISION, True),
+        ("sk-test-openai", "   ", GPT_MINI, GPT_MINI_VISION, True),
+        (None, "sk-test-anthropic", OPUS, SONNET_VISION, True),
+        ("", None, OPUS, SONNET_VISION, False),
     ],
     ids=["both keys", "openai only", "blank anthropic key", "anthropic only", "no keys"],
 )
@@ -250,6 +262,8 @@ async def test_seeded_catalogue_follows_the_provider_keys(
     openai_key: str | None,
     anthropic_key: str | None,
     default_chat: str,
+    vision: tuple[str, str, float | None, float | None],
+    vision_enabled: bool,
     tables: None,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -266,10 +280,10 @@ async def test_seeded_catalogue_follows_the_provider_keys(
     await run_bootstrap()
 
     models = await all_models()
+    vision_model, vision_name, vision_input, vision_output = vision
     assert {
-        model.litellm_model: (
+        (model.kind, model.litellm_model): (
             model.display_name,
-            model.kind,
             model.enabled,
             model.is_default,
             model.input_cost_per_mtok,
@@ -277,17 +291,20 @@ async def test_seeded_catalogue_follows_the_provider_keys(
         )
         for model in models
     } == {
-        litellm_model: (
-            display_name,
-            kind,
-            has_key[key_env] and litellm_model != LARGE_EMBEDDING,
-            litellm_model in (default_chat, SMALL_EMBEDDING),
-            input_cost,
-            output_cost,
-        )
-        for litellm_model, (display_name, kind, key_env, input_cost, output_cost) in CATALOGUE.items()
+        **{
+            (kind, litellm_model): (
+                display_name,
+                has_key[key_env] and litellm_model != LARGE_EMBEDDING,
+                litellm_model in (default_chat, SMALL_EMBEDDING),
+                input_cost,
+                output_cost,
+            )
+            for litellm_model, (display_name, kind, key_env, input_cost, output_cost) in CATALOGUE.items()
+        },
+        ("vision", vision_model): (vision_name, vision_enabled, True, vision_input, vision_output),
     }
-    assert len(models) == len(CATALOGUE)
+    assert len(models) == len(CATALOGUE) + 1
+    assert await vision_marker() == vision_model
     assert all(
         (model.api_base, model.api_key_env, model.max_output_tokens, model.temperature, model.embedding_dim)
         == (None, None, None, None, None)
@@ -308,7 +325,7 @@ async def test_models_are_seeded_only_into_an_empty_table(app: object, monkeypat
     await run_bootstrap()
 
     assert model_rows(await all_models()) == edited
-    assert len(edited) == len(CATALOGUE) - 1
+    assert len(edited) == len(CATALOGUE)  # one deleted, plus the vision model
 
     async with SessionLocal() as session:
         await session.execute(delete(LLMModel))
@@ -316,6 +333,7 @@ async def test_models_are_seeded_only_into_an_empty_table(app: object, monkeypat
 
     await run_bootstrap()
 
+    # The vision model was seeded once already ("vision_seeded"), so an emptied catalogue doesn't get it again.
     reseeded = await all_models()
     assert {model.litellm_model for model in reseeded} == set(CATALOGUE)
     assert {model.litellm_model for model in reseeded if model.enabled} == ANTHROPIC_CHAT
@@ -323,6 +341,7 @@ async def test_models_are_seeded_only_into_an_empty_table(app: object, monkeypat
         ("chat", OPUS),
         ("embedding", SMALL_EMBEDDING),
     }
+    assert await vision_marker() == SONNET
 
 
 async def test_repeated_starts_change_nothing(create_user: CreateUser, admin_client: ApiClient) -> None:
@@ -334,6 +353,7 @@ async def test_repeated_starts_change_nothing(create_user: CreateUser, admin_cli
 
     assert await snapshot() == before
     assert len(before[0]) == 2
-    assert len(before[1]) == len(CATALOGUE)
+    assert len(before[1]) == len(CATALOGUE) + 1
+    assert await vision_marker() == SONNET
     assert (await admin_client.get("/api/auth/me")).status_code == 200
     assert (await alice.get("/api/auth/me")).status_code == 200

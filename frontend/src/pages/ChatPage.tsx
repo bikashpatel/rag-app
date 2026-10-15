@@ -71,7 +71,7 @@ export default function ChatPage() {
   useEffect(
     () => () => {
       window.clearTimeout(lateReloadTimer.current);
-      lateUsageTimers.current.forEach(window.clearTimeout);
+      lateUsageTimers.current.forEach((timer) => window.clearTimeout(timer));
     },
     [],
   );
@@ -80,7 +80,7 @@ export default function ChatPage() {
   const refreshUsage = useCallback(
     (settled: boolean) => {
       const load = () => void refresh().catch(() => undefined);
-      lateUsageTimers.current.forEach(window.clearTimeout);
+      lateUsageTimers.current.forEach((timer) => window.clearTimeout(timer));
       lateUsageTimers.current = settled ? [] : LATE_USAGE_REFRESH_MS.map((ms) => window.setTimeout(load, ms));
       load();
     },

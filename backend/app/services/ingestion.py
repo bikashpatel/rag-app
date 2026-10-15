@@ -2,25 +2,29 @@
 
 import asyncio
 import logging
+import tempfile
+import time
 from collections import Counter
-from collections.abc import AsyncIterator, Collection
+from collections.abc import AsyncIterator, Callable, Collection, Sequence
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
+from weakref import WeakKeyDictionary
 
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Document, LLMModel, User, utcnow
+from app.models import Document, LLMModel, User, VisionPage, utcnow
 from app.redis_client import INGEST_QUEUE, forget_ingest_attempts, get_redis, ingest_attempts_key
-from app.services import llm, storage, vectorstore
+from app.services import llm, storage, vectorstore, vision
 from app.services.chunking import Chunk, chunk_segments
-from app.services.model_registry import get_active_embedding_model
-from app.services.parsing import DocumentParseError, parse_file
-from app.services.usage import record_usage
+from app.services.model_registry import get_active_embedding_model, get_active_vision_model
+from app.services.parsing import DocumentParseError, ParsedDocument, Segment, VisionRequest, parse_file
+from app.services.usage import record_usage, vision_tokens_this_month
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +45,11 @@ _locks: dict[int, asyncio.Lock] = {}
 _lock_users: Counter[int] = Counter()
 # Strong references to in-flight usage records: the event loop only keeps weak ones.
 _pending_records: set[asyncio.Task[None]] = set()
+# Told when a job enters (True) and leaves (False) the vision phase, from inside the job's task (app.worker).
+_vision_phase_listener: Callable[[bool], None] | None = None
+# At most WORKER_CONCURRENCY documents read pages at once; one semaphore per event loop (asyncio primitives bind to
+# the loop that first waits on them) and configured size.
+_vision_phase_limits: WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]] = WeakKeyDictionary()
 
 
 class _IngestionError(Exception):
@@ -60,6 +69,24 @@ class _Job:
     stored_name: str
     previous_model_id: int | None
     model_target: tuple[str, str | None]  # the model's (litellm_model, api_base) when the run started
+    vision_model: LLMModel | None = None  # the active vision model when the run started (detached)
+    vision_target: tuple[str, str | None] | None = None  # its (litellm_model, api_base)
+    vision_blocked: str | None = None  # the owner's vision allowance is used up: the error for a scanned page
+
+
+@dataclass
+class _Usage:
+    """What a run has used so far. Recorded on every path: success, failure, stop, re-queue and cancellation."""
+
+    embedding: llm.Usage = field(default_factory=llm.Usage)
+    vision: llm.Usage = field(default_factory=llm.Usage)
+    parsed: bool = False  # the parse finished: a cancellation after it isn't the file's fault
+
+
+def set_vision_phase_listener(listener: Callable[[bool], None] | None) -> None:
+    """The worker frees a job's slot while it reads pages with the vision model (network waits, possibly minutes)."""
+    global _vision_phase_listener
+    _vision_phase_listener = listener
 
 
 async def enqueue_document(doc_id: int) -> None:
@@ -185,26 +212,30 @@ async def process_document(doc_id: int) -> None:
 
 
 async def _run(job: _Job, model: LLMModel) -> None:
-    usage = llm.Usage()
+    usage = _Usage()
     try:
-        num_chunks, num_pages = await _index(job, model, usage)
+        num_chunks, num_pages, vision_keys = await _index(job, model, usage)
     except asyncio.CancelledError:
-        # Shutdown cancelled the job: it stays "processing" for recover_pending(), but the batches already
-        # embedded were paid for.
-        task = asyncio.create_task(_record_usage_in_new_session(job, model, usage))
+        # Shutdown cancelled the job: it stays "processing" for recover_pending(), but the calls already made were
+        # paid for. A stop after the parse isn't a crash, so it doesn't count toward MAX_INTERRUPTED_RUNS.
+        task = asyncio.create_task(_after_cancel(job, model, usage))
         _pending_records.add(task)
         task.add_done_callback(_pending_records.discard)
         await asyncio.shield(task)
         raise
+    except vision.Stopped:
+        logger.info("Document %s stopped: the document was deleted or queued again", job.doc_id)
+        await _record_usage_in_new_session(job, model, usage)
+        return
     except Exception as exc:
-        if isinstance(exc, _ModelChanged) or not await _model_is_current(job, model):
+        if isinstance(exc, (_ModelChanged, vision.ModelChanged)) or not await _model_is_current(job, model):
             await _retry_later(job, model, usage)
         else:
             await _fail(job, model, usage, _failure_message(job.doc_id, exc))
         return
 
     try:
-        await _finish(job, model, usage, num_chunks, num_pages)
+        await _finish(job, model, usage, num_chunks, num_pages, vision_keys)
     except _ModelChanged:
         await _retry_later(job, model, None)
     except Exception as exc:
@@ -213,7 +244,20 @@ async def _run(job: _Job, model: LLMModel) -> None:
         await _fail(job, model, None, _failure_message(job.doc_id, exc))
 
 
-async def _finish(job: _Job, model: LLMModel, usage: llm.Usage, num_chunks: int, num_pages: int | None) -> None:
+async def _after_cancel(job: _Job, model: LLMModel, usage: _Usage) -> None:
+    await _record_usage_in_new_session(job, model, usage)
+    if usage.parsed:
+        await forget_ingest_attempts([job.doc_id])
+
+
+async def _finish(
+    job: _Job,
+    model: LLMModel,
+    usage: _Usage,
+    num_chunks: int,
+    num_pages: int | None,
+    vision_keys: set[tuple[int, str]],
+) -> None:
     async with SessionLocal() as db:
         await _record_usage(db, job, model, usage)
     async with SessionLocal() as db:
@@ -224,12 +268,16 @@ async def _finish(job: _Job, model: LLMModel, usage: llm.Usage, num_chunks: int,
             db,
             job.doc_id,
             ("processing",),
+            commit=False,
             status="ready",
             error=None,
             num_chunks=num_chunks,
             num_pages=num_pages,
             embedding_model_id=model.id,
         ):
+            # The cached pages are now exactly the ones this run read or reused.
+            await _prune_vision_pages(db, job.doc_id, vision_keys)
+            await db.commit()
             return
         # No longer processing: either re-queued (it stays pending; record where its vectors now live so the
         # next run replaces them) or deleted (drop the vectors just written).
@@ -237,7 +285,7 @@ async def _finish(job: _Job, model: LLMModel, usage: llm.Usage, num_chunks: int,
             await _discard_points(job.doc_id, {vectorstore.collection_name(model.id)})
 
 
-async def _fail(job: _Job, model: LLMModel, usage: llm.Usage | None, error: str) -> None:
+async def _fail(job: _Job, model: LLMModel, usage: _Usage | None, error: str) -> None:
     await _discard_points(job.doc_id, _collections(job, model))
     async with SessionLocal() as db:
         if usage is not None:
@@ -245,10 +293,10 @@ async def _fail(job: _Job, model: LLMModel, usage: llm.Usage | None, error: str)
         await _update_document(db, job.doc_id, ("processing",), status="failed", error=error)
 
 
-async def _retry_later(job: _Job, model: LLMModel, usage: llm.Usage | None) -> None:
-    """The embedding model was edited or deleted during the run: drop what was written and queue the document
-    again, so it is embedded with the model that is active now."""
-    logger.info("The embedding model changed while document %s was processed; queuing it again", job.doc_id)
+async def _retry_later(job: _Job, model: LLMModel, usage: _Usage | None) -> None:
+    """The embedding or vision model was edited, deleted or (vision) turned off during the run: drop what was
+    written and queue the document again, so it is processed with the models that are active now."""
+    logger.info("The embedding or vision model changed while document %s was processed; queuing it again", job.doc_id)
     collection = vectorstore.collection_name(model.id)
     await _discard_points(job.doc_id, {collection})
     async with SessionLocal() as db:
@@ -309,6 +357,8 @@ async def _claim(doc_id: int) -> tuple[_Job, LLMModel] | None:
         if model is None:
             await _update_document(db, doc_id, _RUNNABLE, status="failed", error=NO_EMBEDDING_MODEL)
             return None
+        vision_model = await get_active_vision_model(db) if _is_pdf(doc.stored_name) else None
+        vision_blocked = await _vision_allowance(db, doc) if vision_model is not None else None
         if not await _update_document(db, doc_id, _RUNNABLE, status="processing", error=None):
             return None
         job = _Job(
@@ -319,9 +369,31 @@ async def _claim(doc_id: int) -> tuple[_Job, LLMModel] | None:
             stored_name=doc.stored_name,
             previous_model_id=doc.embedding_model_id,
             model_target=(model.litellm_model, model.api_base),
+            vision_model=vision_model,
+            vision_target=(vision_model.litellm_model, vision_model.api_base) if vision_model is not None else None,
+            vision_blocked=vision_blocked,
         )
     await _count_attempt(doc_id)
     return job, model
+
+
+def _is_pdf(stored_name: str) -> bool:
+    return stored_name.lower().endswith(".pdf")
+
+
+async def _vision_allowance(db: AsyncSession, doc: Document) -> str | None:
+    """The error for scanned pages when the owner has used up VISION_MONTHLY_TOKEN_LIMIT this month, else None.
+    Checked when the run starts, like the chat budget; the admin (and so the shared documents) is exempt."""
+    limit = settings.vision_monthly_token_limit
+    if limit <= 0 or doc.owner.is_admin:
+        return None
+    used = await vision_tokens_this_month(db, doc.owner_id)
+    if used < limit:
+        return None
+    return (
+        f"This PDF has scanned pages, but your monthly allowance for the vision model is used up ({used:,} of "
+        f"{limit:,} tokens). Ask the admin to raise VISION_MONTHLY_TOKEN_LIMIT, or try again next month."
+    )
 
 
 async def _count_attempt(doc_id: int) -> None:
@@ -336,8 +408,11 @@ async def _count_attempt(doc_id: int) -> None:
         logger.warning("Could not count the ingestion attempt of document %s: %s", doc_id, exc)
 
 
-async def _update_document(db: AsyncSession, doc_id: int, statuses: Collection[str] | None, **values: Any) -> bool:
-    """Update the row only while its status is one of `statuses` (any status if None). False if no row matched."""
+async def _update_document(
+    db: AsyncSession, doc_id: int, statuses: Collection[str] | None, *, commit: bool = True, **values: Any
+) -> bool:
+    """Update the row only while its status is one of `statuses` (any status if None). False if no row matched.
+    With commit=False the caller commits (or rolls back)."""
     statement = update(Document).where(Document.id == doc_id)
     if statuses is not None:
         statement = statement.where(Document.status.in_(statuses))
@@ -345,19 +420,46 @@ async def _update_document(db: AsyncSession, doc_id: int, statuses: Collection[s
         statement.values(**values).returning(Document.id).execution_options(synchronize_session=False)
     )
     updated = result.first() is not None
-    await db.commit()
+    if commit or not updated:
+        await db.commit()
     return updated
 
 
-async def _index(job: _Job, model: LLMModel, usage: llm.Usage) -> tuple[int, int | None]:
-    chunks, num_pages = await asyncio.to_thread(_parse_and_chunk, job.stored_name)
+async def _prune_vision_pages(db: AsyncSession, doc_id: int, used: set[tuple[int, str]]) -> None:
+    for mode in ("transcribe", "describe"):
+        pages = sorted(page for page, used_mode in used if used_mode == mode)
+        await db.execute(
+            delete(VisionPage).where(
+                VisionPage.document_id == doc_id, VisionPage.mode == mode, VisionPage.page.not_in(pages)
+            )
+        )
+
+
+async def _index(job: _Job, model: LLMModel, usage: _Usage) -> tuple[int, int | None, set[tuple[int, str]]]:
+    """Returns the chunk count, the page count and the (page, mode) cache keys the run read or reused."""
+    vision_keys: set[tuple[int, str]] = set()
+    if job.vision_model is not None and _is_pdf(job.stored_name):
+        fingerprint = vision.fingerprint(job.vision_model)
+        cache = await vision.load_cache(job.doc_id, fingerprint)
+        with tempfile.TemporaryDirectory(prefix="rag-vision-", ignore_cleanup_errors=True) as tmp:
+            request = VisionRequest(Path(tmp), frozenset(cache), job.vision_blocked)
+            parsed = await asyncio.to_thread(_parse, job.stored_name, request)
+            usage.parsed = True
+            segments = parsed.segments
+            if parsed.page_images:
+                segments = await _read_with_vision(job, parsed, fingerprint, cache, usage, vision_keys)
+    else:
+        parsed = await asyncio.to_thread(_parse, job.stored_name, None)
+        usage.parsed = True
+        segments = parsed.segments
+    chunks = await asyncio.to_thread(_chunk, segments)
     collection = vectorstore.collection_name(model.id)
     batch_size = max(1, settings.embed_batch_size)
     for start in range(0, len(chunks), batch_size):
         batch = chunks[start : start + batch_size]
         result = await llm.embed_texts(model, [chunk.text for chunk in batch])
-        usage.prompt_tokens += result.usage.prompt_tokens
-        usage.cost_usd += result.usage.cost_usd
+        usage.embedding.prompt_tokens += result.usage.prompt_tokens
+        usage.embedding.cost_usd += result.usage.cost_usd
         if start == 0:
             await _prepare_collection(job, model, collection, len(result.vectors[0]))
         await vectorstore.upsert_chunks(
@@ -376,22 +478,91 @@ async def _index(job: _Job, model: LLMModel, usage: llm.Usage) -> tuple[int, int
                 for chunk, vector in zip(batch, result.vectors, strict=True)
             ],
         )
-    return len(chunks), num_pages
+    return len(chunks), parsed.num_pages, vision_keys
 
 
-def _parse_and_chunk(stored_name: str) -> tuple[list[Chunk], int | None]:
+async def _read_with_vision(
+    job: _Job,
+    parsed: ParsedDocument,
+    fingerprint: str,
+    cache: dict[tuple[int, str], str],
+    usage: _Usage,
+    used: set[tuple[int, str]],
+) -> list[Segment]:
+    assert job.vision_model is not None
+    async with _vision_phase():
+        run = vision.VisionRun(
+            doc_id=job.doc_id,
+            model=job.vision_model,
+            fingerprint=fingerprint,
+            cached=cache,
+            usage=usage.vision,
+            checkpoint=lambda: _vision_checkpoint(job),
+            deadline=time.monotonic() + settings.vision_timeout_seconds,
+            used=used,
+        )
+        return await vision.read_pages(run, parsed, job.filename)
+
+
+@asynccontextmanager
+async def _vision_phase() -> AsyncIterator[None]:
+    """At most WORKER_CONCURRENCY documents read pages at once; while a job does, it doesn't hold a worker slot."""
+    loop = asyncio.get_running_loop()
+    size = max(1, settings.worker_concurrency)
+    current = _vision_phase_limits.get(loop)
+    if current is None or current[0] != size:
+        current = (size, asyncio.Semaphore(size))
+        _vision_phase_limits[loop] = current
+    async with current[1]:
+        listener = _vision_phase_listener
+        if listener is not None:
+            listener(True)
+        try:
+            yield
+        finally:
+            if listener is not None:
+                listener(False)
+
+
+async def _vision_checkpoint(job: _Job) -> None:
+    """Before each uncached vision call: Stopped if the document was deleted or queued again, ModelChanged if the
+    vision model is no longer the active one as it was. A database error is logged and the run goes on."""
+    assert job.vision_model is not None
+    try:
+        async with SessionLocal() as db:
+            status = await db.scalar(select(Document.status).where(Document.id == job.doc_id))
+            model = (
+                await db.execute(
+                    select(
+                        LLMModel.kind, LLMModel.enabled, LLMModel.is_default, LLMModel.litellm_model, LLMModel.api_base
+                    ).where(LLMModel.id == job.vision_model.id)
+                )
+            ).first()
+    except Exception as exc:
+        logger.warning("Could not check document %s before a vision call: %s", job.doc_id, exc)
+        return
+    if status != "processing":
+        raise vision.Stopped
+    if model is None or (tuple(model[:3]), tuple(model[3:])) != (("vision", True, True), job.vision_target):
+        raise vision.ModelChanged
+
+
+def _parse(stored_name: str, request: VisionRequest | None) -> ParsedDocument:
     path = storage.stored_path(stored_name)
     try:
-        parsed = parse_file(path, path.suffix)
+        return parse_file(path, path.suffix, request)
     except FileNotFoundError as exc:
         raise _IngestionError(_MISSING_FILE) from exc
     except OSError as exc:
         logger.warning("Could not read %s: %r", stored_name, exc)
         raise _IngestionError("The uploaded file could not be read.") from exc
-    chunks = chunk_segments(parsed.segments, settings.chunk_size, settings.chunk_overlap)
+
+
+def _chunk(segments: Sequence[Segment]) -> list[Chunk]:
+    chunks = chunk_segments(list(segments), settings.chunk_size, settings.chunk_overlap)
     if not chunks:
         raise DocumentParseError("The document contains no text.")
-    return chunks, parsed.num_pages
+    return chunks
 
 
 async def _prepare_collection(job: _Job, model: LLMModel, collection: str, dim: int) -> None:
@@ -438,32 +609,51 @@ async def _discard_points(doc_id: int, collections: set[str]) -> None:
             logger.exception("Could not delete vectors of document %s from %s", doc_id, name)
 
 
-async def _record_usage(db: AsyncSession, job: _Job, model: LLMModel, usage: llm.Usage) -> None:
-    """One embedding usage event for everything embedded, even when a later batch failed. A model deleted
-    meanwhile is recorded by name."""
-    if not usage.prompt_tokens or await db.get(User, job.owner_id) is None:
+async def _record_usage(db: AsyncSession, job: _Job, model: LLMModel, usage: _Usage) -> None:
+    """One embedding event for everything embedded, even when a later batch failed, and one vision event for every
+    finished vision call, committed together. A model deleted meanwhile is recorded by name."""
+    events: list[tuple[str, LLMModel, llm.Usage]] = []
+    if usage.embedding.prompt_tokens:
+        events.append(("embedding", model, usage.embedding))
+    if usage.vision.total_tokens and job.vision_model is not None:
+        events.append(("vision", job.vision_model, usage.vision))
+    if not events:
         return
     try:
-        exists = await db.scalar(select(LLMModel.id).where(LLMModel.id == model.id)) is not None
-        await record_usage(
-            db,
-            user_id=job.owner_id,
-            model=model if exists else None,
-            model_name=model.litellm_model,
-            kind="embedding",
-            usage=usage,
-        )
+        if await db.get(User, job.owner_id) is None:  # the owner's usage rows are gone with them
+            for kind, event_model, event_usage in events:
+                logger.warning(
+                    "The owner of document %s was deleted, so its %s usage isn't recorded: %s, %d tokens, $%.6f",
+                    job.doc_id,
+                    kind,
+                    event_model.litellm_model,
+                    event_usage.total_tokens,
+                    event_usage.cost_usd,
+                )
+            return
+        for kind, event_model, event_usage in events:
+            exists = await db.scalar(select(LLMModel.id).where(LLMModel.id == event_model.id)) is not None
+            await record_usage(
+                db,
+                user_id=job.owner_id,
+                model=event_model if exists else None,
+                model_name=event_model.litellm_model,
+                kind=kind,
+                usage=event_usage,
+                commit=False,
+            )
+        await db.commit()
     except Exception:
-        logger.exception("Could not record embedding usage for document %s", job.doc_id)
+        logger.exception("Could not record the usage of document %s", job.doc_id)
         await db.rollback()
 
 
-async def _record_usage_in_new_session(job: _Job, model: LLMModel, usage: llm.Usage) -> None:
+async def _record_usage_in_new_session(job: _Job, model: LLMModel, usage: _Usage) -> None:
     try:
         async with SessionLocal() as db:
             await _record_usage(db, job, model, usage)
     except Exception:
-        logger.exception("Could not record embedding usage for document %s", job.doc_id)
+        logger.exception("Could not record the usage of document %s", job.doc_id)
 
 
 def _failure_message(doc_id: int, exc: Exception) -> str:

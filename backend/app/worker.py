@@ -11,7 +11,13 @@ from app.config import settings
 from app.db import close_db, init_db
 from app.redis_client import INGEST_QUEUE, close_redis, get_redis
 from app.schemas import MAX_INT
-from app.services.ingestion import process_document, reclaim_interrupted, recover_pending, requeue_orphans
+from app.services.ingestion import (
+    process_document,
+    reclaim_interrupted,
+    recover_pending,
+    requeue_orphans,
+    set_vision_phase_listener,
+)
 from app.services.vectorstore import close_qdrant
 
 logger = logging.getLogger("app.worker")
@@ -33,12 +39,14 @@ class Worker:
     A job is popped only when a slot is free, so stopping never strands a popped id: running jobs get a
     grace period, and anything still unfinished stays "processing" until recover_pending() on the next start.
     A job that ends without recording a result (e.g. the database failed its final update) leaves its document
-    "processing" too; the periodic sweep retries it.
+    "processing" too; the periodic sweep retries it. A job reading pages with the vision model (network waits) gives
+    its slot back until it leaves that phase.
     """
 
     def __init__(self, concurrency: int) -> None:
         self._concurrency = max(1, concurrency)
         self._tasks: dict[asyncio.Task[None], int] = {}  # running job -> document id
+        self._reading: set[asyncio.Task[None]] = set()  # running jobs in the vision phase
         self._stopping = asyncio.Event()
         self._slot_freed = asyncio.Event()
 
@@ -51,8 +59,26 @@ class Worker:
     async def run(self) -> None:
         if not await self._init_db() or not await self._recover():
             return
-        await self._consume()
-        await self._drain()
+        set_vision_phase_listener(self._vision_phase_changed)
+        try:
+            await self._consume()
+            await self._drain()
+        finally:
+            set_vision_phase_listener(None)
+
+    def _vision_phase_changed(self, entering: bool) -> None:
+        """Called from inside a job's task when it enters or leaves the vision phase."""
+        task = asyncio.current_task()
+        if task is None or task not in self._tasks:
+            return
+        if entering:
+            self._reading.add(task)
+        else:
+            self._reading.discard(task)
+        self._slot_freed.set()
+
+    def _has_free_slot(self) -> bool:
+        return len(self._tasks) - len(self._reading) < self._concurrency
 
     async def _pause(self, seconds: float) -> None:
         """Sleep, waking early on shutdown."""
@@ -98,7 +124,7 @@ class Worker:
         delay = 1.0
         next_sweep = loop.time() + _SWEEP_SECONDS
         while not self._stopping.is_set():
-            if len(self._tasks) >= self._concurrency:
+            if not self._has_free_slot():
                 self._slot_freed.clear()
                 await self._slot_freed.wait()
                 continue
@@ -146,6 +172,7 @@ class Worker:
 
     def _finished(self, task: asyncio.Task[None]) -> None:
         self._tasks.pop(task, None)
+        self._reading.discard(task)
         self._slot_freed.set()
 
     async def _process(self, doc_id: int) -> None:

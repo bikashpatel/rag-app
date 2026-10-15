@@ -173,13 +173,16 @@
   line-height: 1.2;
   color: var(--text);
 }
+/* Model names wrap to a second line before they are cut, so the active models stay recognizable in narrow tiles. */
 .admin-tile-text {
-  display: block;
+  display: -webkit-box;
   overflow: hidden;
   font-size: 15px;
-  line-height: 26px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 20px;
+  overflow-wrap: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 .admin-tile-detail {
   margin: 0;
@@ -403,6 +406,11 @@
 }
 .admin-card-header {
   padding: var(--space-4);
+}
+/* A heading block with a long subtitle wraps beside the header's buttons instead of pushing them to a new line. */
+.admin-card-heading {
+  flex: 1 1 20rem;
+  min-width: 0;
 }
 .admin-card-title {
   font-size: 15px;

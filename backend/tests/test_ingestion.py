@@ -295,14 +295,14 @@ async def test_duplicate_queue_entries_are_harmless(alice: ApiClient, fake_llm: 
 @pytest.mark.parametrize(
     ("filename", "data", "error"),
     [
-        ("scan.pdf", pdf_bytes(""), "No extractable text (scanned PDFs need OCR, which isn't supported yet)."),
+        ("scan.pdf", pdf_bytes(""), "No extractable text: this PDF has neither a text layer nor page images to read."),
         ("locked.pdf", encrypted_pdf("Top secret figures."), "Password-protected PDFs aren't supported."),
         ("blank.txt", b"  \n\n\t ", "The document contains no text."),
         ("empty.html", b"<html><script>var x = 1;</script></html>", "The document contains no text."),
         ("broken.docx", b"not a zip archive", "The file is corrupted or not a valid .docx file."),
         ("broken.pdf", b"%PDF-1.4 truncated", "The file is corrupted or not a valid .pdf file."),
     ],
-    ids=["scanned-pdf", "encrypted-pdf", "blank-text", "empty-html", "corrupt-docx", "corrupt-pdf"],
+    ids=["pdf-without-text", "encrypted-pdf", "blank-text", "empty-html", "corrupt-docx", "corrupt-pdf"],
 )
 async def test_unreadable_documents_fail_with_a_friendly_message(
     alice: ApiClient, fake_llm: FakeLLM, filename: str, data: bytes, error: str
@@ -540,7 +540,8 @@ async def test_a_cancelled_run_records_what_it_embedded_and_stays_processing(
     async with SessionLocal() as session:
         document = await session.get(Document, doc_id)
     assert document is not None and document.status == "processing"  # retried on the next start
-    assert await get_redis().get(ingest_attempts_key(doc_id)) == "1"
+    # A graceful stop after the parse isn't a crash: it doesn't count toward MAX_INTERRUPTED_RUNS.
+    assert await get_redis().exists(ingest_attempts_key(doc_id)) == 0
 
 
 async def test_a_finished_run_is_not_counted_as_interrupted(alice: ApiClient) -> None:

@@ -5,10 +5,11 @@ import os
 from dataclasses import dataclass
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import LLMModel, User
+from app.models import AppState, LLMModel, User
 from app.security import hash_password, verify_password
 
 logger = logging.getLogger(__name__)
@@ -27,11 +28,13 @@ class _SeedModel:
 
 
 _OPUS = "anthropic/claude-opus-5-5"
+_SONNET = "anthropic/claude-sonnet-5-5"
 _GPT_MINI = "openai/gpt-5.4-mini"
+_VISION_SEEDED = "vision_seeded"  # app_state key: the vision model was seeded (or one existed) once
 
 _SEED_MODELS = (
     _SeedModel("Claude Opus 5.5", _OPUS, "chat", "ANTHROPIC_API_KEY", 4.0, 20.0),
-    _SeedModel("Claude Sonnet 5.5", "anthropic/claude-sonnet-5-5", "chat", "ANTHROPIC_API_KEY", 2.0, 10.0),
+    _SeedModel("Claude Sonnet 5.5", _SONNET, "chat", "ANTHROPIC_API_KEY", 2.0, 10.0),
     _SeedModel("Claude Haiku 5.5", "anthropic/claude-haiku-5-5", "chat", "ANTHROPIC_API_KEY", 0.10, 0.50),
     _SeedModel("GPT-5.5", "openai/gpt-5.5", "chat", "OPENAI_API_KEY"),
     _SeedModel("GPT-5.4 mini", _GPT_MINI, "chat", "OPENAI_API_KEY"),
@@ -103,8 +106,46 @@ async def _seed_models(db: AsyncSession) -> None:
     logger.info("Seeded %d models", len(_SEED_MODELS))
 
 
+async def _seed_vision_model(db: AsyncSession) -> None:
+    """Add the default vision model once per database (an existing one gets it on its next start), unless a vision
+    model exists. Recorded in app_state, so a vision model the admin deletes isn't added again."""
+    if await db.get(AppState, _VISION_SEEDED) is not None:
+        return
+    seeded = "existing"
+    if await db.scalar(select(LLMModel.id).where(LLMModel.kind == "vision").limit(1)) is None:
+        if _has_key("OPENAI_API_KEY") and not _has_key("ANTHROPIC_API_KEY"):
+            # LiteLLM's model map prices it and lists it as reading images.
+            model = LLMModel(
+                display_name="GPT-5.4 mini (vision)",
+                litellm_model=_GPT_MINI,
+                kind="vision",
+                enabled=True,
+                is_default=True,
+            )
+        else:
+            model = LLMModel(
+                display_name="Claude Sonnet 5.5 (vision)",
+                litellm_model=_SONNET,
+                kind="vision",
+                enabled=_has_key("ANTHROPIC_API_KEY"),
+                is_default=True,
+                input_cost_per_mtok=2.0,
+                output_cost_per_mtok=10.0,
+            )
+        db.add(model)
+        seeded = model.litellm_model
+        logger.info("Seeded the vision model %r", model.display_name)
+    db.add(AppState(key=_VISION_SEEDED, value=seeded))
+    try:
+        await db.commit()
+    except IntegrityError:  # another backend starting at the same time seeded it first
+        await db.rollback()
+        logger.info("The vision model was seeded by another process")
+
+
 async def bootstrap(db: AsyncSession) -> None:
     """Idempotent; runs on every backend start."""
     await _sync_admin(db)
     await _seed_models(db)
     await db.commit()
+    await _seed_vision_model(db)

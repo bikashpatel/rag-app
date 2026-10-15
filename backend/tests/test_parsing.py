@@ -29,7 +29,9 @@ from app.services.parsing import (
     parse_file,
 )
 
-NO_PDF_TEXT = "No extractable text (scanned PDFs need OCR, which isn't supported yet)."
+NO_PDF_TEXT = (
+    "No extractable text: this PDF looks scanned or image-only. Ask the admin to enable a vision model to read it."
+)
 NO_TEXT = "The document contains no text."
 TOO_COMPLEX = "The file is too large or complex to process."
 UNSUPPORTED_ENCRYPTION = "This PDF uses encryption that isn't supported. Save an unencrypted copy and upload it again."
@@ -141,7 +143,7 @@ def test_pdf_has_one_segment_per_page_and_skips_blank_pages(write: WriteFile) ->
     )
 
 
-def test_scanned_pdf_without_a_text_layer_needs_ocr(write: WriteFile) -> None:
+def test_scanned_pdf_without_a_text_layer_needs_a_vision_model(write: WriteFile) -> None:
     assert parse_error(write, "scan.pdf", pdf_bytes("", "")) == NO_PDF_TEXT
 
 

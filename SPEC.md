@@ -472,7 +472,9 @@ Endpoints:
    document goes back to `pending` and is queued again). The first failed call
    on a scanned page stops new calls and fails the document ("Page N couldn't
    be read with the vision model: <reason>"); a failed description is skipped
-   with a logged warning. A document in this phase doesn't hold a
+   with a logged warning, but a fatal error on one (rejected key, unknown model,
+   no image received) also stops new calls, and scanned pages not read yet fail
+   the document with that reason. A document in this phase doesn't hold a
    `WORKER_CONCURRENCY` slot (at most `WORKER_CONCURRENCY` documents are in it
    at once).
    *Cost*: vision tokens are one `vision` usage event per run for the owner,

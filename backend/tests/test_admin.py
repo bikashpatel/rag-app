@@ -46,6 +46,7 @@ GPT = "GPT-5.5"
 GPT_MINI = "GPT-5.4 mini"
 SMALL = "OpenAI text-embedding-3-small"
 LARGE = "OpenAI text-embedding-3-large"
+SONNET_VISION = "Claude Sonnet 5.5 (vision)"
 
 ACTIVE_EMBEDDING = "This is the active embedding model. Make another embedding model the default first."
 ENV_ADMIN = "The admin account is managed in .env"
@@ -83,6 +84,7 @@ DOCUMENT_ITEM_KEYS = {
     "owner_username",
     "can_delete",
     "is_stale",
+    "vision_pages",
     "created_at",
     "updated_at",
 }
@@ -353,7 +355,7 @@ async def test_create_user_applies_the_defaults(admin_client: ApiClient, new_cli
         "restrict_models": False,
         "allowed_model_ids": [],
         "last_login_at": None,
-        "usage": {"chat_tokens": 0, "embedding_tokens": 0, "cost_usd": 0.0},
+        "usage": {"chat_tokens": 0, "embedding_tokens": 0, "vision_tokens": 0, "cost_usd": 0.0},
         "document_count": 0,
         "storage_bytes": 0,
     }
@@ -865,6 +867,16 @@ async def test_list_users_reports_this_months_usage_and_documents(
             cost_usd=3.0,
             created_at=last_month,
         ),
+        UsageEvent(
+            user_id=carol.user_id,
+            model_name="anthropic/claude-sonnet-5-5",
+            kind="vision",
+            prompt_tokens=2500,
+            completion_tokens=500,
+            total_tokens=3000,
+            cost_usd=0.01,
+            created_at=now,
+        ),
     )
 
     listing = await admin_client.get("/api/admin/users")
@@ -875,15 +887,26 @@ async def test_list_users_reports_this_months_usage_and_documents(
     assert users["alice"]["usage"] == {
         "chat_tokens": 47 + 1200,
         "embedding_tokens": alice_embedding_tokens,
+        "vision_tokens": 0,
         "cost_usd": pytest.approx(0.5 + chat_cost + alice_embedding_tokens / 1_000_000, abs=1e-6),
     }
     assert users["alice"]["document_count"] == 2
     assert users["alice"]["storage_bytes"] == sum(len(data) for data in files.values())
-    assert users["bob"]["usage"] == {"chat_tokens": 0, "embedding_tokens": 70, "cost_usd": 0.25}
+    assert users["bob"]["usage"] == {"chat_tokens": 0, "embedding_tokens": 70, "vision_tokens": 0, "cost_usd": 0.25}
     assert (users["bob"]["document_count"], users["bob"]["storage_bytes"]) == (0, 0)
-    assert users["carol"]["usage"] == {"chat_tokens": 0, "embedding_tokens": 0, "cost_usd": 0.0}
+    assert users["carol"]["usage"] == {
+        "chat_tokens": 0,
+        "embedding_tokens": 0,
+        "vision_tokens": 3000,
+        "cost_usd": 0.01,
+    }
     assert (users["carol"]["document_count"], users["carol"]["storage_bytes"]) == (0, 0)
-    assert users[ADMIN_USERNAME]["usage"] == {"chat_tokens": 0, "embedding_tokens": 0, "cost_usd": 0.0}
+    assert users[ADMIN_USERNAME]["usage"] == {
+        "chat_tokens": 0,
+        "embedding_tokens": 0,
+        "vision_tokens": 0,
+        "cost_usd": 0.0,
+    }
     assert {user["id"] for user in users.values()} == {
         admin_client.user_id,
         alice.user_id,
@@ -921,7 +944,8 @@ async def test_list_models_returns_every_model_by_kind_and_name(
 
     assert response.status_code == 200
     models = response.json()
-    assert [model["display_name"] for model in models] == [HAIKU, OPUS, SONNET, GPT_MINI, GPT, LARGE, SMALL]
+    by_kind_and_name = [HAIKU, OPUS, SONNET, GPT_MINI, GPT, LARGE, SMALL, SONNET_VISION]
+    assert [model["display_name"] for model in models] == by_kind_and_name
     opus = next(model for model in models if model["display_name"] == OPUS)
     assert opus == {
         "id": model_ids[OPUS],
@@ -949,6 +973,7 @@ async def test_list_models_returns_every_model_by_kind_and_name(
         GPT: ("chat", True, False),
         LARGE: ("embedding", False, False),
         SMALL: ("embedding", True, True),
+        SONNET_VISION: ("vision", True, True),
     }
 
 
@@ -1157,7 +1182,7 @@ async def test_making_a_model_the_default_clears_the_previous_default(
     assert response.status_code == 200
     assert response.json()["is_default"] is True
     models = (await admin_client.get("/api/admin/models")).json()
-    assert [model["display_name"] for model in models if model["is_default"]] == [SONNET, SMALL]
+    assert [model["display_name"] for model in models if model["is_default"]] == [SONNET, SMALL, SONNET_VISION]
 
     created = await admin_client.post(
         "/api/admin/models",
@@ -1166,7 +1191,7 @@ async def test_making_a_model_the_default_clears_the_previous_default(
 
     assert created.status_code == 201
     models = (await admin_client.get("/api/admin/models")).json()
-    assert [model["display_name"] for model in models if model["is_default"]] == ["House model", SMALL]
+    assert [model["display_name"] for model in models if model["is_default"]] == ["House model", SMALL, SONNET_VISION]
     listed = (await admin_client.get("/api/models")).json()
     assert listed[0] == {
         "id": created.json()["id"],
@@ -1237,7 +1262,7 @@ async def test_enabling_and_defaulting_in_one_request(admin_client: ApiClient, m
 
     assert chat_model.status_code == 200 and embedding.status_code == 200
     models = (await admin_client.get("/api/admin/models")).json()
-    assert [model["display_name"] for model in models if model["is_default"]] == [GPT, LARGE]
+    assert [model["display_name"] for model in models if model["is_default"]] == [GPT, LARGE, SONNET_VISION]
     assert (await stats(admin_client))["active_embedding_model"] == {"id": model_ids[LARGE], "display_name": LARGE}
 
 
@@ -1315,6 +1340,7 @@ async def test_deleting_an_unused_embedding_model(admin_client: ApiClient, model
         GPT_MINI,
         GPT,
         SMALL,
+        SONNET_VISION,
     ]
 
 
@@ -1558,6 +1584,7 @@ async def test_stats_on_a_fresh_install(admin_client: ApiClient, model_ids: dict
         "stale_documents": 0,
         "failed_documents": 0,
         "active_embedding_model": {"id": model_ids[SMALL], "display_name": SMALL},
+        "active_vision_model": {"id": model_ids[SONNET_VISION], "display_name": SONNET_VISION},
         "queue_length": 0,
     }
 
@@ -1583,6 +1610,7 @@ async def test_stats_count_documents_by_state_and_the_queue(
         "stale_documents": 0,
         "failed_documents": 1,
         "active_embedding_model": {"id": model_ids[SMALL], "display_name": SMALL},
+        "active_vision_model": {"id": model_ids[SONNET_VISION], "display_name": SONNET_VISION},
         "queue_length": 1,
     }
     assert after_switch == {
@@ -1724,6 +1752,7 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
     alice = await create_user("alice", login=False)
     bob = await create_user("bob", login=False)
     opus, haiku, small = "anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5", "openai/text-embedding-3-small"
+    sonnet = "anthropic/claude-sonnet-5-5"
 
     def event(
         user: ApiClient, model: str, kind: str, prompt: int, completion: int, cost: float, at: datetime
@@ -1745,6 +1774,7 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
         event(alice, small, "embedding", 300, 0, 0.000006, _utc(2026, 3, 15, 8)),
         event(bob, haiku, "chat", 1000, 500, 0.00035, _utc(2026, 3, 31, 23, 59, 59, 999999)),
         event(bob, small, "embedding", 40, 0, 0.0000008, _utc(2026, 3, 31, 10)),
+        event(bob, sonnet, "vision", 2000, 400, 0.008, _utc(2026, 3, 15, 9)),
         event(alice, opus, "chat", 9999, 1, 5.0, _utc(2026, 2, 28, 23, 59, 59)),
         event(bob, haiku, "chat", 7777, 3, 5.0, _utc(2026, 4, 1)),
     )
@@ -1754,14 +1784,21 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
     assert response.status_code == 200
     assert response.json() == {
         "month": "2026-03",
-        "totals": {"chat_tokens": 1870, "embedding_tokens": 340, "cost_usd": 0.002957, "requests": 3},
+        "totals": {
+            "chat_tokens": 1870,
+            "embedding_tokens": 340,
+            "vision_tokens": 2400,
+            "cost_usd": 0.010957,
+            "requests": 3,
+        },
         "by_user": [
             {
                 "user_id": bob.user_id,
                 "username": "bob",
                 "chat_tokens": 1500,
                 "embedding_tokens": 40,
-                "cost_usd": 0.000351,
+                "vision_tokens": 2400,
+                "cost_usd": 0.008351,
                 "requests": 1,
             },
             {
@@ -1769,6 +1806,7 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
                 "username": "alice",
                 "chat_tokens": 370,
                 "embedding_tokens": 300,
+                "vision_tokens": 0,
                 "cost_usd": 0.002606,
                 "requests": 2,
             },
@@ -1798,11 +1836,31 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
                 "cost_usd": 0.000007,
                 "requests": 2,
             },
+            {
+                "model_name": sonnet,
+                "kind": "vision",
+                "prompt_tokens": 2000,
+                "completion_tokens": 400,
+                "cost_usd": 0.008,
+                "requests": 1,
+            },
         ],
         "daily": [
-            {"date": "2026-03-01", "chat_tokens": 120, "embedding_tokens": 0, "cost_usd": 0.0008},
-            {"date": "2026-03-15", "chat_tokens": 250, "embedding_tokens": 300, "cost_usd": 0.001806},
-            {"date": "2026-03-31", "chat_tokens": 1500, "embedding_tokens": 40, "cost_usd": 0.000351},
+            {"date": "2026-03-01", "chat_tokens": 120, "embedding_tokens": 0, "vision_tokens": 0, "cost_usd": 0.0008},
+            {
+                "date": "2026-03-15",
+                "chat_tokens": 250,
+                "embedding_tokens": 300,
+                "vision_tokens": 2400,
+                "cost_usd": 0.009806,
+            },
+            {
+                "date": "2026-03-31",
+                "chat_tokens": 1500,
+                "embedding_tokens": 40,
+                "vision_tokens": 0,
+                "cost_usd": 0.000351,
+            },
         ],
     }
 
@@ -1849,7 +1907,7 @@ async def test_usage_report_for_a_month_without_usage(admin_client: ApiClient) -
     assert response.status_code == 200
     assert response.json() == {
         "month": "1999-12",
-        "totals": {"chat_tokens": 0, "embedding_tokens": 0, "cost_usd": 0.0, "requests": 0},
+        "totals": {"chat_tokens": 0, "embedding_tokens": 0, "vision_tokens": 0, "cost_usd": 0.0, "requests": 0},
         "by_user": [],
         "by_model": [],
         "daily": [],
@@ -1890,7 +1948,7 @@ async def test_admin_lists_every_document_newest_first(
         ("bob", "private", "ready", True),
         ("alice", "private", "ready", True),
     ]
-    assert documents[0]["error"] == "No extractable text (scanned PDFs need OCR, which isn't supported yet)."
+    assert documents[0]["error"] == "No extractable text: this PDF has neither a text layer nor page images to read."
     assert documents[2] == {**bob_doc, "is_stale": True, "can_delete": True}
 
 

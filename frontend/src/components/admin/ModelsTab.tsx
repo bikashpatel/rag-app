@@ -81,7 +81,6 @@ export default function ModelsTab({ onChanged }: { onChanged: () => void }) {
   const [toggling, setToggling] = useState<ReadonlySet<number>>(new Set());
 
   const flashes: Record<ModelKind, Flash> = { chat: chatFlash, embedding: embeddingFlash, vision: visionFlash };
-  const flashFor = (kind: ModelKind): Flash => flashes[kind];
   const replace = (saved: AdminModel) => models.setData((list) => list && applySaved(list, saved));
   const patchLocal = (id: number, patch: Partial<AdminModel>) =>
     models.setData((list) => list && list.map((model) => (model.id === id ? { ...model, ...patch } : model)));
@@ -94,7 +93,7 @@ export default function ModelsTab({ onChanged }: { onChanged: () => void }) {
       patchLocal(model.id, { enabled });
       try {
         replace(await api.patch<AdminModel>(`/admin/models/${model.id}`, { enabled } satisfies AdminModelUpdate));
-        flashFor(model.kind).success(
+        flashes[model.kind].success(
           model.kind === "vision" && model.is_default && !enabled
             ? `${model.display_name} disabled. Scanned PDFs can't be read until a vision model is active.`
             : `${model.display_name} ${enabled ? "enabled" : "disabled"}.`,
@@ -102,7 +101,7 @@ export default function ModelsTab({ onChanged }: { onChanged: () => void }) {
         if (model.kind === "vision" || (model.kind === "embedding" && model.is_default)) onChanged();
       } catch (err) {
         patchLocal(model.id, { enabled: model.enabled });
-        flashFor(model.kind).error(
+        flashes[model.kind].error(
           errorMessage(err, `Couldn't ${enabled ? "enable" : "disable"} ${model.display_name}.`),
         );
       } finally {
@@ -117,10 +116,10 @@ export default function ModelsTab({ onChanged }: { onChanged: () => void }) {
     makeDefault: async (model) => {
       replace(await api.patch<AdminModel>(`/admin/models/${model.id}`, { is_default: true } satisfies AdminModelUpdate));
       if (model.kind === "chat") {
-        flashFor(model.kind).success(`${model.display_name} is now the default chat model.`);
+        flashes[model.kind].success(`${model.display_name} is now the default chat model.`);
         return;
       }
-      flashFor(model.kind).success(
+      flashes[model.kind].success(
         model.kind === "embedding"
           ? `${model.display_name} is now the active embedding model. Re-index documents so search can find them.`
           : `${model.display_name} is now the active vision model. New PDF uploads use it for scanned pages and images.`,
@@ -131,7 +130,7 @@ export default function ModelsTab({ onChanged }: { onChanged: () => void }) {
     remove: async (model) => {
       await deleteResource(`/admin/models/${model.id}`);
       models.setData((list) => list && list.filter((m) => m.id !== model.id));
-      flashFor(model.kind).success(`Deleted ${model.display_name}.`);
+      flashes[model.kind].success(`Deleted ${model.display_name}.`);
       onChanged();
     },
 
@@ -143,7 +142,7 @@ export default function ModelsTab({ onChanged }: { onChanged: () => void }) {
   function handleSaved(saved: AdminModel, created: boolean) {
     setEditing(null);
     replace(saved);
-    flashFor(saved.kind).success(created ? `Added ${saved.display_name}.` : `Saved changes to ${saved.display_name}.`);
+    flashes[saved.kind].success(created ? `Added ${saved.display_name}.` : `Saved changes to ${saved.display_name}.`);
     if (created || saved.kind !== "chat") onChanged();
   }
 
@@ -156,7 +155,7 @@ export default function ModelsTab({ onChanged }: { onChanged: () => void }) {
               key={section.kind}
               {...section}
               models={list.filter((model) => model.kind === section.kind)}
-              flash={flashFor(section.kind)}
+              flash={flashes[section.kind]}
               toggling={toggling}
               actions={actions}
               onAdd={() => setEditing({ model: null, kind: section.kind })}
@@ -190,7 +189,7 @@ function ModelSection({ kind, title, description, emptyHint, models, flash, togg
   return (
     <section className="card admin-card" aria-labelledby={titleId}>
       <div className="admin-card-header">
-        <div>
+        <div className="admin-card-heading">
           <h2 id={titleId} className="admin-card-title">
             {title}
           </h2>

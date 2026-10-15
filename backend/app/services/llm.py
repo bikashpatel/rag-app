@@ -137,15 +137,25 @@ def resolve_max_tokens(model: LLMModel, default: int | None = None) -> int:
 
 
 def _known_output_cap(litellm_model: str) -> int | None:
-    """The output-token cap in LiteLLM's bundled model map. A plain lookup: litellm.get_model_info() can make
+    """The output-token cap in LiteLLM's bundled model map."""
+    cap = _model_map_entry(litellm_model).get("max_output_tokens")
+    return int(cap) if isinstance(cap, int | float) and cap > 0 else None
+
+
+def listed_with_vision(litellm_model: str) -> bool:
+    """Whether LiteLLM's bundled model map says the model reads images."""
+    return _model_map_entry(litellm_model).get("supports_vision") is True
+
+
+def _model_map_entry(litellm_model: str) -> dict[str, Any]:
+    """The model's entry in LiteLLM's bundled model map, or {}. A plain lookup: litellm.get_model_info() can make
     blocking calls to some providers' servers."""
     provider, _, name = litellm_model.partition("/") if "/" in litellm_model else ("openai", "", litellm_model)
     for key in (litellm_model, name):
         info = litellm.model_cost.get(key)
         if isinstance(info, dict) and info.get("litellm_provider") == provider:
-            cap = info.get("max_output_tokens")
-            return int(cap) if isinstance(cap, int | float) and cap > 0 else None
-    return None
+            return info
+    return {}
 
 
 def compute_cost(model: LLMModel, prompt_tokens: int, completion_tokens: int) -> float:
@@ -293,8 +303,8 @@ _MAX_RETRY_AFTER_SECONDS = 3600.0
 async def read_image(
     model: LLMModel, jpeg: bytes, *, system: str, instruction: str, image_size: tuple[int, int]
 ) -> VisionReply:
-    """One vision call (no retries): the image, then the instruction. Thinking is kept low, since it counts toward
-    max_tokens and is billed as output. Failures are raised as VisionCallError."""
+    """One vision call, made as one HTTP request (no retries): the image, then the instruction. Thinking is kept low,
+    since it counts toward max_tokens and is billed as output. Failures are raised as VisionCallError."""
     try:
         kwargs = _base_kwargs(model)
     except LLMError as exc:  # the model's key isn't set: every page would fail
@@ -310,12 +320,14 @@ async def read_image(
                 ],
             },
         ],
-        max_tokens=resolve_max_tokens(model, settings.vision_max_output_tokens),
+        max_tokens=vision_max_tokens(model),
         reasoning_effort="low",
+        # Exactly one HTTP request: the OpenAI SDK (openai/* and OpenAI-compatible hosts) otherwise retries 429s,
+        # 5xx and timeouts twice inside the call. vision.read_pages owns retries, delays and Retry-After.
+        max_retries=0,
     )
     if model.temperature is not None:  # null by default: Claude 5.5 models reject a non-default temperature
         kwargs["temperature"] = model.temperature
-    _allow_effort(model.litellm_model)
     try:
         response = await litellm.acompletion(**kwargs)
     except Exception as exc:
@@ -340,6 +352,12 @@ async def read_image(
         usage.estimated = True
     usage.cost_usd = compute_cost(model, usage.prompt_tokens, usage.completion_tokens)
     return VisionReply(text=text, usage=usage, truncated=_get(choice, "finish_reason") == "length")
+
+
+def vision_max_tokens(model: LLMModel) -> int:
+    """max_tokens of a vision call, thinking included: the model's own, else VISION_MAX_OUTPUT_TOKENS."""
+    _allow_effort(model.litellm_model)  # first, so the value never changes after the first call
+    return resolve_max_tokens(model, settings.vision_max_output_tokens)
 
 
 def _vision_error(exc: Exception) -> VisionCallError:
@@ -376,7 +394,8 @@ def _allow_effort(litellm_model: str) -> None:
     """Let reasoning_effort reach Claude models that think adaptively but are missing from LiteLLM's model map
     (claude-sonnet-5-5 in LiteLLM 1.103.1). LiteLLM sends their effort as output_config.effort only when the map
     says they support it, and drop_params removes it otherwise, so they would think at their default effort (high).
-    Every adaptive-thinking Claude model accepts the effort setting."""
+    Every adaptive-thinking Claude model accepts the effort setting. The registered entry gets LiteLLM's baseline for
+    unknown Claude models, so their output cap becomes 64000 tokens (above every default here)."""
     provider, _, name = litellm_model.partition("/")
     if provider != "anthropic" or not name or name in litellm.model_cost or litellm_model in litellm.model_cost:
         return

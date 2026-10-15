@@ -25,14 +25,17 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
                                │           └──> LiteLLM ─> OpenAI / Anthropic / Ollama / …
                                └── uploads volume (shared)
               worker (same image) <── Redis list rag:ingest_queue
-                 parse ─> chunk ─> embed (LiteLLM) ─> Qdrant
+                 parse ─> [PDF pages: render (child process) ─> vision model (LiteLLM)] ─> chunk ─> embed (LiteLLM) ─> Qdrant
 ```
 
 - **Upload:** nginx checks the session, then streams the file to the backend, which validates it,
   stores it in the `uploads` volume, creates the document row (`pending`) and pushes its id onto
   the Redis queue. The worker parses it (in a thread), chunks it, embeds it with the active
   embedding model, writes the vectors to Qdrant and marks the document `ready` (or `failed` with
-  a readable error).
+  a readable error). For PDFs, pages without a text layer (scans) and pages with large images are
+  rendered to JPEG in a memory- and time-limited child process and read by the active vision model,
+  which transcribes scans and describes charts, diagrams and photos; that text is indexed and cited by
+  page like the rest.
 - **Chat:** `POST /api/chat/stream` checks the rate limit, budget and model access, saves the
   user message, retrieves passages from the user's private documents plus the shared knowledge
   base (every Qdrant search carries this access filter), and streams the answer as Server-Sent
@@ -46,7 +49,7 @@ Code layout:
 |---|---|
 | `backend/app/main.py`, `config.py`, `db.py`, `models.py` | app factory, settings, async SQLAlchemy, ORM |
 | `backend/app/routers/` | `auth`, `models`, `documents`, `conversations`, `chat`, `admin` (all under `/api`) |
-| `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
+| `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
 | `backend/app/worker.py` | ingestion worker (`python -m app.worker`) |
 | `backend/tests/` | integration tests, no Docker needed ([README](backend/tests/README.md)) |
 | `frontend/src/pages/` | `LoginPage`, `ChatPage`, `AdminPage` |
@@ -93,7 +96,22 @@ Notes:
 - Anthropic has no embeddings API, so embedding needs the OpenAI key unless you switch to a local
   embedding model (see "Local models with Ollama").
 - Models are seeded on the **first** start only. A seeded model is enabled only if its provider
-  key was set at that moment; if you add a key later, enable the models in Admin → Models.
+  key was set at that moment; if you add a key later, enable the models in Admin → Models. The one
+  exception is the vision model: an existing database gets "Claude Sonnet 5.5 (vision)" (or "GPT-5.4 mini
+  (vision)" when only the OpenAI key is set) once, on its next start, enabled and active if the key is set,
+  so from then on PDF page images go to that provider without any admin action. A vision model you delete
+  isn't added again.
+- **Vision model for PDFs** (`VISION_*` in `.env.example`): at most `VISION_MAX_PAGES` (50, at most 200)
+  pages per document are read with the vision model, full-page scans first (a PDF with more of them fails
+  with a message; other pages over the cap keep only their text layer), with `VISION_CONCURRENCY` (3) calls
+  at a time per document and `VISION_MAX_IN_FLIGHT` (4) in the worker, and no new call after
+  `VISION_TIMEOUT_SECONDS` (1800). Each user may use `VISION_MONTHLY_TOKEN_LIMIT` (2,000,000) vision tokens a
+  month (0 = unlimited; the admin is exempt). Pages are rendered with a long edge of `VISION_MAX_IMAGE_PX`
+  (1568, at most 2576) pixels, and `VISION_MAX_OUTPUT_TOKENS` (8192) caps each page's output when the model's
+  "Max output tokens" is blank. `VISION_MIN_TEXT_CHARS` (40) and `VISION_MIN_IMAGE_RATIO` (0.1) decide which
+  pages count as scanned and which images are large enough to describe.
+- `WORKER_MEM_LIMIT` (default `4g`) is the worker container's memory limit (Compose `mem_limit` and
+  `memswap_limit`); PDF pages are rendered in child processes limited to 1 GiB each.
 
 ## 3. Run
 
@@ -132,19 +150,35 @@ document panel to limit which documents a question searches. **Stop** keeps the 
 Users change their own password from the account menu (the admin's password lives in `.env`).
 
 **Admin page** (`/admin`, admin only). An overview at the top shows users, documents, failed
-and stale documents, the ingestion queue and the active embedding model, and offers a re-index
-when documents are stale or failed.
+and stale documents, the ingestion queue and the active embedding and vision models ("Off" when no
+vision model is active), and offers a re-index when documents are stale or failed.
 
 - **Users:** create users (the only way to get an account), reset passwords, deactivate, delete.
   Per-user limits (`0` = unlimited, except for the max file size):
-  - monthly token budget (chat tokens only; embedding tokens are shown but don't count)
+  - monthly token budget (chat tokens only; embedding and vision tokens are shown but don't count)
   - chat requests per minute
   - which chat models they may use
   - max file size, max number of documents, max total storage
-- **Models:** add, edit, enable/disable, choose the default chat model and the active embedding
-  model, and **Test** the connection.
-- **Usage:** tokens and estimated cost per user, per model and per day, for any month.
+- **Models:** three sections, Chat, Embedding and Vision. Add, edit, enable/disable, choose the default
+  chat model, the active embedding model and the active vision model, and **Test** the connection (for a
+  vision model, it sends a small generated image and checks the model reads it).
+  - The **active vision model** reads PDF pages that have no text layer (scans: it transcribes them) and
+    describes images such as charts, diagrams and photos on pages with text. The page images are sent to
+    the model's provider (a cloud provider, unless you add a local model, e.g. through Ollama), and every
+    page read costs tokens. Disabling the active vision model (or deleting it) turns this off; scanned PDFs
+    then fail with a message saying so. Charts drawn as vector graphics aren't detected, only raster images.
+  - Pages read once are cached per document, so Retry, reprocess and re-indexing don't pay for them again
+    (unless the vision model or its settings changed).
+  - Changing, disabling or deleting the vision model while a PDF is being read puts that PDF back in the queue,
+    so it is read again with the model that is active then. Deleting or reprocessing a document stops its
+    reading run.
+- **Usage:** chat, embedding and vision tokens and the estimated cost per user, per model and per day, for
+  any month. Only chat tokens count toward user budgets; vision tokens have their own monthly allowance
+  (`VISION_MONTHLY_TOKEN_LIMIT`).
 - **Documents:** every uploaded document, with re-index and delete actions, and **Re-index all documents**.
+  Documents read with the vision model show how many pages it read ("pages read by vision"). PDFs that
+  failed as scanned before the vision model was enabled can be retried (Retry in the document panel, or
+  "Retry failed" in the admin overview).
 
 The admin can upload to the **shared knowledge base** (toggle in the document panel). Shared
 documents are searched in every user's chats. Users' own uploads stay private to them. The
@@ -152,7 +186,8 @@ admin bypasses all usage limits.
 
 ## 5. Switching or adding models (LiteLLM)
 
-In **Admin → Models → Add model**, enter a LiteLLM model string:
+In **Admin → Models**, click **Add chat model**, **Add embedding model** or **Add vision model** and enter
+a LiteLLM model string:
 
 | Provider | Example | Key in `.env` |
 |---|---|---|
@@ -169,13 +204,22 @@ Add the key to `.env`, run `docker compose up -d`, add the model, then click **T
   model with an **API base**, which gets no key at all (your OpenAI or Anthropic key is never sent
   to a custom host). If the named variable isn't set, calls fail with a message saying so.
 - **Max output tokens:** blank means `DEFAULT_MAX_OUTPUT_TOKENS` (16000), lowered to the model's
-  own limit when LiteLLM's model map knows it.
+  own limit when LiteLLM's model map knows it. For a vision model it is per page, thinking included, and
+  blank means `VISION_MAX_OUTPUT_TOKENS` (8192).
 - **Temperature:** leave it blank for Claude 5.5 models, which reject a custom temperature.
 - **Prices** come from LiteLLM's price list unless you enter your own per-1M-token prices.
 
+**Vision models** must accept images, e.g. `anthropic/claude-sonnet-5-5` (seeded), `openai/gpt-5.4-mini`,
+`gemini/gemini-2.5-flash`, or locally `ollama_chat/llama3.2-vision` (only the Anthropic one was tried here).
+**Test** sends a small generated image showing "TEST 4712" and passes only if the reply contains 4712. Then
+click **Make active** on an enabled model. At most one vision model is active, and it reads PDFs from the next
+run on (new uploads, Retry, reprocess). Vision calls ask for low reasoning effort, and vision models are never
+offered for chat.
+
 **Changing the embedding model:** vectors from different embedding models can't be mixed. When
 you make another embedding model active, documents embedded with the old one become stale; the
-admin overview shows how many and offers a re-index. Re-indexing uses embedding tokens.
+admin overview shows how many and offers a re-index. Re-indexing uses embedding tokens, plus vision
+tokens for PDF pages not yet read with the active vision model.
 
 ### Local models with Ollama
 
@@ -195,7 +239,7 @@ cd backend
 uv venv --python 3.13 .venv            # once (uv downloads Python 3.13 if needed)
 uv pip sync requirements-dev.txt       # again whenever the locks change
 #   or, with python3.13 on PATH: python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # about 700 tests, about 70 s
+.venv/bin/python -m pytest -q          # about 860 tests, about 90 s
 
 # Lint and type-check (tools not in the requirements; run through uvx)
 uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests
@@ -274,12 +318,25 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
   the old admin account on the next start; changing `ADMIN_PASSWORD` signs out the admin's
   existing sessions.
 - Retrieved passages are treated as untrusted data in the prompt, so instructions inside documents
-  are not followed. As with any RAG system, this lowers the risk but doesn't eliminate it.
+  are not followed. As with any RAG system, this lowers the risk but doesn't eliminate it. The vision
+  prompt does the same for text inside page images.
+- PDF pages for the vision model are rendered in a separate process with no API keys in its environment,
+  a 1 GiB memory limit (enforced on Linux, so in Docker) and 30 s per page. Page images of users' private
+  PDFs go to the active vision model's provider.
 - Secrets are never logged; provider errors are turned into user-facing messages (`llm.friendly_error`).
 
 ## 8. Known limitations
 
-- No OCR: scanned PDFs without a text layer can't be indexed. Password-protected PDFs aren't supported.
+- Scanned PDF pages are read by the vision model, which costs tokens: with Claude Sonnet 5.5 about $0.007 for
+  a simple page (measured) and up to about $0.03 for a dense one, up to `VISION_MAX_PAGES` pages per document
+  and `VISION_MONTHLY_TOKEN_LIMIT` tokens per user and month. The allowance is checked when a document starts
+  processing, so documents already in progress can take a user past it. There's no local OCR engine.
+- Charts drawn as vector graphics (most Office, LaTeX and matplotlib exports) aren't detected; only raster
+  images are. Pages whose content is over 2 MiB aren't checked for images.
+- Only PDFs go to the vision model: images in DOCX and PPTX files aren't read yet. Password-protected PDFs
+  aren't supported.
+- Deleting a user deletes their usage history too (chat, embedding and vision), so their costs leave the
+  usage report.
 - Legacy `.doc`, `.ppt` and `.xls` files must be saved in the modern format first.
 - Database tables are created automatically on start. There are no migrations yet: add Alembic
   before changing the schema of a database with real data.
