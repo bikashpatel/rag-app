@@ -4,14 +4,18 @@ Every text run gets its font set explicitly (fonts.Runs), and fpdf2's fallback f
 fpdf2 2.8.8 and 2.8.9 lose the font when a line's first fragment uses a fallback font before the page's font is
 set, so the following lines were drawn with the wrong font. Shaping is switched on only for Indian-script runs
 (shaping everything made long English documents several times slower).
+
+Embedded images reach fpdf2 only as in-memory JPEG data (images.Embedder): its image() also takes file names and
+URLs, which a generated file must never make it read.
 """
 
+import io
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any
 
 from fpdf import FPDF, FontFace
-from fpdf.enums import TableBordersLayout, WrapMode
+from fpdf.enums import Align, TableBordersLayout, WrapMode
 from fpdf.output import OutputProducer
 from fpdf.text_region import Paragraph as TextParagraph
 
@@ -26,10 +30,12 @@ from .fonts import (
     font_files,
     scan,
 )
+from .images import Embedder
 from .markdown import (
     MAX_LIST_LEVELS,
     Block,
     Code,
+    Figure,
     Heading,
     ListBlock,
     Paragraph,
@@ -37,10 +43,13 @@ from .markdown import (
     Rule,
     Span,
     Table,
+    check_image_caps,
     check_table_caps,
     link_label,
     plain,
+    text_reference,
     texts,
+    walk,
 )
 
 Color = tuple[int, int, int]
@@ -65,6 +74,11 @@ CODE_RULE: Color = (203, 213, 225)
 RULE: Color = (209, 213, 219)
 FOOTER: Color = (120, 120, 120)
 TABLE_HEADER_FILL: Color = (243, 244, 246)
+CAPTION: Color = (75, 85, 99)  # #4B5563
+CAPTION_PT = 9.0
+FIGURE_MAX_HEIGHT = 0.6  # of the page's usable height
+FIGURE_CAPTION_GAP_MM = 1.5
+CAPTION_ROOM_MM = 8.0  # kept free below an image for the start of its caption
 _TOO_TALL = (
     "A table row is too tall to fit on one page of a PDF. Shorten the cell text, or create a docx or xlsx file instead."
 )
@@ -79,11 +93,16 @@ class _Context:
 
 
 class _NoOpenAction(OutputProducer):
-    """fpdf2 always opens the document with an /OpenAction (a zoom destination); generated files have no actions."""
+    """fpdf2 always opens the document with an /OpenAction (a zoom destination); generated files have no actions.
+
+    An image drawn with alt_text also makes fpdf2 build a structure tree holding only that /Figure (with its /Alt) and
+    mark the catalog /MarkInfo <</Marked true>>. fpdf2 can't tag text, so a file claiming to be a Tagged PDF would hide
+    all its text from screen readers that follow the tags. The claim goes; the tree with the figures' /Alt stays."""
 
     def _finalize_catalog(self, catalog_obj: Any, *args: Any, **kwargs: Any) -> None:
         super()._finalize_catalog(catalog_obj, *args, **kwargs)
         catalog_obj.open_action = None
+        catalog_obj.mark_info = None
 
 
 class _Document(FPDF):
@@ -102,6 +121,7 @@ class _Document(FPDF):
 def render_pdf(blocks: list[Block], title: str) -> tuple[bytes, int, list[str]]:
     """(the PDF, its page count, notes for the tool result)."""
     check_table_caps(blocks)
+    check_image_caps(blocks)
     report = scan([text for text, _ in texts(blocks)])
     if report.unsupported_letters and report.unsupported_letters >= MAX_UNSUPPORTED_SHARE * report.letters:
         script = report.unsupported.most_common(1)[0][0]
@@ -123,16 +143,21 @@ def render_pdf(blocks: list[Block], title: str) -> tuple[bytes, int, list[str]]:
     ]
     if writer.runs.dropped:
         notes.append(f"{writer.runs.dropped} other characters couldn't be shown in the PDF and were left out.")
-    return data, writer.pdf.page, notes
+    return data, writer.pdf.page, writer.images.notes() + notes
 
 
 class _Writer:
     def __init__(self, blocks: list[Block], title: str) -> None:
         self.blocks = blocks
-        self.runs = Runs()
+        self.runs = Runs()  # counts only what is drawn: render_pdf turns its counts into notes
+        self.images = Embedder()
+        scan_runs = Runs()  # finds the fonts to register; its counts are dropped
         families = {SANS}
         for text, code in texts(blocks):
-            families.update(family for family, _ in self.runs(_clean(text, code), MONO if code else SANS))
+            families.update(family for family, _ in scan_runs(_clean(text, code), MONO if code else SANS))
+        for block in walk(blocks):  # the text reference drawn when a figure's image can't be read
+            if isinstance(block, Figure):
+                families.update(family for family, _ in scan_runs(_clean(block.ref.filename, False), SANS))
         pdf = self.pdf = _Document(format="A4")
         pdf.set_margins(20, 18, 20)
         pdf.set_auto_page_break(True, margin=18)
@@ -154,19 +179,11 @@ class _Writer:
     # ---------------- Blocks ----------------
 
     def _blocks(self, blocks: list[Block], context: _Context, bullet: str = "") -> None:
-        for block in blocks:
+        for position, block in enumerate(blocks):
             if isinstance(block, Heading):
-                size = HEADING_PT.get(block.level, BODY_PT)
-                spans = [replace(span, bold=True) for span in block.spans]
-                self._paragraph(
-                    spans,
-                    context,
-                    size=size,
-                    line_height=HEADING_LINE_HEIGHT,
-                    top=0.45 * size,
-                    bottom=0.2 * size,
-                    bullet=bullet,
-                )
+                if position == 0 or not isinstance(blocks[position - 1], Heading):
+                    self._keep_with_figure(blocks, position, context, bullet)
+                self._heading(block, context, bullet)
             elif isinstance(block, Paragraph):
                 gap = LIST_ITEM_GAP_MM if context.level else PARAGRAPH_GAP_MM
                 self._paragraph(block.spans, context, bullet=bullet, bottom=gap)
@@ -179,9 +196,49 @@ class _Writer:
                 self._code(block.text, context, bullet)
             elif isinstance(block, Rule):
                 self._rule(context, bullet)
+            elif isinstance(block, Figure):
+                self._figure(block, context, bullet)
             else:
                 self._table(block, context, bullet)
             bullet = ""
+
+    def _heading(self, heading: Heading, context: _Context, bullet: str) -> None:
+        size = HEADING_PT.get(heading.level, BODY_PT)
+        self._paragraph(
+            [replace(span, bold=True) for span in heading.spans],
+            context,
+            size=size,
+            line_height=HEADING_LINE_HEIGHT,
+            top=0.45 * size,
+            bottom=0.2 * size,
+            bullet=bullet,
+        )
+
+    def _keep_with_figure(self, blocks: list[Block], start: int, context: _Context, bullet: str) -> None:
+        """When the headings from `start` on introduce a figure, and they, its image and the start of its caption
+        don't fit below the current position but do fit on an empty page, start a new page first: a heading never
+        ends a page while its image starts the next one. The headings are measured by drawing them on a copy."""
+        end = start
+        while end < len(blocks) and isinstance(blocks[end], Heading):
+            end += 1
+        figure = blocks[end] if end < len(blocks) else None
+        if not isinstance(figure, Figure) or (loaded := self.images.peek(figure.ref)) is None:
+            return
+        pdf = self.pdf
+        page, top = pdf.page, pdf.get_y()
+        if top <= pdf.t_margin + 0.5:  # already at the top of a page
+            return
+        figure_room = self._figure_box(loaded[1], loaded[2], context)[3] + CAPTION_ROOM_MM
+        with pdf.offset_rendering():
+            for position in range(start, end):
+                heading = blocks[position]
+                assert isinstance(heading, Heading)
+                self._heading(heading, context, bullet if position == start else "")
+            broke = pdf.page != page
+            headings = pdf.get_y() - top
+        bottom = pdf.h - pdf.b_margin
+        if broke or (top + headings + figure_room > bottom and pdf.t_margin + headings + figure_room <= bottom):
+            pdf.add_page()
 
     def _list(self, block: ListBlock, context: _Context, bullet: str) -> None:
         if bullet:  # a list as the first thing in a list item
@@ -207,13 +264,18 @@ class _Writer:
         top: float = 0.0,
         bottom: float = PARAGRAPH_GAP_MM,
         bullet: str = "",
+        align: Align | None = None,
     ) -> None:
         pdf = self.pdf
         self._font(SANS, "I" if context.italic else "", size)  # the bullet's font
         pdf.set_text_color(*context.color)
         with pdf.text_columns(line_height=line_height, l_margin=pdf.l_margin + context.indent) as columns:
             with columns.paragraph(
-                top_margin=top, bottom_margin=bottom, bullet_string=bullet, bullet_r_margin=2 if bullet else None
+                text_align=align,
+                top_margin=top,
+                bottom_margin=bottom,
+                bullet_string=bullet,
+                bullet_r_margin=2 if bullet else None,
             ) as paragraph:
                 if not spans:
                     paragraph.write(" ")
@@ -276,6 +338,50 @@ class _Writer:
                 pdf.line(x, top, x, bottom)
         pdf.page = end_page
         pdf.ln(PARAGRAPH_GAP_MM)
+
+    def _figure(self, figure: Figure, context: _Context, bullet: str) -> None:
+        """The image as wide as the text (at most 60% of the page high, then centered), on the next page when it and
+        the start of its caption don't fit here, then its caption."""
+        gap = LIST_ITEM_GAP_MM if context.level else PARAGRAPH_GAP_MM
+        loaded = self.images.load(figure.ref)
+        if loaded is None:
+            self._paragraph([Span(text_reference(figure))], context, bottom=gap, bullet=bullet)
+            return
+        data, pixels_wide, pixels_high = loaded
+        pdf = self.pdf
+        left, available, width, height = self._figure_box(pixels_wide, pixels_high, context)
+        bullet_line = BODY_PT * BODY_LINE_HEIGHT * 25.4 / 72 if bullet else 0.0  # mm
+        if pdf.get_y() + bullet_line + height + CAPTION_ROOM_MM > pdf.h - pdf.b_margin:
+            pdf.add_page()  # before the bullet, so it stays with its image
+        if bullet:
+            self._paragraph([], context, bullet=bullet, bottom=0)
+        top = pdf.get_y()
+        pdf.image(
+            io.BytesIO(data),
+            x=left + (available - width) / 2,
+            y=top,
+            w=width,
+            h=height,
+            alt_text=figure.ref.alt_text or figure.caption,
+        )
+        pdf.set_y(top + height + FIGURE_CAPTION_GAP_MM)
+        if figure.caption:
+            caption = replace(context, italic=True, color=CAPTION)
+            self._paragraph([Span(figure.caption)], caption, size=CAPTION_PT, bottom=gap, align=Align.C)
+        else:
+            pdf.ln(gap)
+
+    def _figure_box(self, pixels_wide: int, pixels_high: int, context: _Context) -> tuple[float, float, float, float]:
+        """(left edge of the text, text width, image width, image height) in mm: as wide as the text, at most
+        FIGURE_MAX_HEIGHT of the usable page height."""
+        pdf = self.pdf
+        left = pdf.l_margin + context.indent
+        available = pdf.w - pdf.r_margin - left
+        width, height = available, available * pixels_high / pixels_wide
+        tallest = FIGURE_MAX_HEIGHT * (pdf.h - pdf.t_margin - pdf.b_margin)
+        if height > tallest:
+            width, height = tallest * pixels_wide / pixels_high, tallest
+        return left, available, width, height
 
     def _rule(self, context: _Context, bullet: str) -> None:
         if bullet:

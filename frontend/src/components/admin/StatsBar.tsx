@@ -10,7 +10,7 @@ import StatTile from "./StatTile";
 import { ErrorState, RefreshError } from "./StateViews";
 
 const QUEUE_POLL_MS = 5000;
-const TILE_COUNT = 7;
+const TILE_COUNT = 8;
 
 type StatsBarProps = {
   stats: Resource<AdminStats>;
@@ -42,7 +42,7 @@ export default function StatsBar({ stats, onOpenModels }: StatsBarProps) {
   if (!data) {
     if (stats.error) return <ErrorState message={stats.error} onRetry={() => void stats.reload()} />;
     return (
-      <div className="admin-tiles" aria-busy="true">
+      <div className="admin-tiles admin-tiles-overview" aria-busy="true">
         <span className="sr-only">Loading overview</span>
         {Array.from({ length: TILE_COUNT }, (_, i) => (
           <div key={i} className="admin-tile" aria-hidden="true">
@@ -56,12 +56,13 @@ export default function StatsBar({ stats, onOpenModels }: StatsBarProps) {
 
   const activeModel = data.active_embedding_model;
   const visionModel = data.active_vision_model;
+  const imageModel = data.active_image_model;
   const stale = data.stale_documents;
   const failed = data.failed_documents;
   return (
     <div className="admin-overview">
       {stats.error ? <RefreshError message={stats.error} onRetry={() => void stats.reload()} /> : null}
-      <dl className="admin-tiles" aria-label="Overview">
+      <dl className="admin-tiles admin-tiles-overview" aria-label="Overview">
         <StatTile label="Users" value={formatNumber(data.users)} />
         <StatTile label="Documents" value={formatNumber(data.documents)} />
         <StatTile
@@ -98,6 +99,15 @@ export default function StatsBar({ stats, onOpenModels }: StatsBarProps) {
             </span>
           }
           title={visionModel?.display_name}
+        />
+        <StatTile
+          label="Image model"
+          value={
+            <span className={imageModel ? "admin-tile-text" : "admin-tile-text muted"}>
+              {imageModel?.display_name ?? "Off"}
+            </span>
+          }
+          title={imageModel?.display_name}
         />
       </dl>
 

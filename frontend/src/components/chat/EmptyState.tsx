@@ -6,18 +6,25 @@ const EXAMPLE_PROMPTS = [
   "Explain the main topic in simple terms",
 ];
 const FILE_PROMPT = "Create a PDF report summarizing my documents";
+const IMAGE_PROMPT = "Draw a watercolor illustration of a lighthouse at dawn";
 
 type EmptyStateProps = {
   username: string | null;
   disabled: boolean;
   /** The selected model can create files: adds an example that asks for one. */
   canCreateFiles: boolean;
+  /** The selected model can generate images: adds an example that asks for one. */
+  canCreateImages: boolean;
   onPick: (prompt: string) => void;
 };
 
 /** Start screen of a new chat with clickable example prompts. */
-export default function EmptyState({ username, disabled, canCreateFiles, onPick }: EmptyStateProps) {
-  const prompts = canCreateFiles ? [...EXAMPLE_PROMPTS, FILE_PROMPT] : EXAMPLE_PROMPTS;
+export default function EmptyState({ username, disabled, canCreateFiles, canCreateImages, onPick }: EmptyStateProps) {
+  const prompts = [
+    ...EXAMPLE_PROMPTS,
+    ...(canCreateFiles ? [FILE_PROMPT] : []),
+    ...(canCreateImages ? [IMAGE_PROMPT] : []),
+  ];
   return (
     <div className="chat-empty">
       <div className="chat-empty-logo" aria-hidden="true">

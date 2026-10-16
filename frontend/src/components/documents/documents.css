@@ -525,6 +525,35 @@
   color: var(--text-2);
 }
 
+/* A generated image's thumbnail, in place of the type tag; opens the image viewer. */
+.docs-thumb {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-top: -2px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  cursor: zoom-in;
+  transition: border-color 0.12s;
+}
+.docs-thumb:hover {
+  border-color: var(--border-strong);
+}
+.docs-thumb img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.docs-thumb .docs-tag {
+  min-width: 0;
+}
+
 .docs-row-actions {
   display: flex;
   gap: 2px;
@@ -657,4 +686,113 @@
 }
 .docs-meter-fill-danger {
   background: var(--danger);
+}
+
+/* ---------- Image viewer (a Modal) ---------- */
+.docs-viewer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+}
+.docs-viewer-stage {
+  display: flex;
+  justify-content: center;
+  padding: var(--space-2);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+.docs-viewer-box {
+  position: relative;
+  max-width: 100%;
+}
+.docs-viewer-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: var(--radius-sm);
+  object-fit: contain;
+}
+.docs-viewer-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 24px;
+  height: 24px;
+  margin: -12px 0 0 -12px;
+}
+.docs-viewer-broken {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+  margin: 0;
+  padding: var(--space-3);
+  text-align: center;
+}
+.docs-viewer-caption {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.docs-viewer-alt {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.docs-viewer-facts {
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+.docs-viewer-prompt {
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.docs-viewer-prompt summary {
+  width: fit-content;
+  border-radius: 4px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.docs-viewer-prompt-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: var(--space-2);
+}
+.docs-viewer-text {
+  margin: 0;
+  font-size: 13.5px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+.docs-viewer-subhead {
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.docs-viewer-muted {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+.docs-viewer-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 13px;
+}
+.docs-viewer-download:hover {
+  text-decoration: none;
 }

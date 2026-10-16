@@ -77,7 +77,7 @@ class LLMModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     display_name: Mapped[str] = mapped_column(String(100))
     litellm_model: Mapped[str] = mapped_column(String(200))
-    kind: Mapped[str] = mapped_column(String(16), index=True)  # "chat" | "embedding" | "vision"
+    kind: Mapped[str] = mapped_column(String(16), index=True)  # "chat" | "embedding" | "vision" | "image"
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     api_base: Mapped[str | None] = mapped_column(String(500), nullable=True)
@@ -159,7 +159,7 @@ class UsageEvent(Base):
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     model_id: Mapped[int | None] = mapped_column(ForeignKey("llm_models.id", ondelete="SET NULL"), nullable=True)
     model_name: Mapped[str] = mapped_column(String(200))
-    kind: Mapped[str] = mapped_column(String(16))  # "chat" | "embedding" | "vision"
+    kind: Mapped[str] = mapped_column(String(16))  # "chat" | "embedding" | "vision" | "image"
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
     completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
@@ -205,7 +205,7 @@ class MessageFile(Base):
         ForeignKey("documents.id", ondelete="SET NULL"), nullable=True, index=True
     )
     filename: Mapped[str] = mapped_column(String(255))
-    format: Mapped[str] = mapped_column(String(8))  # "pdf" | "docx" | "xlsx" | "md"
+    format: Mapped[str] = mapped_column(String(8))  # "pdf" | "docx" | "xlsx" | "md" | "png" | "jpeg" | "webp"
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
 
@@ -218,3 +218,35 @@ class GeneratedDocument(Base):
 
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True)
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class GeneratedImage(Base):
+    """An image the assistant generated in a chat; its document holds the file. Lives as long as the document.
+    `conversation_id` decides which images create_document may embed (SET NULL when the conversation is deleted)."""
+
+    __tablename__ = "generated_images"
+
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id", ondelete="CASCADE"), primary_key=True)
+    conversation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("conversations.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    model_name: Mapped[str] = mapped_column(String(200))  # the image model's litellm_model
+    prompt: Mapped[str] = mapped_column(Text)
+    revised_prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
+    alt_text: Mapped[str] = mapped_column(String(300))
+    format: Mapped[str] = mapped_column(String(8))  # "png" | "jpeg" | "webp"
+    quality: Mapped[str] = mapped_column(String(8))  # "low" | "medium" | "high", as requested
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+
+
+class UserImageLimit(Base):
+    """A user's monthly image allowance (0 = unlimited). No row: DEFAULT_MONTHLY_IMAGE_LIMIT. A table of its own
+    instead of a users column, so no migration is needed (docs/briefs/image-generation.md, section 3.3)."""
+
+    __tablename__ = "user_image_limits"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    monthly_image_limit: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)

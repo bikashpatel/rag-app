@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -82,6 +83,17 @@ class Settings(BaseSettings):
     generated_file_max_output_tokens: int = Field(default=48_000, ge=1_000, le=128_000)
     generated_file_timeout_seconds: int = Field(default=60, ge=5, le=600)  # per render, waiting for a slot included
     generated_file_concurrency: int = Field(default=2, ge=1, le=16)  # renders (child processes) at once
+
+    # --- Images from chat (services/image_tool.py) ---
+    chat_image_tools: bool = True  # offer create_image when an image model is active and the chat model has tools
+    generated_images_per_answer: int = Field(default=3, ge=1, le=10)
+    # Per user per UTC month, for users without their own value (and the user form's default); 0 = unlimited
+    default_monthly_image_limit: int = Field(default=30, ge=0, le=2_147_483_647)
+    image_max_quality: Literal["low", "medium", "high"] = "medium"  # the highest quality create_image may use
+    image_output_format: Literal["png", "jpeg", "webp"] = "png"  # asked of GPT image models; stored as returned
+    # One image call, waiting for an image slot and quick provider retries included
+    image_timeout_seconds: int = Field(default=180, ge=30, le=600)
+    image_concurrency: int = Field(default=3, ge=1, le=16)  # image calls at once in one backend process
 
     @field_validator("admin_username")
     @classmethod

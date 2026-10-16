@@ -4,12 +4,12 @@ import logging
 import os
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, func, insert, literal, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import AppState, LLMModel, User
+from app.models import AppState, LLMModel, User, UserImageLimit, UTCDateTime, utcnow
 from app.security import hash_password, verify_password
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,9 @@ _OPUS = "anthropic/claude-opus-5-5"
 _SONNET = "anthropic/claude-sonnet-5-5"
 _GPT_MINI = "openai/gpt-5.4-mini"
 _VISION_SEEDED = "vision_seeded"  # app_state key: the vision model was seeded (or one existed) once
+_GPT_IMAGE = "openai/gpt-image-2"
+_IMAGE_SEEDED = "image_seeded"  # app_state key: the image model was seeded (or one existed) once
+_IMAGE_LIMITS_BACKFILLED = "image_limits_backfilled"  # app_state key: existing users got their image limit once
 
 _SEED_MODELS = (
     _SeedModel("Claude Opus 5.5", _OPUS, "chat", "ANTHROPIC_API_KEY", 4.0, 20.0),
@@ -143,9 +146,62 @@ async def _seed_vision_model(db: AsyncSession) -> None:
         logger.info("The vision model was seeded by another process")
 
 
+async def _seed_image_model(db: AsyncSession) -> None:
+    """Add GPT Image 2 as the active image model once per database (an existing one gets it on its next start), unless
+    an image model exists; enabled only when OPENAI_API_KEY is set. Recorded in app_state, so an image model the admin
+    deletes isn't added again. Prices come from LiteLLM's model map."""
+    if await db.get(AppState, _IMAGE_SEEDED) is not None:
+        return
+    seeded = "existing"
+    if await db.scalar(select(LLMModel.id).where(LLMModel.kind == "image").limit(1)) is None:
+        db.add(
+            LLMModel(
+                display_name="GPT Image 2",
+                litellm_model=_GPT_IMAGE,
+                kind="image",
+                enabled=_has_key("OPENAI_API_KEY"),
+                is_default=True,
+            )
+        )
+        seeded = _GPT_IMAGE
+        logger.info("Seeded the image model 'GPT Image 2'")
+    db.add(AppState(key=_IMAGE_SEEDED, value=seeded))
+    try:
+        await db.commit()
+    except IntegrityError:  # another backend starting at the same time seeded it first
+        await db.rollback()
+        logger.info("The image model was seeded by another process")
+
+
+async def _backfill_image_limits(db: AsyncSession) -> None:
+    """Once per database: every non-admin user without a user_image_limits row gets one with
+    DEFAULT_MONTHLY_IMAGE_LIMIT, so every user has an explicit value and a later change of the env default moves
+    nobody (as with the other limits)."""
+    if await db.get(AppState, _IMAGE_LIMITS_BACKFILLED) is not None:
+        return
+    limit = settings.default_monthly_image_limit
+    users = select(User.id, literal(limit, Integer()), literal(utcnow(), UTCDateTime())).where(
+        User.is_admin.is_(False), User.id.not_in(select(UserImageLimit.user_id))
+    )
+    try:
+        result = await db.execute(
+            insert(UserImageLimit).from_select(["user_id", "monthly_image_limit", "updated_at"], users)
+        )
+        count = max(0, result.rowcount or 0)  # type: ignore[attr-defined]
+        db.add(AppState(key=_IMAGE_LIMITS_BACKFILLED, value=str(count)))
+        await db.commit()
+    except IntegrityError:  # another backend starting at the same time backfilled them first
+        await db.rollback()
+        logger.info("The image limits were backfilled by another process")
+        return
+    logger.info("Gave %d existing user(s) the default monthly image limit of %d", count, limit)
+
+
 async def bootstrap(db: AsyncSession) -> None:
     """Idempotent; runs on every backend start."""
     await _sync_admin(db)
     await _seed_models(db)
     await db.commit()
     await _seed_vision_model(db)
+    await _seed_image_model(db)
+    await _backfill_image_limits(db)

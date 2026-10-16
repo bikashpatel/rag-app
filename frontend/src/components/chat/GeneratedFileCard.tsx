@@ -24,8 +24,10 @@ type CardView = {
   download: { id: number; filename: string } | null;
 };
 
-/** `status` null: the document was deleted. */
-function statusText(status: DocumentStatus | null, alreadyExisted: boolean, error: string | null): ReactNode {
+type StatusTextProps = { status: DocumentStatus | null; alreadyExisted: boolean; error: string | null };
+
+/** Where a created file or image is now (`status` null: the document was deleted). Also used by image cards. */
+export function StatusText({ status, alreadyExisted, error }: StatusTextProps) {
   switch (status) {
     case null:
       return <span className="chat-file-status">Deleted from your documents</span>;
@@ -55,7 +57,10 @@ function statusText(status: DocumentStatus | null, alreadyExisted: boolean, erro
   }
 }
 
-function cardView(card: FileCard, doc: DocumentItem | null | undefined): CardView {
+/** A card of a create_document call (images have GeneratedImageCard). */
+type FileOnlyCard = Exclude<FileCard, { kind: "generating" }>;
+
+function cardView(card: FileOnlyCard, doc: DocumentItem | null | undefined): CardView {
   switch (card.kind) {
     case "writing":
       return {
@@ -94,7 +99,9 @@ function cardView(card: FileCard, doc: DocumentItem | null | undefined): CardVie
               <span className="chat-file-meta-part">
                 {fileTypeTag(file.filename).label} · {formatBytes(file.size_bytes)}
               </span>
-              <span className="chat-file-meta-part">{statusText(status, card.alreadyExisted, doc?.error ?? null)}</span>
+              <span className="chat-file-meta-part">
+                <StatusText status={status} alreadyExisted={card.alreadyExisted} error={doc?.error ?? null} />
+              </span>
             </span>
           </span>
         ),
@@ -134,7 +141,7 @@ function cardView(card: FileCard, doc: DocumentItem | null | undefined): CardVie
  * A file the assistant created (or tried to) in an answer: type, name, size, indexing status and Download. The text
  * block is one live region whose DOM node survives writing → created, so the change is announced.
  */
-export default function GeneratedFileCard({ card }: { card: FileCard }) {
+export default function GeneratedFileCard({ card }: { card: FileOnlyCard }) {
   const doc = useDocumentSnapshot(card.kind === "created" ? card.file.document_id : null);
   const view = cardView(card, doc);
   return (

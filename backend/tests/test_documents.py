@@ -44,6 +44,7 @@ DOCUMENT_ITEM_KEYS = {
     "is_stale",
     "vision_pages",
     "generated",
+    "image",
     "created_at",
     "updated_at",
 }
@@ -129,6 +130,7 @@ async def test_upload_creates_a_pending_document_and_queues_it(create_user: Crea
         "is_stale": False,
         "vision_pages": 0,
         "generated": False,
+        "image": None,
     }
     assert item["created_at"].endswith("Z") and item["updated_at"].endswith("Z")
     assert await queued() == [str(item["id"])]

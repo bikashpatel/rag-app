@@ -34,12 +34,13 @@ async def test_lifespan_syncs_the_admin_and_seeds_the_models(app: object) -> Non
         models = list(await session.scalars(select(LLMModel)))
 
     assert admin is not None and admin.is_admin and admin.is_active
-    assert len(models) == 8
+    assert len(models) == 9
     defaults = {model.kind: model.litellm_model for model in models if model.is_default}
     assert defaults == {
         "chat": "anthropic/claude-opus-5-5",
         "embedding": "openai/text-embedding-3-small",
         "vision": "anthropic/claude-sonnet-5-5",
+        "image": "openai/gpt-image-2",
     }
     disabled = [model.litellm_model for model in models if not model.enabled]
     assert disabled == ["openai/text-embedding-3-large"]
@@ -67,6 +68,7 @@ async def test_admin_login_and_me(client: ApiClient) -> None:
         "chat_tokens",
         "embedding_tokens",
         "vision_tokens",
+        "images",
         "cost_usd",
         "monthly_token_limit",
     }

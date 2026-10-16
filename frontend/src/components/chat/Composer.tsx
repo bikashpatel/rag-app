@@ -30,11 +30,20 @@ type ComposerProps = {
   selection: DocumentSelection;
   /** The selected model can create files: the hint says so. */
   canCreateFiles: boolean;
+  /** The selected model can generate images: the hint says so. */
+  canCreateImages: boolean;
   onSend: (text: string) => void;
   onStop: () => void;
   /** When given, the document-scope chip becomes a button (opens the documents slide-over). */
   onScopeClick?: () => void;
 };
+
+/** What the assistant can make with the selected model, or null. */
+function makeHint(files: boolean, images: boolean): string | null {
+  if (files && images) return "You can ask for a PDF, Word, Excel or Markdown file, or an image";
+  if (files) return "You can ask for a PDF, Word, Excel or Markdown file";
+  return images ? "You can ask for an image" : null;
+}
 
 function scopeLabel(selection: DocumentSelection): string {
   if (selection === null) return "All documents";
@@ -48,6 +57,7 @@ export default function Composer({
   disabledReason,
   selection,
   canCreateFiles,
+  canCreateImages,
   onSend,
   onStop,
   onScopeClick,
@@ -99,6 +109,7 @@ export default function Composer({
   }
 
   const scope = scopeLabel(selection);
+  const offer = makeHint(canCreateFiles, canCreateImages);
   const scopeClass = selection !== null && selection.length === 0 ? "chat-scope chat-scope-off" : "chat-scope";
 
   return (
@@ -166,11 +177,15 @@ export default function Composer({
           )}
         </div>
       </form>
-      <p id={hintId} className="chat-composer-hint">
+      <p
+        id={hintId}
+        className={canCreateFiles && canCreateImages ? "chat-composer-hint chat-composer-hint-long" : "chat-composer-hint"}
+      >
         <kbd>Enter</kbd> to send, <kbd>Shift</kbd>+<kbd>Enter</kbd> for a new line
-        {canCreateFiles ? (
+        {offer ? (
           <span className="chat-composer-hint-files">
-            <span className="chat-composer-hint-sep"> · </span>You can ask for a PDF, Word, Excel or Markdown file
+            <span className="chat-composer-hint-sep"> · </span>
+            {offer}
           </span>
         ) : null}
       </p>

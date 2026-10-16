@@ -32,6 +32,7 @@ function effectiveLimits(user: AdminUser, hardCap: number | undefined): UserLimi
     max_upload_mb: hardCap ?? user.max_upload_mb,
     max_documents: 0,
     max_storage_mb: 0,
+    monthly_image_limit: 0,
   };
 }
 
@@ -69,7 +70,9 @@ export default function UsersTab({ onChanged }: { onChanged: () => void }) {
           <h2 id="admin-users-title" className="admin-card-title">
             Users
           </h2>
-          <p className="admin-card-subtitle">Accounts, monthly token budgets, rate limits and upload quotas.</p>
+          <p className="admin-card-subtitle">
+            Accounts, monthly token budgets and image limits, rate limits and upload quotas.
+          </p>
         </div>
         <span className="spacer" />
         <button type="button" className="btn btn-primary" disabled={!config.data} onClick={() => setEditing("new")}>
@@ -88,6 +91,7 @@ export default function UsersTab({ onChanged }: { onChanged: () => void }) {
                   <tr>
                     <th scope="col">User</th>
                     <th scope="col">Tokens this month</th>
+                    <th scope="col">Images this month</th>
                     <th scope="col" className="num">
                       Cost
                     </th>
@@ -158,7 +162,10 @@ function UserRow({ user, limits, modelNames, canEdit, onEdit, onDelete }: UserRo
         </div>
       </td>
       <td>
-        <TokenMeter used={user.usage.chat_tokens} limit={limits.monthly_token_limit} />
+        <LimitMeter used={user.usage.chat_tokens} limit={limits.monthly_token_limit} noun="tokens" format={formatCompact} />
+      </td>
+      <td>
+        <LimitMeter used={user.usage.images} limit={limits.monthly_image_limit} noun="images" format={formatNumber} />
       </td>
       <td className="num" title={tokenBreakdown(user.usage)}>
         {formatCost(user.usage.cost_usd)}
@@ -222,27 +229,33 @@ function UserRow({ user, limits, modelNames, canEdit, onEdit, onDelete }: UserRo
   );
 }
 
-/** What this month's cost is made of (only chat tokens count toward the budget). */
+/** What this month's cost is made of (only chat tokens count toward the budget; images toward the image limit). */
 function tokenBreakdown(usage: AdminUser["usage"]): string {
-  const { chat_tokens, embedding_tokens, vision_tokens } = usage;
-  return `Chat ${formatNumber(chat_tokens)} · Embedding ${formatNumber(embedding_tokens)} · Vision ${formatNumber(vision_tokens)} tokens`;
+  const { chat_tokens, embedding_tokens, vision_tokens, images } = usage;
+  return `Chat ${formatNumber(chat_tokens)} · Embedding ${formatNumber(embedding_tokens)} · Vision ${formatNumber(vision_tokens)} tokens · Images ${formatNumber(images)}`;
 }
 
-function TokenMeter({ used, limit }: { used: number; limit: number }) {
+type LimitMeterProps = { used: number; limit: number; noun: string; format: (n: number) => string };
+
+/** This month's use against a monthly limit (0 = unlimited). */
+function LimitMeter({ used, limit, noun, format }: LimitMeterProps) {
   if (limit === 0) {
     return (
-      <span className="admin-meter-text" title={`${formatNumber(used)} tokens`}>
-        {formatCompact(used)} <span className="muted">· Unlimited</span>
+      <span className="admin-meter-text" title={`${formatNumber(used)} ${noun}`}>
+        {format(used)} <span className="muted">· Unlimited</span>
       </span>
     );
   }
   const ratio = used / limit;
   const tone = ratio >= 1 ? "danger" : ratio >= 0.8 ? "warning" : "accent";
   return (
-    <div className="admin-meter-cell" title={`${formatNumber(used)} of ${formatNumber(limit)} tokens`}>
+    <div className="admin-meter-cell" title={`${formatNumber(used)} of ${formatNumber(limit)} ${noun}`}>
       <span className="admin-meter-text">
-        {formatCompact(used)} <span className="muted">/ {formatCompact(limit)}</span>
-        <span className="sr-only"> tokens, {Math.round(ratio * 100)}% used</span>
+        {format(used)} <span className="muted">/ {format(limit)}</span>
+        <span className="sr-only">
+          {" "}
+          {noun}, {Math.round(ratio * 100)}% used
+        </span>
       </span>
       <span className={`admin-meter admin-meter-${tone}`} aria-hidden="true">
         <span style={{ width: `${Math.min(100, ratio * 100)}%` }} />

@@ -11,7 +11,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_admin
-from app.models import Conversation, Document, LLMModel, Message, UsageEvent, User, user_allowed_models
+from app.models import (
+    Conversation,
+    Document,
+    LLMModel,
+    Message,
+    UsageEvent,
+    User,
+    UserImageLimit,
+    user_allowed_models,
+)
 from app.redis_client import INGEST_QUEUE, forget_ingest_attempts, get_redis
 from app.schemas import MAX_INT, DocumentItem
 from app.schemas_admin import (
@@ -36,8 +45,12 @@ from app.schemas_admin import (
     default_limits,
 )
 from app.security import hash_password_async
-from app.services import llm, vectorstore
-from app.services.model_registry import get_active_embedding_model, get_active_vision_model
+from app.services import image_tool, llm, vectorstore
+from app.services.model_registry import (
+    get_active_embedding_model,
+    get_active_image_model,
+    get_active_vision_model,
+)
 from app.services.storage import (
     delete_document_completely,
     document_item,
@@ -64,6 +77,7 @@ _EMBEDDING_TOKENS = func.coalesce(func.sum(case((UsageEvent.kind == "embedding",
 _VISION_TOKENS = func.coalesce(func.sum(case((UsageEvent.kind == "vision", UsageEvent.total_tokens))), 0)
 _COST = func.coalesce(func.sum(UsageEvent.cost_usd), 0.0)
 _CHAT_REQUESTS = func.count(case((UsageEvent.kind == "chat", UsageEvent.id)))
+_IMAGES = func.count(case((UsageEvent.kind == "image", UsageEvent.id)))
 
 
 def _cost(value: float | None) -> float:
@@ -96,6 +110,7 @@ async def get_config() -> AdminConfig:
 async def get_stats(db: AsyncSession = Depends(get_db)) -> AdminStats:
     active = await get_active_embedding_model(db)
     vision = await get_active_vision_model(db)
+    image = await get_active_image_model(db)
     users = await db.scalar(select(func.count()).select_from(User))
     documents, stale, failed = (
         await db.execute(
@@ -113,6 +128,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)) -> AdminStats:
         failed_documents=failed,
         active_embedding_model=ModelRef(id=active.id, display_name=active.display_name) if active else None,
         active_vision_model=ModelRef(id=vision.id, display_name=vision.display_name) if vision else None,
+        active_image_model=ModelRef(id=image.id, display_name=image.display_name) if image else None,
         queue_length=await get_redis().llen(INGEST_QUEUE),
     )
 
@@ -153,16 +169,26 @@ async def _chat_models(db: AsyncSession, model_ids: list[int]) -> list[LLMModel]
 async def _usage_this_month(db: AsyncSession, user_id: int | None = None) -> dict[int, AdminUserUsage]:
     start, end, _ = month_bounds(None)
     query = (
-        select(UsageEvent.user_id, _CHAT_TOKENS, _EMBEDDING_TOKENS, _VISION_TOKENS, _COST)
+        select(UsageEvent.user_id, _CHAT_TOKENS, _EMBEDDING_TOKENS, _VISION_TOKENS, _IMAGES, _COST)
         .where(UsageEvent.created_at >= start, UsageEvent.created_at < end)
         .group_by(UsageEvent.user_id)
     )
     if user_id is not None:
         query = query.where(UsageEvent.user_id == user_id)
     return {
-        owner: AdminUserUsage(chat_tokens=chat, embedding_tokens=embedding, vision_tokens=vision, cost_usd=_cost(cost))
-        for owner, chat, embedding, vision, cost in (await db.execute(query)).all()
+        owner: AdminUserUsage(
+            chat_tokens=chat, embedding_tokens=embedding, vision_tokens=vision, images=images, cost_usd=_cost(cost)
+        )
+        for owner, chat, embedding, vision, images, cost in (await db.execute(query)).all()
     }
+
+
+async def _image_limits(db: AsyncSession, user_id: int | None = None) -> dict[int, int]:
+    """user id -> their own monthly image limit (users without a row get DEFAULT_MONTHLY_IMAGE_LIMIT)."""
+    query = select(UserImageLimit.user_id, UserImageLimit.monthly_image_limit)
+    if user_id is not None:
+        query = query.where(UserImageLimit.user_id == user_id)
+    return {owner: limit for owner, limit in (await db.execute(query)).tuples()}
 
 
 async def _documents_by_owner(db: AsyncSession, owner_id: int | None = None) -> dict[int, tuple[int, int]]:
@@ -175,8 +201,16 @@ async def _documents_by_owner(db: AsyncSession, owner_id: int | None = None) -> 
     return {owner: (count, size) for owner, count, size in (await db.execute(query)).all()}
 
 
-def _admin_user(user: User, usage: AdminUserUsage | None, documents: tuple[int, int] | None) -> AdminUser:
+def _admin_user(
+    user: User, usage: AdminUserUsage | None, documents: tuple[int, int] | None, image_limit: int | None
+) -> AdminUser:
+    """`image_limit`: the user's own monthly image limit, None without a row (the env default applies; the admin is
+    exempt, so 0)."""
     document_count, storage_bytes = documents or (0, 0)
+    if user.is_admin:
+        image_limit = 0
+    elif image_limit is None:
+        image_limit = settings.default_monthly_image_limit
     return AdminUser(
         id=user.id,
         username=user.username,
@@ -187,11 +221,12 @@ def _admin_user(user: User, usage: AdminUserUsage | None, documents: tuple[int, 
         max_upload_mb=user.max_upload_mb,
         max_documents=user.max_documents,
         max_storage_mb=user.max_storage_mb,
+        monthly_image_limit=image_limit,
         restrict_models=user.restrict_models,
         allowed_model_ids=sorted(model.id for model in user.allowed_models),
         created_at=user.created_at,
         last_login_at=user.last_login_at,
-        usage=usage or AdminUserUsage(chat_tokens=0, embedding_tokens=0, vision_tokens=0, cost_usd=0.0),
+        usage=usage or AdminUserUsage(chat_tokens=0, embedding_tokens=0, vision_tokens=0, images=0, cost_usd=0.0),
         document_count=document_count,
         storage_bytes=int(storage_bytes),
     )
@@ -200,7 +235,8 @@ def _admin_user(user: User, usage: AdminUserUsage | None, documents: tuple[int, 
 async def _admin_user_for(db: AsyncSession, user: User) -> AdminUser:
     usage = await _usage_this_month(db, user.id)
     documents = await _documents_by_owner(db, user.id)
-    return _admin_user(user, usage.get(user.id), documents.get(user.id))
+    image_limits = await _image_limits(db, user.id)
+    return _admin_user(user, usage.get(user.id), documents.get(user.id), image_limits.get(user.id))
 
 
 @router.get("/users")
@@ -208,7 +244,8 @@ async def list_users(db: AsyncSession = Depends(get_db)) -> list[AdminUser]:
     users = await db.scalars(select(User).order_by(User.is_admin.desc(), User.username))
     usage = await _usage_this_month(db)
     documents = await _documents_by_owner(db)
-    return [_admin_user(user, usage.get(user.id), documents.get(user.id)) for user in users]
+    image_limits = await _image_limits(db)
+    return [_admin_user(user, usage.get(user.id), documents.get(user.id), image_limits.get(user.id)) for user in users]
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)
@@ -216,13 +253,15 @@ async def create_user(body: AdminUserCreate, db: AsyncSession = Depends(get_db))
     if await db.scalar(select(User.id).where(User.username == body.username)) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_USERNAME_TAKEN)
     user = User(
-        **body.model_dump(exclude={"password", "allowed_model_ids"}),
+        **body.model_dump(exclude={"password", "allowed_model_ids", "monthly_image_limit"}),
         is_admin=False,
         password_hash=await hash_password_async(body.password),
         allowed_models=await _chat_models(db, body.allowed_model_ids),
     )
     db.add(user)
     try:
+        await db.flush()
+        db.add(UserImageLimit(user_id=user.id, monthly_image_limit=body.monthly_image_limit))
         await db.commit()
     except IntegrityError:
         await db.rollback()
@@ -232,7 +271,7 @@ async def create_user(body: AdminUserCreate, db: AsyncSession = Depends(get_db))
 
 @router.patch("/users/{user_id}")
 async def update_user(user_id: Id, body: AdminUserUpdate, db: AsyncSession = Depends(get_db)) -> AdminUser:
-    changes = body.model_dump(exclude_none=True)
+    changes = body.model_dump(exclude_none=True, exclude={"monthly_image_limit"})
     # Hashed before the row is locked, so the lock isn't held while hashing.
     password_hash = await hash_password_async(changes.pop("password")) if "password" in changes else None
     # Locked: token_version and password_hash are read-modify-write, and change-password writes them too.
@@ -245,6 +284,11 @@ async def update_user(user_id: Id, body: AdminUserUpdate, db: AsyncSession = Dep
         user.password_hash = password_hash
     for field, value in changes.items():
         setattr(user, field, value)
+    if body.monthly_image_limit is not None:  # the user row is locked, so concurrent updates can't both insert
+        if (limit := await db.get(UserImageLimit, user.id)) is not None:
+            limit.monthly_image_limit = body.monthly_image_limit
+        else:
+            db.add(UserImageLimit(user_id=user.id, monthly_image_limit=body.monthly_image_limit))
     await db.commit()
     return await _admin_user_for(db, user)
 
@@ -261,6 +305,7 @@ async def delete_user(user_id: Id, db: AsyncSession = Depends(get_db)) -> None:
     await db.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
     await db.execute(delete(Conversation).where(Conversation.user_id == user.id))
     await db.execute(delete(UsageEvent).where(UsageEvent.user_id == user.id))
+    await db.execute(delete(UserImageLimit).where(UserImageLimit.user_id == user.id))
     await db.delete(user)
     await db.commit()
     for doc in documents:
@@ -301,6 +346,12 @@ async def _discard_vectors(db: AsyncSession, model: LLMModel) -> None:
     model.embedding_dim = None
 
 
+def _require_supported_image_model(litellm_model: str, api_base: str | None) -> None:
+    """Image models must be OpenAI or Azure OpenAI GPT image models (llm.image_model_problem)."""
+    if (problem := llm.image_model_problem(litellm_model, api_base)) is not None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=problem)
+
+
 def _require_enabled_default(is_default: bool | None, enabled: bool) -> None:
     if is_default and not enabled:
         raise HTTPException(
@@ -317,6 +368,8 @@ async def list_models(db: AsyncSession = Depends(get_db)) -> list[AdminModel]:
 @router.post("/models", status_code=status.HTTP_201_CREATED)
 async def create_model(body: AdminModelCreate, db: AsyncSession = Depends(get_db)) -> AdminModel:
     _require_enabled_default(body.is_default, body.enabled)
+    if body.kind == "image":
+        _require_supported_image_model(body.litellm_model, body.api_base)
     model = LLMModel(**body.model_dump())
     db.add(model)
     await db.flush()
@@ -334,6 +387,10 @@ async def update_model(model_id: Id, body: AdminModelUpdate, db: AsyncSession = 
     if is_active_embedding and (changes.get("enabled") is False or changes.get("is_default") is False):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_ACTIVE_EMBEDDING)
     _require_enabled_default(changes.get("is_default"), changes.get("enabled", model.enabled))
+    if model.kind == "image" and ("litellm_model" in changes or "api_base" in changes):
+        _require_supported_image_model(
+            changes.get("litellm_model", model.litellm_model), changes.get("api_base", model.api_base)
+        )
     if model.kind == "embedding" and any(
         name in changes and changes[name] != getattr(model, name) for name in ("litellm_model", "api_base")
     ):
@@ -360,9 +417,13 @@ async def delete_model(model_id: Id, db: AsyncSession = Depends(get_db)) -> None
 
 
 @router.post("/models/{model_id}/test")
-async def run_model_test(model_id: Id, db: AsyncSession = Depends(get_db)) -> ModelTestResult:
+async def run_model_test(
+    model_id: Id, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)
+) -> ModelTestResult:
     model = await _get_model(db, model_id)
     await db.commit()  # don't hold a pooled connection (idle in transaction) during the provider call
+    if model.kind == "image":  # recorded as the admin's image usage (an image Test costs about $0.01)
+        return ModelTestResult(**await image_tool.test_image_model(model, admin))
     result = ModelTestResult(**await llm.test_model(model))
     if model.kind == "embedding" and result.ok and result.embedding_dim:
         model.embedding_dim = result.embedding_dim
@@ -407,14 +468,14 @@ async def usage_report(
         ) from None
     in_month = (UsageEvent.created_at >= start, UsageEvent.created_at < end)
 
-    chat, embedding, vision, cost, requests = (
+    chat, embedding, vision, images, cost, requests = (
         await db.execute(
-            select(_CHAT_TOKENS, _EMBEDDING_TOKENS, _VISION_TOKENS, _COST, _CHAT_REQUESTS).where(*in_month)
+            select(_CHAT_TOKENS, _EMBEDDING_TOKENS, _VISION_TOKENS, _IMAGES, _COST, _CHAT_REQUESTS).where(*in_month)
         )
     ).one()
 
     by_user = await db.execute(
-        select(User.id, User.username, _CHAT_TOKENS, _EMBEDDING_TOKENS, _VISION_TOKENS, _COST, _CHAT_REQUESTS)
+        select(User.id, User.username, _CHAT_TOKENS, _EMBEDDING_TOKENS, _VISION_TOKENS, _IMAGES, _COST, _CHAT_REQUESTS)
         .select_from(UsageEvent)
         .join(User, User.id == UsageEvent.user_id)
         .where(*in_month)
@@ -439,7 +500,7 @@ async def usage_report(
 
     day = func.date(UsageEvent.created_at)
     daily = await db.execute(
-        select(day, _CHAT_TOKENS, _EMBEDDING_TOKENS, _VISION_TOKENS, _COST)
+        select(day, _CHAT_TOKENS, _EMBEDDING_TOKENS, _VISION_TOKENS, _IMAGES, _COST)
         .where(*in_month)
         .group_by(day)
         .order_by(day)
@@ -451,6 +512,7 @@ async def usage_report(
             chat_tokens=chat,
             embedding_tokens=embedding,
             vision_tokens=vision,
+            images=images,
             cost_usd=_cost(cost),
             requests=requests,
         ),
@@ -461,10 +523,20 @@ async def usage_report(
                 chat_tokens=user_chat,
                 embedding_tokens=user_embedding,
                 vision_tokens=user_vision,
+                images=user_images,
                 cost_usd=_cost(user_cost),
                 requests=user_requests,
             )
-            for user_id, username, user_chat, user_embedding, user_vision, user_cost, user_requests in by_user.all()
+            for (
+                user_id,
+                username,
+                user_chat,
+                user_embedding,
+                user_vision,
+                user_images,
+                user_cost,
+                user_requests,
+            ) in by_user.all()
         ],
         by_model=[
             ModelUsage(
@@ -483,9 +555,10 @@ async def usage_report(
                 chat_tokens=day_chat,
                 embedding_tokens=day_embedding,
                 vision_tokens=day_vision,
+                images=day_images,
                 cost_usd=_cost(day_cost),
             )
-            for date, day_chat, day_embedding, day_vision, day_cost in daily.all()
+            for date, day_chat, day_embedding, day_vision, day_images, day_cost in daily.all()
         ],
     )
 

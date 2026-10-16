@@ -61,7 +61,8 @@ async def test_unrestricted_user_gets_every_enabled_chat_model_default_first(
 
     models = await listed(user)
 
-    files = {"can_create_files": True}  # every seeded chat model supports function calling
+    # Every seeded chat model supports function calling; CHAT_IMAGE_TOOLS is off in the tests unless asked for.
+    files = {"can_create_files": True, "can_create_images": False}
     assert models == [
         {"id": model_ids[OPUS], "display_name": OPUS, "provider": "anthropic", "is_default": True, **files},
         {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": False, **files},
@@ -129,6 +130,7 @@ async def test_provider_is_the_prefix_of_the_litellm_model(
         "provider": provider,
         "is_default": False,
         "can_create_files": can_create_files,
+        "can_create_images": False,
     }
 
 
@@ -139,7 +141,7 @@ async def test_restricted_user_gets_only_allowed_enabled_models(
     user = await create_user(restrict_models=True, allowed_model_ids=allowed)
     await patch_model(admin_client, model_ids[SONNET], enabled=False)
 
-    files = {"can_create_files": True}
+    files = {"can_create_files": True, "can_create_images": False}
     assert await listed(user) == [
         {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": False, **files},
         {"id": model_ids[GPT], "display_name": GPT, "provider": "openai", "is_default": False, **files},
@@ -245,3 +247,20 @@ async def test_chat_without_any_available_model(create_user: CreateUser) -> None
 
     assert response.status_code == 400
     assert response.json() == {"detail": "No chat model is available to you. Ask the admin to enable one."}
+
+
+@pytest.mark.usefixtures("image_tools")
+async def test_can_create_images_follows_the_image_model_and_the_tools(
+    admin_client: ApiClient, create_user: CreateUser, model_ids: dict[str, int]
+) -> None:
+    user = await create_user(monthly_image_limit=1, max_documents=1)  # quotas don't matter here
+    created = await admin_client.post(
+        "/api/admin/models", json={"display_name": "Router", "litellm_model": "openrouter/x/y", "kind": "chat"}
+    )
+    assert created.status_code == 201
+
+    images = {model["display_name"]: model["can_create_images"] for model in await listed(user)}
+    assert images == {OPUS: True, HAIKU: True, SONNET: True, GPT_MINI: True, GPT: True, "Router": False}
+
+    await patch_model(admin_client, model_ids["GPT Image 2"], enabled=False)
+    assert not any(model["can_create_images"] for model in await listed(user))

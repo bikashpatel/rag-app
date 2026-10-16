@@ -273,6 +273,18 @@ def test_a_few_characters_of_an_unsupported_script_become_placeholders() -> None
     ]
 
 
+@pytest.mark.parametrize("block", ["```\nprint('東')\nx = 1\n```", "| a |\n|--|\n| **x** 東 |"])
+def test_placeholders_are_counted_as_drawn(block: str) -> None:
+    """A code block is drawn line by line and a table cell as one text: each placeholder counts once."""
+    content = "# Notes\n\n" + "A paragraph of Latin text that keeps the share of Han letters low. " * 3 + "\n\n" + block
+
+    rendered = filegen.render(request(content=content))
+
+    assert rendered.notes == [
+        "1 characters in Han couldn't be shown in the PDF and appear as □. A docx or md file keeps them."
+    ]
+
+
 @pytest.mark.parametrize(
     ("sample", "script"), [("مرحبا بالعالم " * 20, "Arabic"), ("東京は日本の首都です。" * 10, "Han")]
 )

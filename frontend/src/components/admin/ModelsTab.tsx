@@ -33,18 +33,41 @@ const SECTIONS: SectionInfo[] = [
       "Read PDF pages that have no text layer, and describe images such as charts, diagrams and photos on pages with text. The active one is used for new PDF uploads; page images are sent to its provider and cost tokens per page. Disable it to turn this off.",
     emptyHint: "Add one and make it active to read scanned PDFs and describe images in PDFs.",
   },
+  {
+    kind: "image",
+    title: "Image models",
+    description:
+      "Generate images when users ask for one in chat (OpenAI or Azure OpenAI GPT image models). The active one is used; each image costs about $0.01 to $0.20 depending on quality and size and counts toward the user's monthly image limit. Disable it to turn image generation off.",
+    emptyHint: "Add one and make it active so users can ask for images in chat.",
+  },
 ];
-const COLUMNS = 7;
 
-/** Chat and vision models write text, so they have an output limit and separate input and output prices. */
-function writesText(kind: ModelKind): boolean {
+/** Chat and vision models write text, so they have an output limit; embedding models have dimensions instead. */
+function hasSizeColumn(kind: ModelKind): boolean {
+  return kind !== "image";
+}
+
+/** Every kind but embedding has separate input and output prices (image models: prompt text and image tokens). */
+function hasOutputPrice(kind: ModelKind): boolean {
   return kind !== "embedding";
 }
 
-/** Users pick among chat models (the default is preselected); exactly one embedding or vision model is used. */
+function columnCount(kind: ModelKind): number {
+  return hasSizeColumn(kind) ? 7 : 6;
+}
+
+/** Users pick among chat models (the default is preselected); exactly one embedding, vision or image model is used. */
 function defaultLabel(kind: ModelKind): string {
   return kind === "chat" ? "Default" : "Active";
 }
+
+/** What the active model of a kind does, for the "Make active" button and its error. */
+const ROLES: Record<ModelKind, string> = {
+  chat: "default chat model",
+  embedding: "active embedding model",
+  vision: "active vision model",
+  image: "active image model",
+};
 
 /** Insert or replace `saved`; a new default clears the flag on the other models of its kind. */
 function applySaved(list: AdminModel[], saved: AdminModel): AdminModel[] {
@@ -77,10 +100,16 @@ export default function ModelsTab({ onChanged }: { onChanged: () => void }) {
   const chatFlash = useFlash();
   const embeddingFlash = useFlash();
   const visionFlash = useFlash();
+  const imageFlash = useFlash();
   const [editing, setEditing] = useState<{ model: AdminModel | null; kind: ModelKind } | null>(null);
   const [toggling, setToggling] = useState<ReadonlySet<number>>(new Set());
 
-  const flashes: Record<ModelKind, Flash> = { chat: chatFlash, embedding: embeddingFlash, vision: visionFlash };
+  const flashes: Record<ModelKind, Flash> = {
+    chat: chatFlash,
+    embedding: embeddingFlash,
+    vision: visionFlash,
+    image: imageFlash,
+  };
   const replace = (saved: AdminModel) => models.setData((list) => list && applySaved(list, saved));
   const patchLocal = (id: number, patch: Partial<AdminModel>) =>
     models.setData((list) => list && list.map((model) => (model.id === id ? { ...model, ...patch } : model)));
@@ -94,11 +123,15 @@ export default function ModelsTab({ onChanged }: { onChanged: () => void }) {
       try {
         replace(await api.patch<AdminModel>(`/admin/models/${model.id}`, { enabled } satisfies AdminModelUpdate));
         flashes[model.kind].success(
-          model.kind === "vision" && model.is_default && !enabled
+          model.is_default && !enabled && model.kind === "vision"
             ? `${model.display_name} disabled. Scanned PDFs can't be read until a vision model is active.`
-            : `${model.display_name} ${enabled ? "enabled" : "disabled"}.`,
+            : model.is_default && !enabled && model.kind === "image"
+              ? `${model.display_name} disabled. Image generation in chat is off until an image model is active.`
+              : `${model.display_name} ${enabled ? "enabled" : "disabled"}.`,
         );
-        if (model.kind === "vision" || (model.kind === "embedding" && model.is_default)) onChanged();
+        if (model.kind === "vision" || model.kind === "image" || (model.kind === "embedding" && model.is_default)) {
+          onChanged();
+        }
       } catch (err) {
         patchLocal(model.id, { enabled: model.enabled });
         flashes[model.kind].error(
@@ -122,7 +155,9 @@ export default function ModelsTab({ onChanged }: { onChanged: () => void }) {
       flashes[model.kind].success(
         model.kind === "embedding"
           ? `${model.display_name} is now the active embedding model. Re-index documents so search can find them.`
-          : `${model.display_name} is now the active vision model. New PDF uploads use it for scanned pages and images.`,
+          : model.kind === "vision"
+            ? `${model.display_name} is now the active vision model. New PDF uploads use it for scanned pages and images.`
+            : `${model.display_name} is now the active image model.`,
       );
       onChanged();
     },
@@ -185,7 +220,6 @@ type ModelSectionProps = SectionInfo & {
 
 function ModelSection({ kind, title, description, emptyHint, models, flash, toggling, actions, onAdd }: ModelSectionProps) {
   const titleId = `admin-models-${kind}-title`;
-  const writes = writesText(kind);
   return (
     <section className="card admin-card" aria-labelledby={titleId}>
       <div className="admin-card-header">
@@ -215,11 +249,13 @@ function ModelSection({ kind, title, description, emptyHint, models, flash, togg
                 <th scope="col">LiteLLM id</th>
                 <th scope="col">Enabled</th>
                 <th scope="col">{defaultLabel(kind)}</th>
+                {hasSizeColumn(kind) ? (
+                  <th scope="col" className="num">
+                    {kind === "embedding" ? "Dimensions" : "Max output"}
+                  </th>
+                ) : null}
                 <th scope="col" className="num">
-                  {writes ? "Max output" : "Dimensions"}
-                </th>
-                <th scope="col" className="num">
-                  {writes ? "Price / 1M in · out" : "Price / 1M"}
+                  {hasOutputPrice(kind) ? "Price / 1M in · out" : "Price / 1M"}
                 </th>
                 <th scope="col">
                   <span className="sr-only">Actions</span>
@@ -260,7 +296,6 @@ function ModelRow({ model, toggling, actions, flash }: ModelRowProps) {
   const [test, setTest] = useState<TestState | null>(null);
   const lockHintId = useId();
   const name = model.display_name;
-  const writes = writesText(model.kind);
   // Only the active embedding model can't be disabled (the API refuses it); disabling the active vision model
   // simply turns PDF page reading off.
   const enabledLocked = model.kind === "embedding" && model.is_default && model.enabled;
@@ -310,24 +345,26 @@ function ModelRow({ model, toggling, actions, flash }: ModelRowProps) {
         <td>
           <DefaultControl model={model} actions={actions} flash={flash} />
         </td>
-        <td className="num">
-          {writes ? (
-            model.max_output_tokens === null ? (
-              <span className="muted">default</span>
+        {hasSizeColumn(model.kind) ? (
+          <td className="num">
+            {model.kind !== "embedding" ? (
+              model.max_output_tokens === null ? (
+                <span className="muted">default</span>
+              ) : (
+                formatNumber(model.max_output_tokens)
+              )
+            ) : model.embedding_dim === null ? (
+              <span className="muted" title="Detected on first use, or run Test">
+                —
+              </span>
             ) : (
-              formatNumber(model.max_output_tokens)
-            )
-          ) : model.embedding_dim === null ? (
-            <span className="muted" title="Detected on first use, or run Test">
-              —
-            </span>
-          ) : (
-            formatNumber(model.embedding_dim)
-          )}
-        </td>
+              formatNumber(model.embedding_dim)
+            )}
+          </td>
+        ) : null}
         <td className="num admin-nowrap">
           <Price value={model.input_cost_per_mtok} />
-          {writes ? (
+          {hasOutputPrice(model.kind) ? (
             <>
               <span className="muted"> · </span>
               <Price value={model.output_cost_per_mtok} />
@@ -370,7 +407,7 @@ function ModelRow({ model, toggling, actions, flash }: ModelRowProps) {
       </tr>
       {test ? (
         <tr className="admin-subrow">
-          <td colSpan={COLUMNS}>
+          <td colSpan={columnCount(model.kind)}>
             <TestResult name={name} kind={model.kind} state={test} onDismiss={() => setTest(null)} />
           </td>
         </tr>
@@ -384,6 +421,9 @@ function deleteNote(model: AdminModel): string {
   if (model.kind === "embedding") return " Its stored vectors are removed too.";
   if (model.kind === "vision" && model.is_default && model.enabled) {
     return " PDF page reading turns off until another vision model is active.";
+  }
+  if (model.kind === "image" && model.is_default && model.enabled) {
+    return " Image generation in chat turns off until another image model is active.";
   }
   return "";
 }
@@ -423,8 +463,8 @@ function DefaultControl({ model, actions, flash }: { model: AdminModel; actions:
     );
   }
 
-  // Chat and vision models switch without a confirmation: nothing already stored has to be redone.
-  const role = model.kind === "chat" ? "default chat model" : "active vision model";
+  // Chat, vision and image models switch without a confirmation: nothing already stored has to be redone.
+  const role = ROLES[model.kind];
   async function makeDefault() {
     setBusy(true);
     try {
@@ -459,7 +499,9 @@ function TestResult({ name, kind, state, onDismiss }: TestResultProps) {
       <div className="admin-test admin-test-running" role="status">
         <Spinner size={14} label="Testing" />
         <span className="admin-test-text">
-          Sending a short test {kind === "vision" ? "image" : "request"} to {name}…
+          {kind === "image"
+            ? `Generating a small test image with ${name}… (up to a minute, about $0.01)`
+            : `Sending a short test ${kind === "vision" ? "image" : "request"} to ${name}…`}
         </span>
       </div>
     );
@@ -478,6 +520,9 @@ function TestResult({ name, kind, state, onDismiss }: TestResultProps) {
         <strong>{ok ? `${name} works` : `${name} failed`}</strong>
         {facts.length ? <span className="admin-test-facts"> · {facts.join(" · ")}</span> : null}
         {message ? <span className="admin-test-message">{message}</span> : null}
+        {result?.image_data_url ? (
+          <img className="admin-test-image" src={result.image_data_url} alt={`Test image from ${name}`} width={96} />
+        ) : null}
       </span>
       <button type="button" className="btn btn-ghost btn-icon admin-test-close" aria-label="Dismiss test result" onClick={onDismiss}>
         <CloseIcon size={14} />

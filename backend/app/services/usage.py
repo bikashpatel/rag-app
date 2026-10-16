@@ -10,7 +10,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import LLMModel, UsageEvent, User
+from app.models import LLMModel, UsageEvent, User, UserImageLimit
 from app.redis_client import get_redis
 from app.services.llm import Usage
 
@@ -74,8 +74,7 @@ async def check_rate_limit(user: User) -> None:
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             detail=(
-                f"Rate limit reached ({user.rate_limit_per_min} requests per minute). "
-                f"Try again in {retry_after}s."
+                f"Rate limit reached ({user.rate_limit_per_min} requests per minute). Try again in {retry_after}s."
             ),
             headers={"Retry-After": str(retry_after)},
         )
@@ -99,6 +98,25 @@ async def chat_tokens_this_month(db: AsyncSession, user_id: int) -> int:
 async def vision_tokens_this_month(db: AsyncSession, user_id: int) -> int:
     """Checked against VISION_MONTHLY_TOKEN_LIMIT when an ingestion run starts."""
     return await _tokens_this_month(db, user_id, "vision")
+
+
+async def images_this_month(db: AsyncSession, user_id: int) -> int:
+    """The user's image usage events since the start of this UTC month: reservations and kept failures count."""
+    result = await db.execute(
+        select(func.count(UsageEvent.id)).where(
+            UsageEvent.user_id == user_id, UsageEvent.kind == "image", UsageEvent.created_at >= month_start()
+        )
+    )
+    return int(result.scalar_one() or 0)
+
+
+async def monthly_image_limit(db: AsyncSession, user: User) -> int:
+    """Images the user may generate per UTC month (0 = unlimited): 0 for the admin; else their user_image_limits row,
+    or DEFAULT_MONTHLY_IMAGE_LIMIT when they have none."""
+    if user.is_admin:
+        return 0
+    limit = await db.scalar(select(UserImageLimit.monthly_image_limit).where(UserImageLimit.user_id == user.id))
+    return settings.default_monthly_image_limit if limit is None else limit
 
 
 async def check_budget(db: AsyncSession, user: User) -> int | None:
@@ -206,18 +224,23 @@ async def usage_summary(db: AsyncSession, user: User) -> dict:
             UsageEvent.kind,
             func.coalesce(func.sum(UsageEvent.total_tokens), 0),
             func.coalesce(func.sum(UsageEvent.cost_usd), 0.0),
+            func.count(UsageEvent.id),
         )
         .where(UsageEvent.user_id == user.id, UsageEvent.created_at >= start)
         .group_by(UsageEvent.kind)
     )
     totals = {"chat": (0, 0.0), "embedding": (0, 0.0), "vision": (0, 0.0)}
-    for kind, tokens, cost in rows.all():
+    images = 0
+    for kind, tokens, cost, events in rows.all():
         totals[kind] = (int(tokens or 0), float(cost or 0.0))
+        if kind == "image":
+            images = int(events)
     return {
         "month": start.strftime("%Y-%m"),
         "chat_tokens": totals["chat"][0],
         "embedding_tokens": totals["embedding"][0],
         "vision_tokens": totals["vision"][0],
+        "images": images,
         "cost_usd": round(sum(cost for _, cost in totals.values()), 6),
         "monthly_token_limit": 0 if user.is_admin else user.monthly_token_limit,
     }

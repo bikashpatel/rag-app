@@ -16,7 +16,7 @@ from app.models import User, utcnow
 from app.redis_client import get_redis
 from app.schemas import Me, UsageSummary, UserLimits
 from app.security import hash_password_async, needs_rehash, verify_password_async
-from app.services.usage import usage_summary, user_limits
+from app.services.usage import monthly_image_limit, usage_summary, user_limits
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -86,7 +86,7 @@ async def build_me(db: AsyncSession, user: User) -> Me:
         id=user.id,
         username=user.username,
         is_admin=user.is_admin,
-        limits=UserLimits(**user_limits(user)),
+        limits=UserLimits(**user_limits(user), monthly_image_limit=await monthly_image_limit(db, user)),
         usage=UsageSummary(**await usage_summary(db, user)),
     )
 

@@ -29,6 +29,11 @@ async def get_active_vision_model(db: AsyncSession) -> LLMModel | None:
     return await _active_model(db, "vision")
 
 
+async def get_active_image_model(db: AsyncSession) -> LLMModel | None:
+    """The enabled default image model, which chat uses to generate images; None turns that off."""
+    return await _active_model(db, "image")
+
+
 async def list_chat_models_for_user(db: AsyncSession, user: User) -> list[LLMModel]:
     """Enabled chat models the user may use; the default first, then by name."""
     result = await db.execute(select(LLMModel).where(LLMModel.kind == "chat", LLMModel.enabled.is_(True)))

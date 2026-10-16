@@ -47,6 +47,7 @@ GPT_MINI = "GPT-5.4 mini"
 SMALL = "OpenAI text-embedding-3-small"
 LARGE = "OpenAI text-embedding-3-large"
 SONNET_VISION = "Claude Sonnet 5.5 (vision)"
+GPT_IMAGE = "GPT Image 2"
 
 ACTIVE_EMBEDDING = "This is the active embedding model. Make another embedding model the default first."
 ENV_ADMIN = "The admin account is managed in .env"
@@ -62,6 +63,7 @@ ADMIN_USER_KEYS = {
     "max_upload_mb",
     "max_documents",
     "max_storage_mb",
+    "monthly_image_limit",
     "restrict_models",
     "allowed_model_ids",
     "created_at",
@@ -86,6 +88,7 @@ DOCUMENT_ITEM_KEYS = {
     "is_stale",
     "vision_pages",
     "generated",
+    "image",
     "created_at",
     "updated_at",
 }
@@ -308,6 +311,7 @@ async def test_config_reports_the_defaults_and_the_admin(admin_client: ApiClient
             "max_upload_mb": 25,
             "max_documents": 100,
             "max_storage_mb": 500,
+            "monthly_image_limit": 30,
         },
         "max_upload_mb_hard": settings.max_upload_mb_hard,
         "admin_username": ADMIN_USERNAME,
@@ -353,10 +357,11 @@ async def test_create_user_applies_the_defaults(admin_client: ApiClient, new_cli
         "max_upload_mb": settings.default_max_upload_mb,
         "max_documents": settings.default_max_documents,
         "max_storage_mb": settings.default_max_storage_mb,
+        "monthly_image_limit": settings.default_monthly_image_limit,
         "restrict_models": False,
         "allowed_model_ids": [],
         "last_login_at": None,
-        "usage": {"chat_tokens": 0, "embedding_tokens": 0, "vision_tokens": 0, "cost_usd": 0.0},
+        "usage": {"chat_tokens": 0, "embedding_tokens": 0, "vision_tokens": 0, "images": 0, "cost_usd": 0.0},
         "document_count": 0,
         "storage_bytes": 0,
     }
@@ -487,6 +492,7 @@ async def test_update_user_changes_limits_and_keeps_sessions(
         "max_upload_mb": 2,
         "max_documents": 3,
         "max_storage_mb": 0,
+        "monthly_image_limit": 9,
         "restrict_models": True,
         "allowed_model_ids": [model_ids[GPT], model_ids[HAIKU]],
     }
@@ -889,16 +895,24 @@ async def test_list_users_reports_this_months_usage_and_documents(
         "chat_tokens": 47 + 1200,
         "embedding_tokens": alice_embedding_tokens,
         "vision_tokens": 0,
+        "images": 0,
         "cost_usd": pytest.approx(0.5 + chat_cost + alice_embedding_tokens / 1_000_000, abs=1e-6),
     }
     assert users["alice"]["document_count"] == 2
     assert users["alice"]["storage_bytes"] == sum(len(data) for data in files.values())
-    assert users["bob"]["usage"] == {"chat_tokens": 0, "embedding_tokens": 70, "vision_tokens": 0, "cost_usd": 0.25}
+    assert users["bob"]["usage"] == {
+        "chat_tokens": 0,
+        "embedding_tokens": 70,
+        "vision_tokens": 0,
+        "images": 0,
+        "cost_usd": 0.25,
+    }
     assert (users["bob"]["document_count"], users["bob"]["storage_bytes"]) == (0, 0)
     assert users["carol"]["usage"] == {
         "chat_tokens": 0,
         "embedding_tokens": 0,
         "vision_tokens": 3000,
+        "images": 0,
         "cost_usd": 0.01,
     }
     assert (users["carol"]["document_count"], users["carol"]["storage_bytes"]) == (0, 0)
@@ -906,6 +920,7 @@ async def test_list_users_reports_this_months_usage_and_documents(
         "chat_tokens": 0,
         "embedding_tokens": 0,
         "vision_tokens": 0,
+        "images": 0,
         "cost_usd": 0.0,
     }
     assert {user["id"] for user in users.values()} == {
@@ -945,7 +960,7 @@ async def test_list_models_returns_every_model_by_kind_and_name(
 
     assert response.status_code == 200
     models = response.json()
-    by_kind_and_name = [HAIKU, OPUS, SONNET, GPT_MINI, GPT, LARGE, SMALL, SONNET_VISION]
+    by_kind_and_name = [HAIKU, OPUS, SONNET, GPT_MINI, GPT, LARGE, SMALL, GPT_IMAGE, SONNET_VISION]
     assert [model["display_name"] for model in models] == by_kind_and_name
     opus = next(model for model in models if model["display_name"] == OPUS)
     assert opus == {
@@ -974,6 +989,7 @@ async def test_list_models_returns_every_model_by_kind_and_name(
         GPT: ("chat", True, False),
         LARGE: ("embedding", False, False),
         SMALL: ("embedding", True, True),
+        GPT_IMAGE: ("image", True, True),
         SONNET_VISION: ("vision", True, True),
     }
 
@@ -1183,7 +1199,12 @@ async def test_making_a_model_the_default_clears_the_previous_default(
     assert response.status_code == 200
     assert response.json()["is_default"] is True
     models = (await admin_client.get("/api/admin/models")).json()
-    assert [model["display_name"] for model in models if model["is_default"]] == [SONNET, SMALL, SONNET_VISION]
+    assert [model["display_name"] for model in models if model["is_default"]] == [
+        SONNET,
+        SMALL,
+        GPT_IMAGE,
+        SONNET_VISION,
+    ]
 
     created = await admin_client.post(
         "/api/admin/models",
@@ -1192,7 +1213,12 @@ async def test_making_a_model_the_default_clears_the_previous_default(
 
     assert created.status_code == 201
     models = (await admin_client.get("/api/admin/models")).json()
-    assert [model["display_name"] for model in models if model["is_default"]] == ["House model", SMALL, SONNET_VISION]
+    assert [model["display_name"] for model in models if model["is_default"]] == [
+        "House model",
+        SMALL,
+        GPT_IMAGE,
+        SONNET_VISION,
+    ]
     listed = (await admin_client.get("/api/models")).json()
     assert listed[0] == {
         "id": created.json()["id"],
@@ -1200,6 +1226,7 @@ async def test_making_a_model_the_default_clears_the_previous_default(
         "provider": "openai",
         "is_default": True,
         "can_create_files": False,  # LiteLLM doesn't know the model
+        "can_create_images": False,
     }
 
 
@@ -1264,7 +1291,7 @@ async def test_enabling_and_defaulting_in_one_request(admin_client: ApiClient, m
 
     assert chat_model.status_code == 200 and embedding.status_code == 200
     models = (await admin_client.get("/api/admin/models")).json()
-    assert [model["display_name"] for model in models if model["is_default"]] == [GPT, LARGE, SONNET_VISION]
+    assert [model["display_name"] for model in models if model["is_default"]] == [GPT, LARGE, GPT_IMAGE, SONNET_VISION]
     assert (await stats(admin_client))["active_embedding_model"] == {"id": model_ids[LARGE], "display_name": LARGE}
 
 
@@ -1342,6 +1369,7 @@ async def test_deleting_an_unused_embedding_model(admin_client: ApiClient, model
         GPT_MINI,
         GPT,
         SMALL,
+        GPT_IMAGE,
         SONNET_VISION,
     ]
 
@@ -1477,6 +1505,7 @@ async def test_model_test_calls_a_chat_model_with_its_settings(
         "message": "OK: model replied 'Hello there'",
         "latency_ms": result["latency_ms"],
         "embedding_dim": None,
+        "image_data_url": None,
     }
     assert isinstance(result["latency_ms"], int) and result["latency_ms"] >= 0
     [call] = fake_llm.chat_calls
@@ -1530,7 +1559,13 @@ async def test_model_test_reports_provider_errors(
 
     assert response.status_code == 200
     result = response.json()
-    assert result == {"ok": False, "message": message, "latency_ms": result["latency_ms"], "embedding_dim": None}
+    assert result == {
+        "ok": False,
+        "message": message,
+        "latency_ms": result["latency_ms"],
+        "embedding_dim": None,
+        "image_data_url": None,
+    }
 
 
 async def test_model_test_stores_the_embedding_dimension(
@@ -1548,6 +1583,7 @@ async def test_model_test_stores_the_embedding_dimension(
         "message": "OK: returned 32-dimensional embeddings",
         "latency_ms": result["latency_ms"],
         "embedding_dim": 32,
+        "image_data_url": None,
     }
     assert [(call["model"], call["input"]) for call in fake_llm.embedding_calls] == [
         ("openai/text-embedding-3-large", ["connection test"])
@@ -1572,6 +1608,7 @@ async def test_failed_embedding_test_keeps_the_dimension(
         "message": "Could not connect to the model provider.",
         "latency_ms": result["latency_ms"],
         "embedding_dim": None,
+        "image_data_url": None,
     }
     assert (await admin_model(admin_client, large))["embedding_dim"] == 64
 
@@ -1587,6 +1624,7 @@ async def test_stats_on_a_fresh_install(admin_client: ApiClient, model_ids: dict
         "failed_documents": 0,
         "active_embedding_model": {"id": model_ids[SMALL], "display_name": SMALL},
         "active_vision_model": {"id": model_ids[SONNET_VISION], "display_name": SONNET_VISION},
+        "active_image_model": {"id": model_ids[GPT_IMAGE], "display_name": GPT_IMAGE},
         "queue_length": 0,
     }
 
@@ -1613,6 +1651,7 @@ async def test_stats_count_documents_by_state_and_the_queue(
         "failed_documents": 1,
         "active_embedding_model": {"id": model_ids[SMALL], "display_name": SMALL},
         "active_vision_model": {"id": model_ids[SONNET_VISION], "display_name": SONNET_VISION},
+        "active_image_model": {"id": model_ids[GPT_IMAGE], "display_name": GPT_IMAGE},
         "queue_length": 1,
     }
     assert after_switch == {
@@ -1754,7 +1793,7 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
     alice = await create_user("alice", login=False)
     bob = await create_user("bob", login=False)
     opus, haiku, small = "anthropic/claude-opus-5-5", "anthropic/claude-haiku-5-5", "openai/text-embedding-3-small"
-    sonnet = "anthropic/claude-sonnet-5-5"
+    sonnet, gpt_image = "anthropic/claude-sonnet-5-5", "openai/gpt-image-2"
 
     def event(
         user: ApiClient, model: str, kind: str, prompt: int, completion: int, cost: float, at: datetime
@@ -1777,6 +1816,8 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
         event(bob, haiku, "chat", 1000, 500, 0.00035, _utc(2026, 3, 31, 23, 59, 59, 999999)),
         event(bob, small, "embedding", 40, 0, 0.0000008, _utc(2026, 3, 31, 10)),
         event(bob, sonnet, "vision", 2000, 400, 0.008, _utc(2026, 3, 15, 9)),
+        event(alice, gpt_image, "image", 50, 272, 0.00841, _utc(2026, 3, 15, 13)),
+        event(alice, gpt_image, "image", 0, 0, 0.0, _utc(2026, 3, 1, 5)),  # a reservation still in flight
         event(alice, opus, "chat", 9999, 1, 5.0, _utc(2026, 2, 28, 23, 59, 59)),
         event(bob, haiku, "chat", 7777, 3, 5.0, _utc(2026, 4, 1)),
     )
@@ -1790,8 +1831,9 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
             "chat_tokens": 1870,
             "embedding_tokens": 340,
             "vision_tokens": 2400,
-            "cost_usd": 0.010957,
-            "requests": 3,
+            "images": 2,
+            "cost_usd": 0.019367,
+            "requests": 3,  # chat answers only
         },
         "by_user": [
             {
@@ -1800,6 +1842,7 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
                 "chat_tokens": 1500,
                 "embedding_tokens": 40,
                 "vision_tokens": 2400,
+                "images": 0,
                 "cost_usd": 0.008351,
                 "requests": 1,
             },
@@ -1809,7 +1852,8 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
                 "chat_tokens": 370,
                 "embedding_tokens": 300,
                 "vision_tokens": 0,
-                "cost_usd": 0.002606,
+                "images": 2,
+                "cost_usd": 0.011016,
                 "requests": 2,
             },
         ],
@@ -1839,6 +1883,14 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
                 "requests": 2,
             },
             {
+                "model_name": gpt_image,
+                "kind": "image",
+                "prompt_tokens": 50,
+                "completion_tokens": 272,
+                "cost_usd": 0.00841,
+                "requests": 2,  # images
+            },
+            {
                 "model_name": sonnet,
                 "kind": "vision",
                 "prompt_tokens": 2000,
@@ -1848,19 +1900,28 @@ async def test_usage_report_for_a_month(admin_client: ApiClient, create_user: Cr
             },
         ],
         "daily": [
-            {"date": "2026-03-01", "chat_tokens": 120, "embedding_tokens": 0, "vision_tokens": 0, "cost_usd": 0.0008},
+            {
+                "date": "2026-03-01",
+                "chat_tokens": 120,
+                "embedding_tokens": 0,
+                "vision_tokens": 0,
+                "images": 1,
+                "cost_usd": 0.0008,
+            },
             {
                 "date": "2026-03-15",
                 "chat_tokens": 250,
                 "embedding_tokens": 300,
                 "vision_tokens": 2400,
-                "cost_usd": 0.009806,
+                "images": 1,
+                "cost_usd": 0.018216,
             },
             {
                 "date": "2026-03-31",
                 "chat_tokens": 1500,
                 "embedding_tokens": 40,
                 "vision_tokens": 0,
+                "images": 0,
                 "cost_usd": 0.000351,
             },
         ],
@@ -1909,7 +1970,14 @@ async def test_usage_report_for_a_month_without_usage(admin_client: ApiClient) -
     assert response.status_code == 200
     assert response.json() == {
         "month": "1999-12",
-        "totals": {"chat_tokens": 0, "embedding_tokens": 0, "vision_tokens": 0, "cost_usd": 0.0, "requests": 0},
+        "totals": {
+            "chat_tokens": 0,
+            "embedding_tokens": 0,
+            "vision_tokens": 0,
+            "images": 0,
+            "cost_usd": 0.0,
+            "requests": 0,
+        },
         "by_user": [],
         "by_model": [],
         "daily": [],

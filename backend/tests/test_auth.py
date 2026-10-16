@@ -118,6 +118,7 @@ def zero_usage(monthly_token_limit: int) -> dict[str, Any]:
         "chat_tokens": 0,
         "embedding_tokens": 0,
         "vision_tokens": 0,
+        "images": 0,
         "cost_usd": 0.0,
         "monthly_token_limit": monthly_token_limit,
     }
@@ -135,6 +136,7 @@ async def test_login_returns_me_sets_the_session_cookie_and_records_the_login(
         "max_upload_mb": 3,
         "max_documents": 4,
         "max_storage_mb": 50,
+        "monthly_image_limit": 6,
     }
     alice = await create_user("alice", login=False, **limits)
     assert (await get_user("alice")).last_login_at is None
@@ -491,6 +493,7 @@ async def test_me_reports_the_users_limits_and_this_months_usage(create_user: Cr
             "max_upload_mb": 3,
             "max_documents": settings.default_max_documents,
             "max_storage_mb": settings.default_max_storage_mb,
+            "monthly_image_limit": settings.default_monthly_image_limit,
         },
         "usage": {
             **body["usage"],
@@ -518,6 +521,7 @@ async def test_me_reports_the_admin_as_unlimited(admin_client: ApiClient) -> Non
             "max_upload_mb": settings.max_upload_mb_hard,
             "max_documents": 0,
             "max_storage_mb": 0,
+            "monthly_image_limit": 0,
         },
         "usage": zero_usage(0),
     }

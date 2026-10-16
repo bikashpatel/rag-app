@@ -1,6 +1,8 @@
 """Thin LiteLLM wrappers. All model calls in the app go through this module."""
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 import math
@@ -48,6 +50,30 @@ class LLMError(Exception):
         self.bad_request = bad_request
         self.context_window = context_window
         self.detail = detail
+
+
+class ImageCallError(LLMError):
+    """An image call failed. str() is safe to show. `refused`: the provider's safety system declined the prompt.
+    `rate_limited`: the provider is rate limiting (worth another try later, not in this answer). `billed`: the request
+    was sent and may have been billed although no usable image arrived. `usage`: what the response reported, when
+    one arrived. `unusable`: the response can't ever work with this model (no image data, too large, not an image)."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        refused: bool = False,
+        rate_limited: bool = False,
+        billed: bool = False,
+        usage: "Usage | None" = None,
+        unusable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.refused = refused
+        self.rate_limited = rate_limited
+        self.billed = billed
+        self.usage = usage
+        self.unusable = unusable
 
 
 class VisionCallError(LLMError):
@@ -157,6 +183,13 @@ class VisionReply:
     truncated: bool  # the model stopped at max_tokens
 
 
+@dataclass
+class ImageReply:
+    data: bytes  # decoded, not validated yet
+    revised_prompt: str | None
+    usage: Usage  # tokens and cost of this image (estimated=True when the provider reported none)
+
+
 def _get(obj: Any, key: str, default: Any = None) -> Any:
     if obj is None:
         return default
@@ -185,6 +218,8 @@ def friendly_error(exc: BaseException) -> str:
         return "The model provider timed out."
     if isinstance(exc, litellm.APIConnectionError):
         return "Could not connect to the model provider."
+    if isinstance(exc, litellm.PermissionDeniedError):
+        return "The model provider refused access to this model. Check the account's access with the provider."
     if isinstance(exc, litellm.BadRequestError):
         return f"The model provider rejected the request: {_short(str(exc))}"
     return f"Model call failed: {_short(str(exc))}"
@@ -246,8 +281,7 @@ def compute_cost(model: LLMModel, prompt_tokens: int, completion_tokens: int) ->
     """USD cost. Explicit per-1M prices on the model win; else LiteLLM's cost map; else 0."""
     if model.input_cost_per_mtok is not None or model.output_cost_per_mtok is not None:
         return (
-            prompt_tokens * (model.input_cost_per_mtok or 0.0)
-            + completion_tokens * (model.output_cost_per_mtok or 0.0)
+            prompt_tokens * (model.input_cost_per_mtok or 0.0) + completion_tokens * (model.output_cost_per_mtok or 0.0)
         ) / 1_000_000
     try:
         prompt_cost, completion_cost = litellm.cost_per_token(
@@ -464,11 +498,7 @@ def assistant_turn(step: ChatStep, ids: list[str]) -> list[dict]:
     segments: list[tuple[list[dict], list[str], list[int]]] = []
     for kind, item in step.sequence:
         current = segments[-1] if segments else None
-        if (
-            current is None
-            or (kind == "thinking" and (current[1] or current[2]))
-            or (kind == "text" and current[2])
-        ):
+        if current is None or (kind == "thinking" and (current[1] or current[2])) or (kind == "text" and current[2]):
             current = ([], [], [])
             segments.append(current)
         if kind == "thinking":
@@ -699,8 +729,231 @@ def _allow_effort(litellm_model: str) -> None:
         logger.warning("Could not enable reasoning_effort for %s: %s", litellm_model, exc)
 
 
+# ---------------- Image generation (docs/briefs/image-generation.md, section 7.2) ----------------
+
+IMAGE_MAX_BYTES = 32 * 1024 * 1024  # of decoded image data, as filegen.images.MAX_IMAGE_BYTES
+IMAGE_NO_DATA = "The image model returned no image data."
+_IMAGE_TOO_BIG = "The image model returned an image larger than 32 MB, which this app doesn't accept."
+_IMAGE_NOT_AN_IMAGE = "The image model returned data that isn't a PNG, JPEG or WebP image."
+_IMAGE_REFUSED = "The image model's safety system declined this request, so no image was generated."
+_IMAGE_BUSY = "The image model is busy right now (rate limited), so no image was generated."
+_IMAGE_PROVIDERS = frozenset({"openai", "azure"})
+_UNKNOWN_IMAGE_MODEL = "LiteLLM doesn't recognize this model name."
+_IMAGE_PROVIDER_UNSUPPORTED = (
+    "Image models must be OpenAI or Azure OpenAI GPT image models, e.g. openai/gpt-image-2. Other providers can't be "
+    "stopped or cost-capped reliably yet."
+)
+_NOT_A_GPT_IMAGE_MODEL = (
+    "This isn't a GPT image model. dall-e models aren't supported: their sizes and qualities differ."
+)
+_ORGANIZATION_HINT = " OpenAI requires a verified organization for its image models."
+_MAX_REVISED_PROMPT_CHARS = 4000
+# Image output tokens of GPT image models per size and quality (OpenAI's published table for gpt-image-1), used when a
+# response reported no usage or never arrived.
+_IMAGE_OUTPUT_TOKENS = {
+    "1024x1024": {"low": 272, "medium": 1056, "high": 4160},
+    "1536x1024": {"low": 408, "medium": 1584, "high": 6240},
+    "1024x1536": {"low": 408, "medium": 1584, "high": 6240},
+}
+_image_problems: dict[tuple[str, str | None], tuple[str, str | None]] = {}  # (model, api_base) -> (provider, problem)
+_unpriced_image_models: set[str] = set()  # warned once each
+
+
+def _image_provider(litellm_model: str, api_base: str | None) -> tuple[str, str | None]:
+    """(LiteLLM provider or "", the reason the model can't generate images here or None). Pure, cached."""
+    key = (litellm_model, api_base)
+    if (known := _image_problems.get(key)) is not None:
+        return known
+    try:
+        name, provider, _, _ = litellm.get_llm_provider(litellm_model, api_base=api_base)
+    except Exception:
+        result: tuple[str, str | None] = ("", _UNKNOWN_IMAGE_MODEL)
+    else:
+        if provider not in _IMAGE_PROVIDERS:
+            result = (provider, _IMAGE_PROVIDER_UNSUPPORTED)
+        else:
+            try:
+                from litellm.types.utils import LlmProviders
+                from litellm.utils import ProviderConfigManager
+
+                config = ProviderConfigManager.get_provider_image_generation_config(
+                    model=name, provider=LlmProviders(provider)
+                )
+                supported = set(config.get_supported_openai_params(name)) if config is not None else set()
+            except Exception:  # a LiteLLM upgrade moved this: refuse rather than send unchecked parameters
+                supported = set()
+            gpt_image = {"quality", "output_format"} <= supported
+            result = (provider, None if gpt_image else _NOT_A_GPT_IMAGE_MODEL)
+    _image_problems[key] = result
+    return result
+
+
+def image_model_problem(litellm_model: str, api_base: str | None) -> str | None:
+    """Why this model can't be an image model (None: supported). Only OpenAI and Azure OpenAI GPT image models: LiteLLM
+    awaits their calls in the event loop (so Stop and the deadline cancel them), and they take `quality` and
+    `output_format` (so IMAGE_MAX_QUALITY holds whatever the deployment is called). No network."""
+    return _image_provider(litellm_model, api_base)[1]
+
+
+def _image_cost(model: LLMModel, prompt_tokens: int, completion_tokens: int, response: Any) -> float:
+    """The model's own prices win; else LiteLLM's cost map for image generation; else 0 (one warning per model)."""
+    if model.input_cost_per_mtok is not None or model.output_cost_per_mtok is not None:
+        return compute_cost(model, prompt_tokens, completion_tokens)
+    try:
+        return float(
+            litellm.completion_cost(
+                completion_response=response, model=model.litellm_model, call_type="image_generation"
+            )
+        )
+    except Exception as exc:
+        if model.litellm_model not in _unpriced_image_models:
+            _unpriced_image_models.add(model.litellm_model)
+            logger.warning(
+                "No price for the image model %s (%s); its images are recorded at cost 0. Set its prices in the "
+                "admin page.",
+                model.litellm_model,
+                _short(str(exc), 120),
+            )
+        return 0.0
+
+
+def _usage_response(prompt_tokens: int, completion_tokens: int, size: str, quality: str) -> Any:
+    """An ImageResponse carrying only usage, for pricing an image that reported none (or never arrived)."""
+    from litellm.types.utils import ImageUsage, ImageUsageInputTokensDetails
+
+    usage = ImageUsage(
+        input_tokens=prompt_tokens,
+        input_tokens_details=ImageUsageInputTokensDetails(image_tokens=0, text_tokens=prompt_tokens),
+        output_tokens=completion_tokens,
+        total_tokens=prompt_tokens + completion_tokens,
+    )
+    return litellm.ImageResponse(created=int(time.time()), data=[], usage=usage, size=size, quality=quality)
+
+
+def estimate_image_usage(model: LLMModel, prompt: str, size: str, quality: str) -> Usage:
+    """Tokens and cost of an image whose response reported no usage or never arrived (estimated=True)."""
+    prompt_tokens = count_tokens(model, text=prompt)
+    by_quality = _IMAGE_OUTPUT_TOKENS.get(size, _IMAGE_OUTPUT_TOKENS["1024x1024"])
+    completion_tokens = by_quality.get(quality, by_quality["high"])
+    cost = _image_cost(
+        model, prompt_tokens, completion_tokens, _usage_response(prompt_tokens, completion_tokens, size, quality)
+    )
+    return Usage(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, cost_usd=cost, estimated=True)
+
+
+def _is_refusal(exc: Exception) -> bool:
+    """The provider's safety system declined the prompt: LiteLLM's ContentPolicyViolationError, or a plain 400 whose
+    code is moderation_blocked (GPT image models) or whose message names the safety system."""
+    if isinstance(exc, litellm.ContentPolicyViolationError):
+        return True
+    if not isinstance(exc, litellm.BadRequestError):
+        return False
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        codes = {body.get("code"), error.get("code") if isinstance(error, dict) else None}
+        if codes & {"moderation_blocked", "content_policy_violation"}:
+            return True
+    return "safety system" in str(exc).lower()
+
+
+def _image_error(model: LLMModel, exc: Exception) -> ImageCallError:
+    """None of these was billed: the provider answered with an error."""
+    if _is_refusal(exc):
+        return ImageCallError(_IMAGE_REFUSED, refused=True)
+    if isinstance(exc, litellm.RateLimitError):
+        return ImageCallError(_IMAGE_BUSY, rate_limited=True)
+    message = f"Image generation failed: {friendly_error(exc)}"
+    if isinstance(exc, litellm.PermissionDeniedError) and _image_provider(model.litellm_model, model.api_base)[0] == (
+        "openai"
+    ):
+        message += _ORGANIZATION_HINT
+    return ImageCallError(message)
+
+
+def _reported_image_usage(response: Any) -> tuple[int, int]:
+    reported = _get(response, "usage")
+    prompt_tokens = _get(reported, "input_tokens") or _get(reported, "prompt_tokens") or 0
+    completion_tokens = _get(reported, "output_tokens") or _get(reported, "completion_tokens") or 0
+    return int(prompt_tokens), int(completion_tokens)
+
+
+async def generate_image(
+    model: LLMModel,
+    prompt: str,
+    *,
+    size: str,
+    quality: str,
+    output_format: str,
+    timeout: float,
+    limit_seconds: float | None = None,
+) -> ImageReply:
+    """One image, abandoned after `timeout` seconds. Raises ImageCallError (see its flags). The timeout message names
+    `limit_seconds` (the whole limit, when part of it was spent before the call) or else `timeout`.
+
+    The deadline is ours, not LiteLLM's: its image path ignores max_retries and the OpenAI SDK retries timeouts, so a
+    slow request would be sent again (and billed again). LiteLLM gets 30 s more, so ours always ends the call first.
+    Image data only (b64_json): no URL from a response is ever fetched.
+    """
+    if (problem := image_model_problem(model.litellm_model, model.api_base)) is not None:
+        raise ImageCallError(problem, unusable=True)
+    try:
+        kwargs = _base_kwargs(model)
+    except LLMError as exc:  # the model's key isn't set
+        raise ImageCallError(f"Image generation failed: {exc}") from exc
+    kwargs.update(prompt=prompt, n=1, size=size, quality=quality, output_format=output_format, timeout=timeout + 30)
+    if output_format in ("jpeg", "webp"):
+        kwargs["output_compression"] = 90
+    started = time.perf_counter()
+    try:
+        async with asyncio.timeout(timeout):
+            response = await litellm.aimage_generation(**kwargs)
+    except (TimeoutError, litellm.Timeout) as exc:
+        logger.warning("Image generation timed out for %s after %.0f s", model.litellm_model, timeout)
+        limit = round(limit_seconds if limit_seconds is not None else timeout)
+        raise ImageCallError(
+            f"Generating the image took longer than {limit} seconds, so it was abandoned.", billed=True
+        ) from exc
+    except Exception as exc:
+        logger.warning("Image generation failed for %s: %s", model.litellm_model, _short(str(exc), 300))
+        raise _image_error(model, exc) from exc
+
+    prompt_tokens, completion_tokens = _reported_image_usage(response)
+    if prompt_tokens or completion_tokens:
+        usage = Usage(prompt_tokens, completion_tokens, _image_cost(model, prompt_tokens, completion_tokens, response))
+    else:
+        usage = estimate_image_usage(model, prompt, size, quality)
+    items = _get(response, "data") or []
+    item = items[0] if items else None
+    encoded = _get(item, "b64_json")
+    if not isinstance(encoded, str) or not encoded:
+        returned = "a URL instead of image data" if _get(item, "url") else "no image data"
+        logger.warning("%s returned %s", model.litellm_model, returned)
+        raise ImageCallError(IMAGE_NO_DATA, billed=True, usage=usage, unusable=True)
+    if len(encoded) * 3 // 4 > IMAGE_MAX_BYTES:
+        raise ImageCallError(_IMAGE_TOO_BIG, billed=True, usage=usage, unusable=True)
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ImageCallError(_IMAGE_NOT_AN_IMAGE, billed=True, usage=usage, unusable=True) from exc
+    revised = _get(item, "revised_prompt")
+    # Postgres text can't hold NUL characters, and a custom api_base may send anything.
+    revised = revised.replace("\x00", "").strip()[:_MAX_REVISED_PROMPT_CHARS] if isinstance(revised, str) else ""
+    logger.info(
+        "Generated an image with %s in %.1f s: %d bytes, %d + %d tokens%s",
+        model.litellm_model,
+        time.perf_counter() - started,
+        len(data),
+        usage.prompt_tokens,
+        usage.completion_tokens,
+        " (estimated)" if usage.estimated else "",
+    )
+    return ImageReply(data=data, revised_prompt=revised or None, usage=usage)
+
+
 async def test_model(model: LLMModel) -> dict[str, Any]:
-    """Make a tiny real call. Returns the ModelTestResult shape from SPEC.md."""
+    """Make a tiny real call. Returns the ModelTestResult shape from SPEC.md. Image models have their own Test
+    (image_tool.test_image_model), which records its usage."""
     if model.kind == "vision":
         from app.services.vision import test_vision_model  # vision imports this module
 

@@ -1,9 +1,10 @@
 import { useRef, useState, type ReactNode } from "react";
-import { ApiError, documentDownloadUrl } from "../../api/client";
+import { ApiError, documentDownloadUrl, documentImageUrl } from "../../api/client";
 import type { DocumentItem } from "../../api/types";
 import { formatBytes, formatDateTime, formatNumber, formatRelativeTime } from "../../lib/format";
 import FileTag from "./FileTag";
 import { DownloadIcon, TrashIcon } from "./icons";
+import ImageViewer from "./ImageViewer";
 
 type RowAction = "delete" | "reprocess";
 
@@ -21,6 +22,7 @@ function countLabel(count: number, noun: string): string {
 
 function metaParts(doc: DocumentItem): string[] {
   const parts = [formatBytes(doc.size_bytes)];
+  if (doc.image) parts.unshift(`${doc.image.width} × ${doc.image.height}`);
   if (doc.generated) parts.unshift("Created in chat");
   if (doc.status === "ready") parts.push(countLabel(doc.num_chunks, "chunk"));
   if (doc.num_pages) parts.push(countLabel(doc.num_pages, "page"));
@@ -65,6 +67,8 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
   const [confirming, setConfirming] = useState(false);
   const [running, setRunning] = useState<RowAction | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [viewing, setViewing] = useState(false);
+  const [thumbFailed, setThumbFailed] = useState(false);
   const deleteButtonRef = useRef<HTMLButtonElement>(null);
   const ready = doc.status === "ready";
   const canReprocess = doc.can_delete && (doc.status === "failed" || (ready && doc.is_stale));
@@ -101,7 +105,31 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
           aria-label={`Use ${doc.filename} in chat`}
         />
       </label>
-      <FileTag filename={doc.filename} />
+      {doc.image ? (
+        <button
+          type="button"
+          className="docs-thumb"
+          onClick={() => setViewing(true)}
+          aria-label={`View ${doc.filename}`}
+          title="View"
+        >
+          {thumbFailed ? (
+            <FileTag filename={doc.filename} />
+          ) : (
+            <img
+              src={documentImageUrl(doc.id, "thumb")}
+              alt=""
+              width={40}
+              height={40}
+              loading="lazy"
+              decoding="async"
+              onError={() => setThumbFailed(true)}
+            />
+          )}
+        </button>
+      ) : (
+        <FileTag filename={doc.filename} />
+      )}
       <div className="docs-row-main">
         <div className="docs-row-name" title={doc.filename}>
           {doc.filename}
@@ -193,6 +221,9 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
             </button>
           </div>
         </div>
+      ) : null}
+      {viewing && doc.image ? (
+        <ImageViewer documentId={doc.id} filename={doc.filename} image={doc.image} onClose={() => setViewing(false)} />
       ) : null}
     </li>
   );

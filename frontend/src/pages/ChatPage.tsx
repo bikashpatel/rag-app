@@ -186,7 +186,10 @@ export default function ChatPage() {
   const listed = routeId === null ? undefined : conversations.conversations?.find((item) => item.id === routeId);
   const title = listed?.title ?? thread.title ?? (routeId === null ? "New chat" : "Conversation");
   const noModels = models.models !== null && models.models.length === 0;
-  const canCreateFiles = models.models?.find((model) => model.id === modelId)?.can_create_files ?? false;
+  const selectedModel = models.models?.find((model) => model.id === modelId);
+  const canCreateFiles = selectedModel?.can_create_files ?? false;
+  const canCreateImages = selectedModel?.can_create_images ?? false;
+  const imagesOffered = models.models?.some((model) => model.can_create_images) ?? false;
   const disabledReason =
     thread.status === "loading"
       ? "Loading conversation…"
@@ -208,6 +211,7 @@ export default function ChatPage() {
           username={user?.username ?? null}
           disabled={disabledReason !== null || thread.streaming}
           canCreateFiles={canCreateFiles}
+          canCreateImages={canCreateImages}
           onPick={handleSend}
         />
       </div>
@@ -230,6 +234,7 @@ export default function ChatPage() {
         conversations={conversations}
         activeId={routeId}
         user={user}
+        imagesOffered={imagesOffered}
         drawer={sidebarIsDrawer}
         open={sidebarDrawerOpen}
         onClose={closeSidebar}
@@ -287,6 +292,7 @@ export default function ChatPage() {
             disabledReason={disabledReason}
             selection={selection}
             canCreateFiles={canCreateFiles}
+            canCreateImages={canCreateImages}
             onSend={handleSend}
             onStop={thread.stop}
             onScopeClick={documentsIsSlideOver ? () => setDocumentsOpen(true) : undefined}

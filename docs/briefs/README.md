@@ -15,7 +15,8 @@ first; it is the binding contract. Status of every file is in [`../HANDOFF.md`](
 | [frontend-verification.md](frontend-verification.md) | typecheck/build + API contract cross-check |
 | [review-checklist.md](review-checklist.md) | security and correctness review before calling it done |
 | [vision-pdf.md](vision-pdf.md) | vision model for PDFs (revision 2, built; commit `9fb8be6`): scanned pages and image descriptions (backend, admin UI, tests) |
-| [document-generation.md](document-generation.md) | files from chat (revision 2, built and verified live on 2026-10-16): the `create_document` tool loop with ordered thinking replay, keepalives and progress, PDF/DOCX/XLSX/MD rendering in a child process, storage and provenance as documents, download endpoint, file cards. Decisions D1-D24 are in its section 0; what is left is in `../HANDOFF.md` |
+| [document-generation.md](document-generation.md) | files from chat (revision 2, built and verified live on 2026-10-16; commit `70f8076`): the `create_document` tool loop with ordered thinking replay, keepalives and progress, PDF/DOCX/XLSX/MD rendering in a child process, storage and provenance as documents, download endpoint, file cards. Decisions D1-D24 are in its section 0; what is left is in `../HANDOFF.md` |
+| [image-generation.md](image-generation.md) | images from chat (revision 2, built, reviewed and verified live on 2026-10-16; uncommitted): the `create_image` tool in the same loop, image models (kind `image`, OpenAI and Azure GPT image models only, seeding, Test), the image job (slots, deadline, Stop keeps a paid image), validation, AI marker and renditions in the child process, images as private documents, the image and details endpoints, embedding in PDF/DOCX files, the monthly image count (`user_image_limits`, backfill, race-safe reservation), usage kind `image`, image cards and viewer, rollback. Decisions I1-I26 and the review outcomes are in its section 0; the builder split in section 21; what is left is in `../HANDOFF.md` |
 
 ## Rules that apply to every area
 
@@ -41,8 +42,8 @@ Under `backend/app/`: `config.py` (Settings), `db.py` (async engine, `SessionLoc
 (rate limit, budget, `record_usage`, `usage_summary`, `user_limits`, `month_bounds`),
 `vectorstore.py` (Qdrant), `model_registry.py` (model lookups), `storage.py` (upload paths,
 `document_item`, `delete_document_completely`). Later features added services of their own, described in their
-briefs: `pdf_images.py`, `pdf_render_child.py` and `vision.py` (vision), and `document_tool.py` plus the `filegen/`
-package (files from chat).
+briefs: `pdf_images.py`, `pdf_render_child.py` and `vision.py` (vision), `document_tool.py` plus the `filegen/`
+package (files from chat), and `image_tool.py` plus `filegen/images.py` (images from chat).
 
 Pinned libs: FastAPI 0.142, SQLAlchemy 2.0 async (asyncpg in prod, aiosqlite in tests, so
 keep queries portable, with no Postgres-only SQL), pydantic v2, redis-py asyncio, qdrant-client 1.19

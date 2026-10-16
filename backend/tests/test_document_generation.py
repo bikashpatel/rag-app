@@ -57,11 +57,11 @@ CreateUser = Callable[..., Awaitable[ApiClient]]
 
 FORMATS = ("pdf", "docx", "xlsx", "md")
 FILE_EVENT_KEYS = {
-    "writing": {"call_id", "status", "title", "format", "chars"},
-    "created": {"call_id", "status", "file", "document", "already_existed"},
-    "failed": {"call_id", "status", "title", "format", "error"},
+    "writing": {"call_id", "kind", "status", "title", "format", "chars"},
+    "created": {"call_id", "kind", "status", "file", "document", "already_existed"},
+    "failed": {"call_id", "kind", "status", "title", "format", "error"},
 }
-GENERATED_FILE_KEYS = {"document_id", "filename", "format", "size_bytes", "status"}
+GENERATED_FILE_KEYS = {"document_id", "filename", "format", "size_bytes", "status", "image"}
 DOCUMENT_ITEM_KEYS = {
     "id",
     "filename",
@@ -78,6 +78,7 @@ DOCUMENT_ITEM_KEYS = {
     "is_stale",
     "vision_pages",
     "generated",
+    "image",
     "created_at",
     "updated_at",
 }
@@ -184,9 +185,17 @@ def check_stream(events: list[SseEvent], *, ended: bool = True) -> dict[str, lis
             continue
         status = data.get("status")
         assert status in FILE_EVENT_KEYS and set(data) == FILE_EVENT_KEYS[status], data
+        assert data["kind"] == "file", data  # these tests make files only
         history = calls.setdefault(data["call_id"], [])
         if not history:
-            assert data == {"call_id": data["call_id"], "status": "writing", "title": None, "format": None, "chars": 0}
+            assert data == {
+                "call_id": data["call_id"],
+                "kind": "file",
+                "status": "writing",
+                "title": None,
+                "format": None,
+                "chars": 0,
+            }
         else:
             assert history[-1]["status"] == "writing", f"an event after {data['call_id']} ended: {data}"
         if status == "writing":
@@ -195,6 +204,7 @@ def check_stream(events: list[SseEvent], *, ended: bool = True) -> dict[str, lis
         elif status == "created":
             file, document = data["file"], data["document"]
             assert set(file) == GENERATED_FILE_KEYS and set(document) == DOCUMENT_ITEM_KEYS
+            assert file["image"] is None and document["image"] is None
             assert (file["document_id"], file["filename"], file["size_bytes"], file["status"]) == (
                 document["id"],
                 document["filename"],
@@ -380,6 +390,23 @@ def start_turn(monkeypatch: pytest.MonkeyPatch) -> Callable[..., Awaitable[_Turn
     return start
 
 
+@pytest.fixture(params=["files", "files+images"])
+def tool_mode(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Runs a scenario as written (images off) and in the production configuration, with create_image offered next
+    to create_document (docs/briefs/image-generation.md, I19)."""
+    if request.param == "files+images":
+        monkeypatch.setattr(settings, "chat_image_tools", True)
+    return str(request.param)
+
+
+def offered_tools(tool_mode: str) -> list[str]:
+    return ["create_document", "create_image"] if tool_mode == "files+images" else ["create_document"]
+
+
+def tool_names(call: dict[str, Any]) -> list[str]:
+    return [tool["function"]["name"] for tool in call.get("tools") or []]
+
+
 async def read_until(stream: AsyncIterator[str], marker: str) -> list[str]:
     received: list[str] = []
     while marker not in "".join(received):
@@ -537,7 +564,9 @@ async def test_arguments_arriving_one_character_at_a_time(
 
 
 @pytest.mark.parametrize("shape", ["anthropic", "openai"])
-async def test_text_before_and_after_a_tool_call(create_user: CreateUser, fake_llm: FakeLLM, shape: str) -> None:
+async def test_text_before_and_after_a_tool_call(
+    create_user: CreateUser, fake_llm: FakeLLM, shape: str, tool_mode: str
+) -> None:
     alice = await create_user("alice")
     model = (await models_by_name(alice))[OPUS if shape == "anthropic" else MINI]
     fake_llm.script = [
@@ -564,6 +593,7 @@ async def test_text_before_and_after_a_tool_call(create_user: CreateUser, fake_l
         ("delta", "Letter.docx."),
     ]
     first, second = fake_llm.chat_calls
+    assert tool_names(first) == tool_names(second) == offered_tools(tool_mode)
     assistant = second["messages"][len(first["messages"])]
     assert (assistant["role"], assistant["content"]) == ("assistant", "Let me write that.")
     assert "thinking_blocks" not in assistant
@@ -1125,7 +1155,14 @@ async def test_a_pdf_over_the_storage_limit_leaves_no_file_behind(
         "This file would exceed the user's storage limit of 1 MB; it wasn't created. They can delete documents to "
         "free up space."
     )
-    assert calls["f1"][-1] == {"call_id": "f1", "status": "failed", "title": "Report", "format": "pdf", "error": error}
+    assert calls["f1"][-1] == {
+        "call_id": "f1",
+        "kind": "file",
+        "status": "failed",
+        "title": "Report",
+        "format": "pdf",
+        "error": error,
+    }
     assert tool_results(fake_llm.chat_calls[1]) == [{"ok": False, "error": error}]
     assert stored_files() == before  # neither the PDF nor its .source.md
     assert [doc.id for doc in await rows(Document)] == [uploaded.json()["id"]]
@@ -1202,6 +1239,7 @@ async def test_a_file_identical_to_an_upload_links_the_upload(create_user: Creat
         "format": "md",
         "size_bytes": uploaded["size_bytes"],
         "status": "pending",
+        "image": None,
     }
     assert created["document"] == await listed(alice, uploaded["id"]) and created["document"]["generated"] is False
     [result] = tool_results(fake_llm.chat_calls[1])
@@ -1217,6 +1255,7 @@ async def test_a_file_identical_to_an_upload_links_the_upload(create_user: Creat
             "format": "md",
             "size_bytes": uploaded["size_bytes"],
             "status": None,
+            "image": None,
         }
     ]
 
@@ -1441,7 +1480,7 @@ async def test_deleting_the_user_removes_their_generated_files(
 
 
 async def test_one_usage_event_per_answer_sums_every_model_call(
-    admin_client: ApiClient, create_user: CreateUser, fake_llm: FakeLLM
+    admin_client: ApiClient, create_user: CreateUser, fake_llm: FakeLLM, tool_mode: str
 ) -> None:
     alice = await create_user("alice")
     fake_llm.script = [
@@ -1453,6 +1492,7 @@ async def test_one_usage_event_per_answer_sums_every_model_call(
     response, events = await chat(alice, "Two files", document_ids=[])
 
     check_stream(events)
+    assert all(tool_names(call) == offered_tools(tool_mode) for call in fake_llm.chat_calls)
     expected_cost = (3900 * 4.0 + 550 * 20.0) / 1_000_000  # Claude Opus 5.5: $4 / $20 per million tokens
     assert events[-1][1]["usage"] == {
         "prompt_tokens": 3900,
@@ -1472,7 +1512,7 @@ async def test_one_usage_event_per_answer_sums_every_model_call(
 
 
 async def test_follow_up_calls_stop_at_the_budget_left_and_the_next_answer_is_refused(
-    create_user: CreateUser, fake_llm: FakeLLM
+    create_user: CreateUser, fake_llm: FakeLLM, tool_mode: str
 ) -> None:
     alice = await create_user("alice", monthly_token_limit=10_000)
     fake_llm.usage = (5000, 1000)
@@ -1489,6 +1529,7 @@ async def test_follow_up_calls_stop_at_the_budget_left_and_the_next_answer_is_re
     calls = check_stream(events)
     assert statuses(calls) == [("f1", "created")]
     assert len(fake_llm.chat_calls) == 2 and len(fake_llm.script) == 1
+    assert tool_names(fake_llm.chat_calls[1]) == offered_tools(tool_mode)
     answer = await stored_answer(events)
     assert events[-1] == ("error", {"message": BUDGET_SPENT, "assistant_message_id": answer.id})
     assert [file["filename"] for file in await card_files(alice, events)] == ["Report.md"]
@@ -1590,7 +1631,14 @@ async def test_an_answer_that_ends_badly_keeps_the_files_it_created(
         [usage] = await rows(UsageEvent, UsageEvent.kind == "chat")
         assert (usage.prompt_tokens, usage.completion_tokens) == (900, 90)  # the refused call isn't billed
     else:
-        assert calls["f2"][-1] == {"call_id": "f2", "status": "failed", "title": None, "format": None, "error": message}
+        assert calls["f2"][-1] == {
+            "call_id": "f2",
+            "kind": "file",
+            "status": "failed",
+            "title": None,
+            "format": None,
+            "error": message,
+        }
         assert answer.content == "First.\n\nNext one."
     assert len(await rows(Message, Message.role == "assistant")) == 1
     assert [file["filename"] for file in await card_files(alice, events)] == ["First.md"]

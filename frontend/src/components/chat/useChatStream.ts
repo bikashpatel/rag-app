@@ -9,18 +9,58 @@ import type {
   FileEventData,
   GeneratedFile,
   GeneratedFileFormat,
+  GeneratedFileKind,
+  ImageQuality,
 } from "../../api/types";
 import { announceDocument, requestDocumentsReload } from "../documents/documentEvents";
 
 /**
- * A file the answer created or tried to create. `key` is `c<call_id>` while streaming, and `d<document_id>` (`s<index>`
- * once the document was deleted) when loaded with the conversation.
+ * A file or image the answer created or tried to create. `key` is `c<call_id>` while streaming, and `d<document_id>`
+ * (`s<index>` once the document was deleted) when loaded with the conversation. `generating`: the image model is
+ * making the image (`startedAt` for the elapsed time). `wasGenerating`: the stream ended while the image was being
+ * generated, so the server still finishes and saves it.
  */
 export type FileCard =
-  | { key: string; kind: "writing"; title: string | null; format: GeneratedFileFormat | null; chars: number }
+  | {
+      key: string;
+      kind: "writing";
+      fileKind: GeneratedFileKind;
+      title: string | null;
+      format: GeneratedFileFormat | null;
+      chars: number;
+    }
+  | { key: string; kind: "generating"; title: string; width: number; height: number; quality: ImageQuality; startedAt: number }
   | { key: string; kind: "created"; file: GeneratedFile; alreadyExisted: boolean }
-  | { key: string; kind: "failed"; title: string | null; format: GeneratedFileFormat | null; error: string }
-  | { key: string; kind: "stopped"; title: string | null; format: GeneratedFileFormat | null };
+  | {
+      key: string;
+      kind: "failed";
+      fileKind: GeneratedFileKind;
+      title: string | null;
+      format: GeneratedFileFormat | null;
+      error: string;
+    }
+  | {
+      key: string;
+      kind: "stopped";
+      fileKind: GeneratedFileKind;
+      title: string | null;
+      format: GeneratedFileFormat | null;
+      wasGenerating: boolean;
+    };
+
+const IMAGE_FORMATS: ReadonlySet<GeneratedFileFormat> = new Set(["png", "jpeg", "webp"]);
+
+/** The card is about an image (create_image), not a file; a deleted image keeps its png, jpeg or webp format. */
+export function isImageCard(card: FileCard): boolean {
+  switch (card.kind) {
+    case "generating":
+      return true;
+    case "created":
+      return card.file.image !== null || IMAGE_FORMATS.has(card.file.format);
+    default:
+      return card.fileKind === "image";
+  }
+}
 
 export type ThreadMessage = ChatMessage & {
   /** Stable React key that survives the swap from a temporary id to the server id. */
@@ -79,8 +119,8 @@ type ActiveStream = {
   finished: boolean;
   /** Set when the thread was replaced while streaming: the stream must no longer touch the state. */
   detached: boolean;
-  /** call_ids of files still being written (no `created` or `failed` event yet). */
-  writing: Set<string>;
+  /** Calls still in progress (no `created` or `failed` event yet): files being written, images being made. */
+  writing: Map<string, "writing" | "generating">;
 };
 
 const INTERRUPTED = "The connection was lost before the answer finished.";
@@ -88,6 +128,11 @@ const STOPPED_EARLY = "Stopped before the answer started.";
 const LOST_EARLY = "The connection was lost before the answer started.";
 /** Saved as `error` by the backend when the client disconnected mid-answer, e.g. Stop (routers/chat.py _STOPPED). */
 const STOPPED_ERROR = "Stopped before completion";
+/**
+ * An image that was being generated when the stream ended is stored when the image model answers (within the server's
+ * IMAGE_TIMEOUT_SECONDS, 180 s by default): the documents panel looks again a few times until then.
+ */
+const IMAGE_RELOAD_MS = [30_000, 90_000, 190_000];
 
 function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
@@ -112,23 +157,45 @@ function toThreadMessage(message: ChatMessage): ThreadMessage {
   };
 }
 
-/** Inserts or updates the card of one create_document call; an event without a title or format keeps the known one. */
+/**
+ * Inserts or updates the card of one create_document or create_image call; an event without a title or format keeps
+ * the known one.
+ */
 function applyFileEvent(cards: FileCard[], data: FileEventData): FileCard[] {
   const key = `c${data.call_id}`;
   const previous = cards.find((card) => card.key === key);
   let card: FileCard;
   if (data.status === "created") {
     card = { key, kind: "created", file: data.file, alreadyExisted: data.already_existed };
+  } else if (data.status === "generating") {
+    const { title, width, height, quality } = data;
+    const startedAt = previous?.kind === "generating" ? previous.startedAt : Date.now();
+    card = { key, kind: "generating", title, width, height, quality, startedAt };
   } else {
-    const known = previous?.kind === "created" ? undefined : previous;
-    const title = data.title ?? known?.title ?? null;
-    const format = data.format ?? known?.format ?? null;
+    const title = data.title ?? (previous && previous.kind !== "created" ? previous.title : null);
+    const format = data.format ?? (previous && "format" in previous ? previous.format : null);
     card =
       data.status === "writing"
-        ? { key, kind: "writing", title, format, chars: data.chars }
-        : { key, kind: "failed", title, format, error: data.error };
+        ? { key, kind: "writing", fileKind: data.kind, title, format, chars: data.chars }
+        : { key, kind: "failed", fileKind: data.kind, title, format, error: data.error };
   }
   return previous ? cards.map((item) => (item === previous ? card : item)) : [...cards, card];
+}
+
+/** The cards of calls still in progress when the stream ended early. */
+function stopCards(cards: FileCard[]): FileCard[] {
+  return cards.map((card) => {
+    switch (card.kind) {
+      case "writing": {
+        const { key, fileKind, title, format } = card;
+        return { key, kind: "stopped", fileKind, title, format, wasGenerating: false };
+      }
+      case "generating":
+        return { key: card.key, kind: "stopped", fileKind: "image", title: card.title, format: null, wasGenerating: true };
+      default:
+        return card;
+    }
+  });
 }
 
 /**
@@ -152,6 +219,7 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
   const streamRef = useRef<ActiveStream | null>(null);
   const mountedRef = useRef(false);
   const tempIdRef = useRef(0);
+  const imageReloadTimers = useRef<number[]>([]);
 
   const detachStream = useCallback(() => {
     const active = streamRef.current;
@@ -167,6 +235,7 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
     return () => {
       mountedRef.current = false;
       detachStream();
+      imageReloadTimers.current.forEach((timer) => window.clearTimeout(timer));
     };
   }, [detachStream]);
 
@@ -245,7 +314,7 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
       title: null,
       finished: false,
       detached: false,
-      writing: new Set(),
+      writing: new Map(),
     };
     streamRef.current = stream;
 
@@ -296,7 +365,7 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
           break;
         case "file": {
           const data = sse.data;
-          if (data.status === "writing") stream.writing.add(data.call_id);
+          if (data.status === "writing" || data.status === "generating") stream.writing.set(data.call_id, data.status);
           else stream.writing.delete(data.call_id);
           // The document exists whatever happens to this thread, so the panel hears about it even when detached.
           if (data.status === "created") announceDocument(data.document);
@@ -377,15 +446,17 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
     } finally {
       if (stream.frame !== null) cancelAnimationFrame(stream.frame);
       // Stop or a lost connection while a file was being written: the server may still have saved it (it finishes a
-      // file it was storing), so the card can't tell, and the panel looks again.
+      // file it was storing), so the card can't tell, and the panel looks again. An image already being generated is
+      // always finished and saved, up to a few minutes later.
       if (stream.writing.size > 0) {
+        const generating = [...stream.writing.values()].includes("generating");
         stream.writing.clear();
-        update((item) => ({
-          cards: item.cards.map((card) =>
-            card.kind === "writing" ? { key: card.key, kind: "stopped", title: card.title, format: card.format } : card,
-          ),
-        }));
+        update((item) => ({ cards: stopCards(item.cards) }));
         requestDocumentsReload();
+        if (generating) {
+          imageReloadTimers.current.forEach((timer) => window.clearTimeout(timer));
+          imageReloadTimers.current = IMAGE_RELOAD_MS.map((ms) => window.setTimeout(requestDocumentsReload, ms));
+        }
       }
       if (streamRef.current === stream) {
         streamRef.current = null;

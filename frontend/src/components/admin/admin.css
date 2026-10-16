@@ -136,6 +136,10 @@
   gap: var(--space-3);
   margin: 0;
 }
+/* The overview's eight tiles: two rows of four (two columns on narrow screens, below). */
+.admin-tiles-overview {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
 .admin-tile {
   position: relative;
   display: flex;
@@ -584,6 +588,14 @@
   color: var(--text-2);
   overflow-wrap: anywhere;
 }
+.admin-test-image {
+  display: block;
+  height: auto;
+  margin-top: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+}
 
 /* ---------- Forms ---------- */
 .admin-form {
@@ -853,5 +865,17 @@
   }
   .admin-toolbar-count {
     margin-left: 0;
+  }
+  /* Four model kinds: the kind switch spans the form and its segments narrow. */
+  .admin-segmented-options {
+    flex-wrap: wrap;
+    align-self: stretch;
+  }
+  .admin-segment {
+    flex: 1 1 auto;
+  }
+  .admin-segment span {
+    padding: 5px 8px;
+    text-align: center;
   }
 }

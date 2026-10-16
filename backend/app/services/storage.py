@@ -14,9 +14,10 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import Document, GeneratedDocument, User, VisionPage
+from app.models import Document, GeneratedDocument, GeneratedImage, User, VisionPage
 from app.redis_client import forget_ingest_attempts
 from app.schemas import DocumentItem
+from app.schemas import GeneratedImage as GeneratedImageItem
 from app.services import vectorstore
 from app.services.model_registry import get_active_embedding_model
 
@@ -44,13 +45,23 @@ def stored_path(stored_name: str) -> Path:
 
 
 def source_name(stored_name: str) -> str:
-    """The Markdown source stored next to a PDF the assistant created (indexed instead of the PDF's text)."""
+    """The Markdown source stored next to a PDF or an image the assistant created (indexed instead of the file)."""
     return f"{stored_name}.source.md"
 
 
+def preview_name(stored_name: str) -> str:
+    """The WebP preview (long edge 1024) stored next to an image the assistant generated."""
+    return f"{stored_name}.preview.webp"
+
+
+def thumb_name(stored_name: str) -> str:
+    """The WebP thumbnail (long edge 256) stored next to an image the assistant generated."""
+    return f"{stored_name}.thumb.webp"
+
+
 def remove_file(stored_name: str) -> None:
-    """Remove a stored file and its Markdown source, if any."""
-    for name in (stored_name, source_name(stored_name)):
+    """Remove a stored file and its sidecars (Markdown source, image renditions), if any."""
+    for name in (stored_name, source_name(stored_name), preview_name(stored_name), thumb_name(stored_name)):
         try:
             stored_path(name).unlink(missing_ok=True)
         except Exception:
@@ -65,10 +76,12 @@ def document_item(
     admin_view: bool = False,
     vision_pages: int = 0,
     generated: bool = False,
+    image: GeneratedImageItem | None = None,
 ) -> DocumentItem:
     """Build the DocumentItem response. `doc.owner` must be loaded (it is selectin by default).
     `vision_pages`: the document's vision_pages rows (see vision_page_counts); `generated`: it has a
-    generated_documents row (see generated_ids)."""
+    generated_documents row (see generated_ids); `image`: its display details when it is a generated image (see
+    generated_images), never in the admin view (prompts and descriptions are the owner's private content)."""
     if admin_view:
         can_delete = viewer.is_admin
     else:
@@ -91,6 +104,7 @@ def document_item(
         is_stale=doc.status == "ready" and doc.embedding_model_id != active_embedding_model_id,
         vision_pages=vision_pages if doc.status == "ready" else 0,
         generated=generated,
+        image=None if admin_view else image,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
@@ -111,6 +125,21 @@ async def generated_ids(db: AsyncSession, documents: Select[tuple[int]]) -> set[
     return set(
         await db.scalars(select(GeneratedDocument.document_id).where(GeneratedDocument.document_id.in_(documents)))
     )
+
+
+def image_item(row: GeneratedImage) -> GeneratedImageItem:
+    return GeneratedImageItem(
+        width=row.width,
+        height=row.height,
+        alt_text=row.alt_text,
+        quality=row.quality,  # type: ignore[arg-type]
+    )
+
+
+async def generated_images(db: AsyncSession, documents: Select[tuple[int]]) -> dict[int, GeneratedImageItem]:
+    """document id -> display details, for the ids `documents` selects that are generated images (one query)."""
+    rows = await db.scalars(select(GeneratedImage).where(GeneratedImage.document_id.in_(documents)))
+    return {row.document_id: image_item(row) for row in rows}
 
 
 async def is_generated(db: AsyncSession, doc_id: int) -> bool:

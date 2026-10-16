@@ -31,6 +31,8 @@ type ConversationSidebarProps = {
   conversations: ConversationsState;
   activeId: number | null;
   user: Me | null;
+  /** A chat model the user can pick generates images (the usage meter then shows images). */
+  imagesOffered: boolean;
   /** Medium and narrow screens: the sidebar is an overlay drawer. */
   drawer: boolean;
   open: boolean;
@@ -48,6 +50,7 @@ function ConversationSidebar({
   conversations: { conversations, error, reload, rename, remove },
   activeId,
   user,
+  imagesOffered,
   drawer,
   open,
   onClose,
@@ -147,7 +150,7 @@ function ConversationSidebar({
 
       {user ? (
         <div className="chat-sidebar-footer">
-          <UsageMeter user={user} />
+          <UsageMeter user={user} imagesOffered={imagesOffered} />
           <UserMenu user={user} onChangePassword={onChangePassword} onLogout={onLogout} />
         </div>
       ) : null}

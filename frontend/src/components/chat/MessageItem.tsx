@@ -1,10 +1,11 @@
 import { memo, useCallback, useEffect, useId, useState } from "react";
 import { formatNumber } from "../../lib/format";
 import GeneratedFileCard from "./GeneratedFileCard";
+import GeneratedImageCard from "./GeneratedImageCard";
 import { AlertIcon, CheckIcon, ChevronDownIcon, CopyIcon, RetryIcon, SparkleIcon } from "./icons";
 import Markdown from "./Markdown";
 import SourcesList, { type SourceHighlight } from "./SourcesList";
-import type { ThreadMessage } from "./useChatStream";
+import { isImageCard, type FileCard, type ThreadMessage } from "./useChatStream";
 
 const HIGHLIGHT_MS = 2400;
 const COPY_FEEDBACK_MS = 1600;
@@ -29,6 +30,11 @@ function MessageItem(props: MessageItemProps) {
 }
 
 export default memo(MessageItem);
+
+function cardsLabel(cards: FileCard[]): string {
+  const images = cards.filter(isImageCard).length;
+  return images === 0 ? "Files" : images === cards.length ? "Images" : "Files and images";
+}
 
 function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageItemProps) {
   const sourcesId = useId();
@@ -68,17 +74,21 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
           </div>
         ) : null}
         {cards.length > 0 ? (
-          <ul className="chat-files" aria-label="Files">
+          <ul className="chat-files" aria-label={cardsLabel(cards)}>
             {cards.map((card) => (
               <li key={card.key}>
-                <GeneratedFileCard card={card} />
+                {card.kind === "generating" || isImageCard(card) ? (
+                  <GeneratedImageCard card={card} />
+                ) : (
+                  <GeneratedFileCard card={card} />
+                )}
               </li>
             ))}
           </ul>
         ) : null}
         {/* Below the cards, so they also cover the follow-up call after a file is created or fails. A card being written
-            shows its own spinner, and once text streams the cursor at its end takes over. */}
-        {streaming && !content && !cards.some((card) => card.kind === "writing") ? (
+            or generated shows its own spinner, and once text streams the cursor at its end takes over. */}
+        {streaming && !content && !cards.some((card) => card.kind === "writing" || card.kind === "generating") ? (
           <div className="chat-typing" aria-hidden="true">
             <span />
             <span />

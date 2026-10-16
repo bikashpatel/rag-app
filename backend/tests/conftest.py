@@ -6,6 +6,7 @@ import the plain helpers from here, e.g. `from conftest import chat, ingest, pdf
 """
 
 import asyncio
+import base64
 import copy
 import csv
 import functools
@@ -58,6 +59,7 @@ from docx import Document as new_docx  # noqa: E402
 from fakeredis import FakeServer  # noqa: E402
 from fakeredis.aioredis import FakeRedis  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
+from litellm.types.utils import ImageUsage, ImageUsageInputTokensDetails  # noqa: E402
 from openpyxl import Workbook  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 from pptx import Presentation  # noqa: E402
@@ -68,7 +70,7 @@ from app.config import settings  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
 from app.models import Document  # noqa: E402
 from app.redis_client import INGEST_QUEUE, close_redis, get_redis, set_redis  # noqa: E402
-from app.services import document_tool, llm, pdf_images, vision  # noqa: E402
+from app.services import document_tool, image_tool, llm, pdf_images, vision  # noqa: E402
 from app.services.ingestion import process_document  # noqa: E402
 from app.services.vectorstore import close_qdrant  # noqa: E402
 
@@ -205,6 +207,39 @@ def _scripted_chunks(call: ScriptedCall) -> list[Any]:
     return chunks
 
 
+def fake_image(width: int = 64, height: int = 64, fmt: str = "png") -> bytes:
+    """A real image of `width` x `height` drawn by Pillow (a few colored shapes, so re-encoding and renditions do real
+    work), as PNG, JPEG or WebP bytes."""
+    image = Image.new("RGB", (width, height), (245, 240, 230))
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((width // 8, height // 8, width // 2, height // 2), fill=(220, 90, 30))
+    draw.ellipse((width // 3, height // 3, width - 4, height - 4), fill=(40, 90, 200))
+    draw.line((0, height - 1, width - 1, 0), fill=(20, 20, 20), width=2)
+    buffer = io.BytesIO()
+    image.save(buffer, {"png": "PNG", "jpeg": "JPEG", "webp": "WEBP"}[fmt])
+    return buffer.getvalue()
+
+
+def refusal(code: str = "moderation_blocked") -> Exception:
+    """A provider's safety refusal as LiteLLM raises it (test_llm_images.py pins these shapes): GPT image models'
+    `moderation_blocked` is a plain BadRequestError with the error object as `body`; `content_policy_violation` is
+    LiteLLM's ContentPolicyViolationError."""
+    if code == "content_policy_violation":
+        return litellm.ContentPolicyViolationError(
+            message="OpenAIException - Your request was rejected as a result of our safety system.",
+            model="gpt-image-2",
+            llm_provider="openai",
+            body={"code": "content_policy_violation", "type": "invalid_request_error"},
+        )
+    return litellm.BadRequestError(
+        message="OpenAIException - Your request was rejected by the safety system. If you believe this is an error, "
+        "contact us at help.openai.com and include the request ID req_123.",
+        model="gpt-image-2",
+        llm_provider="openai",
+        body={"code": code, "type": "image_generation_user_error", "message": "Your request was rejected"},
+    )
+
+
 @dataclass
 class FakeLLM:
     """Stand-in for `litellm.acompletion` and `litellm.aembedding`; change its attributes inside a test.
@@ -226,6 +261,13 @@ class FakeLLM:
     of (page, mode), which may raise to make that call fail (e.g. `litellm.RateLimitError`). The response
     reports `vision_usage` (None: no usage) and `vision_finish_reason`, after `vision_delay` seconds.
     `vision_max_in_flight` is the peak number of vision calls running at once.
+
+    Image calls (`litellm.aimage_generation`) go to `image_calls`. Each waits on `image_gate` (an asyncio.Event) or
+    `image_delay` seconds, raises `image_error` when set (an exception, or a function of the call number returning
+    one or None), and otherwise returns an ImageResponse with a real image drawn by Pillow in the requested
+    output_format, at 1/16 of the requested size (64x64, 96x64 or 64x96), unless `image_reply` gives the bytes.
+    `image_url_only` returns only a URL; `image_usage` = (input_tokens, output_tokens) or None (not reported);
+    `image_revised_prompt` is the item's revised_prompt.
     """
 
     chunks: list[str] = field(default_factory=lambda: ["Hello", " from", " the", " fake", " model."])
@@ -249,6 +291,14 @@ class FakeLLM:
     vision_calls: list[dict[str, Any]] = field(default_factory=list)
     vision_max_in_flight: int = 0
     _vision_in_flight: int = 0
+    image_calls: list[dict[str, Any]] = field(default_factory=list)
+    image_delay: float = 0.0
+    image_gate: asyncio.Event | None = None
+    image_error: BaseException | Callable[[int], BaseException | None] | None = None
+    image_reply: bytes | None = None
+    image_url_only: bool = False
+    image_usage: tuple[int, int] | None = (50, 272)
+    image_revised_prompt: str | None = None
 
     async def acompletion(self, **kwargs: Any) -> Any:
         if not kwargs.get("stream") and vision_part(kwargs, "image_url") is not None:
@@ -327,6 +377,44 @@ class FakeLLM:
         if call.error is not None:
             raise call.error
 
+    async def aimage_generation(self, **kwargs: Any) -> Any:
+        self.image_calls.append(kwargs)
+        number = len(self.image_calls)
+        if self.image_gate is not None:
+            await self.image_gate.wait()
+        elif self.image_delay:
+            await asyncio.sleep(self.image_delay)
+        error = self.image_error(number) if callable(self.image_error) else self.image_error
+        if error is not None:
+            raise error
+        size = kwargs.get("size") or "1024x1024"
+        width, height = (int(value) for value in size.split("x"))
+        output_format = kwargs.get("output_format") or "png"
+        data = self.image_reply
+        if data is None:
+            data = fake_image(width // 16, height // 16, output_format)
+        if self.image_url_only:
+            item: dict[str, Any] = {"url": "https://images.example.invalid/generated.png"}
+        else:
+            item = {"b64_json": base64.b64encode(data).decode(), "revised_prompt": self.image_revised_prompt}
+        usage = None
+        if self.image_usage is not None:
+            input_tokens, output_tokens = self.image_usage
+            usage = ImageUsage(
+                input_tokens=input_tokens,
+                input_tokens_details=ImageUsageInputTokensDetails(image_tokens=0, text_tokens=input_tokens),
+                output_tokens=output_tokens,
+                total_tokens=input_tokens + output_tokens,
+            )
+        return litellm.ImageResponse(
+            created=1_760_000_000,
+            data=[item],
+            usage=usage,
+            size=size,
+            quality=kwargs.get("quality"),
+            output_format=output_format,
+        )
+
     async def aembedding(self, **kwargs: Any) -> Any:
         self.embedding_calls.append(kwargs)
         if self.embedding_error is not None:
@@ -393,13 +481,30 @@ def _stream_chunk(
 @pytest.fixture(autouse=True)
 def fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
     """The FakeLLM installed for this test (always active; request it to configure or inspect it). Also forgets
-    which models rejected tools and LiteLLM's function-calling answers, which the app keeps for its lifetime."""
+    which models rejected tools and LiteLLM's function-calling answers, which the app keeps for its lifetime, and
+    which image models were marked unusable.
+
+    CHAT_IMAGE_TOOLS is off by default, so the tests written before images keep their file-only prompts and tool
+    lists; request `image_tools` to turn it on."""
     fake = FakeLLM()
     monkeypatch.setattr(litellm, "acompletion", fake.acompletion)
     monkeypatch.setattr(litellm, "aembedding", fake.aembedding)
+    monkeypatch.setattr(litellm, "aimage_generation", fake.aimage_generation)
     monkeypatch.setattr(llm, "_tools_rejected", set())
     monkeypatch.setattr(llm, "_tool_support", {})
+    monkeypatch.setattr(llm, "_unpriced_image_models", set())
+    monkeypatch.setattr(image_tool, "_unusable", {})
+    monkeypatch.setattr(image_tool, "_warned_broken", set())
+    monkeypatch.setattr(settings, "chat_image_tools", False)
     return fake
+
+
+@pytest.fixture
+def image_tools(monkeypatch: pytest.MonkeyPatch, fake_llm: FakeLLM) -> FakeLLM:
+    """CHAT_IMAGE_TOOLS on, as in production: the seeded GPT Image 2 is the active image model (the test environment
+    sets OPENAI_API_KEY). Returns the FakeLLM."""
+    monkeypatch.setattr(settings, "chat_image_tools", True)
+    return fake_llm
 
 
 @dataclass

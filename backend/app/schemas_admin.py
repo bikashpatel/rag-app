@@ -14,7 +14,7 @@ MAX_BIGINT = 9_223_372_036_854_775_807
 # Infrastructure secrets that match the *_API_KEY pattern but must never be sent to a model provider.
 _RESERVED_KEY_ENVS = frozenset({"QDRANT_API_KEY"})
 
-ModelKind = Literal["chat", "embedding", "vision"]
+ModelKind = Literal["chat", "embedding", "vision", "image"]
 
 
 def _strip(value: object) -> object:
@@ -83,6 +83,7 @@ def default_limits() -> UserLimits:
         max_upload_mb=max(1, min(settings.default_max_upload_mb, settings.max_upload_mb_hard)),
         max_documents=settings.default_max_documents,
         max_storage_mb=settings.default_max_storage_mb,
+        monthly_image_limit=settings.default_monthly_image_limit,
     )
 
 
@@ -96,6 +97,7 @@ class AdminUserUsage(BaseModel):
     chat_tokens: int
     embedding_tokens: int
     vision_tokens: int
+    images: int = 0  # images generated this month
     cost_usd: float
 
 
@@ -109,6 +111,7 @@ class AdminUser(BaseModel):
     max_upload_mb: int
     max_documents: int
     max_storage_mb: int
+    monthly_image_limit: int = 0  # effective: the user's own value, else DEFAULT_MONTHLY_IMAGE_LIMIT
     restrict_models: bool
     allowed_model_ids: list[int]
     created_at: datetime
@@ -127,6 +130,7 @@ class AdminUserCreate(BaseModel):
     max_upload_mb: UploadMb = _DEFAULTS.max_upload_mb
     max_documents: Count = _DEFAULTS.max_documents
     max_storage_mb: Count = _DEFAULTS.max_storage_mb
+    monthly_image_limit: Count = _DEFAULTS.monthly_image_limit
     restrict_models: bool = False
     allowed_model_ids: ModelIds = Field(default_factory=list)
 
@@ -141,6 +145,7 @@ class AdminUserUpdate(BaseModel):
     max_upload_mb: UploadMb | None = None
     max_documents: Count | None = None
     max_storage_mb: Count | None = None
+    monthly_image_limit: Count | None = None
     restrict_models: bool | None = None
     allowed_model_ids: ModelIds | None = None
 
@@ -208,6 +213,7 @@ class ModelTestResult(BaseModel):
     message: str
     latency_ms: int
     embedding_dim: int | None
+    image_data_url: str | None = None  # image models: a data: URL of a small thumbnail of the test image
 
 
 # ---------------- Dashboard, usage, re-indexing ----------------
@@ -231,6 +237,7 @@ class AdminStats(BaseModel):
     failed_documents: int
     active_embedding_model: ModelRef | None
     active_vision_model: ModelRef | None
+    active_image_model: ModelRef | None = None
     queue_length: int
 
 
@@ -238,6 +245,7 @@ class UsageTotals(BaseModel):
     chat_tokens: int
     embedding_tokens: int
     vision_tokens: int
+    images: int = 0
     cost_usd: float
     requests: int
 
@@ -248,6 +256,7 @@ class UserUsage(BaseModel):
     chat_tokens: int
     embedding_tokens: int
     vision_tokens: int
+    images: int = 0
     cost_usd: float
     requests: int
 
@@ -266,6 +275,7 @@ class DailyUsage(BaseModel):
     chat_tokens: int
     embedding_tokens: int
     vision_tokens: int
+    images: int = 0
     cost_usd: float
 
 

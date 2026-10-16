@@ -1,4 +1,7 @@
-"""DOCX rendering with python-docx (which never writes macros), from the block tree."""
+"""DOCX rendering with python-docx (which never writes macros), from the block tree.
+
+Embedded images reach python-docx only as in-memory JPEG data (images.Embedder), never as a path the content names.
+"""
 
 import io
 import unicodedata
@@ -12,15 +15,17 @@ from docx.opc.constants import RELATIONSHIP_TYPE
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.oxml.xmlchemy import BaseOxmlElement
-from docx.shared import Inches, Pt, RGBColor
+from docx.shared import Emu, Inches, Pt, RGBColor
 from docx.table import _Cell
 from docx.text.paragraph import Paragraph as DocxParagraph
 from docx.text.run import Run
 
 from . import CREATOR
+from .images import Embedder
 from .markdown import (
     Block,
     Code,
+    Figure,
     Heading,
     ListBlock,
     Paragraph,
@@ -28,8 +33,10 @@ from .markdown import (
     Rule,
     Span,
     Table,
+    check_image_caps,
     check_table_caps,
     link_label,
+    text_reference,
 )
 
 CODE_FONT = "Consolas"
@@ -37,6 +44,9 @@ CODE_PT = 9.5
 LINK_COLOR = RGBColor(0x1D, 0x4E, 0xD8)
 CODE_FILL = "F3F4F6"
 RULE_COLOR = "D1D5DB"
+LIST_INDENT_IN = 0.25
+FIGURE_MAX_HEIGHT = 0.6  # of the page's usable height
+_USABLE_IN = (6.0, 9.0)  # the default template's text area (Letter, 1.25 in and 1 in margins)
 _MAX_LIST_STYLE_LEVEL = 3  # the default template has List Bullet/Number up to 3
 _ALIGNMENTS = {"left": WD_ALIGN_PARAGRAPH.LEFT, "center": WD_ALIGN_PARAGRAPH.CENTER, "right": WD_ALIGN_PARAGRAPH.RIGHT}
 # Child order of w:pPr (ECMA-376), for inserting elements python-docx has no property for.
@@ -50,8 +60,10 @@ _PPR_ORDER = (
 )  # fmt: skip
 
 
-def render_docx(blocks: list[Block], title: str) -> bytes:
+def render_docx(blocks: list[Block], title: str) -> tuple[bytes, list[str]]:
+    """(the DOCX, notes for the tool result)."""
     check_table_caps(blocks)
+    check_image_caps(blocks)
     document = docx.Document()
     properties = document.core_properties
     properties.title = title
@@ -60,15 +72,17 @@ def render_docx(blocks: list[Block], title: str) -> bytes:
     properties.created = properties.modified = datetime.now(timezone.utc)
     properties.revision = 1
     properties.comments = ""
-    _Writer(document).blocks(blocks)
+    writer = _Writer(document)
+    writer.blocks(blocks)
     buffer = io.BytesIO()
     document.save(buffer)
-    return buffer.getvalue()
+    return buffer.getvalue(), writer.images.notes()
 
 
 class _Writer:
     def __init__(self, document: Document) -> None:
         self.document = document
+        self.images = Embedder()
 
     def blocks(self, blocks: list[Block], *, level: int = 0, quote: bool = False) -> None:
         for block in blocks:
@@ -86,6 +100,8 @@ class _Writer:
                 self.code(block.text, level)
             elif isinstance(block, Rule):
                 self.rule()
+            elif isinstance(block, Figure):
+                self.figure(block, level, quote)
             else:
                 self.table(block)
 
@@ -173,6 +189,53 @@ class _Writer:
             run = paragraph.add_run(line)
             run.font.name = CODE_FONT
             _size(run, CODE_PT)
+
+    def figure(self, figure: Figure, level: int, quote: bool) -> None:
+        """A centered picture as wide as the text (less 0.25 in per list level, at most 60% of the page high), kept
+        with its Caption paragraph."""
+        loaded = self.images.load(figure.ref)
+        if loaded is None:
+            style = "Quote" if quote else (f"List Continue{_suffix(level)}" if level else None)
+            self.inline(self.document.add_paragraph(style=style), [Span(text_reference(figure))])
+            return
+        data, pixels_wide, pixels_high = loaded
+        usable_width, usable_height = self._usable_area()
+        indent = Inches(LIST_INDENT_IN * level)
+        available = usable_width - indent
+        tallest = FIGURE_MAX_HEIGHT * usable_height
+        width, height = float(available), available * pixels_high / pixels_wide
+        if height > tallest:
+            width, height = tallest * pixels_wide / pixels_high, tallest
+        paragraph = self.document.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        paragraph.paragraph_format.keep_with_next = True
+        if level:
+            paragraph.paragraph_format.left_indent = indent
+        shape = paragraph.add_run().add_picture(io.BytesIO(data), width=Emu(int(width)), height=Emu(int(height)))
+        shape._inline.docPr.set("descr", figure.ref.alt_text or figure.caption)
+        if figure.caption:
+            caption = self.document.add_paragraph(style="Caption")
+            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            if level:
+                caption.paragraph_format.left_indent = indent
+            self.inline(caption, [Span(figure.caption)])
+
+    def _usable_area(self) -> tuple[int, int]:
+        """The text area of the last section in EMU (width, height)."""
+        section = self.document.sections[-1]
+        lengths = (
+            section.page_width,
+            section.page_height,
+            section.left_margin,
+            section.right_margin,
+            section.top_margin,
+            section.bottom_margin,
+        )
+        values = [int(length) for length in lengths if length is not None]
+        if len(values) < len(lengths):
+            return Inches(_USABLE_IN[0]), Inches(_USABLE_IN[1])
+        width, height, left, right, top, bottom = values
+        return width - left - right, height - top - bottom
 
     def rule(self) -> None:
         paragraph = self.document.add_paragraph()

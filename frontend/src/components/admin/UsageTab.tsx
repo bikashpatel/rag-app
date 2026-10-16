@@ -58,7 +58,7 @@ export default function UsageTab() {
           <h2 className="admin-card-title">Usage in {monthLabel(month)}</h2>
           <p className="admin-card-subtitle">
             Calendar months in UTC. Only chat tokens count toward user budgets; embedding and vision tokens are shown for
-            cost.
+            cost. Images count toward each user's monthly image limit.
           </p>
         </div>
         <span className="spacer" />
@@ -131,6 +131,7 @@ function UsageReportView({ report, pending }: { report: UsageReport; pending: bo
           value={formatCompact(totals.vision_tokens)}
           title={formatNumber(totals.vision_tokens)}
         />
+        <StatTile label="Images" value={formatNumber(totals.images)} />
         <StatTile label="Cost" value={formatCost(totals.cost_usd)} />
         <StatTile label="Chat requests" value={formatNumber(totals.requests)} />
       </dl>
@@ -145,7 +146,7 @@ function UsageReportView({ report, pending }: { report: UsageReport; pending: bo
         <>
           <UsageTable
             title="By user"
-            headers={["User", "Requests", "Chat tokens", "Embedding tokens", "Vision tokens", "Cost"]}
+            headers={["User", "Requests", "Chat tokens", "Embedding tokens", "Vision tokens", "Images", "Cost"]}
             rows={byUser.map((row) => ({
               key: String(row.user_id),
               cells: [
@@ -154,6 +155,7 @@ function UsageReportView({ report, pending }: { report: UsageReport; pending: bo
                 formatNumber(row.chat_tokens),
                 formatNumber(row.embedding_tokens),
                 formatNumber(row.vision_tokens),
+                formatNumber(row.images),
                 formatCost(row.cost_usd),
               ],
             }))}
@@ -176,7 +178,7 @@ function UsageReportView({ report, pending }: { report: UsageReport; pending: bo
           />
           <UsageTable
             title="Daily"
-            headers={["Day", "Chat tokens", "Embedding tokens", "Vision tokens", "Cost"]}
+            headers={["Day", "Chat tokens", "Embedding tokens", "Vision tokens", "Images", "Cost"]}
             rows={daily.map((day) => ({
               key: day.date,
               cells: [
@@ -184,6 +186,7 @@ function UsageReportView({ report, pending }: { report: UsageReport; pending: bo
                 <DailyBar value={day.chat_tokens} peak={peakChatTokens} />,
                 formatNumber(day.embedding_tokens),
                 formatNumber(day.vision_tokens),
+                formatNumber(day.images),
                 formatCost(day.cost_usd),
               ],
             }))}

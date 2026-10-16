@@ -1,5 +1,7 @@
 // Minimal fetch wrapper. Auth is an httpOnly cookie, so requests just need same-origin credentials.
 
+import type { GeneratedImageDetails } from "./types";
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -88,6 +90,19 @@ export const api = {
 /** Same-origin link to a document's file; the server sends it as an attachment, so a plain link downloads it. */
 export function documentDownloadUrl(id: number): string {
   return `/api/documents/${id}/download`;
+}
+
+/** `full`: the stored image; `preview` (long edge 1024) and `thumb` (256): WebP renditions. */
+export type ImageRendition = "full" | "preview" | "thumb";
+
+/** Same-origin URL of a generated image for display (served inline). */
+export function documentImageUrl(id: number, size: ImageRendition = "full"): string {
+  return `/api/documents/${id}/image?size=${size}`;
+}
+
+/** The prompt, revised prompt and image model of a generated image (only its owner gets them). */
+export function getImageDetails(id: number, options?: { signal?: AbortSignal }): Promise<GeneratedImageDetails> {
+  return api.get<GeneratedImageDetails>(`/documents/${id}/image/details`, options);
 }
 
 export type SSEMessage = { event: string; data: unknown };

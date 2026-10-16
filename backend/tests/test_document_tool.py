@@ -34,7 +34,7 @@ from app.models import Document, GeneratedDocument, Message, MessageFile, UsageE
 from app.redis_client import INGEST_QUEUE, get_redis
 from app.routers import chat as chat_router
 from app.routers.chat import _stream_answer, _Turn
-from app.services import document_tool, llm, rag, storage
+from app.services import document_tool, image_tool, llm, rag, storage
 from app.services import usage as usage_service
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
@@ -122,6 +122,23 @@ def start_turn(monkeypatch: pytest.MonkeyPatch) -> StartTurn:
     return start
 
 
+@pytest.fixture(params=["files", "files+images"])
+def tool_mode(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Runs a scenario as written (images off, as in every test here) and in the production configuration, with
+    create_image offered next to create_document (docs/briefs/image-generation.md, I19)."""
+    if request.param == "files+images":
+        monkeypatch.setattr(settings, "chat_image_tools", True)
+    return str(request.param)
+
+
+def offered_tools(tool_mode: str) -> list[str]:
+    return ["create_document", "create_image"] if tool_mode == "files+images" else ["create_document"]
+
+
+def tool_names(call: dict[str, Any]) -> list[str]:
+    return [tool["function"]["name"] for tool in call.get("tools") or []]
+
+
 def parse(raw: list[str]) -> list[SseEvent]:
     import httpx
 
@@ -132,9 +149,9 @@ def parse(raw: list[str]) -> list[SseEvent]:
 
 
 async def test_a_pdf_is_created_stored_linked_and_indexed(
-    create_user: CreateUser, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+    create_user: CreateUser, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch, tool_mode: str
 ) -> None:
-    monkeypatch.setattr(settings, "generated_files_per_answer", 1)  # so the second call is the last one
+    monkeypatch.setattr(settings, "generated_files_per_answer", 1)  # so the second call is the last one (files only)
     alice = await create_user("alice")
     fake_llm.script = [
         ScriptedCall(
@@ -148,7 +165,7 @@ async def test_a_pdf_is_created_stored_linked_and_indexed(
 
     assert names(events) == ["meta", "sources", "delta", "file", "file", "file", "delta", "delta", "done"]
     writing, validated, created = file_events(events)
-    assert writing == {"call_id": "f1", "status": "writing", "title": None, "format": None, "chars": 0}
+    assert writing == {"call_id": "f1", "kind": "file", "status": "writing", "title": None, "format": None, "chars": 0}
     assert (validated["call_id"], validated["status"], validated["title"], validated["format"]) == (
         "f1",
         "writing",
@@ -166,6 +183,7 @@ async def test_a_pdf_is_created_stored_linked_and_indexed(
         "format": "pdf",
         "size_bytes": doc.size_bytes,
         "status": "pending",
+        "image": None,
     }
     assert created["document"]["id"] == doc_id and created["document"]["generated"] is True
     assert created["document"]["created_at"].endswith("Z")
@@ -177,7 +195,12 @@ async def test_a_pdf_is_created_stored_linked_and_indexed(
 
     first, second = fake_llm.chat_calls
     assert (first["tool_choice"], first["parallel_tool_calls"], first["max_tokens"]) == ("auto", False, 48_000)
-    assert second["tool_choice"] == "none" and "parallel_tool_calls" not in second and second["max_tokens"] == 16_000
+    if tool_mode == "files":
+        assert second["tool_choice"] == "none" and "parallel_tool_calls" not in second
+        assert second["max_tokens"] == 16_000
+    else:  # images can still be made, so the second call still offers the tools
+        assert (second["tool_choice"], second["parallel_tool_calls"], second["max_tokens"]) == ("auto", False, 48_000)
+    assert tool_names(first) == offered_tools(tool_mode)
     assert first["tools"] == second["tools"] and first["tools"][0]["eager_input_streaming"] is True
     assert system_prompt(first) == system_prompt(second)
     assert "You can create files with the create_document tool" in system_prompt(first)
@@ -273,7 +296,9 @@ async def test_interleaved_thinking_is_replayed_as_ordered_segments(create_user:
     ] == [("Sure, one moment.", ["SIG-1"], False), (None, ["SIG-2"], True)]
 
 
-async def test_openai_model_creates_two_files_in_successive_calls(create_user: CreateUser, fake_llm: FakeLLM) -> None:
+async def test_openai_model_creates_two_files_in_successive_calls(
+    create_user: CreateUser, fake_llm: FakeLLM, tool_mode: str
+) -> None:
     alice = await create_user("alice")
     mini = await model_id(alice, "GPT-5.4 mini")
     fake_llm.script = [
@@ -289,6 +314,7 @@ async def test_openai_model_creates_two_files_in_successive_calls(create_user: C
     assert [data["call_id"] for data in created] == ["f1", "f2"]
     calls = fake_llm.chat_calls
     assert len(calls) == 3 and "eager_input_streaming" not in calls[0]["tools"][0]
+    assert all(tool_names(call) == offered_tools(tool_mode) for call in calls)
     assert [result["filename"] for result in tool_messages(calls[2])] == ["Letter.docx", "Notes.md"]
     assert [len(tool_messages(call)) for call in calls] == [0, 1, 2]
     answer = await answer_of(events[0][1]["conversation_id"])
@@ -391,7 +417,9 @@ async def test_the_admin_is_offered_the_tool_whatever_the_limits(admin_client: A
     assert fake_llm.chat_calls[0]["tools"][0]["function"]["name"] == "create_document"
 
 
-async def test_a_rejected_tool_is_retried_without_it_and_remembered(create_user: CreateUser, fake_llm: FakeLLM) -> None:
+async def test_a_rejected_tool_is_retried_without_it_and_remembered(
+    create_user: CreateUser, fake_llm: FakeLLM, tool_mode: str
+) -> None:
     alice = await create_user("alice")
     rejected = litellm.BadRequestError(message="tools.0: unsupported schema", model="x", llm_provider="anthropic")
     fake_llm.script = [ScriptedCall(error=rejected, before_output=True), ScriptedCall([("text", "Plain answer.")])]
@@ -403,12 +431,16 @@ async def test_a_rejected_tool_is_retried_without_it_and_remembered(create_user:
     assert "tools" in first and "tools" not in retry
     # Only the tool changes, so only the tool is blamed.
     assert first["max_tokens"] == retry["max_tokens"] == settings.generated_file_max_output_tokens
+    assert tool_names(first) == offered_tools(tool_mode)
     assert document_tool.NO_FILE_TOOLS_NOTE in system_prompt(retry)
-    assert "create_document tool" not in system_prompt(retry)
+    assert "create_document tool" not in system_prompt(retry) and "create_image tool" not in system_prompt(retry)
+    assert (image_tool.NO_IMAGE_TOOLS_NOTE in system_prompt(retry)) is (tool_mode == "files+images")
     [usage] = await chat_usage(alice.user_id)
     assert (usage.prompt_tokens, usage.completion_tokens) == (100, 20)  # the rejected call isn't billed
     assert (await answer_of(events[0][1]["conversation_id"])).content == "Plain answer."
     assert (await can_create_files(alice))["Claude Opus 5.5"] is False
+    images = {model["display_name"]: model["can_create_images"] for model in (await alice.get("/api/models")).json()}
+    assert images["Claude Opus 5.5"] is False and images["Claude Sonnet 5.5"] is (tool_mode == "files+images")
 
     await chat(alice, "Again?", document_ids=[])
     assert "tools" not in fake_llm.chat_calls[-1]
@@ -448,7 +480,7 @@ async def test_when_every_retry_fails_the_answer_ends_and_nothing_is_remembered(
 
 
 async def test_a_rejected_max_tokens_keeps_the_tool_and_retries_with_the_usual_max_tokens(
-    create_user: CreateUser, fake_llm: FakeLLM, caplog: pytest.LogCaptureFixture
+    create_user: CreateUser, fake_llm: FakeLLM, caplog: pytest.LogCaptureFixture, tool_mode: str
 ) -> None:
     alice = await create_user("alice")
     too_many = litellm.BadRequestError(
@@ -467,8 +499,11 @@ async def test_a_rejected_max_tokens_keeps_the_tool_and_retries_with_the_usual_m
     assert events[-1][0] == "done"
     assert [offered(call) for call in fake_llm.chat_calls] == [(True, FILE_MAX), (True, USUAL_MAX), (True, USUAL_MAX)]
     rejected, retried, last = fake_llm.chat_calls
-    assert system_prompt(retried).count(document_tool.file_instructions(USUAL_MAX)) == 1
+    images = tool_mode == "files+images"
+    assert system_prompt(retried).count(document_tool.file_instructions(USUAL_MAX, images)) == 1
     assert document_tool.file_instructions(USUAL_MAX) != document_tool.file_instructions(FILE_MAX)  # fewer words
+    assert tool_names(retried) == offered_tools(tool_mode)
+    assert ("You can generate images with the create_image tool" in system_prompt(retried)) is images
     assert system_prompt(last) == system_prompt(retried)
     assert tool_messages(last)[0]["ok"] is True
     assert (await can_create_files(alice))["Claude Opus 5.5"] is True  # the tool wasn't to blame
@@ -521,7 +556,7 @@ async def test_a_tool_rejected_at_the_usual_max_tokens_too_is_remembered(
 
 
 async def test_a_context_window_error_is_retried_once_with_the_usual_max_tokens(
-    create_user: CreateUser, fake_llm: FakeLLM
+    create_user: CreateUser, fake_llm: FakeLLM, tool_mode: str
 ) -> None:
     alice = await create_user("alice")
 
@@ -533,6 +568,7 @@ async def test_a_context_window_error_is_retried_once_with_the_usual_max_tokens(
 
     assert events[-1][0] == "done"
     assert [offered(call) for call in fake_llm.chat_calls] == [(True, FILE_MAX), (True, USUAL_MAX)]
+    assert all(tool_names(call) == offered_tools(tool_mode) for call in fake_llm.chat_calls)
     assert (await can_create_files(alice))["Claude Opus 5.5"] is True
 
     fake_llm.chat_calls.clear()
@@ -601,7 +637,7 @@ async def test_a_second_signature_error_ends_the_answer(create_user: CreateUser,
 
 
 async def test_an_answer_creates_at_most_the_file_limit(
-    create_user: CreateUser, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+    create_user: CreateUser, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch, tool_mode: str
 ) -> None:
     monkeypatch.setattr(settings, "generated_files_per_answer", 2)
     alice = await create_user("alice")
@@ -611,8 +647,15 @@ async def test_an_answer_creates_at_most_the_file_limit(
 
     created = [data for data in file_events(events) if data["status"] == "created"]
     assert [data["file"]["filename"] for data in created] == ["File 0.md", "File 1.md"]
-    assert [call.get("tool_choice") for call in fake_llm.chat_calls] == ["auto", "auto", "none"]
-    assert len(fake_llm.script) == 2  # no more calls than the limit allowed
+    if tool_mode == "files":
+        assert [call.get("tool_choice") for call in fake_llm.chat_calls] == ["auto", "auto", "none"]
+        assert len(fake_llm.script) == 2  # no more calls than the limit allowed
+    else:  # create_image is still offered, so further files are attempted and each gets the limit error
+        assert [call.get("tool_choice") for call in fake_llm.chat_calls] == ["auto"] * 6
+        assert fake_llm.script == [] and len(await rows(Document)) == 2
+        assert {result["error"] for result in tool_messages(fake_llm.chat_calls[-1])[2:]} == {
+            "Only 2 files can be created per answer; this one wasn't created. Tell the user."
+        }
 
 
 async def test_extra_calls_in_one_response_get_the_limit_error(
@@ -916,18 +959,18 @@ async def test_refreshing_a_slot_never_recreates_a_released_one(create_user: Cre
 
 
 async def test_progress_and_keepalives_while_a_file_is_written(
-    create_user: CreateUser, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+    create_user: CreateUser, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch, tool_mode: str
 ) -> None:
     monkeypatch.setattr(document_tool, "_PROGRESS_SECONDS", 0.05)
     monkeypatch.setattr(chat_router, "_KEEPALIVE_SECONDS", 0.05)
-    real_render = document_tool.render
+    real_render = document_tool._render
 
-    async def slow_render(request: Any) -> Any:
+    async def slow_render(*args: Any) -> Any:
         # A warm render child can finish a small md file within the keepalive interval, so make it slower.
         await asyncio.sleep(0.3)
-        return await real_render(request)
+        return await real_render(*args)
 
-    monkeypatch.setattr(document_tool, "render", slow_render)
+    monkeypatch.setattr(document_tool, "_render", slow_render)
     alice = await create_user("alice")
     fake_llm.chunk_delay = 0.02
     content = "# Report\n\n" + "Revenue grew in every region this quarter. " * 30
@@ -1011,7 +1054,7 @@ async def test_stop_during_rendering_kills_the_child_and_creates_nothing(
 
 
 async def test_stop_while_storing_links_the_document_exactly_once(
-    create_user: CreateUser, start_turn: StartTurn, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+    create_user: CreateUser, start_turn: StartTurn, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch, tool_mode: str
 ) -> None:
     alice = await create_user("alice")
     gate, reached = asyncio.Event(), asyncio.Event()
@@ -1120,7 +1163,9 @@ async def test_deleting_the_document_or_the_conversation_keeps_the_rest(
     assert [row.document_id for row in await rows(GeneratedDocument)] == [kept["document_id"]]
 
 
-async def test_the_next_turn_knows_the_files_an_answer_created(create_user: CreateUser, fake_llm: FakeLLM) -> None:
+async def test_the_next_turn_knows_the_files_an_answer_created(
+    create_user: CreateUser, fake_llm: FakeLLM, tool_mode: str
+) -> None:
     alice = await create_user("alice")
     fake_llm.script = [
         ScriptedCall([pdf_call("Q3 report"), pdf_call("Figures", "| a |\n|---|\n| 1 |", fmt="md")]),
@@ -1138,7 +1183,8 @@ async def test_the_next_turn_knows_the_files_an_answer_created(create_user: Crea
         "content": '(App note: this answer created these files, which are in the user\'s documents: "Q3 report.pdf", '
         '"Figures.md".)',
     }
-    assert 'Notes in parentheses that start with "App note:"' in system_prompt(fake_llm.chat_calls[-1])
+    assert system_prompt(fake_llm.chat_calls[-1]).count('Notes in parentheses that start with "App note:"') == 1
+    assert tool_names(fake_llm.chat_calls[-1]) == offered_tools(tool_mode)
 
 
 async def test_the_history_note_says_which_files_were_deleted_since(create_user: CreateUser, fake_llm: FakeLLM) -> None:

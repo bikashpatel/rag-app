@@ -2,7 +2,7 @@
 
 import logging
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from itertools import dropwhile
@@ -12,7 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import Document, GeneratedDocument, Message, User
+from app.models import Document, GeneratedDocument, GeneratedImage, Message, User
 from app.schemas import Source
 from app.services import llm, vectorstore
 from app.services.model_registry import get_active_embedding_model
@@ -59,6 +59,15 @@ _GENERATED_PASSAGES_NOTE = (
     "They are earlier answers, not original sources: prefer the user's original documents, and say so when you rely "
     "on such a file."
 )
+_IMAGE_PASSAGES_NOTE = (
+    'Passages marked "an image the assistant generated" describe a picture the assistant made, not facts; never cite '
+    "them as evidence."
+)
+# Images whose answers are older than the history window: without their references the model can't embed them.
+_EARLIER_IMAGES_NOTE = (
+    "Earlier in this conversation, before the messages below, the assistant generated these images, which are in the "
+    "user's documents and can be embedded in pdf and docx files with their reference: {images}."
+)
 _SEARCH_FAILED_NOTE = (
     "The user's documents could not be searched for their latest message (document search is unavailable "
     "right now), so no passages are included. If they are asking about their documents, tell them their "
@@ -68,10 +77,13 @@ _SEARCH_FAILED_NOTE = (
 
 
 class HistoryFile(NamedTuple):
-    """A file an earlier answer created, for the note in the history: `deleted` once its document is gone."""
+    """A file or image an earlier answer created, for the note in the history: `deleted` once its document is gone.
+    `image`: a generated image; `image_id`: its document id while the document exists (its reference for files)."""
 
     name: str
     deleted: bool = False
+    image_id: int | None = None
+    image: bool = False
 
 
 @dataclass
@@ -82,6 +94,7 @@ class RetrievalResult:
     contexts: list[str] = field(default_factory=list)
     warning: str | None = None
     generated: dict[int, datetime] = field(default_factory=dict)  # document id -> when the assistant created it
+    generated_images: set[int] = field(default_factory=set)  # the ids in `generated` that are generated images
 
 
 async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[int] | None) -> RetrievalResult:
@@ -113,18 +126,22 @@ async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[
             document_ids=document_ids,
         )
         generated: dict[int, datetime] = {}
+        images: set[int] = set()
         if hits:
             # Vectors can briefly outlive their document (a delete racing ingestion); never cite deleted content.
             rows = await db.execute(
-                select(Document.id, GeneratedDocument.created_at)
+                select(Document.id, GeneratedDocument.created_at, GeneratedImage.document_id)
                 .outerjoin(GeneratedDocument, GeneratedDocument.document_id == Document.id)
+                .outerjoin(GeneratedImage, GeneratedImage.document_id == Document.id)
                 .where(Document.id.in_({hit.doc_id for hit in hits}))
             )
             existing = set()
-            for doc_id, created_at in rows.tuples():
+            for doc_id, created_at, image_id in rows.tuples():
                 existing.add(doc_id)
                 if created_at is not None:
                     generated[doc_id] = created_at
+                    if image_id is not None:
+                        images.add(doc_id)
             hits = [hit for hit in hits if hit.doc_id in existing]
     except Exception:
         logger.exception("Document search failed for user %s", user.id)
@@ -136,6 +153,7 @@ async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[
         sources=[_source(index, hit) for index, hit in enumerate(hits, start=1)],
         contexts=[hit.text for hit in hits],
         generated=generated,
+        generated_images=images,
     )
 
 
@@ -161,24 +179,39 @@ def build_messages(
     search_failed: bool = False,
     generated: Mapping[int, datetime] | None = None,
     file_instructions: str | None = None,
+    image_instructions: str | None = None,
     history_files: Mapping[int, Sequence[HistoryFile]] | None = None,
+    generated_images: Collection[int] = (),
+    earlier_images: Sequence[HistoryFile] = (),
 ) -> list[dict]:
     """OpenAI-style messages for LiteLLM: system prompt with the passages, the history, then the new message.
 
     `search_failed`: the search couldn't run (the retrieval warning), which isn't the same as finding nothing.
-    `generated`: document id -> creation time of the passages' documents the assistant created. `file_instructions`:
-    what the system prompt says about creating files (document_tool.plan). `history_files`: message id -> the files
-    that answer created, noted in the history so the model knows them (and which of them were deleted since).
+    `generated`: document id -> creation time of the passages' documents the assistant created; `generated_images`:
+    those of them that are generated images. `file_instructions` and `image_instructions`: what the system prompt says
+    about creating files and images (document_tool.plan, image_tool.plan). `history_files`: message id -> the files
+    and images that answer created, noted in the history so the model knows them (and which were deleted since).
+    `earlier_images`: images of the conversation that no answer in `history` lists (their answers are older), listed
+    with their references so create_document can still embed them.
     """
     generated = generated or {}
     history_files = history_files or {}
     system = _SYSTEM_PROMPT
     if file_instructions:
         system += "\n\n" + file_instructions
-    if any(source.document_id in generated for source in sources):
-        system += "\n\n" + _GENERATED_PASSAGES_NOTE
+    if image_instructions:
+        system += "\n\n" + image_instructions
+    if earlier_images:
+        system += "\n\n" + _EARLIER_IMAGES_NOTE.format(images=", ".join(_listed(image) for image in earlier_images))
+    passage_notes = []
+    if any(source.document_id in generated and source.document_id not in generated_images for source in sources):
+        passage_notes.append(_GENERATED_PASSAGES_NOTE)
+    if any(source.document_id in generated_images for source in sources):
+        passage_notes.append(_IMAGE_PASSAGES_NOTE)
+    if passage_notes:
+        system += "\n\n" + " ".join(passage_notes)
     if sources:
-        system += "\n\n" + _context_block(sources, contexts, generated)
+        system += "\n\n" + _context_block(sources, contexts, generated, generated_images)
     elif search_failed:
         system += "\n\n" + _SEARCH_FAILED_NOTE
     elif documents_requested:
@@ -197,23 +230,32 @@ def _history_content(message: Message, history_files: Mapping[int, Sequence[Hist
     files = history_files.get(message.id) if message.role == "assistant" else None
     if not files:
         return message.content
-    kept = ", ".join(f'"{file.name}"' for file in files if not file.deleted)
-    gone = ", ".join(f'"{file.name}"' for file in files if file.deleted)
     # "since deleted", not "deleted by the user": an admin can delete the document too.
     deleted = "which have since been deleted from the user's documents"
-    if not gone:
-        note = f"(App note: this answer created these files, which are in the user's documents: {kept}.)"
-    elif not kept:
-        note = f"(App note: this answer created these files, {deleted}: {gone}.)"
-    else:
-        note = (
-            f"(App note: this answer created these files, which are in the user's documents: {kept}. It also created "
-            f"these files, {deleted}: {gone}.)"
-        )
+    clauses: list[str] = []
+    for noun, verb, group in (
+        ("files", "created", [file for file in files if not file.image]),
+        ("images", "generated", [file for file in files if file.image]),
+    ):
+        kept = ", ".join(_listed(file) for file in group if not file.deleted)
+        gone = ", ".join(f'"{file.name}"' for file in group if file.deleted)
+        subject = "It" if clauses else "this answer"
+        if kept:
+            clauses.append(f"{subject} {verb} these {noun}, which are in the user's documents: {kept}")
+        if gone:
+            clauses.append(f"{'It also' if kept else subject} {verb} these {noun}, {deleted}: {gone}")
+    note = f"(App note: {'. '.join(clauses)}.)"
     return f"{message.content}\n\n{note}" if message.content else note
 
 
-def _context_block(sources: list[Source], contexts: list[str], generated: Mapping[int, datetime]) -> str:
+def _listed(file: HistoryFile) -> str:
+    """A file's name in the history note; an image also with its reference for create_document."""
+    return f'"{file.name}" (image:{file.image_id})' if file.image_id is not None else f'"{file.name}"'
+
+
+def _context_block(
+    sources: list[Source], contexts: list[str], generated: Mapping[int, datetime], images: Collection[int] = ()
+) -> str:
     passages = []
     for source, text in zip(sources, contexts, strict=True):
         origin = f"source: {_defuse(' '.join(source.filename.split()))}"
@@ -221,7 +263,14 @@ def _context_block(sources: list[Source], contexts: list[str], generated: Mappin
             origin += f", page {source.page}"
         text = text.strip()
         if (created := generated.get(source.document_id)) is not None:
-            origin += f", a file the assistant created on {created.date().isoformat()}"
+            if source.document_id in images:
+                # Prompts are often fiction ("a poster announcing our Q3 revenue of $10M"), never evidence.
+                origin += (
+                    f", an image the assistant generated on {created.date().isoformat()}: its title, description and "
+                    "prompt, not a factual source"
+                )
+            else:
+                origin += f", a file the assistant created on {created.date().isoformat()}"
             # Its own citation markers would read as the current passage numbers.
             text = _neutralize_markers(text)
         passages.append(f"[{source.index}] ({origin})\n{_defuse(text)}")

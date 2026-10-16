@@ -12,8 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user
-from app.models import Conversation, Document, Message, MessageFile, User
+from app.models import Conversation, Document, GeneratedImage, Message, MessageFile, User
 from app.schemas import MAX_INT, GeneratedFile, Source
+from app.services.storage import image_item
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -74,24 +75,28 @@ def _summary(conversation: Conversation) -> ConversationSummary:
 
 
 async def message_files(db: AsyncSession, message_ids: Collection[int]) -> dict[int, list[GeneratedFile]]:
-    """message id -> the files that answer created, in creation order, with each document's status now."""
+    """message id -> the files and images that answer created, in creation order, with each document's status now
+    (and an image's display details while its document exists)."""
     if not message_ids:
         return {}
     rows = await db.execute(
-        select(MessageFile, Document.status)
+        select(MessageFile, Document.status, GeneratedImage)
         .outerjoin(Document, Document.id == MessageFile.document_id)
+        .outerjoin(GeneratedImage, GeneratedImage.document_id == MessageFile.document_id)
         .where(MessageFile.message_id.in_(message_ids))
         .order_by(MessageFile.id)
     )
     files: defaultdict[int, list[GeneratedFile]] = defaultdict(list)
-    for row, status_now in rows.tuples():
+    for row, status_now, image in rows.tuples():
+        exists = row.document_id is not None
         files[row.message_id].append(
             GeneratedFile(
                 document_id=row.document_id,
                 filename=row.filename,
                 format=row.format,  # type: ignore[arg-type]
                 size_bytes=row.size_bytes,
-                status=status_now if row.document_id is not None else None,  # type: ignore[arg-type]
+                status=status_now if exists else None,  # type: ignore[arg-type]
+                image=image_item(image) if exists and image is not None else None,
             )
         )
     return files
@@ -130,9 +135,7 @@ async def get_conversation(
     conversation_id: ConversationId, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> ConversationDetail:
     conversation = await get_owned_conversation(db, user, conversation_id)
-    result = await db.execute(
-        select(Message).where(Message.conversation_id == conversation.id).order_by(Message.id)
-    )
+    result = await db.execute(select(Message).where(Message.conversation_id == conversation.id).order_by(Message.id))
     messages = list(result.scalars())
     files = await message_files(db, [message.id for message in messages if message.role == "assistant"])
     return ConversationDetail(

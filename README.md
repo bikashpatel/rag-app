@@ -23,7 +23,8 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
                                │           ├──> Redis     ingest queue, login/rate limits, answer slots
                                │           ├──> Qdrant    one vector collection per embedding model
                                │           └──> LiteLLM ─> OpenAI / Anthropic / Ollama / …
-                               │           └──> file render child (create_document: PDF/DOCX/XLSX/MD)
+                               │           └──> file render child (create_document: PDF/DOCX/XLSX/MD;
+                               │                                   create_image: validate and re-encode images)
                                └── uploads volume (shared)
               worker (same image) <── Redis list rag:ingest_queue
                  parse ─> [PDF pages: render (child process) ─> vision model (LiteLLM)] ─> chunk ─> embed (LiteLLM) ─> Qdrant
@@ -48,6 +49,12 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
   time- and memory-limited child process (fpdf2 with bundled Noto fonts for PDFs, python-docx, openpyxl),
   stores it as one of the user's private documents (quotas apply), queues it for indexing like an upload,
   and calls the model again with the result. The answer shows a file card with a Download button.
+- **Images from chat:** in the same loop, chat models with function calling get a `create_image` tool while an image
+  model is active. When the user asks for an image, the backend counts it against the user's monthly image limit,
+  generates it with the active image model (an OpenAI GPT image model through LiteLLM), validates and re-encodes the
+  bytes in the same child process, stores the image as one of the user's private documents (indexed by its prompt
+  and description), and calls the model again with the result. The answer shows the image; `create_document` can
+  embed it in PDF and Word files.
 - **Admin:** one admin account, defined in `.env`. Users exist only if the admin creates them.
 
 Code layout:
@@ -56,7 +63,7 @@ Code layout:
 |---|---|
 | `backend/app/main.py`, `config.py`, `db.py`, `models.py` | app factory, settings, async SQLAlchemy, ORM |
 | `backend/app/routers/` | `auth`, `models`, `documents`, `conversations`, `chat`, `admin` (all under `/api`) |
-| `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `document_tool` (the chat's `create_document` tool) + `filegen/` (PDF, DOCX, XLSX and MD rendering, run by `filegen/child.py`), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
+| `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `document_tool` (the chat's `create_document` tool) + `filegen/` (PDF, DOCX, XLSX and MD rendering and image validation, run by `filegen/child.py`), `image_tool` (the chat's `create_image` tool and the monthly image count), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
 | `backend/app/fonts/` | Noto Sans fonts for generated PDFs (SIL Open Font License, `OFL.txt`) |
 | `backend/app/worker.py` | ingestion worker (`python -m app.worker`) |
 | `backend/tests/` | integration tests, no Docker needed ([README](backend/tests/README.md)) |
@@ -104,11 +111,12 @@ Notes:
 - Anthropic has no embeddings API, so embedding needs the OpenAI key unless you switch to a local
   embedding model (see "Local models with Ollama").
 - Models are seeded on the **first** start only. A seeded model is enabled only if its provider
-  key was set at that moment; if you add a key later, enable the models in Admin → Models. The one
-  exception is the vision model: an existing database gets "Claude Sonnet 5.5 (vision)" (or "GPT-5.4 mini
-  (vision)" when only the OpenAI key is set) once, on its next start, enabled and active if the key is set,
-  so from then on PDF page images go to that provider without any admin action. A vision model you delete
-  isn't added again.
+  key was set at that moment; if you add a key later, enable the models in Admin → Models. The
+  exceptions are the vision and image models. An existing database gets "Claude Sonnet 5.5 (vision)" (or "GPT-5.4
+  mini (vision)" when only the OpenAI key is set) once, on its next start, enabled and active if the key is set,
+  so from then on PDF page images go to that provider without any admin action. In the same way it gets the image
+  model "GPT Image 2" (`openai/gpt-image-2`) once, enabled and active if `OPENAI_API_KEY` is set, and every existing
+  user gets the default monthly image limit once. A vision or image model you delete isn't added again.
 - **Vision model for PDFs** (`VISION_*` in `.env.example`): at most `VISION_MAX_PAGES` (50, at most 200)
   pages per document are read with the vision model, full-page scans first (a PDF with more of them fails
   with a message; other pages over the cap keep only their text layer), with `VISION_CONCURRENCY` (3) calls
@@ -128,6 +136,20 @@ Notes:
     a file is requested (measured: about $0.006 per Claude Opus 5.5 call).
   - Generated files count toward the user's document, storage and per-file limits (the admin is exempt). A user
     with no room isn't offered the tool, and the assistant says so.
+- **Images from chat** (`CHAT_IMAGE_TOOLS`, `GENERATED_IMAGES_PER_ANSWER`, `DEFAULT_MONTHLY_IMAGE_LIMIT` and `IMAGE_*`
+  in `.env.example`): `CHAT_IMAGE_TOOLS=false` turns image generation off and keeps existing images (disabling the
+  active image model in the admin page does the same).
+  - One answer may generate `GENERATED_IMAGES_PER_ANSWER` (3) images.
+  - `DEFAULT_MONTHLY_IMAGE_LIMIT` (30, `0` = unlimited) is the user form's default for the monthly image count.
+    Changing it later doesn't change existing users, who each have their own value.
+  - `IMAGE_MAX_QUALITY` (medium) caps the quality, and with it the cost.
+  - `IMAGE_OUTPUT_FORMAT` (png) is the format asked of the image model and stored. A PNG measured about 0.7 MB for a
+    square low-quality image and 2.7 MB for a landscape medium one; `jpeg` and `webp` are much smaller.
+  - An image may take `IMAGE_TIMEOUT_SECONDS` (180), waiting for a slot included, and `IMAGE_CONCURRENCY` (3) images
+    are generated at once per backend process.
+  - Measured with GPT Image 2: about $0.006 for a square low-quality image and $0.042 for a landscape medium one.
+    Offering the image tool adds about 1,040 input tokens to every model call of a capable chat model, whether or not
+    an image is requested.
 - `WORKER_MEM_LIMIT` (default `4g`) is the worker container's memory limit (Compose `mem_limit` and
   `memswap_limit`); PDF pages are rendered in child processes limited to 1 GiB each.
 
@@ -178,8 +200,8 @@ marked as earlier answers rather than sources. When the content uses your docume
 Sources section. Every document in the panel, uploads included, has a Download button.
 
 - **What each format holds:**
-  - PDF and Word: headings, paragraphs, bold and italic, lists, tables, code blocks and links. PDFs also get page
-    numbers.
+  - PDF and Word: headings, paragraphs, bold and italic, lists, tables, code blocks and links, plus images generated
+    earlier in the same conversation (see below). PDFs also get page numbers.
   - Excel: one or more sheets with a bold, frozen header row and an auto-filter. Numbers and dates are stored as
     real values, and text that looks like a formula stays text.
   - Markdown: the same content as a `.md` file that loads nothing (images become text, HTML is escaped).
@@ -189,9 +211,36 @@ Sources section. Every document in the panel, uploads included, has a Download b
 - **Stop:** pressing Stop while a file is being written cancels it; if it was already being saved, it is still in
   your documents.
 
+**Images from chat:** ask for an image in your own words, for example "generate an image of a fox in the snow",
+"draw a watercolor illustration of a lighthouse at dawn" or "make a logo concept for a bakery". This works with chat
+models that support function calling while the admin has an image model active; on desktop, the composer hint says
+"…or an image" when the selected model can. The assistant writes a full prompt for the image model and picks square,
+landscape or portrait.
+
+- **In the answer:** while the image is made (10 to 40 s in the live tests), a placeholder with the image's shape
+  counts the seconds. Then the image appears under the answer with its name, type, size and Download. Click it for a
+  full-size viewer that shows the description, size and quality, the prompt (under "Prompt") and Download; Escape
+  closes it.
+- **In your documents:** every image is also saved to your private documents, with a thumbnail and "Created in chat".
+  It counts toward your document and storage limits, but a finished image is always saved, even when that takes you
+  over a limit. It is indexed by its title, description and prompt, so later chats can find it; such passages are
+  marked as images the assistant generated, not as facts.
+- **In files:** ask for a PDF or Word file "with the logo" and the image is placed in it, scaled to the page width,
+  with a caption. This works for images generated earlier in the same conversation. Excel and Markdown files get a
+  text reference instead.
+- **Limits (defaults):** up to 3 images per answer, and a monthly image count per user (30) that the sidebar's usage
+  meter shows as "Images this month". The admin sets each user's count; the admin has no limit. Failed attempts that
+  the provider may have charged for count too.
+- **When it fails:** a refused prompt (the provider's safety system), a busy provider or a timeout shows a card with
+  the reason, and the assistant explains it. After any failure other than a refusal, that answer makes no more
+  images; ask again in a new message.
+- **Stop:** pressing Stop before the image model was called cancels the image. Once it is being generated, only the
+  text stops: the image is still finished, saved to your documents and counted, and it appears on the answer after
+  a reload.
+
 **Admin page** (`/admin`, admin only). An overview at the top shows users, documents, failed
-and stale documents, the ingestion queue and the active embedding and vision models ("Off" when no
-vision model is active), and offers a re-index when documents are stale or failed.
+and stale documents, the ingestion queue and the active embedding, vision and image models ("Off" when no
+vision or image model is active), and offers a re-index when documents are stale or failed.
 
 - **Users:** create users (the only way to get an account), reset passwords, deactivate, delete.
   Per-user limits (`0` = unlimited, except for the max file size):
@@ -199,9 +248,11 @@ vision model is active), and offers a re-index when documents are stale or faile
   - chat requests per minute
   - which chat models they may use
   - max file size, max number of documents, max total storage
-- **Models:** three sections, Chat, Embedding and Vision. Add, edit, enable/disable, choose the default
-  chat model, the active embedding model and the active vision model, and **Test** the connection (for a
-  vision model, it sends a small generated image and checks the model reads it).
+  - monthly image limit (images per UTC calendar month; the Users table shows "Images this month")
+- **Models:** four sections, Chat, Embedding, Vision and Image. Add, edit, enable/disable, choose the default
+  chat model and the active embedding, vision and image models, and **Test** the connection (for a vision model,
+  it sends a small generated image and checks the model reads it; for an image model, it generates one small
+  low-quality image, about $0.006, shows its thumbnail and records it as the admin's image usage).
   - The **active vision model** reads PDF pages that have no text layer (scans: it transcribes them) and
     describes images such as charts, diagrams and photos on pages with text. The page images are sent to
     the model's provider (a cloud provider, unless you add a local model, e.g. through Ollama), and every
@@ -212,11 +263,16 @@ vision model is active), and offers a re-index when documents are stale or faile
   - Changing, disabling or deleting the vision model while a PDF is being read puts that PDF back in the queue,
     so it is read again with the model that is active then. Deleting or reprocessing a document stops its
     reading run.
-- **Usage:** chat, embedding and vision tokens and the estimated cost per user, per model and per day, for
-  any month. Only chat tokens count toward user budgets; vision tokens have their own monthly allowance
-  (`VISION_MONTHLY_TOKEN_LIMIT`).
-- **Documents:** every document (uploads and files created in chat), with re-index and delete actions, and
-  **Re-index all documents**.
+  - The **active image model** generates the images users ask for in chat. Prompts go to its provider (OpenAI or
+    Azure), whichever provider the chat model is from. Disabling or deleting it turns image generation off; images
+    already made stay. If the model returns unusable data (no image data, or not a PNG, JPEG or WebP image), image
+    generation pauses until the model is edited or its **Test** succeeds.
+- **Usage:** chat, embedding and vision tokens, generated images and the estimated cost per user, per model and
+  per day, for any month. Only chat tokens count toward user budgets; vision tokens have their own monthly allowance
+  (`VISION_MONTHLY_TOKEN_LIMIT`) and images their monthly count.
+- **Documents:** every document (uploads, and files and images created in chat), with re-index and delete actions,
+  and **Re-index all documents**. Users' generated images show only their type tag here; their prompts and the
+  images themselves stay private to their owner.
   Documents read with the vision model show how many pages it read ("pages read by vision"). PDFs that
   failed as scanned before the vision model was enabled can be retried (Retry in the document panel, or
   "Retry failed" in the admin overview).
@@ -227,8 +283,8 @@ admin bypasses all usage limits.
 
 ## 5. Switching or adding models (LiteLLM)
 
-In **Admin → Models**, click **Add chat model**, **Add embedding model** or **Add vision model** and enter
-a LiteLLM model string:
+In **Admin → Models**, click **Add chat model**, **Add embedding model**, **Add vision model** or **Add image
+model** and enter a LiteLLM model string:
 
 | Provider | Example | Key in `.env` |
 |---|---|---|
@@ -257,6 +313,14 @@ click **Make active** on an enabled model. At most one vision model is active, a
 run on (new uploads, Retry, reprocess). Vision calls ask for low reasoning effort, and vision models are never
 offered for chat.
 
+**Image models** must be OpenAI GPT image models (`openai/gpt-image-2`, seeded; also `openai/<name>` with an API base
+for an OpenAI-compatible server) or Azure OpenAI deployments of them (`azure/<deployment>`). The server refuses other
+providers and dall-e models with a message (422): LiteLLM runs other providers' image calls as blocking requests that
+Stop and the time limit can't cancel, and dall-e takes other sizes and qualities. Prices are per 1M prompt text tokens
+(input) and image tokens (output); blank uses LiteLLM's price list. Max output tokens and temperature don't apply.
+OpenAI may require a verified organization for its image models; the Test then says so. At most one image model is
+active, and image models are never offered for chat.
+
 **Changing the embedding model:** vectors from different embedding models can't be mixed. When
 you make another embedding model active, documents embedded with the old one become stale; the
 admin overview shows how many and offers a re-index. Re-indexing uses embedding tokens, plus vision
@@ -280,7 +344,7 @@ cd backend
 uv venv --python 3.13 .venv            # once (uv downloads Python 3.13 if needed)
 uv pip sync requirements-dev.txt       # again whenever the locks change
 #   or, with python3.13 on PATH: python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # about 1,170 tests, about 2.5 minutes
+.venv/bin/python -m pytest -q          # about 1,500 tests, about 3.5 minutes
 
 # Lint and type-check (tools not in the requirements; run through uvx)
 uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests
@@ -375,9 +439,18 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
 
   Links show their host. The prompt allows the tool only when the user's own message asks for a file, never
   because a document does.
+- Images the assistant generates follow the same rules: the tool is used only when the user's own message asks for
+  an image, and each image lands only in that user's private documents. The provider's bytes are decoded only in
+  that child process (PNG, JPEG or WebP only, size-checked before decoding), re-encoded without their metadata and
+  marked as AI-generated (XMP, IPTC `trainedAlgorithmicMedia`). Only image data is accepted, so no URL from a model
+  response is ever fetched. Images embedded in files reach the renderers only as copies the server made, never as a
+  path or URL from the model. `GET /api/documents/{id}/image` serves them inline with the listing's visibility,
+  `nosniff`, a sandbox CSP and `Cache-Control: private, no-cache`. Prompts are shown only to the image's owner (not
+  in Admin → Documents, not in logs), but they go to the image model's provider (OpenAI) even when the chat model is
+  from another provider.
 - Downloads (`GET /api/documents/{id}/download`) follow the listing's visibility rules (anything else is a 404)
-  and are sent as attachments with `nosniff`, `no-store` and a sandbox CSP. PDF and Office files get their own
-  content type; everything else, Markdown and HTML included, is `application/octet-stream`.
+  and are sent as attachments with `nosniff`, `no-store` and a sandbox CSP. PDF, Office and generated image files
+  get their own content type; everything else, Markdown and HTML included, is `application/octet-stream`.
 - Secrets are never logged; provider errors are turned into user-facing messages (`llm.friendly_error`).
 
 ## 8. Known limitations
@@ -394,21 +467,30 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
   characters of another script (Chinese, Arabic, Hebrew, Thai, …) appear as □ with a note; more than 2 % of
   the letters and the PDF is refused with a hint to create a docx or md file, which keep every script. Emoji
   are left out of PDFs.
-- Generated files have no images or charts, and an earlier file can't be converted to another format: "make
-  it a Word document too" writes the content again from the documents, which costs another file's tokens.
+- Generated files have no charts, and only PDF and Word files can hold images (those generated in the same
+  conversation). An earlier file can't be converted to another format: "make it a Word document too" writes the
+  content again from the documents, which costs another file's tokens.
   Citations of a generated PDF have no page number, because it is indexed from its Markdown source.
-- One answer that writes files makes up to `GENERATED_FILES_PER_ANSWER` + 2 model calls, each re-sending the
-  context; with a monthly budget, no further call starts once the answer has used what was left, but up to two
-  answers running at once can still go past the budget.
+- One answer that writes files or images makes up to `GENERATED_FILES_PER_ANSWER` + `GENERATED_IMAGES_PER_ANSWER` +
+  2 model calls, each re-sending the context; with a monthly budget, no further call starts once the answer has used
+  what was left, but up to two answers running at once can still go past the budget.
 - The file tool costs tokens even when no file is asked for: about 1,550 input tokens per model call with a
   capable model. Its calls may also use up to 48,000 output tokens instead of 16,000. Set `CHAT_FILE_TOOLS=false`
   if you don't need files.
-- The admin can't download users' private documents; downloads follow the same visibility as the document list.
-- Deleting a user deletes their usage history too (chat, embedding and vision), so their costs leave the
+- Images: the image tool adds about 1,040 input tokens per model call with a capable model, image or not
+  (`CHAT_IMAGE_TOOLS=false` removes it). Only OpenAI and Azure OpenAI GPT image models work; image prompts go to
+  OpenAI even when the chat runs on Anthropic. Three sizes only (1024×1024, 1536×1024, 1024×1536), no transparent
+  backgrounds, no editing or variations of an image, and no image uploads. Images in one answer are made one after
+  another. Re-encoding drops the provider's C2PA provenance data; the XMP marker is what says the image is
+  AI-generated. PNG (the default) takes about 0.7 to 3 MB per image.
+- The admin can't download users' private documents or view their images; downloads follow the same visibility as
+  the document list.
+- Deleting a user deletes their usage history too (chat, embedding, vision and images), so their costs leave the
   usage report.
 - Legacy `.doc`, `.ppt` and `.xls` files must be saved in the modern format first.
 - Database tables are created automatically on start. There are no migrations yet: add Alembic
-  before changing the schema of a database with real data.
+  before changing the schema of a database with real data. Rolling the code back to a release before images needs
+  the SQL in `docs/HANDOFF.md` ("Images from chat") first.
 - Run exactly one worker container. Scale with `WORKER_CONCURRENCY` instead.
 - No backups are configured.
 

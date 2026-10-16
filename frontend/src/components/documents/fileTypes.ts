@@ -17,6 +17,11 @@ const TAGS = new Map<string, FileTypeTag>([
   [".md", { label: "MD", tone: "neutral" }],
   [".markdown", { label: "MD", tone: "neutral" }],
   [".txt", { label: "TXT", tone: "neutral" }],
+  // Images the assistant generated (they can't be uploaded).
+  [".png", { label: "PNG", tone: "accent" }],
+  [".jpg", { label: "JPG", tone: "accent" }],
+  [".jpeg", { label: "JPG", tone: "accent" }],
+  [".webp", { label: "WEBP", tone: "accent" }],
 ]);
 
 /** Old binary Office formats the server rejects, with the format to save them as instead. */

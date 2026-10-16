@@ -12,7 +12,7 @@ Single-tenant, locally hosted Retrieval-Augmented-Generation chat app.
 - **Stack:** FastAPI (Python 3.13) · Postgres 17 · Redis 7.4 · Qdrant 1.19 ·
   React 19 + Vite 8 (TypeScript 5.9) · nginx · Docker Compose.
 - **LLM access:** everything goes through **LiteLLM** (`litellm.acompletion`,
-  `litellm.aembedding`). Provider keys come from env (`OPENAI_API_KEY`,
+  `litellm.aembedding`, `litellm.aimage_generation`). Provider keys come from env (`OPENAI_API_KEY`,
   `ANTHROPIC_API_KEY`, and any other key LiteLLM understands).
 - **Auth:** username + password, argon2 hashes, JWT in an **httpOnly,
   SameSite=Strict cookie** (`rag_session`). A `Authorization: Bearer <jwt>`
@@ -26,8 +26,9 @@ Single-tenant, locally hosted Retrieval-Augmented-Generation chat app.
   per minute, allowed models, upload limits (max file MB, max documents, max
   total storage MB). **`0` means unlimited** for `monthly_token_limit`,
   `rate_limit_per_min`, `max_documents`, `max_storage_mb`. `max_upload_mb`
-  is always ≥ 1 and capped by `MAX_UPLOAD_MB_HARD`. The admin bypasses all
-  usage checks.
+  is always ≥ 1 and capped by `MAX_UPLOAD_MB_HARD`. Plus a **monthly image
+  count** (`monthly_image_limit`, default `DEFAULT_MONTHLY_IMAGE_LIMIT`, `0` =
+  unlimited). The admin bypasses all usage checks.
 - **Monthly budget** counts **chat (LLM) tokens only** (prompt + completion)
   in the current UTC calendar month. Embedding and vision tokens are recorded
   and shown but don't count toward the budget. Vision tokens have a separate
@@ -39,6 +40,13 @@ Single-tenant, locally hosted Retrieval-Augmented-Generation chat app.
   user's private documents, indexed like an upload, and the answer shows a file
   card with a Download button (section 6, Chat; brief
   `docs/briefs/document-generation.md`).
+- **Images from chat:** when the user asks, the assistant generates an image
+  with the `create_image` tool and the active **image model**. The image is shown
+  in the answer (with a full-size viewer and Download), saved as one of the
+  user's private documents (indexed by its prompt and description), and can be
+  embedded in PDF and DOCX files the assistant creates in the same conversation
+  (section 6, Chat; brief `docs/briefs/image-generation.md`). Image costs are
+  `image` usage events and don't count toward the token budget.
 
 ## 2. Repository layout and ownership
 
@@ -62,7 +70,7 @@ rag-app/
       worker.py             INGESTION   ingestion worker process (python -m app.worker)
       services/
         __init__.py
-        llm.py              FOUNDATION  LiteLLM wrappers: stream_chat, embed_texts, read_image, test_model, compute_cost
+        llm.py              FOUNDATION  LiteLLM wrappers: stream_chat, embed_texts, read_image, generate_image, test_model, compute_cost
         usage.py            FOUNDATION  rate limit, budget check, record_usage, usage_summary
         vectorstore.py      FOUNDATION  Qdrant wrapper
         model_registry.py   FOUNDATION  model lookup helpers
@@ -75,7 +83,8 @@ rag-app/
         ingestion.py        INGESTION   enqueue_document, process_document
         rag.py              CHAT        retrieval + prompt building
         document_tool.py    CHAT        create_document tool: schema, validation, render limits, storing the file as a document
-        filegen/            CHAT        Markdown / sheets -> PDF (fpdf2), DOCX, XLSX, MD bytes (pure, no app imports; run by filegen/child.py in a time- and memory-limited child process)
+        image_tool.py       CHAT        create_image tool: schema, validation, the monthly limit's reservation, generating, storing the image as a document, the image model Test
+        filegen/            CHAT        Markdown / sheets -> PDF (fpdf2), DOCX, XLSX, MD bytes, and image validation (images.py) (pure, no app imports; run by filegen/child.py in a time- and memory-limited child process)
       fonts/                CHAT        Noto Sans TTFs for generated PDFs (SIL OFL 1.1, fonts/OFL.txt)
       routers/
         __init__.py
@@ -138,6 +147,13 @@ See `backend/app/config.py` for defaults. Important ones:
 | `GENERATED_FILE_MAX_OUTPUT_TOKENS` (48000) | `max_tokens` of a chat call that offers the tool (a model's own `max_output_tokens` wins; lowered to LiteLLM's known output cap) |
 | `GENERATED_FILE_TIMEOUT_SECONDS` (60) | time to render one generated file in its child process, waiting for a render slot included; the child is killed after it |
 | `GENERATED_FILE_CONCURRENCY` (2) | generated files rendered at once (child processes) in one backend process |
+| `CHAT_IMAGE_TOOLS` (true) | offer the `create_image` tool when a usable image model is active and the chat model supports function calling (section 6, Chat); `false` turns image generation off and keeps existing images |
+| `GENERATED_IMAGES_PER_ANSWER` (3) | images one answer may generate |
+| `DEFAULT_MONTHLY_IMAGE_LIMIT` (30) | images per user per UTC calendar month: the user form's default and the value every existing user gets once on the first start with images (0 = unlimited; the admin is exempt) |
+| `IMAGE_MAX_QUALITY` (medium) | highest quality `create_image` may use: `low`, `medium` or `high` |
+| `IMAGE_OUTPUT_FORMAT` (png) | format asked of the image model: `png`, `jpeg` or `webp`; the image is stored as returned |
+| `IMAGE_TIMEOUT_SECONDS` (180) | one image call, waiting for an image slot and quick provider retries included; the call is abandoned after it |
+| `IMAGE_CONCURRENCY` (3) | image calls at once in one backend process |
 
 ## 4. Data model (SQLAlchemy, `app/models.py`)
 
@@ -151,31 +167,44 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   use every enabled chat model; if true only `allowed_models`.
   Bumping `token_version` invalidates all of the user's sessions.
 - **llm_models**: `id, display_name, litellm_model (e.g. "openai/gpt-5.4-mini",
-  "anthropic/claude-sonnet-5-5", "ollama/llama3.1"), kind ("chat"|"embedding"|"vision"),
+  "anthropic/claude-sonnet-5-5", "ollama/llama3.1"), kind ("chat"|"embedding"|"vision"|"image"),
   enabled, is_default, api_base, api_key_env, max_output_tokens, temperature,
   input_cost_per_mtok, output_cost_per_mtok, embedding_dim, created_at,
   updated_at`. At most one `is_default` per kind. The default embedding model
   is the **active** one: all indexing and retrieval use it. The default vision
   model, when enabled, is the **active** vision model: ingestion uses it to read
   PDF pages (section 7); without one, PDFs are read from their text layer only.
-  Vision models are never offered to users as chat models. `api_key_env` is
+  The default image model, when enabled, is the **active** image model: chat
+  generates images with it; without one, `create_image` isn't offered.
+  Vision and image models are never offered to users as chat models. `api_key_env` is
   the *name* of an env var holding the key (must match `^[A-Z][A-Z0-9_]*_API_KEY$`).
-  Costs are USD per 1M tokens; when null, LiteLLM's cost map is used.
+  Costs are USD per 1M tokens (image models: input = prompt text tokens,
+  output = image tokens); when null, LiteLLM's cost map is used.
 - **documents**: `id, owner_id → users (CASCADE), scope ("private"|"shared"),
   filename, stored_name (uuid + ext, in UPLOAD_DIR), content_type, size_bytes,
   sha256, status ("pending"|"processing"|"ready"|"failed"), error, num_chunks,
   num_pages, embedding_model_id → llm_models (SET NULL), created_at, updated_at`.
   A PDF the assistant created has its Markdown source stored next to it as
   `<stored_name>.source.md` (indexed instead of the PDF's text, section 7;
-  removed with the document).
+  removed with the document). An image the assistant generated (`image/png`,
+  `image/jpeg` or `image/webp`; `.png`, `.jpg` or `.webp`) has three files next
+  to it: `<stored_name>.source.md` (title, description, prompt; indexed),
+  `<stored_name>.preview.webp` (long edge 1024) and `<stored_name>.thumb.webp`
+  (long edge 256); sidecars don't count toward storage.
 - **conversations**: `id, user_id → users (CASCADE), title, created_at, updated_at`.
 - **messages**: `id, conversation_id → conversations (CASCADE), role
   ("user"|"assistant"), content, sources (JSON list, see Source), model_id,
   model_name, prompt_tokens, completion_tokens, error, created_at`.
 - **usage_events**: `id, user_id → users (CASCADE), model_id (SET NULL),
-  model_name, kind ("chat"|"embedding"|"vision"), prompt_tokens, completion_tokens,
+  model_name, kind ("chat"|"embedding"|"vision"|"image"), prompt_tokens, completion_tokens,
   total_tokens, cost_usd, created_at`. Ingestion records at most one `embedding`
-  and one `vision` event per document run, for the document's owner.
+  and one `vision` event per document run, for the document's owner. Each
+  generated image is one `image` event (prompt tokens = prompt text, completion
+  tokens = image tokens), inserted before the image model is called (the monthly
+  image count's reservation) and settled with the tokens and cost afterwards
+  (estimated when the request was sent but no response came; deleted when
+  nothing was billed). Each admin Test of an image model is one `image` event
+  of the admin.
 - **vision_pages**: `document_id → documents (CASCADE), page, mode
   ("transcribe"|"describe")` (together the primary key), `fingerprint, text,
   created_at`. The vision model's cleaned output for one page of one document
@@ -185,9 +214,9 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   `max_tokens`) matches; a successful run deletes the rows it didn't use.
   Never shared between documents, not even identical files.
 - **app_state**: `key (primary key), value, updated_at`. Server flags, e.g.
-  `vision_seeded` (section 6, Admin).
+  `vision_seeded`, `image_seeded` and `image_limits_backfilled` (section 6, Admin).
 - **message_files**: `id, message_id → messages (CASCADE), document_id →
-  documents (SET NULL), filename, format ("pdf"|"docx"|"xlsx"|"md"),
+  documents (SET NULL), filename, format ("pdf"|"docx"|"xlsx"|"md"|"png"|"jpeg"|"webp"),
   size_bytes, created_at`. A file the assistant created in that answer, in
   creation order; filename, format and size are a snapshot, so the card can
   still be shown after the document is deleted (`document_id` NULL).
@@ -195,8 +224,23 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   created_at`. Marks a document the assistant created in a chat (inserted with
   the document); kept when the conversation is deleted. Source of
   `DocumentItem.generated` and of the label on its passages in later chats.
+- **generated_images**: `document_id` (primary key) `→ documents (CASCADE),
+  conversation_id → conversations (SET NULL), model_name, prompt, revised_prompt,
+  alt_text, format ("png"|"jpeg"|"webp"), quality ("low"|"medium"|"high"),
+  width, height, created_at`. An image the assistant generated (inserted with its
+  document, which also gets a `generated_documents` row). Source of
+  `DocumentItem.image` and `GeneratedFile.image`; `conversation_id` decides which
+  images `create_document` may embed.
+- **user_image_limits**: `user_id` (primary key) `→ users (CASCADE),
+  monthly_image_limit, updated_at`. A user's monthly image count (0 =
+  unlimited). Written when the admin creates a user or sends the field in an
+  update; on the first start with this table every existing non-admin user
+  gets a row with `DEFAULT_MONTHLY_IMAGE_LIMIT` (`app_state` key
+  `image_limits_backfilled`). A user without a row gets the env default.
 - New tables are created by `create_all` on an existing database; no column is
-  added to an existing table, so no migration is needed.
+  added to an existing table, so no migration is needed (the choice against
+  introducing Alembic for the image limit is explained in
+  `docs/briefs/image-generation.md` section 3.3).
 
 ## 5. Qdrant layout
 
@@ -227,14 +271,21 @@ of truth is `frontend/src/api/types.ts`.
 
 ```ts
 type UserLimits = { monthly_token_limit: number; rate_limit_per_min: number;
-  max_upload_mb: number; max_documents: number; max_storage_mb: number }
+  max_upload_mb: number; max_documents: number; max_storage_mb: number;
+  monthly_image_limit: number /* images per UTC month; 0 = unlimited */ }
 type UsageSummary = { month: string /* "YYYY-MM" */; chat_tokens: number;
-  embedding_tokens: number; vision_tokens: number;
+  embedding_tokens: number; vision_tokens: number; images: number /* generated this month */;
   cost_usd: number /* every kind */; monthly_token_limit: number /* counts chat_tokens only */ }
 type Me = { id: number; username: string; is_admin: boolean;
   limits: UserLimits; usage: UsageSummary }
 type ChatModel = { id: number; display_name: string; provider: string; is_default: boolean;
-  can_create_files: boolean /* CHAT_FILE_TOOLS is on and LiteLLM says the model supports function calling */ }
+  can_create_files: boolean /* CHAT_FILE_TOOLS is on and LiteLLM says the model supports function calling */;
+  can_create_images: boolean /* CHAT_IMAGE_TOOLS is on, a usable image model is active and the model gets tools */ }
+type ImageQuality = "low"|"medium"|"high"
+type GeneratedImage = { width: number; height: number; alt_text: string;
+  quality: ImageQuality /* as requested */ }  // display details only; no prompt
+type GeneratedImageDetails = { prompt: string; revised_prompt: string|null;
+  model_name: string /* the image model's litellm_model */; created_at: string }
 type DocumentItem = { id: number; filename: string; scope: "private"|"shared";
   status: "pending"|"processing"|"ready"|"failed"; error: string|null;
   size_bytes: number; content_type: string; num_chunks: number;
@@ -242,6 +293,7 @@ type DocumentItem = { id: number; filename: string; scope: "private"|"shared";
   can_delete: boolean; is_stale: boolean;
   vision_pages: number /* pages read with the vision model (vision_pages rows); 0 unless status is "ready" */;
   generated: boolean /* the assistant created this file in a chat (generated_documents row) */;
+  image: GeneratedImage|null /* an image the assistant generated (generated_images row); always null in GET /admin/documents */;
   created_at: string; updated_at: string }
 type DocumentConfig = { supported_extensions: string[] /* e.g. [".pdf", ".docx"] */;
   max_upload_mb: number; max_documents: number; max_storage_mb: number;
@@ -250,10 +302,12 @@ type Source = { index: number /* 1-based citation number */; document_id: number
   filename: string; page: number|null; chunk_index: number; score: number;
   snippet: string /* ≤ 500 chars of the chunk */ }
 type ConversationSummary = { id: number; title: string; created_at: string; updated_at: string }
-type GeneratedFileFormat = "pdf"|"docx"|"xlsx"|"md"
+type GeneratedFileFormat = "pdf"|"docx"|"xlsx"|"md"|"png"|"jpeg"|"webp"
+type GeneratedFileKind = "file"|"image"
 type GeneratedFile = { document_id: number|null /* null once the document was deleted */;
   filename: string; format: GeneratedFileFormat; size_bytes: number;
-  status: "pending"|"processing"|"ready"|"failed"|null /* the document's status now; null when deleted */ }
+  status: "pending"|"processing"|"ready"|"failed"|null /* the document's status now; null when deleted */;
+  image: GeneratedImage|null /* a generated image whose document still exists */ }
 type ChatMessage = { id: number; role: "user"|"assistant"; content: string;
   sources: Source[]; model_name: string|null; prompt_tokens: number;
   completion_tokens: number; error: string|null;
@@ -283,7 +337,7 @@ active embedding model (or has no embedding model). For the user's own counts
   gets 400 and counts toward the login throttle for that username (429).
 
 ### Models — `routers/models.py`
-- `GET /models` → `ChatModel[]`: enabled chat models (never embedding or vision models) this user may use,
+- `GET /models` → `ChatModel[]`: enabled chat models (never embedding, vision or image models) this user may use,
   default first, then by display_name. `provider` = prefix before `/` of
   `litellm_model` (or `"openai"` if no prefix).
 
@@ -309,12 +363,32 @@ active embedding model (or has no embedding model). For the user's own counts
   Visible documents only, as in `GET /documents` (the caller's private ones and
   every shared one); others 404 "Document not found"; a row whose file is gone
   404 "The file is missing from storage.". Headers: `Content-Type` from the
-  extension (`.pdf`, `.docx`, `.pptx`, `.xlsx` their own types, anything else
-  `application/octet-stream`; never the type the upload declared),
+  extension (`.pdf`, `.docx`, `.pptx`, `.xlsx`, `.png`, `.jpg`/`.jpeg`,
+  `.webp` their own types, anything else `application/octet-stream`; never the
+  type the upload declared),
   `Content-Disposition: attachment; filename="<ASCII fallback>";
   filename*=UTF-8''<percent-encoded filename>`, `X-Content-Type-Options:
   nosniff`, `Cache-Control: private, no-store`, `Content-Security-Policy:
   sandbox`.
+- `GET /documents/{id}/image?size=full|preview|thumb` (default `full`; other
+  values 422) → a generated image for display. Visibility as for download
+  (others 404 "Document not found"); a visible document that isn't a generated
+  image 404 "This document isn't an image."; the stored file missing 404 "The
+  file is missing from storage." `full` is the stored image, `preview` (long edge
+  1024) and `thumb` (256) are WebP renditions (the stored image when a rendition
+  is missing). Headers: `Content-Type` `image/png`, `image/jpeg` or `image/webp`;
+  `Content-Disposition: inline; filename="<ASCII fallback>";
+  filename*=UTF-8''<percent-encoded filename>`; `X-Content-Type-Options:
+  nosniff`; `Cache-Control: private, no-cache`; `ETag`
+  `"<first 32 hex of sha256>-<served>-<served file size>"` (`<served>` is
+  `full`, `preview` or `thumb` as actually served; `If-None-Match` per RFC 9110:
+  `*`, or a comma list of tags compared weakly, `W/` allowed; a match → 304
+  with `ETag` and `Cache-Control`, no body);
+  `Content-Security-Policy: sandbox`; `Cross-Origin-Resource-Policy:
+  same-origin`.
+- `GET /documents/{id}/image/details` → `GeneratedImageDetails` (the prompt,
+  revised prompt, image model and time; for the image viewer). Same visibility
+  and 404 rules as `/image`; `Cache-Control: private, no-store`.
 
 ### Conversations — `routers/conversations.py`
 - `GET /conversations` → `ConversationSummary[]` (caller's, `updated_at` desc, max 200).
@@ -343,20 +417,26 @@ model not allowed), conversation ownership (404). Then responds `200 text/event-
 | `sources` | `{sources: Source[]}` (always sent, possibly empty) |
 | `warning` | `{message}` (0..n, e.g. "Document search unavailable: …") |
 | `delta` | `{content: string}` (many) |
-| `file` | `FileEventData` (0..n, interleaved with `delta`; see "Files" below) |
+| `file` | `FileEventData` (0..n, interleaved with `delta`; see "Files" and "Images" below) |
 | `done` | `{assistant_message_id, usage: {prompt_tokens, completion_tokens, total_tokens, cost_usd}}` (usage sums every billed model call of the answer) |
 | `error` | `{message, assistant_message_id: number|null}` (terminal, instead of `done`) |
 
 ```ts
 type FileEventData =
-  | { call_id: string /* "f1", "f2", … per answer */; status: "writing";
-      title: string|null; format: GeneratedFileFormat|null;
-      chars: number /* characters of the file written so far (approximate) */ }
-      // a create_document call started (chars 0); then at most every 2 s while it is written (title and format
-      // as soon as they appear); once more with the validated title and format just before rendering
-  | { call_id: string; status: "created"; file: GeneratedFile; document: DocumentItem;
-      already_existed: boolean /* an identical private document existed and is linked instead */ }  // stored and queued for indexing
-  | { call_id: string; status: "failed"; title: string|null; format: GeneratedFileFormat|null; error: string }  // not created; the model is told why
+  | { call_id: string /* "f1", "f2", … for files; "i1", "i2", … for images; per answer */;
+      kind: GeneratedFileKind; status: "writing";
+      title: string|null; format: GeneratedFileFormat|null /* null for images */;
+      chars: number /* characters of the file (or image prompt) written so far (approximate) */ }
+      // a create_document or create_image call started (chars 0); then at most every 2 s while it is written (title
+      // and format as soon as they appear); once more with the validated title (and a file's format) before the work
+  | { call_id: string; kind: "image"; status: "generating"; title: string;
+      width: number; height: number; quality: ImageQuality }
+      // images only: the arguments are valid and the image model was called (20 to 120 s)
+  | { call_id: string; kind: GeneratedFileKind; status: "created"; file: GeneratedFile /* file.image set for images */;
+      document: DocumentItem;
+      already_existed: boolean /* an identical private document existed and is linked instead; false for images */ }  // stored and queued for indexing
+  | { call_id: string; kind: GeneratedFileKind; status: "failed"; title: string|null;
+      format: GeneratedFileFormat|null; error: string }  // not created; the model is told why
 ```
 
 **Keepalive.** After `meta`, whenever 15 s pass without an event (the model
@@ -415,20 +495,76 @@ these files, which are in the user's documents: …)" in the model's history
 user's documents"), and passages from generated files are labelled as files the
 assistant created (their `[n]` markers neutralized).
 
+**Images.** The model also gets `create_image` (`prompt`, `title`,
+`alt_text`, `aspect` "square"|"landscape"|"portrait" → 1024×1024, 1536×1024,
+1024×1536, `quality` "low"|"medium"|"high", lowered to `IMAGE_MAX_QUALITY`) when
+`CHAT_IMAGE_TOOLS` is on, a usable image model is active (supported, see Admin,
+and not marked unusable), the chat model gets tools (as above), and a non-admin
+user has room for an image (a free document slot and 8 MiB of storage) and
+images left this month; otherwise the system prompt says why images can't be
+made. Both tools go in one list (`create_document` first) that stays identical
+for every call of the answer; an answer makes at most
+`GENERATED_FILES_PER_ANSWER` (when files are offered) +
+`GENERATED_IMAGES_PER_ANSWER` (when images are offered) + 2 model calls, and the
+same rules apply: explicit request only, never because a passage asks, one tool
+call per model call, `tool_choice: "none"` on the last call; when the tools are
+rejected, the retry drops both. For each `create_image` call the server
+validates the arguments, re-reads the active image model, checks room, then
+**reserves** the image: under the per-user lock it counts the user's `image`
+usage events of this UTC month and, below `monthly_image_limit` (or for the
+admin), inserts one (zero cost). An image job then waits for one of
+`IMAGE_CONCURRENCY` slots and calls the image model through
+`litellm.aimage_generation` (`n=1`, `quality` always sent, base64 data only,
+never a URL), all within `IMAGE_TIMEOUT_SECONDS`. The event is settled with the
+reported tokens and cost when a response arrives; deleted when the request was
+never sent or was refused or failed without billing (safety system, rate limit,
+key or access errors); kept with an estimated cost when it was sent but no
+response came (timeout). Any failed call except a safety refusal or invalid
+arguments ends image generation for the rest of the answer; a response with no
+or unusable image data also marks the model unusable in that process until it
+is edited or its Test succeeds. The image bytes are validated and re-encoded
+without their metadata in the file child process (PNG, JPEG or WebP only, at
+most 32 MiB and 16.8 megapixels), marked as AI-generated (XMP, IPTC
+`DigitalSourceType` `trainedAlgorithmicMedia`), stored as a private document of
+the user with `generated_documents` and `generated_images` rows (a paid image is
+always stored, even over the document or storage quota; the per-file upload
+limit doesn't apply), queued for ingestion (indexed from its `.source.md`), and
+linked to the answer (`message_files`). The tool result gives the model
+`image_id` (the document id) and an escaped `markdown` reference
+`![title](image:<id>)`. `create_document` content may contain such references on
+a line of their own: the server embeds the images generated in this
+conversation and owned by the user (PDF and DOCX: a picture scaled to the text
+width with its caption and alt text; XLSX and MD: a text reference; unknown ids
+stay text and are reported to the model; at most 10 per file). Image usage never
+counts toward the token budget. In later turns an answer that generated images
+carries "(App note: this answer generated these images, which are in the user's
+documents: "Fox.png" (image:812).)" in the model's history; while
+`create_document` is offered, the conversation's images whose answers are older
+than the history (the newest 20, deleted ones left out) are listed with their
+references in the system prompt. Passages from image documents are labelled as
+images the assistant generated, not factual sources. **Stop** before the `generating` event, or while the job still waits
+for a slot, sends nothing and releases the reservation; once the request may
+have been sent, the job finishes on its own: the answer is saved at once as
+stopped, and the image is stored, counted and linked to that message when it
+arrives.
+
 ### Admin — `routers/admin.py` (all require admin; non-admin → 403)
 ```ts
 type AdminUser = { id: number; username: string; is_admin: boolean; is_active: boolean;
   monthly_token_limit: number; rate_limit_per_min: number; max_upload_mb: number;
-  max_documents: number; max_storage_mb: number; restrict_models: boolean;
+  max_documents: number; max_storage_mb: number;
+  monthly_image_limit: number /* effective: the user's own value, else DEFAULT_MONTHLY_IMAGE_LIMIT */;
+  restrict_models: boolean;
   allowed_model_ids: number[]; created_at: string; last_login_at: string|null;
-  usage: { chat_tokens: number; embedding_tokens: number; vision_tokens: number; cost_usd: number }; // current month
+  usage: { chat_tokens: number; embedding_tokens: number; vision_tokens: number; images: number; cost_usd: number }; // current month
   document_count: number; storage_bytes: number }
 type AdminUserCreate = { username: string /* 3-64, ^[a-zA-Z0-9_.-]+$, lowercased */;
   password: string /* >= 8 */; is_active?: boolean; monthly_token_limit?: number;
   rate_limit_per_min?: number; max_upload_mb?: number; max_documents?: number;
-  max_storage_mb?: number; restrict_models?: boolean; allowed_model_ids?: number[] }
+  max_storage_mb?: number; monthly_image_limit?: number /* 0 = unlimited */;
+  restrict_models?: boolean; allowed_model_ids?: number[] }
 type AdminUserUpdate = Partial<Omit<AdminUserCreate, "username">>  // password = reset
-type ModelKind = "chat"|"embedding"|"vision"
+type ModelKind = "chat"|"embedding"|"vision"|"image"
 type AdminModel = { id: number; display_name: string; litellm_model: string;
   kind: ModelKind; enabled: boolean; is_default: boolean;
   api_base: string|null; api_key_env: string|null; max_output_tokens: number|null;
@@ -440,16 +576,18 @@ type AdminModelCreate = { display_name: string; litellm_model: string; kind: Mod
   max_output_tokens?: number|null; temperature?: number|null;
   input_cost_per_mtok?: number|null; output_cost_per_mtok?: number|null }
 type AdminModelUpdate = Partial<Omit<AdminModelCreate, "kind">>
-type ModelTestResult = { ok: boolean; message: string; latency_ms: number; embedding_dim: number|null }
+type ModelTestResult = { ok: boolean; message: string; latency_ms: number; embedding_dim: number|null;
+  image_data_url: string|null /* image models: a data: URL of a small thumbnail of the test image */ }
 type AdminConfig = { defaults: UserLimits; max_upload_mb_hard: number; admin_username: string }
 type AdminStats = { users: number; documents: number; stale_documents: number;
   failed_documents: number; active_embedding_model: {id: number; display_name: string}|null;
-  active_vision_model: {id: number; display_name: string}|null; queue_length: number }
+  active_vision_model: {id: number; display_name: string}|null;
+  active_image_model: {id: number; display_name: string}|null; queue_length: number }
 type UsageReport = { month: string;
-  totals: { chat_tokens: number; embedding_tokens: number; vision_tokens: number; cost_usd: number; requests: number };
-  by_user: { user_id: number; username: string; chat_tokens: number; embedding_tokens: number; vision_tokens: number; cost_usd: number; requests: number }[];
-  by_model: { model_name: string; kind: ModelKind; prompt_tokens: number; completion_tokens: number; cost_usd: number; requests: number }[];
-  daily: { date: string /* YYYY-MM-DD */; chat_tokens: number; embedding_tokens: number; vision_tokens: number; cost_usd: number }[] }
+  totals: { chat_tokens: number; embedding_tokens: number; vision_tokens: number; images: number; cost_usd: number; requests: number };
+  by_user: { user_id: number; username: string; chat_tokens: number; embedding_tokens: number; vision_tokens: number; images: number; cost_usd: number; requests: number }[];
+  by_model: { model_name: string; kind: ModelKind; prompt_tokens: number; completion_tokens: number; cost_usd: number; requests: number /* image models: images */ }[];
+  daily: { date: string /* YYYY-MM-DD */; chat_tokens: number; embedding_tokens: number; vision_tokens: number; images: number; cost_usd: number }[] }
 ```
 Endpoints:
 - `GET /admin/config` → `AdminConfig`
@@ -461,14 +599,24 @@ Endpoints:
   admin account cannot be changed or deleted here (400 "The admin account is
   managed in .env"). Changing a password or deactivating bumps
   `token_version`. `allowed_model_ids` must reference existing chat models
-  (422 otherwise).
+  (422 otherwise). Creating a user writes its `user_image_limits` row with
+  `monthly_image_limit` (default `DEFAULT_MONTHLY_IMAGE_LIMIT`); an update that
+  sends the field writes (or creates) the row.
 - `GET /admin/models` → `AdminModel[]` · `POST /admin/models` → 201 ·
   `PATCH /admin/models/{id}` · `DELETE /admin/models/{id}` → 204 ·
   `POST /admin/models/{id}/test` → `ModelTestResult`. Setting `is_default`
   clears it on the other models of the same kind; making a disabled model the
   default → 400. Vision models follow the chat-model rules: disabling,
   un-defaulting or deleting the active vision model is allowed and turns PDF
-  page reading off. Deleting the active embedding model, disabling it
+  page reading off. Image models do the same: disabling, un-defaulting or
+  deleting the active image model is allowed and turns image generation off.
+  Image models must be OpenAI (`openai/…`, also with an `api_base`) or Azure
+  OpenAI (`azure/<deployment>`) models whose LiteLLM image config is a GPT
+  image config (it takes `quality` and `output_format`); creating one, or
+  changing an image model's `litellm_model` or `api_base`, otherwise → 422 with
+  the reason (other providers run as blocking calls that Stop can't cancel;
+  dall-e models take other sizes and qualities).
+  Deleting the active embedding model, disabling it
   (`enabled: false`) or unsetting its `is_default` → 409 ("This is the active
   embedding model. Make another embedding model the default first.").
   Deleting another embedding model, or changing an embedding model's
@@ -485,19 +633,31 @@ Endpoints:
   `reasoning_effort="low"` (thinking counts toward `max_tokens`). The Test
   sends a tiny real request: a one-word chat prompt, one embedding, or for a
   vision model a small generated image showing "TEST 4712" with the production
-  vision system prompt (`ok` only if the reply contains 4712). Bootstrap adds a
+  vision system prompt (`ok` only if the reply contains 4712), or for an image
+  model one 1024×1024 image at low quality, validated like a chat image and
+  returned as a 256-px thumbnail in `image_data_url` (recorded as an `image`
+  usage event of the admin; other Tests aren't recorded).
+  Bootstrap adds a
   default vision model once, recorded as `app_state` key `vision_seeded` (an
   existing database gets it on its next start): "Claude Sonnet 5.5 (vision)"
   `anthropic/claude-sonnet-5-5`, enabled if `ANTHROPIC_API_KEY` is set, or
   "GPT-5.4 mini (vision)" `openai/gpt-5.4-mini` if only `OPENAI_API_KEY` is
-  set. A vision model the admin deletes is not added again.
+  set. A vision model the admin deletes is not added again. Bootstrap also adds
+  an image model once, recorded as `app_state` key `image_seeded`: "GPT Image 2"
+  `openai/gpt-image-2`, the active image model, enabled if `OPENAI_API_KEY` is
+  set (prices from LiteLLM's map); an image model the admin deletes is not added
+  again. On that start every existing non-admin user also gets a
+  `user_image_limits` row with `DEFAULT_MONTHLY_IMAGE_LIMIT`, once (`app_state`
+  key `image_limits_backfilled`).
 - `POST /admin/reindex` `{only_stale?: boolean /* default true */}` →
   `{queued: number}`: sets matching documents (`only_stale`: stale and failed
   ones; otherwise all) to "pending" and enqueues them. 400 when there is no
   active embedding model.
 - `GET /admin/usage?month=YYYY-MM` (default current month) → `UsageReport`.
-  `requests` counts chat usage events only; `cost_usd` covers every kind.
-- `GET /admin/documents` → `DocumentItem[]` (all documents, every owner).
+  `requests` counts chat usage events only; `images` counts `image` usage
+  events; `cost_usd` covers every kind.
+- `GET /admin/documents` → `DocumentItem[]` (all documents, every owner;
+  `image` is always null there: prompts are the owner's private content).
   `DELETE /admin/documents/{id}` → 204 (any document).
 
 ## 7. Ingestion pipeline
@@ -592,9 +752,14 @@ Endpoints:
    its text layer, because text extracted from shaped Indian-script PDFs is
    lossy; `num_pages` still comes from the PDF, no page is sent to the vision
    model, and its citations have no page number. DOCX, XLSX and MD files are
-   parsed as usual. When their passages are put into a chat prompt they are
-   labelled as files the assistant created (section 6, Chat).
-6. Supported: `.pdf .docx .pptx .xlsx .html .htm .md .markdown .txt .csv .json`.
+   parsed as usual. A generated image is indexed from its `.source.md` (title,
+   description, prompt and revised prompt; no OCR or vision model), with no
+   pages. When their passages are put into a chat prompt they are
+   labelled as files the assistant created (section 6, Chat); passages of a
+   generated image as an image the assistant generated (its title, description
+   and prompt, not a factual source).
+6. Supported uploads: `.pdf .docx .pptx .xlsx .html .htm .md .markdown .txt .csv .json`
+   (images can't be uploaded; only generated images are image documents).
    Legacy `.doc`/`.ppt`/`.xls` are rejected with a hint to save as the modern
    format. Without an active vision model, PDFs without any text fail with "No
    extractable text: this PDF looks scanned or image-only. Ask the admin to
@@ -661,6 +826,27 @@ Endpoints:
   (`GET /api/documents/{id}/download`), and rows with `generated` say "Created
   in chat". The composer hint mentions files when the selected model's
   `can_create_files` is true.
+- **Generated images**: `file` events with `kind: "image"` drive an image card
+  under the answer (writing, then `generating` with a placeholder of the final
+  aspect ratio, then the preview from `GET /api/documents/{id}/image?size=preview`
+  with filename, size, indexing status and Download; failed; stopped, which for
+  a card that was `generating` says the image is still saved; deleted),
+  rebuilt from `ChatMessage.files` (`file.image`) on reload. Clicking the preview
+  opens the viewer, exported by FE-DOCS for FE-CHAT:
+
+  ```ts
+  // src/components/documents/ImageViewer.tsx: a Modal (Escape closes, focus trapped and returned) with the full image,
+  // its alt text as caption, size, format and quality, the prompt (and revised prompt) loaded from
+  // GET /api/documents/{id}/image/details when it opens, Download and Close.
+  export type ImageViewerProps = { documentId: number; filename: string; image: GeneratedImage; onClose: () => void };
+  export default function ImageViewer(props: ImageViewerProps): JSX.Element
+  ```
+  Document rows with `image` show a thumbnail (`size=thumb`) that opens the
+  viewer. `client.ts` exports `documentImageUrl(id, size = "full")` and
+  `getImageDetails(id)`. The
+  composer hint and empty state mention images when the selected model's
+  `can_create_images` is true, and the usage meter shows images this month
+  against `limits.monthly_image_limit`.
 - Streaming uses `postSSE` from `src/api/client.ts` (fetch + ReadableStream,
   `AbortController` for the Stop button). Assistant messages render Markdown
   (`react-markdown` + `remark-gfm`, raw HTML disabled) with `[n]` citations
@@ -687,6 +873,9 @@ OpenAI models, and one test runs the real LiteLLM against a local fake provider
 server and checks the replayed request bodies; generated files are checked by
 parsing them back with pypdf, pypdfium2, python-docx and openpyxl, and the
 file-rendering child runs for real, with fake children for timeouts and
-crashes).
+crashes; image generation is mocked at `litellm.aimage_generation` with real
+PNG, JPEG and WebP bytes made with Pillow, and one test runs the real LiteLLM
+against a local fake OpenAI images endpoint; tests marked `postgres` run only
+with `TEST_POSTGRES_URL`, against a throwaway Postgres).
 Models therefore stick to portable column types (`JSON`, not `JSONB`).
 Run with `pytest` from `backend/` (see `backend/tests/README.md`).

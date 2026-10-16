@@ -2,7 +2,7 @@
 
 Snapshot taken 2026-10-14 (IST) on macOS (Apple Silicon), after the full build, review and Docker
 run. Updated 2026-10-15 after the vision model for PDFs was built, reviewed, fixed and verified in Docker, and
-2026-10-16 after files from chat went through the same steps.
+2026-10-16 after files from chat and then images from chat went through the same steps.
 `SPEC.md` is the binding contract; `README.md` has setup, commands and the architecture.
 
 ## Status
@@ -35,6 +35,25 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
   - Frontend: a file card on the answer (`chat/GeneratedFileCard.tsx`) and a module store shared by the panel and
     the cards (`documents/documentEvents.ts`). Every document row has a Download button, and generated rows say
     "Created in chat". The composer hint mentions files when the selected model can create them.
+- **Images from chat** (`docs/briefs/image-generation.md`, revision 2): when the user asks, the chat assistant
+  generates an image with a `create_image` tool and the active **image model** (seeded: GPT Image 2,
+  `openai/gpt-image-2`). The image shows in the answer, is saved as one of the user's private documents and can be
+  embedded in PDF and DOCX files from `create_document`. Each user has a monthly image count. See "Images from chat"
+  below.
+  - Backend: `services/image_tool.py` (the tool, the monthly count's reservation, the image job, storing, the admin
+    Test) and `services/filegen/images.py` (validation, re-encoding and renditions in the existing render child),
+    plus changes to `llm` (`generate_image`, `image_model_problem`, `estimate_image_usage`), `rag`, `storage`,
+    `ingestion`, `usage`, `bootstrap`, `document_tool`, the filegen renderers and the `chat`, `conversations`,
+    `documents`, `models`, `admin` and `auth` routers. New tables `generated_images` and `user_image_limits`. New
+    endpoints `GET /api/documents/{id}/image?size=full|preview|thumb` and `GET /api/documents/{id}/image/details`.
+  - Tests: `test_image_tool.py`, `test_image_generation.py`, `test_llm_images.py` (the real LiteLLM against a local
+    images endpoint), `test_filegen_images.py`, the independent `test_image_generation_independent.py` (written from
+    the contract), and the main file-loop scenarios run a second time with both tools on.
+  - Frontend: an image card on the answer (`chat/GeneratedImageCard.tsx`: writing, a "generating" placeholder with
+    the final aspect ratio and a seconds counter, then the preview), a full-size viewer (`documents/ImageViewer.tsx`,
+    on `Modal`) with the prompt and Download, thumbnails in the document panel, an "Images this month" row in the
+    usage meter, and in the admin page an "Image models" section, an eighth overview tile, an image column and limit
+    field for users, and image columns in Usage.
 
 How the work went: the lead wrote `SPEC.md` and the foundation code. Agents then built the
 feature areas in parallel from `docs/briefs/`, followed by backend integration tests, frontend
@@ -46,17 +65,28 @@ review (5 confirmed findings, all fixed with regression tests), then a Docker re
 chat followed the same steps and added an independent test pass written from the contract
 (`test_document_generation.py`). Its review had 6 confirmed findings, all fixed (see "Files from chat"), and was
 followed by a rebuild and live runs. A separate test pass for the vision feature (`test_vision_independent.py`, 109
-tests) found one more vision bug, fixed after the vision commit (see "Vision review fixes" below).
+tests) found one more vision bug, fixed after the vision commit (see "Vision review fixes" below). Images from chat
+went the same way: a brief, a review of its first revision (15 points, each accepted or answered in the brief's
+section 0.1), a second revision that also split the build between three parallel builders (backend, file generation,
+frontend; brief section 21), an independent test pass, a review (7 distinct confirmed findings, all fixed, the backend
+ones with regression tests), a Docker rebuild and live runs, which found 2 more problems, both fixed (see "Images from
+chat").
 
-The Compose project `rag-app` was left running with its data. The vision feature is committed (`9fb8be6`, on
-top of `de561d3` and the scaffold `e56133e`). Three things are **uncommitted**: files from chat, the later vision
-fix in `pdf_images.py`, and `test_vision_independent.py`. Check `git status` before relying on history. The
-agents' test and smoke scripts lived in scratch directories and are not in the repo.
+The Compose project `rag-app` was left running with its data, on the images build. The vision feature and files
+from chat are committed (`9fb8be6`, then `70f8076`, which also holds the later vision fix and
+`test_vision_independent.py`). **Images from chat is uncommitted** on top of `70f8076`. Check `git status` before
+relying on history. The agents' test and smoke scripts lived in scratch directories and are not in the repo.
 
 ## How it was verified
 
 | Check | Result |
 |---|---|
+| Backend suite after images from chat, its review fixes and the 2 live-run fixes (2026-10-16) | **1494 passed, 1 skipped** in about 207 to 210 s, three times in a row (the skipped test is the `postgres`-marked reservation race, which needs `TEST_POSTGRES_URL`). ruff 0.13.0 `check` (app and tests) and mypy 1.18.2 (43 files) are clean. The image tests include the real LiteLLM 1.103.1 against a local `/v1/images/generations` server (`test_llm_images.py`): request body, refusals, one request for a slow or stopped call, three for a 500 (the SDK's own retries) |
+| Images from chat in Docker (`docker compose up -d --build`, 2026-10-16; then `up -d --build backend worker` after each live-run fix) | All 6 services up, 5 healthy, `/api/health` 200; `pip check` clean in the container (Pillow 12.3.0, fpdf2 2.8.9; no new package). On the existing database the backend logged "Seeded the image model 'GPT Image 2'" and "Gave 1 existing user(s) the default monthly image limit of 30"; `app_state` has `image_seeded` = `openai/gpt-image-2` and `image_limits_backfilled` = 1. GPT Image 2 is enabled and active (stats `active_image_model`). The frontend container served the same asset names as a local build |
+| Images from chat, live run in Docker, 2026-10-16 (users `smoke-image` and `smoke-image-other`, deleted afterwards; scratch script, not in the repo) | Run 1: 30 passed, 0 failed (1 deliberate skip). Run 2, on the fixed build: 25 passed, 0 failed (the admin Test and default-image steps skipped on purpose). Verified: <br>• admin **Test**: "OK: generated a 1024×1024 PNG (732 KB) in 10.4 s, about $0.0060", a 256-px WebP thumbnail and one admin `image` usage event <br>• SSE: `writing`, then `generating` (1024x1024 low from Claude Haiku 5.5; 1536x1024 medium from Claude Opus 5.5), then `created`, call id `i1`; the prompt is never in an event <br>• one `image` usage event per image with the provider's tokens and cost; `done.usage` and the `chat` event hold only the chat calls <br>• the card comes back after a reload <br>• the image is a private, generated document the other user can't see; the admin list shows it with `image` null <br>• indexing: `ready` with no vision pages, from the `.source.md` (title, "AI-generated image", description, prompt); the image, `.source.md`, `.preview.webp` and `.thumb.webp` on disk <br>• `/image`: full PNG, WebP preview and thumb, `inline`, `nosniff`, `private, no-cache`, one ETag per rendition, CSP `sandbox`, CORP `same-origin`; `If-None-Match` exact, `W/`, list and `*` give 304; `size=huge` 422; the download has the same bytes as an attachment. `/image/details` gives the owner the prompt with `no-store`; another user and the admin get 404 on `/image`, `/image/details` and `/download`, an anonymous request 401 <br>• bytes: the PNG's only metadata is the iTXt XMP AI marker (`trainedAlgorithmicMedia`, CreatorTool `openai/gpt-image-2`); no EXIF, ICC or C2PA; renditions WebP without metadata <br>• a PDF with the image as `/DCTDecode` 1024x1024 and `/Alt` = alt text, no `/MarkInfo`, no actions (page rendered and checked by eye); a DOCX with inline JPEG pictures (5.4 × 5.4 in square, 6.0 × 4.0 in landscape), `descr` = alt text and one Caption paragraph each <br>• a user at their monthly limit: no image call, and Haiku relayed "you've used this month's image allowance (2 of 2)…" <br>• the usage report shows images by user, by model (kind `image`, `requests` = images), daily and in totals; chat tokens exclude image tokens <br>• full cleanup, sidecar files and `user_image_limits` rows included |
+| Measured image costs (gpt-image-2, LiteLLM 1.103.1 prices) | 1024×1024 low: 21 to 49 prompt tokens + 196 image tokens, about $0.006 (the brief's table estimated 272 image tokens); 1536×1024 medium: 97 + 1,372 tokens, $0.0416 (estimated 1,584). Answers with one image took 15 to 21 s (Haiku, low) and 39 s (Opus, medium). Stored PNGs: about 650 to 730 KB for a square low image, 2.7 MB for a landscape medium one |
+| Browser check after images from chat (Playwright, Chromium, reusing the live run's images, so no image was generated) | 50 of 50 steps, no page errors or CSP violations. Admin: the "Image models" section (GPT Image 2 enabled and active, no Max output column, sections in the order Chat, Embedding, Vision, Image, no image model among the chat models), the eighth tile "Image model GPT Image 2", the users' "Images this month" column (2/2 with a full bar), the Usage tile and columns. Chat: the preview in a 478 px square frame and a 3:2 landscape frame with no layout shift, the card's "PNG · 649 KB · In your documents" and Download, the composer hint "…or an image", the meter "Images this month 2 / 2". Viewer: full image, "1024 × 1024 · PNG · quality low", the prompt with "Made with openai/gpt-image-2", Tab and Shift+Tab trapped, `#root` inert, Escape closes, focus returns; the panel's 40×40 thumbnail opens it too. Dark mode and 390 px (card 362 px, viewer 358 px wide, no horizontal scroll) |
+| API and files-from-chat smoke tests after images from chat | API smoke 29 passed, 1 skipped (the model Tests, on purpose); stats have `active_image_model` and the report `images`. Haiku's "pong" went from 1,904 to 2,945 prompt tokens: offering the image tool adds about **1,040 input tokens** per call of a tool-capable model (the brief estimated 700). Files-from-chat smoke (updated for `kind` and `image`): 38 of 40 on the first run (Haiku wrote an "(App note: …)" line itself once, and a script check counted kept smoke users), then 40 of 40 |
 | Backend suite (`cd backend && .venv/bin/python -m pytest -q`) after files from chat and its review fixes (2026-10-16) | **1169 passed** in about 147 s (SQLite, fakeredis, in-memory Qdrant, mocked LiteLLM, the real PDF and file render children). The last two of 4 runs were green in a row. Run 2 failed one timing-dependent test (`test_progress_and_keepalives_while_a_file_is_written`: a warm render child finished before the keepalive interval). The test now delays the render, and the app was unchanged. ruff 0.13.0 `check` (app and tests) and mypy 1.18.2 (app) are clean. The suite includes a test that runs the real LiteLLM 1.103.1 against a local fake Anthropic/OpenAI server and checks the replayed request bodies: thinking blocks in order, `disable_parallel_tool_use`, `{}` for invalid arguments and the OpenAI flags. Earlier counts: 856 after the vision feature (2026-10-15), 697 before it |
 | Files from chat in the Linux image (a separately tagged build of `backend/`, removed afterwards; the running stack untouched) | `pip check` clean with the new locks; the render child got `RLIMIT_AS` 1 GiB, `RLIMIT_FSIZE` and `oom_score_adj` 1000; a Hindi/Nepali PDF (11 pages) and an English report (37 pages) rendered at the same time in 2.7 s |
 | Files from chat, live run in Docker, 2026-10-16 (users `smoke-docgen` and `smoke-docgen-other`, deleted afterwards; scratch script, not in the repo) | Run 1 used mixed models: PDF and MD on Claude Haiku 5.5, DOCX on Claude Opus 5.5 and XLSX on GPT-5.4 mini. It passed 36 of 40 checks; the 4 failures were the script's header check, which didn't expect nginx's repeated headers (see "Files from chat"). Run 2 used only Haiku and passed 40 of 40. Both runs verified: <br>• the SSE contract of every answer: `writing` progress, one `created` per call, and `done.usage` summing every call <br>• each file became a private, owned, `generated` document, invisible to the other user, that reached `ready` with no vision pages <br>• the cards came back after a reload and followed the status <br>• the downloads: type by extension, `attachment` with an ASCII fallback plus `filename*` (a Hindi name too), the uploaded file's exact bytes, and 404 for another user and for the admin on private files <br>• the files parsed back: a Hindi PDF with Noto subset fonts, a table, the page footer and no actions, JavaScript or forms (page 1 rendered to PNG and checked by eye) <br>• the DOCX heading and list styles and its Sources section, with no macros <br>• the XLSX header, freeze pane and auto-filter, numbers stored as numbers, and `=1+1` stored as quote-prefixed text with no `<f>` element <br>• plain Markdown <br>• Qdrant vectors, with the PDF indexed from its `.source.md` (the Hindi text was exact; citations had no page) <br>• a later chat answering from the generated letter <br>• the quota cases: lowering `max_documents` mid-answer gave a tool error, the model explained it, and nothing was stored; a user at the limit wasn't offered the tool <br>• one `chat` usage event per answer, equal to the summed `done.usage` <br>• full cleanup, `.source.md` files included |
@@ -64,10 +94,10 @@ agents' test and smoke scripts lived in scratch directories and are not in the r
 | Vision tests against a throwaway Postgres 17 (scratch copy of `conftest.py`, one database per test; run before the review fixes) | 106 passed: all of `test_vision.py` plus the usage-report, users-usage, admin-documents and `/me` usage tests (daily vision aggregates, the `vision_pages` cascade, the foreign-key failure when a document is deleted while a cache row is written, the bootstrap race) |
 | Backend suite against a throwaway Postgres 17 (scratch copy of `conftest.py`, run before the last 2 tests were added) | 694 passed; only the fresh-interpreter import test was left out, because the scratch layout broke its path |
 | Lint and types (commands in `README.md`) | ruff 0.13.0 and mypy 1.18.2 clean on `app/` (ruff on `tests/` too), re-run after the vision review fixes and again on 2026-10-16 after files from chat |
-| Frontend `npm ci`, `npx tsc --noEmit`, `npx vite build` | clean, also after the vision UI, the overview-tile fix and the files-from-chat UI (346 modules); `npm audit` reported 0 vulnerabilities (no npm package was added since) |
+| Frontend `npm ci`, `npx tsc --noEmit`, `npx vite build` | clean, also after the vision UI, the overview-tile fix, the files-from-chat UI (346 modules) and the images UI (348 modules; the only message is the old warning about a chunk over 500 kB); `npm audit` reported 0 vulnerabilities (no npm package was added since) |
 | `docker compose up -d --build` (Docker Desktop, arm64) | all 6 services up, 5 healthy (the worker has no healthcheck); `/api/health` returns 200 through nginx. Backend, worker and frontend rebuilt on 2026-10-15 at 16:39Z after the vision review fixes. They were rebuilt again at 21:07Z (2026-10-16 02:37 IST) after files from chat. That rebuild created the tables `message_files` and `generated_documents`, and the image has fpdf2 2.8.9, uharfbuzz 0.56.2, markdown-it-py 4.2.0 and the fonts. Both times the frontend container served the same asset names as a local build |
 | API smoke test against the live stack | 35 passed, 1 skipped (the disabled embedding model): admin login, user creation, PDF and DOCX ingestion, duplicate rejected, vectors in Qdrant, SSE event order, citations from both documents, Stop mid-answer saves the partial answer and its usage, usage meter, admin usage report (daily grouping on Postgres), stats, cleanup including vectors. Re-run after the vision rebuild: 29 passed, 1 skipped (the model Tests, skipped on purpose); stats include `active_vision_model`, the report `vision_tokens`, and a text-only PDF made no vision call. Re-run after the files-from-chat rebuild (2026-10-16): 29 passed, 1 skipped. Prompt tokens per call went up by about 1,550 for the same requests, because the file tool and its prompt are sent (Haiku "pong" 352 → 1,904, Opus answer 595 → 2,147). After the client closed the connection, the saved partial answer (178 characters) was longer than what the client had received (61), because the answer runs in its own task until the cancel lands. In the browser, Stop showed 2,302 characters and saved 2,305 |
-| Real model calls | Admin **Test** returned OK for all 5 seeded chat models, `text-embedding-3-small` (1536 dims) and the vision model (it read "TEST 4712"; 1.3 to 8.4 s over 3 runs, provider latency). Streaming usage is provider-reported, not estimated, for Anthropic and OpenAI. The files-from-chat runs on 2026-10-16 made about 35 chat model calls (Haiku 29, Opus 4, GPT-5.4 mini 2), 3 vision calls and about 40 small embedding calls, for under $0.10 of chat cost. The two docgen runs cost $0.048 and $0.006, and the Opus Word letter alone was $0.041 |
+| Real model calls | Admin **Test** returned OK for all 5 seeded chat models, `text-embedding-3-small` (1536 dims) and the vision model (it read "TEST 4712"; 1.3 to 8.4 s over 3 runs, provider latency). Streaming usage is provider-reported, not estimated, for Anthropic and OpenAI. The files-from-chat runs on 2026-10-16 made about 35 chat model calls (Haiku 29, Opus 4, GPT-5.4 mini 2), 3 vision calls and about 40 small embedding calls, for under $0.10 of chat cost. The two docgen runs cost $0.048 and $0.006, and the Opus Word letter alone was $0.041. The images runs on 2026-10-16 made 4 image requests (4 images, about $0.060: the admin Test, two square low balloons and one landscape medium lighthouse), about 60 chat model calls (mostly Haiku, 2 Opus, plus one GPT-5.4 mini and one Sonnet 5.5 vision Test per browser run), for under $0.10 of chat cost, and a few dozen small embedding calls. No refusal or failed image request happened |
 | Browser check (Playwright, Chromium) | 36 steps passed 3 times: login, upload, streaming, sources, Stop, reload, layouts at 1440/1000/700/390 px, dark mode, admin at 390/800 px, modal focus trap; no page errors, CSP violations or page-level scrolling. After the vision UI: 39 steps passed (Models in the order Chat, Embedding, Vision; the vision model active and not offered for chat; its UI **Test**; 390 px and dark mode; the Usage vision tile and columns). After files from chat: 41 steps (row above) |
 | Postgres behaviour | `create_all` advisory lock (6 processes at once: 0 of 18 failures, 15 of 18 without it); all timestamps `timestamptz`; usage report splits days in UTC even with a +05:45 database default; native booleans |
 | Failure handling | worker SIGKILLed mid-document: re-queued on start, finished with exactly 800 chunks and no duplicate vectors. Graceful worker stop finished the in-flight job. Redis stopped for 20 s: worker backed off and recovered, and an upload made during the outage was queued when Redis returned. `docker compose restart backend` mid-answer took 15.8 s and stored the partial answer and its usage |
@@ -143,8 +173,9 @@ All contract changes are already in `SPEC.md` and `frontend/src/api/types.ts`.
   (48000) in the same way: the model's own value wins, and LiteLLM's cap lowers it.
 - **Seeding** happens only when `llm_models` is empty (the first start). A seeded model is enabled
   only if its provider key was set then. The default chat model is Claude Opus 5.5 (GPT-5.4 mini if
-  only the OpenAI key is set); `text-embedding-3-large` is always seeded disabled. The vision model is the
-  exception: it is seeded once per database, also into an existing one (see "Vision model for PDFs").
+  only the OpenAI key is set); `text-embedding-3-large` is always seeded disabled. The vision and image models are
+  the exceptions: each is seeded once per database, also into an existing one (see "Vision model for PDFs" and
+  "Images from chat").
 
 ### Database
 
@@ -153,10 +184,14 @@ All contract changes are already in `SPEC.md` and `frontend/src/api/types.ts`.
   whatever the server's `TimeZone`.
 - `init_db` runs `create_all` under `pg_advisory_xact_lock`, because the backend and the worker both
   run it and can start at the same time (e.g. `docker compose restart backend worker`). There is no Alembic.
-  Each feature added only new tables, never columns: `vision_pages` and `app_state` for vision, and
-  `message_files` and `generated_documents` for files from chat. A `message_files` row is deleted with its message.
+  Each feature added only new tables, never columns: `vision_pages` and `app_state` for vision,
+  `message_files` and `generated_documents` for files from chat, and `generated_images` and `user_image_limits` for
+  images (the per-user image limit is a table of its own rather than a `users` column, so Alembic didn't have to come
+  in with a feature; brief section 3.3). A `message_files` row is deleted with its message.
   Deleting its document sets its `document_id` to null, and the card then shows "Deleted". `generated_documents`
-  lives as long as the document.
+  and `generated_images` live as long as the document. Images also put new values into existing string columns
+  (`llm_models.kind` and `usage_events.kind` `image`; `message_files.format` `png`, `jpeg`, `webp`), which is why a
+  code rollback needs SQL first (see "Images from chat").
 - Ids and limits are validated against Postgres `INTEGER`/`BIGINT` maxima, so they return 422, not 500.
 - Postgres row locks guard several races: upload quota and duplicate checks (`FOR NO KEY UPDATE`
   on the user row, plus a per-user asyncio lock), admin reset against change-password, document
@@ -292,7 +327,8 @@ the model again with the tool result so it can finish the answer. While the answ
 drive the card: `writing` with progress, then `created` or `failed`. After a reload the card comes from
 `ChatMessage.files`, which is rebuilt from `message_files` with the document's current status. Failed attempts
 aren't stored. The content is a Markdown subset: headings, paragraphs, bold and italic, lists, tables, code
-blocks and links. Images, HTML and footnotes aren't supported. Rendering in short:
+blocks and links. HTML and footnotes aren't supported, and images only as `image:<id>` references to images
+generated in the same conversation (see "Images from chat"). Rendering in short:
 
 - **PDF**: fpdf2 with Noto Sans fonts. It has headings, paragraphs, bold and italic, nested lists, tables, code
   blocks, links with their host shown, a "page / pages" footer and the creator "RAG Assistant".
@@ -301,7 +337,8 @@ blocks and links. Images, HTML and footnotes aren't supported. Rendering in shor
 - **XLSX**: openpyxl. Each sheet has a bold header row, a frozen first row, an auto-filter and fitted column widths.
   Numbers and ISO dates are stored typed, and every other cell is text. A "Notes" sheet holds the content when
   there is any.
-- **MD**: the Markdown is rewritten from the parsed tree. Images become text and HTML is escaped (D21).
+- **MD**: the Markdown is rewritten from the parsed tree. Images become text and HTML is escaped (D21); a
+  generated image's reference becomes `[Image: caption] (filename)`.
 - When the model lists the passages it used (`source_numbers`), the file ends with a Sources section: document
   names and pages for every cited number. In xlsx this is an extra sheet.
 
@@ -351,7 +388,9 @@ What matters when maintaining it:
   to `GENERATED_FILES_PER_ANSWER` + 2 calls each. The answer's slot is refreshed every 60 s while it streams.
 - **Cost of offering the tool (D1, D16).** The tool and its prompt add about 1,550 input tokens to every call that
   offers it. The live run measured this on 2026-10-16, and it comes to about $0.006 per Claude Opus 5.5 call.
-  Every answer from a tool-capable model pays it, not only file requests; `CHAT_FILE_TOOLS=false` removes it.
+  Every answer from a tool-capable model pays it, not only file requests; `CHAT_FILE_TOOLS=false` removes it. With
+  images on, the image tool, its prompt and the longer file prompt add about 1,040 more (measured the same way), so
+  both features together add about 2,600 input tokens per call.
   Those calls also request `GENERATED_FILE_MAX_OUTPUT_TOKENS` (48,000) instead of the 16,000 default. The model
   only decides during the call whether to write a file, so every answer from a tool-capable model gets the
   higher limit. A runaway answer can therefore cost up to three times as much per call (about $0.96 instead of
@@ -413,6 +452,219 @@ What matters when maintaining it:
   symbols such as ✓ ✔ ★ only when no font has them; a response `[thinking, text, thinking, tool]` replays as two
   segments (`[thinking, text]`, `[thinking, tool]`), as section 4's rule gives (14.5 said three).
 
+### Images from chat
+
+Everything in `docs/briefs/image-generation.md` (revision 2) is built, backend and frontend. Decisions I1-I26 are in
+its section 0, the review of revision 1 in 0.1, and the error table in section 17.
+
+**How it works.** A user asks in their own words ("generate an image of…", "draw an illustration of…", "make a logo
+concept…"). The model calls `create_image` with `prompt`, `title`, `alt_text`, `aspect` (`square` 1024×1024,
+`landscape` 1536×1024, `portrait` 1024×1536) and `quality` (low, medium or high, lowered to `IMAGE_MAX_QUALITY`). The
+server reserves one image of the user's monthly count and calls the active image model through
+`litellm.aimage_generation`. It then validates and re-encodes the bytes in the filegen child and stores the image as a
+private document. The tool result gives the model `image_id` and a ready-made `![title](image:<id>)` reference, and
+the model finishes the answer. `file` SSE events carry `kind: "image"`: `writing`, then `generating` (title, width,
+height, quality; the card shows a placeholder with the final aspect ratio), then `created` (`file.image`) or `failed`.
+After a reload the card comes from `message_files`. To put an image in a file, the user asks for a PDF or Word file
+"with the logo", and the model writes the reference on a line of its own.
+
+What matters when maintaining it:
+
+- **Settings** (in `.env.example`): `CHAT_IMAGE_TOOLS` (true), `GENERATED_IMAGES_PER_ANSWER` (3, at most 10),
+  `DEFAULT_MONTHLY_IMAGE_LIMIT` (30; 0 = unlimited), `IMAGE_MAX_QUALITY` (medium), `IMAGE_OUTPUT_FORMAT` (png),
+  `IMAGE_TIMEOUT_SECONDS` (180, slot wait included) and `IMAGE_CONCURRENCY` (3 per backend process). Constants: prompt
+  at most 4,000 characters, title 120, alt text 300; image data at most 32 MiB, 16 to 4,096 px per edge, at most
+  16,777,216 pixels; at most 10 images per generated file; the room check before reserving is a free document slot
+  plus 8 MiB of storage.
+- **Who gets the tool (I2).** `image_tool.plan` offers it when `CHAT_IMAGE_TOOLS` is on, an enabled active image model
+  is supported and not marked unusable, and the chat model gets tools (`llm.supports_tools`). A non-admin user must
+  also have room and images left this month. Otherwise the system prompt says why (no image model, a broken one, this
+  chat model can't, the month's images are used up, no room), and the model tells the user.
+  `ChatModel.can_create_images` (composer hint, usage meter row) ignores quotas and the monthly count.
+- **The loop** is the files loop (D2, D4, D17 to D19). Both tools go in one list (`create_document` first) that is
+  byte-identical for every call. An answer makes at most `GENERATED_FILES_PER_ANSWER` +
+  `GENERATED_IMAGES_PER_ANSWER` + 2 model calls, with one tool call per model call, and the last call is sent with
+  `tool_choice: "none"`. Recovery 1 (tools rejected) drops both tools, also on a turn that offers only images. Images
+  in one answer are generated one after another.
+- **Only OpenAI and Azure OpenAI GPT image models (I21).** `llm.image_model_problem` accepts `openai/…` (also with an
+  `api_base`) and `azure/<deployment>` when LiteLLM's image config for the name takes `quality` and `output_format`;
+  dall-e is refused. The admin API answers 422 with the reason, and the Test, the planner and the call refuse such
+  models too. The reason: LiteLLM 1.103.1 runs Gemini, Vertex AI, OpenRouter, Recraft, FAL, Stability, AIML, RunwayML,
+  DashScope and Qwen image calls as blocking requests in the default executor. Stop and the deadline can't cancel
+  them, and they hold threads that uploads and parsing need. Adding them needs a dedicated, capped executor.
+- **LiteLLM facts behind the call (I4, I5).** LiteLLM's image path ignores `max_retries`, and the OpenAI SDK retries
+  429s, 5xx and timeouts twice. So the app's own `asyncio.timeout` (`IMAGE_TIMEOUT_SECONDS` minus the slot wait) wraps
+  the call, and LiteLLM's timeout is 30 s longer. A slow call is then abandoned after one request and never billed
+  twice; quick 429 or 5xx retries inside the deadline are accepted. `quality` and `output_format` are always sent, and
+  `response_format` never. Only `b64_json` is used: a URL in a response is never fetched (a URL-only reply fails).
+  `test_llm_images.py` pins all this against a local server and fails if a LiteLLM upgrade changes it.
+- **Slots (I23).** At most `IMAGE_CONCURRENCY` image calls run at once per backend process. A job waits for a slot only
+  until `min(60 s, IMAGE_TIMEOUT_SECONDS / 2)` before its deadline, so a request that is sent always has that long.
+  If no slot comes in time, the user is told too many images are being made; nothing is sent and the reservation is
+  released.
+- **The monthly count (I11, I12).** Each user has a `user_image_limits` row (0 = unlimited; the admin is exempt). The
+  first start with this feature gave every existing non-admin user `DEFAULT_MONTHLY_IMAGE_LIMIT` once (`app_state` key
+  `image_limits_backfilled`), and creating a user writes a row, so a later change of the env default moves nobody. The
+  **reservation** runs under the per-user upload lock (`storage.serialized_uploads`: an asyncio lock plus
+  `FOR NO KEY UPDATE` on the user row). It counts this UTC month's `image` usage events and inserts one at zero cost.
+  What happens to that event:
+  - settled with the reported tokens and cost when a response arrives;
+  - deleted (released) when nothing was sent, or the provider refused or failed without billing (safety refusal, rate
+    limit, key or access errors);
+  - kept with an estimated cost when the request was sent but no response came (timeout);
+  - kept with the reported cost when the response was unusable.
+
+  The count shown to users therefore includes failed attempts that may have been billed.
+- **Cost (I13).** There is one `image` usage event per image: prompt text tokens as `prompt_tokens`, image tokens as
+  `completion_tokens`. The model's own prices win; otherwise `litellm.completion_cost(call_type="image_generation")`
+  is used, and an unpriced model costs 0 with one warning. Without a response, `llm.estimate_image_usage` uses
+  `_IMAGE_OUTPUT_TOKENS`, OpenAI's gpt-image-1 table (square 272 / 1,056 / 4,160 for low / medium / high; landscape and
+  portrait 408 / 1,584 / 6,240). gpt-image-2 measured lower: 196 (square low) and 1,372 (landscape medium). The table
+  wasn't changed, because only 2 of its 6 cells were measured and a test pins 1,584; estimates therefore run high.
+  Measured cost: about $0.006 per square low image and $0.042 per landscape medium one. Image usage never counts toward
+  the chat budget; `done.usage` and the `chat` event hold only the chat calls. Each admin image Test is recorded as an
+  `image` event of the admin (I18).
+- **Failures (I22).** Every failed call except a safety refusal or invalid arguments ends image generation for the rest
+  of the answer (`ImageSession.halted`), so the model can't retry a billed failure. Replies that would fail the same way
+  every time (no image data or only a URL, too large, not a PNG, JPEG or WebP image) also mark the model **unusable**
+  in that process until it is edited or its Test succeeds (keyed by id and `updated_at`). Meanwhile the tool isn't
+  offered. Refusals are recognized in three shapes: `ContentPolicyViolationError`, a 400 with code `moderation_blocked`,
+  and a message naming the "safety system". `friendly_error` now maps `PermissionDeniedError`, and for OpenAI image
+  models the error adds that OpenAI requires a verified organization. The `failed` event and the card get only the
+  user-facing part of a message; the tool result adds the hint for the model (`ImageFailure`).
+- **Validation (I8).** Image bytes are decoded only in `filegen/child.py`, the render child (`python -I`, empty
+  environment, `RLIMIT_AS` 1 GiB). It runs for at most 30 s, two at a time per backend process; the wait for a slot
+  has no deadline, so a paid image isn't lost to a queue. The child:
+  - accepts PNG, JPEG and WebP only, checks sizes before decoding and keeps the first frame;
+  - re-encodes in the same format without the source metadata, which drops OpenAI's C2PA manifest;
+  - marks the image as AI-generated with an XMP packet (IPTC `DigitalSourceType` `trainedAlgorithmicMedia`,
+    `xmp:CreatorTool` = the model). PNGs get it as an iTXt chunk, because Pillow 12.3's `xmp=` doesn't write PNG;
+  - writes `preview.webp` (long edge 1024) and `thumb.webp` (256).
+- **Storing (I7, I16).** The image becomes a private document (`image/png`, `image/jpeg` or `image/webp`) with a
+  `generated_documents` row and a `generated_images` row (prompt, revised prompt, alt text, format, quality, size,
+  conversation). It gets three sidecars, `.source.md`, `.preview.webp` and `.thumb.webp`, which don't count toward
+  storage; `storage.remove_file` deletes them. Room is checked before reserving. After payment no quota refuses the
+  image: it can take the user over `max_documents` or `max_storage_mb` (the tool result says so), and the per-file
+  upload limit doesn't apply. Uploading images is still refused (415).
+- **Indexing (I25).** The worker indexes the `.source.md` ("AI-generated image, made in chat with … on …", then the
+  title, alt text, prompt and any revised prompt). There is no OCR or vision call. Later prompts label such passages
+  as an image the assistant generated, not a factual source.
+- **Serving (I9, I24).** `GET /documents/{id}/image?size=full|preview|thumb` follows the list's visibility; anything
+  else is a 404, including the admin asking for a user's private image. The response:
+  - is `inline`, typed by the stored format, with `nosniff`, CSP `sandbox` and CORP `same-origin`;
+  - has `Cache-Control: private, no-cache`, a per-rendition ETag and RFC 9110 `If-None-Match` handling (304). There is
+    no `max-age` on purpose: a shared browser's cache ignores cookies.
+
+  Prompts come only from `GET /documents/{id}/image/details` (`no-store`), which the viewer loads.
+  `GeneratedImage` in lists and events has only width, height, alt text and quality, and `DocumentItem.image` is
+  always null in `GET /admin/documents`. Logs never hold a prompt, image data or a response URL.
+- **Embedding in files (I14).** `create_document` content may contain `![caption](image:<id>)` on a line of its own.
+  `image_tool.resolve_images` accepts only images generated in the same conversation and owned by the user; ids above
+  2,147,483,647 are never queried, because `documents.id` is a Postgres `INTEGER`. The server copies the files into
+  the render work directory. The child converts each to JPEG (long edge 2,000 px, transparency on white), and fpdf2 and
+  python-docx get only `BytesIO` objects, never a path or URL.
+  - PDF: the image is scaled to the text width, at most 60% of the page high, with an italic caption and `/Alt`. A
+    heading right before a figure moves to the next page with it. `/MarkInfo` is removed, so the file doesn't claim to
+    be a Tagged PDF.
+  - DOCX: a centered inline picture with `descr` = alt text and a `Caption` paragraph.
+  - XLSX (Notes sheet) and MD: the text `[Image: caption] (filename)`.
+
+  Unknown ids stay text and the tool result lists them. A file can embed at most 10 images. Deleting the conversation
+  keeps the image document, but it can't be embedded any more.
+- **History.** An answer's App note lists its images with their references (`"Fox logo.png" (image:812)`). While
+  `create_document` is offered, the conversation's images whose answers are older than the `HISTORY_MESSAGES` window
+  (the newest 20) are listed in the system prompt (`chat._earlier_images`).
+- **Stop (I15).** Stop before the `generating` event, or while the job still waits for a slot, sends nothing and
+  releases the reservation. Once the request may have been sent, the job finishes on its own: the stopped answer is
+  saved at once, and the image is stored, counted with its real cost and linked to that message when it arrives. The
+  stopped card says so, and a reload shows the image. `drain_answers` also waits for running image jobs on shutdown;
+  a job still running after that is cancelled, and its reservation stays at cost 0 (logged).
+- **Seeding (I17).** `bootstrap._seed_image_model` runs on every start but only acts while the `app_state` row
+  `image_seeded` is missing. It adds "GPT Image 2" (`openai/gpt-image-2`) as the active image model unless an image
+  model exists, enabled only when `OPENAI_API_KEY` is set. An image model the admin deletes isn't added again. GPT
+  Image 1 mini isn't seeded (LiteLLM lists it as deprecated on 2026-12-01); the admin can add it.
+- **Admin Test (I18).** It generates one 1024×1024 low-quality image (measured: $0.006, 10 s), validates it through
+  the child and returns a 256-px thumbnail. It is recorded as the admin's image usage, and a success clears the model's
+  unusable mark. Through the Cloudflare tunnel, a Test longer than about 100 s is cut off.
+- **Frontend.** `GeneratedImageCard.tsx` has the writing, generating (placeholder, pulse, seconds counter), created
+  (preview button, Download), deleted, failed (Retry link when the preview fails to load) and stopped states.
+  `ImageViewer.tsx` is built on `Modal`. `Modal` now handles Escape in the capture phase, so a viewer opened from the
+  panel's slide-over closes alone. Created image events call `announceDocument`, like files.
+
+**Off switch and rollback (I26, brief 3.4).** To turn images off, set `CHAT_IMAGE_TOOLS=false` and run `docker compose
+up -d backend`, or disable the active image model. Existing images, cards, documents, embedding and the usage report
+keep working.
+
+A **code rollback** to a release before this feature (e.g. `70f8076`) is not safe on a database the feature has used.
+The running stack has used it: it has the seeded model, the admin's Test event and the backfilled limit rows. The old
+code types model kinds, usage kinds and file formats as Literals, so `GET /admin/models`, `GET /admin/usage` for a
+month with image events and `GET /conversations/{id}` of a conversation with an image would return 500. Image
+documents would also fail if re-indexed, and deleting one would leave its renditions behind. Run this first, after a
+backup (next step 6):
+
+```bash
+docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
+BEGIN;
+DELETE FROM message_files WHERE format IN ('png', 'jpeg', 'webp');  -- image cards go; the image documents stay
+UPDATE usage_events SET kind = 'embedding' WHERE kind = 'image';     -- keeps the cost totals; not 'vision' (allowance)
+DELETE FROM llm_models WHERE kind = 'image';                         -- usage_events.model_id becomes NULL
+COMMIT;
+SQL
+```
+
+`generated_images`, `user_image_limits` and the `app_state` rows stay; the old code ignores them. To roll forward
+again, add the image model in Admin → Models, because `image_seeded` is still set (or delete that row before
+starting). **This procedure hasn't been checked yet** (brief 18.5: on a throwaway Postgres 17, confirm the three 500s
+with `70f8076`'s backend, apply the SQL, confirm 200s). Do that before relying on it.
+
+**Fixes from the live run** (2026-10-16; brief sections 4.1 and 5 and `SPEC.md` updated):
+
+- Duplicate captions. Asked for a file "with a caption", Claude Haiku 5.5 wrote the reference and then its own
+  "Figure 1: …" line, so the PDF and the DOCX each showed two captions. The file prompt and `create_document`'s
+  content description now say the bracket text is printed as the caption. Checked live: one caption each.
+- Images older than the history window couldn't be embedded. Five turns after an image, its App note had left the
+  history, and Haiku said it had no reference. Fixed by `chat._earlier_images` and
+  `rag.build_messages(earlier_images=…)`, with the regression test
+  `test_images_older_than_the_history_window_are_listed_so_files_can_still_embed_them`. Checked live: the same Word
+  request then embedded the image.
+
+**Review fixes** (7 distinct confirmed findings, all fixed; the backend ones have regression tests in
+`test_image_generation.py` and `test_filegen_images.py`):
+
+- An `image:<id>` reference above the Postgres `INTEGER` range made `create_document` fail with a server error on
+  Postgres (asyncpg refuses the value). Such ids are now never queried and stay text.
+- A job that got its image slot just before its deadline still sent a request that was sure to be abandoned, billed
+  and counted. The slot wait now ends `min(60 s, IMAGE_TIMEOUT_SECONDS / 2)` before the deadline.
+- PDF: a heading right before a figure was left alone at the bottom of a page while its image moved on.
+- PDF: with an image, fpdf2 marked the file as a Tagged PDF whose structure tree held only the figure, so screen
+  readers that follow the tags lost the body text.
+- PDF notes reported placeholder characters from an embedded image's file name, which is never drawn.
+- Frontend (`global.css`): the image viewer grew wider than a phone screen when the file name was one long word.
+- The tool result said the image is shown "above your reply"; the cards are below the text.
+
+Choices still to confirm with the user (brief section 20, with what the live run measured):
+
+- the seeded GPT Image 2 became the active image model on the existing database without any admin action (as the
+  vision model did), and the existing user got the default limit of 30 images a month from the backfill;
+- the defaults: 30 images per user per month, 3 per answer, quality capped at medium, 180 s per image, 3 image calls
+  at once, and PNG (measured 0.65 MB for a square low image and 2.7 MB for a landscape medium one; JPEG or WebP would
+  be several times smaller);
+- GPT Image 1 mini isn't seeded;
+- re-encoding drops OpenAI's C2PA provenance, and the XMP "AI-generated" marker replaces it;
+- only images generated in the same conversation can be embedded;
+- 0 = unlimited, so the admin can't turn images off for one user (the smallest limit is 1). The table now exists on
+  the running database, so a per-user switch would need an `ALTER TABLE` or Alembic, no longer just a model change;
+- Stop keeps an image already being generated (saved and counted), and a paid image is saved even over the user's
+  document or storage quota;
+- only OpenAI and Azure OpenAI GPT image models are supported;
+- attempts that may have been billed count toward the month, and one failed image ends image generation for that
+  answer;
+- admin Test images are recorded as the admin's usage;
+- the overhead: offering the image tool adds about 1,040 input tokens to every call of a tool-capable model (the brief
+  estimated 700). On Claude Opus 5.5 ($4 per 1M input tokens) that is about $0.004 per call;
+- image prompts go to OpenAI even when the chat runs on Anthropic;
+- images in one answer are generated one after another.
+
 ## Known limitations and open risks
 
 - **Parsing is only partly isolated.** pypdf, python-docx, python-pptx, openpyxl and BeautifulSoup still parse
@@ -442,7 +694,7 @@ What matters when maintaining it:
   - Generated PDFs cover Latin, Greek, Cyrillic and ten Indian scripts. Other scripts under 2% of the letters
     appear as □; above that the PDF is refused with a hint to use docx or md. Emoji are left out. CJK and Arabic
     fonts would add about 20 MB to the image.
-  - Generated files have no images or charts.
+  - Generated files have no charts. PDF and DOCX files can embed only images generated in the same conversation.
   - An earlier file can't be re-rendered in another format; the model writes it again from the sources, which
     costs another file's tokens.
   - Citations of generated PDFs have no page number, because they are indexed from the Markdown source.
@@ -455,13 +707,38 @@ What matters when maintaining it:
   - `llm._model_map_entry` doesn't match `bedrock_converse` or `vertex_ai-*` map entries. Their output cap is
     unknown, so the file call's max_tokens isn't lowered for them; recovery 0 handles a rejection.
   - A lowered max_tokens isn't remembered between answers, so such a model pays one rejected call per answer.
+- **Images from chat, not yet checked** (each spends images or needs a scratch database; get the user's approval for
+  the spend):
+  - the rollback procedure above, on a throwaway Postgres 17 (brief 18.5);
+  - the `postgres`-marked reservation race (`TEST_POSTGRES_URL`; the 1 skipped test);
+  - live: Stop during generation, an image through the Cloudflare tunnel, an image requested from GPT-5.4 mini (the
+    OpenAI tool-call shape; only Claude Haiku 5.5 and Opus 5.5 made images live), and a real provider refusal (its
+    shapes were checked only against a fake server).
+- **Images from chat, limits by design.**
+  - Three sizes only (1024×1024, 1536×1024, 1024×1536), no transparent backgrounds, no editing or variations, no
+    image uploads, one image per tool call, and images in one answer are made one after another.
+  - Only OpenAI and Azure OpenAI GPT image models (I21). Image prompts go to OpenAI even when the chat runs on another
+    provider, and an injected passage could make the model put document text into a prompt.
+  - Re-encoding drops the provider's C2PA manifest; only the XMP marker says the image is AI-generated.
+  - The monthly count includes failed attempts that may have been billed. The cost of a timed-out image is an
+    estimate from a table that ran high in the live run (196 instead of 272 image tokens for a square low image).
+  - A paid image is stored even over the user's quotas. Only images already in flight in other answers can add to
+    that overshoot, because a slot and 8 MiB are checked first.
+  - Images from other conversations, or from a deleted conversation, can't be embedded in files. The admin can't
+    view or download users' private images (404), as with every private document.
+  - A custom `api_base` is trusted with memory: the OpenAI SDK reads the whole JSON response before the 32 MiB
+    check.
+  - Model wording isn't controlled. In one of two runs, Haiku wrote an "(App note: …)" line itself, which the user
+    sees and the next turn's history then repeats. It also once said the image is "shown above", although the card is
+    below the text (the tool result says "below").
 - **Usage history goes with the user.** Deleting a user cascades their `usage_events` (SPEC section 4), so their
-  chat, embedding and vision costs leave the usage report (after the smoke runs, this month's vision total was
-  back to 0). Keep cost history elsewhere if it must survive user deletion.
+  chat, embedding, vision and image costs leave the usage report (after the smoke runs, this month's vision total
+  was back to 0). Keep cost history elsewhere if it must survive user deletion.
 - **Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks.
   The delete race and the password-reset race were checked with scratch tests against Postgres 17,
   and the whole suite passed on Postgres once. The upload lock across several backend processes and
-  the embedding-model locks were never raced there.
+  the embedding-model locks were never raced there. The image reservation has a `postgres`-marked test (two
+  engines, the asyncio lock defeated), skipped unless `TEST_POSTGRES_URL` is set; it hasn't been run yet.
 - **One worker only.** A second worker container would reset the other's in-flight documents (the
   start-up recovery and the sweep assume a single process).
 - **The per-IP login throttle is effectively global.** Behind Docker's port publishing every client
@@ -470,7 +747,8 @@ What matters when maintaining it:
 - **Without nginx** (uvicorn on :8000 in development), upload bodies are read before the session
   check, there is no 1 MB body cap, and 422 responses echo the rejected input.
 - **Budget overspend is bounded, not zero:** up to 2 in-flight answers can finish past the limit. An answer
-  that writes files makes up to `GENERATED_FILES_PER_ANSWER` + 2 model calls; it stops calling once it used what
+  that writes files or images makes up to `GENERATED_FILES_PER_ANSWER` + `GENERATED_IMAGES_PER_ANSWER` + 2 model
+  calls; it stops calling once it used what
   was left when it started, but answers running at the same time don't see each other's tokens.
   Embedding tokens don't count toward the budget (by design).
 - No HTTPS, `COOKIE_SECURE=false`, no backups, no migrations.
@@ -494,6 +772,17 @@ What matters when maintaining it:
 
 ## Next steps
 
+Images from chat is built, reviewed and was verified live in Docker on 2026-10-16 (uncommitted). What is left of it:
+
+- Check the rollback procedure in "Images from chat" on a throwaway Postgres 17 (brief 18.5, no model spend), and run
+  the `postgres`-marked reservation test against one (`TEST_POSTGRES_URL`, see `backend/tests/README.md`).
+- With the user's approval for the spend (a few cents per image), run the remaining live cases: Stop during
+  generation, an image through the Cloudflare tunnel, an image requested from GPT-5.4 mini, and a provider refusal.
+  Use a `smoke-*` user, deleted afterwards, never `bikash`.
+- Confirm the open points listed at the end of "Images from chat" with the user. If a per-user switch to block images
+  is wanted, add it now (it needs an `ALTER TABLE` on the running database, or Alembic).
+- Optional: measure the other sizes and qualities and update `llm._IMAGE_OUTPUT_TOKENS` (and its test) for gpt-image-2.
+
 Files from chat is built and was verified live in Docker on 2026-10-16. What is left of it:
 
 - With the user's approval for the token spend, run the rest of brief section 14.7: the long report through the
@@ -510,8 +799,8 @@ Files from chat is built and was verified live in Docker on 2026-10-16. What is 
   - downloads from Admin → Documents.
 - Decide the vision `NO_CONTENT` fix (known limitations), and optionally tidy nginx's duplicate headers on `/api/`.
 
-1. Review `git status` and commit the build: files from chat, the vision follow-up fix and
-   `test_vision_independent.py`.
+1. Review `git status` and commit images from chat (files from chat, the vision follow-up fix and
+   `test_vision_independent.py` are already in `70f8076`).
 2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
 3. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the
    monthly vision allowance and the automatic activation of the seeded Sonnet vision model).

@@ -9,7 +9,13 @@ import { FormValidator, MAX_INT32, type FieldErrors } from "./form";
 
 const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 
-type LimitKey = "monthly_token_limit" | "rate_limit_per_min" | "max_upload_mb" | "max_documents" | "max_storage_mb";
+type LimitKey =
+  | "monthly_token_limit"
+  | "monthly_image_limit"
+  | "rate_limit_per_min"
+  | "max_upload_mb"
+  | "max_documents"
+  | "max_storage_mb";
 type ErrorKey = "username" | "password" | LimitKey;
 
 type FormState = Record<LimitKey, string> & {
@@ -27,6 +33,7 @@ function initialState(user: AdminUser | null, config: AdminConfig): FormState {
     password: "",
     is_active: user?.is_active ?? true,
     monthly_token_limit: String(limits.monthly_token_limit),
+    monthly_image_limit: String(limits.monthly_image_limit),
     rate_limit_per_min: String(limits.rate_limit_per_min),
     max_upload_mb: String(limits.max_upload_mb),
     max_documents: String(limits.max_documents),
@@ -80,6 +87,7 @@ export default function UserFormModal({ user, config, chatModels, modelsError, o
     const fields: AdminUserUpdate = {
       is_active: form.is_active,
       monthly_token_limit: v.integer("monthly_token_limit", form.monthly_token_limit, 0, Number.MAX_SAFE_INTEGER),
+      monthly_image_limit: v.integer("monthly_image_limit", form.monthly_image_limit, 0, MAX_INT32),
       rate_limit_per_min: v.integer("rate_limit_per_min", form.rate_limit_per_min, 0, MAX_INT32),
       max_upload_mb: v.integer("max_upload_mb", form.max_upload_mb, 1, config.max_upload_mb_hard),
       max_documents: v.integer("max_documents", form.max_documents, 0, MAX_INT32),
@@ -214,6 +222,11 @@ export default function UserFormModal({ user, config, chatModels, modelsError, o
           <legend>Usage limits</legend>
           <div className="admin-form-grid">
             {limitField("monthly_token_limit", "Monthly token limit", "Chat tokens per calendar month (UTC). 0 = unlimited.")}
+            {limitField(
+              "monthly_image_limit",
+              "Monthly image limit",
+              "Images the user can generate per calendar month (UTC). 0 = unlimited.",
+            )}
             {limitField("rate_limit_per_min", "Requests per minute", "0 = unlimited.")}
             {limitField("max_upload_mb", "Max file size (MB)", `1 to ${config.max_upload_mb_hard} MB per file.`)}
             {limitField("max_documents", "Max documents", "0 = unlimited.")}

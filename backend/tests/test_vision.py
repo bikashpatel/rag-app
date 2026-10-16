@@ -1347,6 +1347,7 @@ async def test_the_vision_test_reads_the_test_image(admin_client: ApiClient, fak
         "message": "OK: read the test image as 'TEST 4712'",
         "latency_ms": result["latency_ms"],
         "embedding_dim": None,
+        "image_data_url": None,
     }
     [call] = fake_llm.vision_calls
     assert vision_page_and_mode(call) == (0, "test")

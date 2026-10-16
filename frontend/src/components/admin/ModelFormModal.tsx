@@ -28,6 +28,7 @@ const EXAMPLES: Record<ModelKind, { model: string; apiBase?: string }[]> = {
     { model: "gemini/gemini-2.5-flash" },
     { model: "ollama_chat/llama3.2-vision", apiBase: OLLAMA_API_BASE },
   ],
+  image: [{ model: "openai/gpt-image-2" }],
 };
 
 const KINDS: Record<ModelKind, { label: string; namePlaceholder: string; switchLabel: string }> = {
@@ -38,11 +39,20 @@ const KINDS: Record<ModelKind, { label: string; namePlaceholder: string; switchL
     switchLabel: "Active embedding model",
   },
   vision: { label: "Vision", namePlaceholder: "e.g. Claude Sonnet 5.5 (vision)", switchLabel: "Active vision model" },
+  image: { label: "Image", namePlaceholder: "e.g. GPT Image 2", switchLabel: "Active image model" },
 };
 
 const MODEL_HINT = "provider/model, exactly as LiteLLM names it. Ollama runs on the host, so give it the API base below.";
 const VISION_MODEL_HINT =
   "provider/model, exactly as LiteLLM names it; the model must accept images (Test checks it). Ollama runs on the host, so give it the API base below.";
+const IMAGE_MODEL_HINT =
+  "OpenAI (openai/…) or Azure OpenAI (azure/<deployment>) GPT image models only; the server checks the name.";
+const MODEL_HINTS: Record<ModelKind, string> = {
+  chat: MODEL_HINT,
+  embedding: MODEL_HINT,
+  vision: VISION_MODEL_HINT,
+  image: IMAGE_MODEL_HINT,
+};
 
 type TextKey =
   | "display_name"
@@ -90,6 +100,11 @@ function defaultSwitchHint(kind: ModelKind, locked: boolean, enabled: boolean, s
       ? "This is the active vision model. Make another vision model active, or disable this one to turn image reading off."
       : "Turn on to read scanned pages and images in new PDF uploads with this model.";
   }
+  if (kind === "image") {
+    return locked
+      ? "This is the active image model. Make another image model active, or disable this one to turn image generation off."
+      : "Turn on to generate images in chat with this model.";
+  }
   if (locked) return "This is the active model. Make another embedding model active to change it.";
   return selected
     ? "Existing documents must be re-indexed after switching; search skips them until then."
@@ -116,8 +131,11 @@ export default function ModelFormModal({ model, kind, onClose, onSaved }: ModelF
 
   const creating = model === null;
   const isChat = form.kind === "chat";
-  /** Chat and vision models write text: they get the output limit, temperature and an output price. */
-  const writesText = form.kind !== "embedding";
+  /** Chat and vision models write text: they get the output limit and temperature. */
+  const writesText = form.kind === "chat" || form.kind === "vision";
+  /** Every kind but embedding has an output price (image models: image tokens). */
+  const pricesOutput = form.kind !== "embedding";
+  const isImage = form.kind === "image";
   const defaultLocked = model?.is_default ?? false;
   const enabledLocked = model !== null && model.kind === "embedding" && model.is_default && model.enabled;
   const indexInvalidated =
@@ -163,8 +181,10 @@ export default function ModelFormModal({ model, kind, onClose, onSaved }: ModelF
         ? {
             max_output_tokens: v.optionalNumber("max_output_tokens", form.max_output_tokens, 1, 1_000_000, true),
             temperature: v.optionalNumber("temperature", form.temperature, 0, 2),
-            output_cost_per_mtok: v.optionalNumber("output_cost_per_mtok", form.output_cost_per_mtok, 0, Infinity),
           }
+        : {}),
+      ...(pricesOutput
+        ? { output_cost_per_mtok: v.optionalNumber("output_cost_per_mtok", form.output_cost_per_mtok, 0, Infinity) }
         : {}),
     };
     setErrors(v.errors);
@@ -268,7 +288,7 @@ export default function ModelFormModal({ model, kind, onClose, onSaved }: ModelF
         )}
 
         <div className="stack admin-gap-sm">
-          {textField("litellm_model", "LiteLLM model", form.kind === "vision" ? VISION_MODEL_HINT : MODEL_HINT, {
+          {textField("litellm_model", "LiteLLM model", MODEL_HINTS[form.kind], {
             placeholder: EXAMPLES[form.kind][0].model,
             mono: true,
           })}
@@ -290,14 +310,14 @@ export default function ModelFormModal({ model, kind, onClose, onSaved }: ModelF
 
         <div className="admin-form-grid">
           {textField("api_base", "API base (optional)", "For self-hosted or proxy endpoints.", {
-            placeholder: OLLAMA_API_BASE,
+            placeholder: isImage ? "Provider default" : OLLAMA_API_BASE,
             mono: true,
           })}
           {textField(
             "api_key_env",
             "API key env var (optional)",
             "Name of a server env var holding the key, ending in _API_KEY. Blank = the provider's default key, or no key when an API base is set.",
-            { placeholder: "GROQ_API_KEY", mono: true },
+            { placeholder: isImage ? "AZURE_API_KEY" : "GROQ_API_KEY", mono: true },
           )}
           {writesText
             ? textField(
@@ -319,15 +339,21 @@ export default function ModelFormModal({ model, kind, onClose, onSaved }: ModelF
             : null}
           {textField(
             "input_cost_per_mtok",
-            writesText ? "Input cost per 1M tokens (USD)" : "Cost per 1M tokens (USD)",
+            isImage
+              ? "Prompt cost per 1M tokens (USD)"
+              : pricesOutput
+                ? "Input cost per 1M tokens (USD)"
+                : "Cost per 1M tokens (USD)",
             "Blank = automatic, from LiteLLM's price list.",
             { placeholder: "Automatic", inputMode: "decimal" },
           )}
-          {writesText
-            ? textField("output_cost_per_mtok", "Output cost per 1M tokens (USD)", "Blank = automatic, from LiteLLM's price list.", {
-                placeholder: "Automatic",
-                inputMode: "decimal",
-              })
+          {pricesOutput
+            ? textField(
+                "output_cost_per_mtok",
+                isImage ? "Image output cost per 1M tokens (USD)" : "Output cost per 1M tokens (USD)",
+                "Blank = automatic, from LiteLLM's price list.",
+                { placeholder: "Automatic", inputMode: "decimal" },
+              )
             : null}
         </div>
 

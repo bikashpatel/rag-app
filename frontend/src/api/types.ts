@@ -6,6 +6,7 @@ export type UserLimits = {
   max_upload_mb: number;
   max_documents: number; // 0 = unlimited
   max_storage_mb: number; // 0 = unlimited
+  monthly_image_limit: number; // images per UTC calendar month; 0 = unlimited (the admin's is 0)
 };
 
 export type UsageSummary = {
@@ -13,6 +14,7 @@ export type UsageSummary = {
   chat_tokens: number;
   embedding_tokens: number;
   vision_tokens: number;
+  images: number; // images generated this month
   cost_usd: number; // every kind
   monthly_token_limit: number; // 0 = unlimited; counts chat_tokens only
 };
@@ -32,10 +34,30 @@ export type ChatModel = {
   is_default: boolean;
   /** The assistant can create files with this model (CHAT_FILE_TOOLS on and the model supports function calling). */
   can_create_files: boolean;
+  /** The assistant can generate images with this model (CHAT_IMAGE_TOOLS on, a usable image model active, function calling). */
+  can_create_images: boolean;
 };
 
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 export type DocumentScope = "private" | "shared";
+
+export type ImageQuality = "low" | "medium" | "high";
+
+/** Display details of an image the assistant generated in a chat (no prompt: see GeneratedImageDetails). */
+export type GeneratedImage = {
+  width: number;
+  height: number;
+  alt_text: string;
+  quality: ImageQuality; // as requested
+};
+
+/** GET /documents/{id}/image/details: what the image viewer shows besides the image (owner only). */
+export type GeneratedImageDetails = {
+  prompt: string;
+  revised_prompt: string | null;
+  model_name: string; // the image model's litellm_model when it was generated
+  created_at: string;
+};
 
 export type DocumentItem = {
   id: number;
@@ -53,6 +75,7 @@ export type DocumentItem = {
   is_stale: boolean;
   vision_pages: number; // pages read with the vision model; 0 unless status is "ready"
   generated: boolean; // the assistant created this file in a chat
+  image: GeneratedImage | null; // a generated image (GET /documents/{id}/image serves it); always null in GET /admin/documents
   created_at: string;
   updated_at: string;
 };
@@ -87,7 +110,9 @@ export type ConversationSummary = {
   updated_at: string;
 };
 
-export type GeneratedFileFormat = "pdf" | "docx" | "xlsx" | "md";
+export type GeneratedFileFormat = "pdf" | "docx" | "xlsx" | "md" | "png" | "jpeg" | "webp";
+/** What a `file` event is about: a create_document file or a create_image image. */
+export type GeneratedFileKind = "file" | "image";
 
 /** A file the assistant created in an answer; it is one of the user's private documents. */
 export type GeneratedFile = {
@@ -96,6 +121,7 @@ export type GeneratedFile = {
   format: GeneratedFileFormat;
   size_bytes: number;
   status: DocumentStatus | null; // the document's status now; null when deleted
+  image: GeneratedImage | null; // set for a generated image whose document still exists
 };
 
 export type ChatMessage = {
@@ -127,26 +153,42 @@ export type TokenUsage = {
   cost_usd: number;
 };
 
-/** Data of the `file` event: progress of one create_document call. `call_id` is "f1", "f2", … per answer. */
+/**
+ * Data of the `file` event: progress of one create_document call (`kind` "file", `call_id` "f1", "f2", …) or one
+ * create_image call (`kind` "image", `call_id` "i1", "i2", …) of the answer.
+ */
 export type FileEventData =
   | {
       // The call started (chars 0, title and format null); then at most every 2 s while it is written (title and
-      // format as soon as they appear); once more with the validated title and format just before rendering.
+      // format as soon as they appear); once more with the validated title (and a file's format) before the work.
       call_id: string;
+      kind: GeneratedFileKind;
       status: "writing";
       title: string | null;
-      format: GeneratedFileFormat | null;
-      chars: number; // characters of the file written so far (approximate)
+      format: GeneratedFileFormat | null; // always null for images
+      chars: number; // characters of the file (or the image prompt) written so far (approximate)
+    }
+  | {
+      // Images only: the arguments are valid and the image model was called (20 to 120 s); the final size is known.
+      call_id: string;
+      kind: "image";
+      status: "generating";
+      title: string;
+      width: number;
+      height: number;
+      quality: ImageQuality;
     }
   | {
       call_id: string;
+      kind: GeneratedFileKind;
       status: "created";
-      file: GeneratedFile;
+      file: GeneratedFile; // file.image is set for images
       document: DocumentItem;
-      already_existed: boolean; // an identical private document existed and is linked instead
+      already_existed: boolean; // an identical private document existed and is linked instead (always false for images)
     }
   | {
       call_id: string;
+      kind: GeneratedFileKind;
       status: "failed";
       title: string | null;
       format: GeneratedFileFormat | null;
@@ -183,11 +225,12 @@ export type AdminUser = {
   max_upload_mb: number;
   max_documents: number;
   max_storage_mb: number;
+  monthly_image_limit: number; // effective: the user's own value, else DEFAULT_MONTHLY_IMAGE_LIMIT; 0 = unlimited
   restrict_models: boolean;
   allowed_model_ids: number[];
   created_at: string;
   last_login_at: string | null;
-  usage: { chat_tokens: number; embedding_tokens: number; vision_tokens: number; cost_usd: number };
+  usage: { chat_tokens: number; embedding_tokens: number; vision_tokens: number; images: number; cost_usd: number };
   document_count: number;
   storage_bytes: number;
 };
@@ -201,14 +244,18 @@ export type AdminUserCreate = {
   max_upload_mb?: number;
   max_documents?: number;
   max_storage_mb?: number;
+  monthly_image_limit?: number; // 0 = unlimited; default AdminConfig.defaults.monthly_image_limit
   restrict_models?: boolean;
   allowed_model_ids?: number[];
 };
 
 export type AdminUserUpdate = Partial<Omit<AdminUserCreate, "username">>;
 
-/** "vision": reads PDF pages for ingestion (the active one is the enabled default); never offered for chat. */
-export type ModelKind = "chat" | "embedding" | "vision";
+/**
+ * "vision": reads PDF pages for ingestion; "image": generates images in chat (create_image). The active one of each is
+ * the enabled default; neither is ever offered as a chat model.
+ */
+export type ModelKind = "chat" | "embedding" | "vision" | "image";
 
 export type AdminModel = {
   id: number;
@@ -249,6 +296,7 @@ export type ModelTestResult = {
   message: string;
   latency_ms: number;
   embedding_dim: number | null;
+  image_data_url: string | null; // image models: a data: URL of a small thumbnail of the test image
 };
 
 export type AdminConfig = {
@@ -264,6 +312,7 @@ export type AdminStats = {
   failed_documents: number;
   active_embedding_model: { id: number; display_name: string } | null;
   active_vision_model: { id: number; display_name: string } | null;
+  active_image_model: { id: number; display_name: string } | null;
   queue_length: number;
 };
 
@@ -273,6 +322,7 @@ export type UsageReport = {
     chat_tokens: number;
     embedding_tokens: number;
     vision_tokens: number;
+    images: number;
     cost_usd: number;
     requests: number; // chat requests only
   };
@@ -282,22 +332,24 @@ export type UsageReport = {
     chat_tokens: number;
     embedding_tokens: number;
     vision_tokens: number;
+    images: number;
     cost_usd: number;
     requests: number;
   }[];
   by_model: {
     model_name: string;
     kind: ModelKind;
-    prompt_tokens: number;
-    completion_tokens: number;
+    prompt_tokens: number; // image models: prompt text tokens
+    completion_tokens: number; // image models: image tokens
     cost_usd: number;
-    requests: number;
+    requests: number; // image models: images
   }[];
   daily: {
     date: string;
     chat_tokens: number;
     embedding_tokens: number;
     vision_tokens: number;
+    images: number;
     cost_usd: number;
   }[];
 };

@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
 
 from . import CREATOR, RenderRequest, SheetData
-from .markdown import parse
+from .markdown import Block
 from .mdwriter import write
 
 Value = str | int | float | bool | None
@@ -30,7 +30,8 @@ _MIN_WIDTH, _MAX_WIDTH = 8, 60
 _NOTES_WIDTH = 100
 
 
-def render_xlsx(request: RenderRequest) -> bytes:
+def render_xlsx(request: RenderRequest, notes_blocks: list[Block]) -> bytes:
+    """`notes_blocks`: the parsed content, written to a Notes sheet when there is any (images as text references)."""
     workbook = Workbook()
     workbook.properties.title = request.title
     workbook.properties.creator = CREATOR
@@ -43,7 +44,7 @@ def render_xlsx(request: RenderRequest) -> bytes:
     if request.content.strip():
         notes = workbook.create_sheet(_sheet_name("Notes", len(names) + 1, names))
         notes.column_dimensions["A"].width = _NOTES_WIDTH
-        for row, line in enumerate(write(parse(request.content)).rstrip("\n").split("\n"), start=1):
+        for row, line in enumerate(write(notes_blocks).rstrip("\n").split("\n"), start=1):
             if line:
                 cell = notes.cell(row=row, column=1)
                 _set_text(cell, line)

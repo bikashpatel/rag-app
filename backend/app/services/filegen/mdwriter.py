@@ -1,14 +1,28 @@
 """The block tree written back as Markdown: the MD file, and the indexed source of a PDF.
 
-Only what the other formats render survives: images are already text, raw HTML comes out escaped (so the file
-loads nothing when previewed), and only http, https and mailto links are written. Every inline run is checked by
-parsing it back; emphasis the Markdown rules can't express there is dropped rather than garbled, so writing a
-parsed file again gives the same text.
+Only what the other formats render survives: images are already text, an embedded image (a Figure) becomes the
+text reference "[Image: caption] (file name)", raw HTML comes out escaped (so the file loads nothing when
+previewed), and only http, https and mailto links are written. Every inline run is checked by parsing it back;
+emphasis the Markdown rules can't express there is dropped rather than garbled, so writing a parsed file again
+gives the same text.
 """
 
 import re
 
-from .markdown import Block, Code, Heading, ListBlock, Paragraph, Quote, Rule, Span, Table, parse_inline
+from .markdown import (
+    Block,
+    Code,
+    Figure,
+    Heading,
+    ListBlock,
+    Paragraph,
+    Quote,
+    Rule,
+    Span,
+    Table,
+    parse_inline,
+    text_reference,
+)
 
 _ALWAYS_ESCAPED = frozenset("\\`*_[]<>|~")
 _ENTITY = re.compile(r"&(?:#[0-9]{1,7};|#[xX][0-9a-fA-F]{1,6};|[A-Za-z][A-Za-z0-9]{1,31};)")
@@ -57,6 +71,8 @@ def _block(block: Block, *, alternate: bool = False, first_in_item: bool = False
         return "#" * block.level + (" " + text if (text := inline(block.spans, heading=True)) else "")
     if isinstance(block, Paragraph):
         return inline(block.spans)
+    if isinstance(block, Figure):
+        return inline([Span(text_reference(block))])
     if isinstance(block, ListBlock):
         return _list(block, alternate)
     if isinstance(block, Quote):

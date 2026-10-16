@@ -34,6 +34,7 @@ _MISSING_FILE = "The uploaded file is missing from storage."
 _MAX_ERROR_CHARS = 1000
 _MAX_REASON_CHARS = 300
 _RUNNABLE = ("pending", "processing")
+_IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".webp"})  # images the assistant generated (never uploads)
 # A document whose runs keep ending without a result (e.g. the worker is killed for running out of memory
 # while parsing it) fails after this many, instead of being retried on every start forever.
 MAX_INTERRUPTED_RUNS = 3
@@ -556,6 +557,9 @@ def _parse(stored_name: str, request: VisionRequest | None) -> ParsedDocument:
             # A PDF the assistant created: its text layer is lossy for shaped Indian scripts, so it is indexed from
             # the Markdown it was rendered from (no page numbers, no vision model).
             return ParsedDocument(segments=parse_file(source, ".md", None).segments, num_pages=pages, page_images=[])
+        if path.suffix.lower() in _IMAGE_SUFFIXES and source.is_file():
+            # An image the assistant generated: indexed from its title, description and prompt (no OCR, no vision).
+            return ParsedDocument(segments=parse_file(source, ".md", None).segments, num_pages=None, page_images=[])
         return parse_file(path, path.suffix, request)
     except FileNotFoundError as exc:
         raise _IngestionError(_MISSING_FILE) from exc

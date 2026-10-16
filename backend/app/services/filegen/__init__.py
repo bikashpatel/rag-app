@@ -1,4 +1,5 @@
-"""The files the chat assistant creates: Markdown (and sheets for xlsx) to PDF, DOCX, XLSX or MD bytes.
+"""The files the chat assistant creates: Markdown (and sheets for xlsx) to PDF, DOCX, XLSX or MD bytes, with the
+images generated in the conversation embedded in PDF and DOCX files.
 
 Pure functions: no database, no network and no imports from `app` (relative imports only), so child.py can run
 them in a process without the app's settings or secrets. The renderers are imported only when needed.
@@ -6,7 +7,8 @@ them in a process without the app's settings or secrets. The renderers are impor
 
 import re
 import unicodedata
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
+from datetime import date
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
 if TYPE_CHECKING:
@@ -22,6 +24,7 @@ CONTENT_TYPES: dict[FileFormat, str] = {
     "md": "text/markdown",
 }
 CREATOR = "RAG Assistant"
+MAX_IMAGES_PER_FILE = 10
 
 _MAX_STEM_CHARS = 120
 _HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
@@ -37,6 +40,10 @@ _RESERVED_CHARACTERS = re.compile(r'[<>:"/\\|?*]')
 _DEVICE_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(1, 10)), *(f"LPT{n}" for n in range(1, 10))}
 )
+# What a caption must escape to stay one image's text (mdwriter escapes the same), and the & of an entity.
+_CAPTION_ESCAPES = re.compile(r"[\\`*_\[\]<>|~]")
+_ENTITY = re.compile(r"&(?:#[0-9]{1,7};|#[xX][0-9a-fA-F]{1,6};|[A-Za-z][A-Za-z0-9]{1,31};)")
+_TEXT_REFERENCES = "Images can only be embedded in pdf and docx files; this file has text references to them."
 
 
 class RenderError(Exception):
@@ -58,12 +65,25 @@ class SheetData:
 
 
 @dataclass(frozen=True)
+class ImageRef:
+    """An image the content may embed as ![caption](image:<id>), resolved by the server."""
+
+    id: int
+    path: str  # a bare file name in the render work directory ("img-812.png"); "" for xlsx and md
+    filename: str  # the image document's file name, for text references
+    alt_text: str  # the PDF's /Alt and the DOCX picture's descr
+    width: int
+    height: int
+
+
+@dataclass(frozen=True)
 class RenderRequest:
     title: str
     format: FileFormat
     content: str  # Markdown ("" for xlsx without notes)
     sheets: list[SheetData]
     sources: list[SourceRef]  # one per (filename, page), in order of their first number
+    images: list[ImageRef] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -76,6 +96,7 @@ class RenderRequest:
             content=data["content"],
             sheets=[SheetData(**sheet) for sheet in data["sheets"]],
             sources=[SourceRef(**source) for source in data["sources"]],
+            images=[ImageRef(**image) for image in data.get("images", [])],
         )
 
 
@@ -108,37 +129,46 @@ def _xml_safe_request(request: RenderRequest) -> RenderRequest:
             for sheet in request.sheets
         ],
         sources=[SourceRef(source.numbers, xml_safe(source.filename), source.page) for source in request.sources],
+        images=[
+            replace(ref, filename=xml_safe(ref.filename), alt_text=xml_safe(ref.alt_text)) for ref in request.images
+        ],
     )
 
 
 def render(request: RenderRequest) -> Rendered:
-    """The file's bytes. Raises RenderError for input that can't be rendered (the message says why)."""
+    """The file's bytes. Raises RenderError for input that can't be rendered (the message says why). Images are
+    read from the working directory (ImageRef.path) for pdf and docx only."""
+    from .markdown import has_figures, parse
+
     request = _xml_safe_request(request)
     if request.format == "xlsx":
         from .excel import render_xlsx
 
-        return Rendered(render_xlsx(request), None, None, [])
+        notes_sheet = parse(request.content, _images_by_id(request)) if request.content.strip() else []
+        data = render_xlsx(request, notes_sheet)
+        return Rendered(data, None, None, [_TEXT_REFERENCES] if has_figures(notes_sheet) else [])
     blocks = document_tree(request)
     if request.format == "pdf":
         from .mdwriter import write
         from .pdf import render_pdf
 
-        data, pages, notes = render_pdf(blocks, request.title)
-        return Rendered(data, pages, write(blocks), notes)
+        data, pages, pdf_notes = render_pdf(blocks, request.title)
+        return Rendered(data, pages, write(blocks), pdf_notes)
     if request.format == "docx":
         from .word import render_docx
 
-        return Rendered(render_docx(blocks, request.title), None, None, [])
+        data, docx_notes = render_docx(blocks, request.title)
+        return Rendered(data, None, None, docx_notes)
     from .mdwriter import write
 
-    return Rendered(write(blocks).encode(), None, None, [])
+    return Rendered(write(blocks).encode(), None, None, [_TEXT_REFERENCES] if has_figures(blocks) else [])
 
 
 def document_tree(request: RenderRequest) -> "list[Block]":
     """The content's blocks, with a title heading unless the content starts with one, then the Sources section."""
     from .markdown import Heading, ListBlock, Paragraph, Span, parse
 
-    blocks = parse(request.content)
+    blocks = parse(request.content, _images_by_id(request))
     if not blocks or not (isinstance(blocks[0], Heading) and blocks[0].level == 1):
         blocks.insert(0, Heading(1, [Span(request.title)]))
     if request.sources:
@@ -152,6 +182,74 @@ def document_markdown(request: RenderRequest) -> str:
     from .mdwriter import write
 
     return write(document_tree(_xml_safe_request(request)))
+
+
+def _images_by_id(request: RenderRequest) -> dict[int, ImageRef]:
+    return {ref.id: ref for ref in request.images}
+
+
+def image_refs(content: str) -> list[int]:
+    """The ids of the ![caption](image:<id>) references in `content` that a file can embed (those standing in
+    paragraphs, not in headings or table cells), in order, each once."""
+    from .markdown import image_ids
+
+    return image_ids(content)
+
+
+def image_markdown(caption: str, image_id: int) -> str:
+    """The reference that embeds an image: "![<caption>](image:<id>)", the caption on one line with every character
+    that would end it or style it escaped, so it parses back as this image with this caption."""
+    text = " ".join(xml_safe(caption).split())
+    text = _CAPTION_ESCAPES.sub(lambda found: "\\" + found.group(), text)
+    text = _ENTITY.sub(lambda found: "\\" + found.group(), text)
+    return f"![{text}](image:{image_id})"
+
+
+def image_source_markdown(
+    *, title: str, alt_text: str, prompt: str, revised_prompt: str | None, model: str, created: date
+) -> str:
+    """The indexed text of a generated image (its .source.md): title, what it is, description, prompt and the
+    model's revised prompt, written as escaped Markdown."""
+    from .markdown import Block, Heading, Paragraph, Span
+    from .mdwriter import write
+
+    made_with = f" with {name}" if (name := _one_line(model)) else ""
+    blocks: list[Block] = [
+        Heading(1, [Span(_one_line(title) or "Image")]),
+        Paragraph([Span(f"AI-generated image, made in chat{made_with} on {created.isoformat()}.")]),
+    ]
+    if description := _one_line(alt_text):
+        blocks.append(Paragraph([Span(description)]))
+    blocks.extend(_labelled("Prompt", prompt))
+    if revised_prompt:
+        blocks.extend(_labelled("Revised prompt", revised_prompt))
+    return write(blocks)
+
+
+def _one_line(text: str) -> str:
+    return " ".join(xml_safe(text).split())
+
+
+def _labelled(label: str, text: str) -> "list[Block]":
+    """`text` as paragraphs (split at blank lines, lines joined by hard breaks), the first one starting with the
+    label."""
+    from .markdown import Paragraph, Span
+
+    paragraphs: list[Block] = []
+    for part in re.split(r"\n[ \t]*\n", xml_safe(text).replace("\r\n", "\n").replace("\r", "\n")):
+        lines = [" ".join(line.split()) for line in part.split("\n")]
+        lines = [line for line in lines if line]
+        if not lines:
+            continue
+        if not paragraphs:
+            lines[0] = f"{label}: {lines[0]}"
+        spans: list[Span] = []
+        for line in lines:
+            if spans:
+                spans.append(Span("\n"))
+            spans.append(Span(line))
+        paragraphs.append(Paragraph(spans))
+    return paragraphs
 
 
 def source_line(source: SourceRef) -> str:

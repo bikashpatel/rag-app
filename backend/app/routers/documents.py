@@ -8,6 +8,7 @@ import asyncio
 import hashlib
 import logging
 import mimetypes
+import os
 import re
 import unicodedata
 from pathlib import Path as FilePath
@@ -15,17 +16,17 @@ from pathlib import PurePosixPath
 from typing import Annotated, BinaryIO, Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Path, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Path, Query, UploadFile, status
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 from sqlalchemy import ColumnElement, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user
-from app.models import Document, User
+from app.models import Document, GeneratedImage, User
 from app.redis_client import forget_ingest_attempts
-from app.schemas import MAX_INT, DocumentItem
+from app.schemas import MAX_INT, DocumentItem, GeneratedImageDetails
 from app.services import storage
 from app.services.ingestion import NO_EMBEDDING_MODEL, enqueue_document
 from app.services.model_registry import get_active_embedding_model
@@ -52,9 +53,19 @@ _DOWNLOAD_TYPES = {
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
 }
 _ASCII_FILENAME_UNSAFE = re.compile(r"[^A-Za-z0-9 ._()-]")
 _MAX_ASCII_FILENAME_CHARS = 150
+_NOT_FOUND = "Document not found"
+_FILE_MISSING = "The file is missing from storage."
+_IMAGE_TYPES = {"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp"}  # generated_images.format
+# One entity tag of an If-None-Match list (RFC 9110 8.8.3), optionally weak, followed by the list's comma or its end.
+_ENTITY_TAG = re.compile(r'[ \t]*(?:W/)?"([!#-~\x80-\xff]*)"[ \t]*(?=,|$)')
+ImageRendition = Literal["full", "preview", "thumb"]
 
 
 class DocumentConfig(BaseModel):
@@ -81,6 +92,7 @@ async def list_documents(
     active_id = await _active_embedding_model_id(db)
     vision_pages = await storage.vision_page_counts(db, select(Document.id).where(visible, Document.status == "ready"))
     generated = await storage.generated_ids(db, select(Document.id).where(visible))
+    images = await storage.generated_images(db, select(Document.id).where(visible))
     return [
         storage.document_item(
             doc,
@@ -88,6 +100,7 @@ async def list_documents(
             active_embedding_model_id=active_id,
             vision_pages=vision_pages.get(doc.id, 0),
             generated=doc.id in generated,
+            image=images.get(doc.id),
         )
         for doc in result.scalars()
     ]
@@ -194,16 +207,18 @@ async def reprocess_document(
     if active is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=NO_EMBEDDING_MODEL)
     generated = await storage.is_generated(db, doc.id)
-    if doc.status == "pending":
-        # Already queued, and that run uses the active model: another queue entry would only be a duplicate run.
-        # (One lost from the queue is re-queued by the worker's sweep.)
-        return storage.document_item(doc, viewer=user, active_embedding_model_id=active.id, generated=generated)
-    doc.status = "pending"
-    doc.error = None
-    await db.commit()
-    await forget_ingest_attempts([doc.id])
-    await _enqueue(doc.id)
-    return storage.document_item(doc, viewer=user, active_embedding_model_id=active.id, generated=generated)
+    image = (await storage.generated_images(db, select(Document.id).where(Document.id == doc.id))).get(doc.id)
+    if doc.status != "pending":
+        # When pending, it is already queued, and that run uses the active model: another queue entry would only be a
+        # duplicate run. (One lost from the queue is re-queued by the worker's sweep.)
+        doc.status = "pending"
+        doc.error = None
+        await db.commit()
+        await forget_ingest_attempts([doc.id])
+        await _enqueue(doc.id)
+    return storage.document_item(
+        doc, viewer=user, active_embedding_model_id=active.id, generated=generated, image=image
+    )
 
 
 @router.get("/{doc_id}/download", response_class=FileResponse)
@@ -212,22 +227,116 @@ async def download_document(
 ) -> FileResponse:
     doc = await db.scalar(select(Document).where(Document.id == doc_id, _visible_to(user)))
     if doc is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND)
     path = storage.stored_path(doc.stored_name)
     if not await asyncio.to_thread(path.is_file):
         logger.warning("Document %s has no stored file %s", doc.id, doc.stored_name)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="The file is missing from storage.")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_FILE_MISSING)
     extension = PurePosixPath(doc.filename).suffix.lower()
     return FileResponse(
         path,
         media_type=_DOWNLOAD_TYPES.get(extension, "application/octet-stream"),
         headers={
-            "Content-Disposition": _attachment(doc.filename),
+            "Content-Disposition": _disposition(doc.filename),
             "X-Content-Type-Options": "nosniff",
             "Cache-Control": "private, no-store",
             "Content-Security-Policy": "sandbox",
         },
     )
+
+
+@router.get("/{doc_id}/image", response_class=FileResponse)
+async def document_image(
+    doc_id: DocumentId,
+    size: Annotated[ImageRendition, Query()] = "full",
+    if_none_match: Annotated[str | None, Header()] = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """A generated image for display: the stored image, or its WebP preview or thumbnail (the stored image when the
+    rendition is missing). Revalidated on every use (no max-age): a browser's cache ignores cookies, so on a shared
+    browser one user's cached image must not be shown to the next without a server check."""
+    doc, image = await _visible_image(db, user, doc_id)
+    served: ImageRendition = size
+    path = storage.stored_path(doc.stored_name)
+    media_type = _IMAGE_TYPES.get(image.format, "application/octet-stream")
+    if size != "full":
+        name = storage.preview_name if size == "preview" else storage.thumb_name
+        rendition = storage.stored_path(name(doc.stored_name))
+        if await asyncio.to_thread(rendition.is_file):
+            path, media_type = rendition, "image/webp"
+        else:
+            served = "full"
+    try:
+        stat = await asyncio.to_thread(os.stat, path)
+    except FileNotFoundError:
+        logger.warning("Document %s has no stored file %s", doc.id, doc.stored_name)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_FILE_MISSING) from None
+    opaque = f"{doc.sha256[:32]}-{served}-{stat.st_size}"
+    headers = {"ETag": f'"{opaque}"', "Cache-Control": "private, no-cache"}
+    if if_none_match is not None and _none_match(if_none_match, opaque):
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
+    return FileResponse(
+        path,
+        media_type=media_type,
+        stat_result=stat,
+        headers={
+            **headers,
+            "Content-Disposition": _disposition(doc.filename, "inline"),
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "sandbox",
+            "Cross-Origin-Resource-Policy": "same-origin",
+        },
+    )
+
+
+@router.get("/{doc_id}/image/details")
+async def document_image_details(
+    doc_id: DocumentId, response: Response, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> GeneratedImageDetails:
+    """The prompt and model of a generated image (private content: the viewer loads it when it opens)."""
+    _, image = await _visible_image(db, user, doc_id)
+    response.headers["Cache-Control"] = "private, no-store"
+    return GeneratedImageDetails(
+        prompt=image.prompt,
+        revised_prompt=image.revised_prompt,
+        model_name=image.model_name,
+        created_at=image.created_at,
+    )
+
+
+async def _visible_image(db: AsyncSession, user: User, doc_id: int) -> tuple[Document, GeneratedImage]:
+    """A document the caller sees (as in the list) that is a generated image; 404 otherwise."""
+    row = (
+        await db.execute(
+            select(Document, GeneratedImage)
+            .outerjoin(GeneratedImage, GeneratedImage.document_id == Document.id)
+            .where(Document.id == doc_id, _visible_to(user))
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND)
+    doc, image = row
+    if image is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="This document isn't an image.")
+    return doc, image
+
+
+def _none_match(header: str, opaque: str) -> bool:
+    """If-None-Match (RFC 9110 13.1.2): "*" matches; otherwise a comma-separated list of entity tags, compared weakly
+    (W/ ignored, the opaque tags equal). Malformed entries are ignored."""
+    if header.strip() == "*":
+        return True
+    position = 0
+    while position < len(header):
+        if (found := _ENTITY_TAG.match(header, position)) is not None:
+            if found.group(1) == opaque:
+                return True
+            position = found.end() + 1
+        else:
+            comma = header.find(",", position)
+            position = len(header) if comma < 0 else comma + 1
+    return False
 
 
 async def _get_manageable_document(db: AsyncSession, user: User, doc_id: int) -> Document:
@@ -236,7 +345,7 @@ async def _get_manageable_document(db: AsyncSession, user: User, doc_id: int) ->
     if doc is None or not (
         (doc.scope == "private" and doc.owner_id == user.id) or (doc.scope == "shared" and user.is_admin)
     ):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=_NOT_FOUND)
     return doc
 
 
@@ -295,15 +404,15 @@ def _display_filename(filename: str | None, extension: str) -> str:
     return stem[: _MAX_FILENAME_CHARS - len(suffix)] + suffix
 
 
-def _attachment(filename: str) -> str:
-    """Content-Disposition for a download: an ASCII fallback (unsafe characters as "_", at most 150 characters
-    keeping the extension) and the exact name in RFC 5987 form."""
+def _disposition(filename: str, kind: Literal["attachment", "inline"] = "attachment") -> str:
+    """Content-Disposition for a download (or `inline` for display): an ASCII fallback (unsafe characters as "_", at
+    most 150 characters keeping the extension) and the exact name in RFC 5987 form."""
     decomposed = unicodedata.normalize("NFKD", filename)
     ascii_name = _ASCII_FILENAME_UNSAFE.sub("_", "".join(ch for ch in decomposed if not unicodedata.combining(ch)))
     if len(ascii_name) > _MAX_ASCII_FILENAME_CHARS:
         suffix = PurePosixPath(ascii_name).suffix[:20]
         ascii_name = ascii_name[: _MAX_ASCII_FILENAME_CHARS - len(suffix)] + suffix
-    return f"attachment; filename=\"{ascii_name or 'download'}\"; filename*=UTF-8''{quote(filename, safe='')}"
+    return f"{kind}; filename=\"{ascii_name or 'download'}\"; filename*=UTF-8''{quote(filename, safe='')}"
 
 
 def _content_type(declared: str | None, filename: str) -> str:
