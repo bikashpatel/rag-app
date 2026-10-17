@@ -27,8 +27,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Document, GeneratedDocument, LLMModel, User
-from app.schemas import DocumentItem, GeneratedFile, Source
-from app.services import filegen, llm, storage
+from app.schemas import AnswerSource, DocumentItem, EmailSource, GeneratedFile
+from app.services import filegen, llm, rag, storage
 from app.services.ingestion import enqueue_document
 from app.services.model_registry import get_active_embedding_model, provider_of
 from app.services.usage import user_limits
@@ -49,6 +49,7 @@ _MAX_ROWS = 10_000
 _MAX_CELLS = 200_000
 _MAX_CELL_CHARS = 32_767
 _MAX_SOURCE_NUMBERS = 50
+_MAX_EMAIL_SOURCE_CHARS = 200
 _PREFIX_CHARS = 4096  # where progress looks for the title and format
 _HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
 _FORMAT_ALIASES = {"markdown": "md", "word": "docx", "excel": "xlsx"}
@@ -86,8 +87,7 @@ digits without separators or units, dates as YYYY-MM-DD.
 Sources section is added for you.
 - After the tool returns, tell the user the file name and that it is in their documents. If it returns an error, \
 explain it to the user, and correct the input and try once more only when the error says how.
-- Notes in parentheses that start with "App note:" in earlier answers were added by the app. Never write them \
-yourself."""
+- {app_note}"""
 
 _MARKDOWN_RULES = (
     "content is Markdown: headings, paragraphs, bold and italic, bullet and numbered lists, tables, code blocks and "
@@ -248,6 +248,7 @@ def file_instructions(max_tokens: int, images: bool = False) -> str:
         limit=settings.generated_files_per_answer,
         words=_words(max_tokens),
         markdown=_MARKDOWN_RULES_WITH_IMAGES if images else _MARKDOWN_RULES,
+        app_note=rag.APP_NOTE_SENTENCE,
     )
 
 
@@ -406,18 +407,36 @@ def _source_numbers(value: object) -> list[int]:
     return numbers[:_MAX_SOURCE_NUMBERS]
 
 
-def source_refs(numbers: Sequence[int], sources: Sequence[Source]) -> tuple[list[filegen.SourceRef], list[int]]:
-    """The Sources section's entries (one per document and page, in order of their first number) and the numbers
-    that match no passage."""
+def source_refs(
+    numbers: Sequence[int], sources: Sequence[AnswerSource]
+) -> tuple[list[filegen.SourceRef], list[int]]:
+    """The Sources section's entries (one per document and page, or per email conversation, in order of their first
+    number) and the numbers that match no source."""
     by_number = {source.index: source for source in sources}
-    groups: dict[tuple[int, int | None], list[int]] = {}
+    groups: dict[tuple[str, object, object], list[int]] = {}
     for number in sorted(numbers):
-        if (source := by_number.get(number)) is not None:
-            groups.setdefault((source.document_id, source.page), []).append(number)
-    refs = [
-        filegen.SourceRef(found, _clean_text(by_number[found[0]].filename), page) for (_, page), found in groups.items()
-    ]
+        source = by_number.get(number)
+        if isinstance(source, EmailSource):
+            groups.setdefault(("email", source.plugin_id, source.thread_id), []).append(number)
+        elif source is not None:
+            groups.setdefault(("document", source.document_id, source.page), []).append(number)
+    refs: list[filegen.SourceRef] = []
+    for found in groups.values():
+        first = by_number[found[0]]
+        if isinstance(first, EmailSource):
+            refs.append(filegen.SourceRef(found, _email_source(first), None))
+        else:
+            refs.append(filegen.SourceRef(found, _clean_text(first.filename), first.page))
     return refs, [number for number in numbers if number not in by_number]
+
+
+def _email_source(source: EmailSource) -> str:
+    """An email's Sources line, as its plugin describes it (Gmail: "Email: <subject> (<sender>, <date>)")."""
+    from app.plugins import base, registry  # they import this module
+
+    plugin = registry.get_plugin(source.plugin_id)
+    text = plugin.describe_source(source) if plugin is not None else base.describe_email(source)
+    return " ".join(_clean_text(text).split())[:_MAX_EMAIL_SOURCE_CHARS]
 
 
 # ---------------- One answer's files ----------------
@@ -438,7 +457,7 @@ class FileSession:
     `conversation_id`: images generated in it can be embedded."""
 
     user: User
-    sources: list[Source]
+    sources: Sequence[AnswerSource]  # the answer's live list: plugins may add emails while it runs
     sink: FileSink
     max_tokens: int | None = None
     conversation_id: int | None = None
@@ -863,12 +882,14 @@ async def _save(user_id: int, request: filegen.RenderRequest, rendered: filegen.
                     logger.warning("Could not queue document %s for ingestion: %s", doc.id, exc)
             active = await get_active_embedding_model(db)
             vision_pages = await storage.vision_page_counts(db, select(Document.id).where(Document.id == doc.id))
+            imported = await storage.imported_sources(db, select(Document.id).where(Document.id == doc.id))
             item = storage.document_item(
                 doc,
                 viewer=user,
                 active_embedding_model_id=active.id if active is not None else None,
                 vision_pages=vision_pages.get(doc.id, 0),
                 generated=duplicate is None or await storage.is_generated(db, doc.id),
+                imported_from=imported.get(doc.id),
             )
             return _Stored(file, item, duplicate is not None)
     except BaseException:

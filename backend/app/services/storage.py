@@ -2,11 +2,12 @@
 
 import asyncio
 import logging
+import unicodedata
 import uuid
 from collections import Counter
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from fastapi import HTTPException, status
@@ -14,7 +15,7 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import Document, GeneratedDocument, GeneratedImage, User, VisionPage
+from app.models import Document, GeneratedDocument, GeneratedImage, ImportedDocument, User, VisionPage
 from app.redis_client import forget_ingest_attempts
 from app.schemas import DocumentItem
 from app.schemas import GeneratedImage as GeneratedImageItem
@@ -25,6 +26,12 @@ logger = logging.getLogger(__name__)
 
 _upload_locks: dict[int, asyncio.Lock] = {}
 _upload_lock_users: Counter[int] = Counter()
+
+_MAX_FILENAME_CHARS = 255
+# Control, format (e.g. bidi overrides) and surrogate code points never belong in a display name, nor U+FFFE and
+# U+FFFF, which XML can't hold (the name can be listed in the Sources of a generated Word or Excel file).
+_HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+_NONCHARACTERS = frozenset("\ufffe\uffff")
 
 
 def upload_dir() -> Path:
@@ -59,6 +66,30 @@ def thumb_name(stored_name: str) -> str:
     return f"{stored_name}.thumb.webp"
 
 
+def basename(filename: str | None) -> str:
+    return (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
+
+
+def extension_of(filename: str | None) -> str:
+    """The lowercased extension of the name's last path segment ("" when it has none)."""
+    return PurePosixPath(basename(filename)).suffix.lower()
+
+
+def display_filename(filename: str | None, extension: str) -> str:
+    """Basename without control/format characters, whitespace collapsed, at most 255 chars keeping the extension."""
+    name = unicodedata.normalize("NFC", basename(filename))
+    visible = "".join(
+        ch
+        for ch in name
+        if ch.isspace() or (unicodedata.category(ch) not in _HIDDEN_CATEGORIES and ch not in _NONCHARACTERS)
+    )
+    name = " ".join(visible.split())
+    stem, suffix = name[: len(name) - len(extension)], name[len(name) - len(extension) :]
+    if not stem or suffix.lower() != extension:
+        return f"document{extension}"
+    return stem[: _MAX_FILENAME_CHARS - len(suffix)] + suffix
+
+
 def remove_file(stored_name: str) -> None:
     """Remove a stored file and its sidecars (Markdown source, image renditions), if any."""
     for name in (stored_name, source_name(stored_name), preview_name(stored_name), thumb_name(stored_name)):
@@ -77,11 +108,13 @@ def document_item(
     vision_pages: int = 0,
     generated: bool = False,
     image: GeneratedImageItem | None = None,
+    imported_from: str | None = None,
 ) -> DocumentItem:
     """Build the DocumentItem response. `doc.owner` must be loaded (it is selectin by default).
     `vision_pages`: the document's vision_pages rows (see vision_page_counts); `generated`: it has a
     generated_documents row (see generated_ids); `image`: its display details when it is a generated image (see
-    generated_images), never in the admin view (prompts and descriptions are the owner's private content)."""
+    generated_images), never in the admin view (prompts and descriptions are the owner's private content);
+    `imported_from`: the plugin it was imported through (see imported_sources)."""
     if admin_view:
         can_delete = viewer.is_admin
     else:
@@ -105,6 +138,7 @@ def document_item(
         vision_pages=vision_pages if doc.status == "ready" else 0,
         generated=generated,
         image=None if admin_view else image,
+        imported_from=imported_from,
         created_at=doc.created_at,
         updated_at=doc.updated_at,
     )
@@ -140,6 +174,19 @@ async def generated_images(db: AsyncSession, documents: Select[tuple[int]]) -> d
     """document id -> display details, for the ids `documents` selects that are generated images (one query)."""
     rows = await db.scalars(select(GeneratedImage).where(GeneratedImage.document_id.in_(documents)))
     return {row.document_id: image_item(row) for row in rows}
+
+
+async def imported_sources(db: AsyncSession, documents: Select[tuple[int]]) -> dict[int, str]:
+    """document id -> the display name of the plugin it was imported through ("Gmail"), for the ids `documents`
+    selects that were imported (one query)."""
+    from app.plugins import registry  # it imports services that import this module
+
+    rows = await db.execute(
+        select(ImportedDocument.document_id, ImportedDocument.plugin_id).where(
+            ImportedDocument.document_id.in_(documents)
+        )
+    )
+    return {doc_id: registry.plugin_name(plugin_id) for doc_id, plugin_id in rows.tuples()}
 
 
 async def is_generated(db: AsyncSession, doc_id: int) -> bool:

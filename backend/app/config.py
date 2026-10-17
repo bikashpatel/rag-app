@@ -95,6 +95,28 @@ class Settings(BaseSettings):
     image_timeout_seconds: int = Field(default=180, ge=30, le=600)
     image_concurrency: int = Field(default=3, ge=1, le=16)  # image calls at once in one backend process
 
+    # --- Plugins (app/plugins; docs/briefs/plugins-gmail.md) ---
+    # Origins the app is reached at (comma-separated scheme://host[:port]); OAuth redirect URIs come only from these
+    public_base_urls: str = "http://localhost:8080"
+    # Comma-separated Fernet keys for users' OAuth tokens; the first encrypts. Empty or invalid: OAuth plugins are off
+    token_encryption_key: str = ""
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_testing_mode: bool = True  # the Google app is in "Testing": Google ends connections after 7 days
+    # Google's endpoints; other values only for a fake Google in tests and smoke runs
+    google_oauth_authorize_url: str = "https://accounts.google.com/o/oauth2/v2/auth"  # browser-facing
+    google_oauth_token_url: str = "https://oauth2.googleapis.com/token"
+    google_oauth_revoke_url: str = "https://oauth2.googleapis.com/revoke"
+    gmail_api_base_url: str = "https://gmail.googleapis.com"
+    gmail_tool_calls_per_answer: int = Field(default=5, ge=1, le=20)
+    gmail_max_chars_per_answer: int = Field(default=40_000, ge=5_000, le=400_000)  # email text returned to the model
+    gmail_daily_send_limit: int = Field(default=20, ge=1, le=500)  # per user (the admin too) per UTC day
+    gmail_send_confirm_minutes: int = Field(default=30, ge=5, le=1440)  # how long a proposed email can be sent
+    # All attachments of one draft or email. At most 18: base64 makes them a third larger, and Gmail refuses messages
+    # over 25 MB (the built message is checked too)
+    gmail_max_attachment_mb: int = Field(default=15, ge=1, le=18)
+    gmail_import_max_items: int = Field(default=20, ge=1, le=100)  # threads plus attachments per import request
+
     @field_validator("admin_username")
     @classmethod
     def _lower_admin(cls, v: str) -> str:

@@ -11,6 +11,7 @@ import type {
   GeneratedFileFormat,
   GeneratedFileKind,
   ImageQuality,
+  PluginCard,
 } from "../../api/types";
 import { announceDocument, requestDocumentsReload } from "../documents/documentEvents";
 
@@ -62,13 +63,27 @@ export function isImageCard(card: FileCard): boolean {
   }
 }
 
-export type ThreadMessage = ChatMessage & {
+/**
+ * A card a plugin added to the answer (`plugin` events, or `ChatMessage.plugin_cards` when loaded). `stopped`: the
+ * stream ended while the card's action was still running, so its outcome is unknown here.
+ */
+export type ThreadPluginCard = PluginCard & { stopped: boolean };
+
+const BUSY_PLUGIN_STATUSES: ReadonlySet<string> = new Set(["running", "writing", "creating", "importing"]);
+
+/** The card's action is still running (searching, writing, saving or importing). */
+export function pluginCardBusy(card: PluginCard): boolean {
+  return BUSY_PLUGIN_STATUSES.has(card.status);
+}
+
+export type ThreadMessage = Omit<ChatMessage, "plugin_cards"> & {
   /** Stable React key that survives the swap from a temporary id to the server id. */
   key: string;
   streaming: boolean;
   stopped: boolean;
   warnings: string[];
   cards: FileCard[];
+  pluginCards: ThreadPluginCard[];
 };
 
 export type ThreadStatus = "ready" | "loading" | "error";
@@ -121,6 +136,10 @@ type ActiveStream = {
   detached: boolean;
   /** Calls still in progress (no `created` or `failed` event yet): files being written, images being made. */
   writing: Map<string, "writing" | "generating">;
+  /** Plugin cards whose action is still running, by card_id. */
+  pluginBusy: Set<string>;
+  /** Documents of plugin cards (imports) already announced to the panel. */
+  announced: Set<number>;
 };
 
 const INTERRUPTED = "The connection was lost before the answer finished.";
@@ -138,11 +157,13 @@ function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === "AbortError";
 }
 
-function toThreadMessage(message: ChatMessage): ThreadMessage {
+function toThreadMessage({ plugin_cards, ...message }: ChatMessage): ThreadMessage {
   // A saved stopped answer renders like a live one (muted "Stopped" note), not as a failure.
   const stopped = message.role === "assistant" && message.error === STOPPED_ERROR;
   return {
     ...message,
+    // A card saved while its action was still running belongs to an answer that ended early.
+    pluginCards: plugin_cards.map((card) => ({ ...card, stopped: pluginCardBusy(card) })),
     error: stopped ? null : message.error,
     key: `m${message.id}`,
     streaming: false,
@@ -180,6 +201,18 @@ function applyFileEvent(cards: FileCard[], data: FileEventData): FileCard[] {
         : { key, kind: "failed", fileKind: data.kind, title, format, error: data.error };
   }
   return previous ? cards.map((item) => (item === previous ? card : item)) : [...cards, card];
+}
+
+/** Replaces the card with the same card_id (a `plugin` event carries the card's whole state), else appends it. */
+function upsertPluginCard(cards: ThreadPluginCard[], card: PluginCard): ThreadPluginCard[] {
+  const next = { ...card, stopped: false };
+  const index = cards.findIndex((item) => item.card_id === card.card_id);
+  return index === -1 ? [...cards, next] : cards.map((item, i) => (i === index ? next : item));
+}
+
+/** Plugin cards whose action was still running when the stream ended. */
+function stopPluginCards(cards: ThreadPluginCard[], busy: ReadonlySet<string>): ThreadPluginCard[] {
+  return cards.map((card) => (busy.has(card.card_id) ? { ...card, stopped: true } : card));
 }
 
 /** The cards of calls still in progress when the stream ended early. */
@@ -296,6 +329,7 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
       error: null,
       files: [],
       cards: [],
+      pluginCards: [],
       created_at: now,
     };
     setMessages((list) => [
@@ -315,6 +349,8 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
       finished: false,
       detached: false,
       writing: new Map(),
+      pluginBusy: new Set(),
+      announced: new Set(),
     };
     streamRef.current = stream;
 
@@ -354,6 +390,8 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
           break;
         }
         case "sources":
+          // Sent again (the whole list) when a plugin tool adds emails, and once more before the end when emails the
+          // answer doesn't cite are dropped.
           update(() => ({ sources: sse.data.sources }));
           break;
         case "warning":
@@ -370,6 +408,21 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
           // The document exists whatever happens to this thread, so the panel hears about it even when detached.
           if (data.status === "created") announceDocument(data.document);
           update((item) => ({ cards: applyFileEvent(item.cards, data) }));
+          break;
+        }
+        case "plugin": {
+          const card = sse.data;
+          if (pluginCardBusy(card)) stream.pluginBusy.add(card.card_id);
+          else stream.pluginBusy.delete(card.card_id);
+          // Imported documents exist whatever happens to this thread: the panel hears about each one once.
+          if (card.type === "gmail_import") {
+            for (const { document } of card.items) {
+              if (!document || stream.announced.has(document.id)) continue;
+              stream.announced.add(document.id);
+              announceDocument(document);
+            }
+          }
+          update((item) => ({ pluginCards: upsertPluginCard(item.pluginCards, card) }));
           break;
         }
         case "done":
@@ -457,6 +510,13 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
           imageReloadTimers.current.forEach((timer) => window.clearTimeout(timer));
           imageReloadTimers.current = IMAGE_RELOAD_MS.map((ms) => window.setTimeout(requestDocumentsReload, ms));
         }
+      }
+      // A plugin action still running (an import, a draft being saved) may have finished on the server.
+      if (stream.pluginBusy.size > 0) {
+        const busy = new Set(stream.pluginBusy);
+        stream.pluginBusy.clear();
+        update((item) => ({ pluginCards: stopPluginCards(item.pluginCards, busy) }));
+        requestDocumentsReload();
       }
       if (streamRef.current === stream) {
         streamRef.current = null;

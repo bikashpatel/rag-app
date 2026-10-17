@@ -1,9 +1,9 @@
 """Response schemas shared by several routers (see SPEC.md section 6)."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Discriminator, Tag
 
 # Largest Postgres INTEGER: no id or INTEGER column can hold more, and bigger values make the driver fail (a 500).
 MAX_INT = 2_147_483_647
@@ -75,6 +75,7 @@ class DocumentItem(BaseModel):
     vision_pages: int  # pages read with the vision model (vision_pages rows); 0 unless status is "ready"
     generated: bool  # the assistant created this file in a chat (generated_documents row)
     image: GeneratedImage | None = None  # a generated image; always None in GET /admin/documents
+    imported_from: str | None = None  # the plugin's name ("Gmail") when imported through a plugin (imported_documents)
     created_at: datetime
     updated_at: datetime
 
@@ -94,6 +95,8 @@ class GeneratedFile(BaseModel):
 
 
 class Source(BaseModel):
+    """A retrieved document passage. It has no `kind` (stored messages predate it); see AnswerSource."""
+
     index: int
     document_id: int
     filename: str
@@ -101,3 +104,30 @@ class Source(BaseModel):
     chunk_index: int
     score: float
     snippet: str
+
+
+class EmailSource(BaseModel):
+    """An email a plugin tool returned in this answer, numbered after the document passages
+    (docs/briefs/plugins-gmail.md, P14). Subject, sender and snippet are untrusted text from the mailbox."""
+
+    kind: Literal["email"] = "email"
+    index: int  # 1-based citation number, in the same sequence as the document passages
+    plugin_id: str  # "gmail"
+    message_id: str
+    thread_id: str
+    subject: str
+    sender: str  # "Name <address>" or "address"
+    date: datetime | None
+    snippet: str  # at most 300 characters
+    url: str  # the conversation in the provider's web app
+
+
+def _source_kind(value: Any) -> str:
+    kind = value.get("kind") if isinstance(value, dict) else getattr(value, "kind", None)
+    return kind or "document"
+
+
+# A source of an answer: a document passage (no `kind`) or an email (`kind: "email"`).
+AnswerSource = Annotated[
+    Annotated[Source, Tag("document")] | Annotated[EmailSource, Tag("email")], Discriminator(_source_kind)
+]

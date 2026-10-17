@@ -1,35 +1,10 @@
 import { useId, useMemo, useState, type ReactNode } from "react";
 import type { UsageReport } from "../../api/types";
 import { formatCompact, formatCost, formatNumber } from "../../lib/format";
-import Spinner from "../ui/Spinner";
 import { useResource } from "./hooks";
-import { ChevronLeftIcon, ChevronRightIcon } from "./icons";
+import MonthPicker, { currentMonth, monthLabel } from "./MonthPicker";
 import StatTile from "./StatTile";
 import { EmptyState, ResourceGate } from "./StateViews";
-
-const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
-
-/** Budgets use UTC calendar months, so the report does too. */
-function currentMonth(): string {
-  return new Date().toISOString().slice(0, 7);
-}
-
-function parseMonth(month: string): [number, number] {
-  const [year, monthNumber] = month.split("-").map(Number);
-  return [year, monthNumber - 1];
-}
-
-function shiftMonth(month: string, delta: number): string {
-  const [year, monthIndex] = parseMonth(month);
-  return new Date(Date.UTC(year, monthIndex + delta, 1)).toISOString().slice(0, 7);
-}
-
-function monthLabel(month: string): string {
-  const [year, monthIndex] = parseMonth(month);
-  return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric", timeZone: "UTC" }).format(
-    Date.UTC(year, monthIndex, 1),
-  );
-}
 
 function dayLabel(date: string): string {
   const [year, month, day] = date.split("-").map(Number);
@@ -39,17 +14,8 @@ function dayLabel(date: string): string {
 }
 
 export default function UsageTab() {
-  const thisMonth = currentMonth();
-  const [month, setMonth] = useState(thisMonth);
-  const [draft, setDraft] = useState(thisMonth);
+  const [month, setMonth] = useState(currentMonth);
   const report = useResource<UsageReport>(`/admin/usage?month=${month}`, "Couldn't load usage.");
-  const inputId = useId();
-  const draftValid = MONTH_PATTERN.test(draft) && draft <= thisMonth;
-
-  function selectMonth(value: string) {
-    setDraft(value);
-    if (MONTH_PATTERN.test(value) && value <= thisMonth) setMonth(value);
-  }
 
   return (
     <div className="admin-stack">
@@ -62,39 +28,12 @@ export default function UsageTab() {
           </p>
         </div>
         <span className="spacer" />
-        <div className="admin-month-picker">
-          {report.loading && report.data ? <Spinner size={14} label="Loading usage" /> : null}
-          <button
-            type="button"
-            className="btn btn-ghost btn-icon"
-            aria-label="Previous month"
-            onClick={() => selectMonth(shiftMonth(month, -1))}
-          >
-            <ChevronLeftIcon />
-          </button>
-          <label className="sr-only" htmlFor={inputId}>
-            Month
-          </label>
-          <input
-            id={inputId}
-            type="month"
-            className="input admin-month-input"
-            value={draft}
-            max={thisMonth}
-            placeholder="YYYY-MM"
-            aria-invalid={draftValid ? undefined : true}
-            onChange={(e) => selectMonth(e.target.value)}
-          />
-          <button
-            type="button"
-            className="btn btn-ghost btn-icon"
-            aria-label="Next month"
-            disabled={month >= thisMonth}
-            onClick={() => selectMonth(shiftMonth(month, 1))}
-          >
-            <ChevronRightIcon />
-          </button>
-        </div>
+        <MonthPicker
+          month={month}
+          onChange={setMonth}
+          loading={report.loading && report.data !== null}
+          loadingLabel="Loading usage"
+        />
       </div>
       <ResourceGate resource={report} loadingLabel="Loading usage">
         {(data) => <UsageReportView report={data} pending={data.month !== month} />}

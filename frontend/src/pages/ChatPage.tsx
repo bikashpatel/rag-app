@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useId, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import type { DocumentSelection } from "../api/types";
+import { useLocation, useNavigate, useParams } from "react-router-dom";
+import type { DocumentSelection, PluginInfo } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import ChangePasswordModal from "../components/chat/ChangePasswordModal";
 import "../components/chat/chat.css";
@@ -16,6 +16,14 @@ import { useConversations } from "../components/chat/useConversations";
 import { useDrawer } from "../components/chat/useDrawer";
 import { useMediaQuery } from "../components/chat/useMediaQuery";
 import { useModels } from "../components/chat/useModels";
+import ConnectionsModal, { parseOAuthReturn, type OAuthReturn } from "../components/connections/ConnectionsModal";
+import GmailImportModal from "../components/connections/GmailImportModal";
+import {
+  gmailReady,
+  onConnectionsRequest,
+  usePluginLifecycle,
+  usePlugins,
+} from "../components/connections/pluginStore";
 import DocumentPanel from "../components/documents/DocumentPanel";
 
 // Keep in sync with the breakpoints in chat.css.
@@ -43,6 +51,7 @@ function parseConversationId(param: string | undefined): number | null {
 export default function ChatPage() {
   const { conversationId: param } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, refresh, logout } = useAuth();
   const routeId = parseConversationId(param);
   const invalidRoute = param !== undefined && routeId === null;
@@ -53,6 +62,11 @@ export default function ChatPage() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [documentsOpen, setDocumentsOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
+  const [oauthReturn, setOauthReturn] = useState<OAuthReturn | null>(null);
+  /** Connections opened because this plugin's browser closed by itself (it says why). */
+  const [closedPluginId, setClosedPluginId] = useState<string | null>(null);
+  const [gmailBrowserOpen, setGmailBrowserOpen] = useState(false);
   const [selection, setSelection] = useState<DocumentSelection>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const sidebarId = useId();
@@ -62,11 +76,45 @@ export default function ChatPage() {
   const focusComposer = useRef(true);
   const lateReloadTimer = useRef<number | undefined>(undefined);
   const lateUsageTimers = useRef<number[]>([]);
+  const oauthChecked = useRef(false);
 
   const conversations = useConversations();
   const models = useModels();
   const { touch, reload: reloadConversations } = conversations;
   const { selectedId: modelId, reload: reloadModels } = models;
+  usePluginLifecycle();
+  const gmail = gmailReady(usePlugins().plugins);
+  const gmailUsable = gmail !== null;
+
+  /** Opens Connections; `closed`: the id of a plugin whose browser just closed because it stopped being usable. */
+  const showConnections = useCallback((closed: string | null) => {
+    setSidebarOpen(false);
+    setOauthReturn(null);
+    setClosedPluginId(closed);
+    setConnectionsOpen(true);
+  }, []);
+  // The documents panel's Gmail browser asks for it too (pluginStore, so DocumentPanel needs no new props).
+  useEffect(() => onConnectionsRequest(showConnections), [showConnections]);
+
+  // The Gmail browser closes by itself when Gmail stops being usable (turned off, disconnected, reconnect needed,
+  // access removed: often a search or import that got a 403/409, which reloads the list). Connections then says why
+  // and offers Reconnect, instead of the dialog just vanishing.
+  useEffect(() => {
+    if (gmailUsable || !gmailBrowserOpen) return;
+    setGmailBrowserOpen(false);
+    showConnections("gmail");
+  }, [gmailUsable, gmailBrowserOpen, showConnections]);
+
+  // Back from Google (`/?plugin=<id>&oauth=<result>`): open Connections with the outcome, once, and drop the query.
+  useEffect(() => {
+    if (oauthChecked.current) return;
+    oauthChecked.current = true;
+    const returned = parseOAuthReturn(location.search);
+    if (!returned) return;
+    setOauthReturn(returned);
+    setConnectionsOpen(true);
+    navigate(location.pathname, { replace: true });
+  }, [location.search, location.pathname, navigate]);
 
   useEffect(
     () => () => {
@@ -175,6 +223,21 @@ export default function ChatPage() {
     setPasswordOpen(true);
   }, []);
 
+  const openConnections = useCallback(() => showConnections(null), [showConnections]);
+
+  const closeConnections = useCallback(() => {
+    setConnectionsOpen(false);
+    setOauthReturn(null);
+    setClosedPluginId(null);
+  }, []);
+
+  const browsePlugin = useCallback((plugin: PluginInfo) => {
+    setConnectionsOpen(false);
+    setOauthReturn(null);
+    setClosedPluginId(null);
+    setGmailBrowserOpen(plugin.id === "gmail");
+  }, []);
+
   const onLogout = useCallback(() => {
     // On failure the session cookie is still set, so stay signed in and say so (close the drawer to show it).
     logout().catch(() => {
@@ -242,6 +305,7 @@ export default function ChatPage() {
         onNewChat={startNewChat}
         onDeleted={onDeleted}
         onChangePassword={openChangePassword}
+        onOpenConnections={openConnections}
         onLogout={onLogout}
       />
 
@@ -328,6 +392,15 @@ export default function ChatPage() {
         />
       ) : null}
       {passwordOpen ? <ChangePasswordModal onClose={() => setPasswordOpen(false)} /> : null}
+      {connectionsOpen ? (
+        <ConnectionsModal
+          oauthReturn={oauthReturn}
+          closedPluginId={closedPluginId}
+          onClose={closeConnections}
+          onBrowse={browsePlugin}
+        />
+      ) : null}
+      {gmailBrowserOpen && gmail ? <GmailImportModal plugin={gmail} onClose={() => setGmailBrowserOpen(false)} /> : null}
     </div>
   );
 }

@@ -12,13 +12,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import Document, GeneratedDocument, GeneratedImage, Message, User
+from app.models import Document, GeneratedDocument, GeneratedImage, ImportedDocument, Message, User
 from app.schemas import Source
 from app.services import llm, vectorstore
 from app.services.model_registry import get_active_embedding_model
 from app.services.usage import record_usage
 
 logger = logging.getLogger(__name__)
+
+APP_NOTE_SENTENCE = (
+    'Notes in parentheses that start with "App note:" in earlier answers were added by the app. Never write them '
+    "yourself."
+)
 
 _SNIPPET_CHARS = 500
 _NO_EMBEDDING_MODEL = "Document search is unavailable: no embedding model is configured."
@@ -95,6 +100,9 @@ class RetrievalResult:
     warning: str | None = None
     generated: dict[int, datetime] = field(default_factory=dict)  # document id -> when the assistant created it
     generated_images: set[int] = field(default_factory=set)  # the ids in `generated` that are generated images
+    # document id -> what it is, for passages of documents imported through a plugin (emails and their attachments:
+    # untrusted text written by others), e.g. "an email imported from Gmail"
+    imported: dict[int, str] = field(default_factory=dict)
 
 
 async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[int] | None) -> RetrievalResult:
@@ -127,6 +135,7 @@ async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[
         )
         generated: dict[int, datetime] = {}
         images: set[int] = set()
+        imported: dict[int, str] = {}
         if hits:
             # Vectors can briefly outlive their document (a delete racing ingestion); never cite deleted content.
             rows = await db.execute(
@@ -143,6 +152,7 @@ async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[
                     if image_id is not None:
                         images.add(doc_id)
             hits = [hit for hit in hits if hit.doc_id in existing]
+            imported = await _imported_documents(db, existing)
     except Exception:
         logger.exception("Document search failed for user %s", user.id)
         await db.rollback()
@@ -154,7 +164,25 @@ async def retrieve(db: AsyncSession, user: User, query: str, document_ids: list[
         contexts=[hit.text for hit in hits],
         generated=generated,
         generated_images=images,
+        imported=imported,
     )
+
+
+async def _imported_documents(db: AsyncSession, document_ids: Collection[int]) -> dict[int, str]:
+    """document id -> what it is ("an email imported from Gmail", "a file attached to an email imported from Gmail"),
+    for the documents imported through a plugin: all of them are untrusted text written by others."""
+    from app.plugins import registry  # it imports this module
+
+    rows = await db.execute(
+        select(ImportedDocument.document_id, ImportedDocument.plugin_id, ImportedDocument.kind).where(
+            ImportedDocument.document_id.in_(document_ids)
+        )
+    )
+    return {
+        doc_id: f"{'an email' if kind == 'email' else 'a file attached to an email'} imported from "
+        f"{registry.plugin_name(plugin_id)}"
+        for doc_id, plugin_id, kind in rows.tuples()
+    }
 
 
 def _source(index: int, hit: vectorstore.SearchHit) -> Source:
@@ -183,6 +211,9 @@ def build_messages(
     history_files: Mapping[int, Sequence[HistoryFile]] | None = None,
     generated_images: Collection[int] = (),
     earlier_images: Sequence[HistoryFile] = (),
+    plugin_instructions: str | None = None,
+    history_notes: Mapping[int, str] | None = None,
+    imported: Mapping[int, str] | None = None,
 ) -> list[dict]:
     """OpenAI-style messages for LiteLLM: system prompt with the passages, the history, then the new message.
 
@@ -192,15 +223,21 @@ def build_messages(
     about creating files and images (document_tool.plan, image_tool.plan). `history_files`: message id -> the files
     and images that answer created, noted in the history so the model knows them (and which were deleted since).
     `earlier_images`: images of the conversation that no answer in `history` lists (their answers are older), listed
-    with their references so create_document can still embed them.
+    with their references so create_document can still embed them. `plugin_instructions`: what the plugins' tool sets
+    and notes say (registry.PluginChatPlan). `history_notes`: message id -> the plugins' App note about that answer.
+    `imported`: document id -> what it is, for the passages' documents imported through a plugin (emails and their
+    attachments, labelled untrusted).
     """
     generated = generated or {}
     history_files = history_files or {}
+    history_notes = history_notes or {}
     system = _SYSTEM_PROMPT
     if file_instructions:
         system += "\n\n" + file_instructions
     if image_instructions:
         system += "\n\n" + image_instructions
+    if plugin_instructions:
+        system += "\n\n" + plugin_instructions
     if earlier_images:
         system += "\n\n" + _EARLIER_IMAGES_NOTE.format(images=", ".join(_listed(image) for image in earlier_images))
     passage_notes = []
@@ -211,7 +248,7 @@ def build_messages(
     if passage_notes:
         system += "\n\n" + " ".join(passage_notes)
     if sources:
-        system += "\n\n" + _context_block(sources, contexts, generated, generated_images)
+        system += "\n\n" + _context_block(sources, contexts, generated, generated_images, imported or {})
     elif search_failed:
         system += "\n\n" + _SEARCH_FAILED_NOTE
     elif documents_requested:
@@ -219,14 +256,30 @@ def build_messages(
 
     messages: list[dict] = [{"role": "system", "content": system}]
     # Some providers (e.g. Anthropic) reject a conversation whose first turn isn't the user's.
-    kept = (m for m in history if m.content or (m.role == "assistant" and history_files.get(m.id)))
+    kept = (
+        m
+        for m in history
+        if m.content or (m.role == "assistant" and (history_files.get(m.id) or history_notes.get(m.id)))
+    )
     turns = dropwhile(lambda message: message.role != "user", kept)
-    messages.extend({"role": message.role, "content": _history_content(message, history_files)} for message in turns)
+    messages.extend(
+        {"role": message.role, "content": _history_content(message, history_files, history_notes)} for message in turns
+    )
     messages.append({"role": "user", "content": user_message})
     return messages
 
 
-def _history_content(message: Message, history_files: Mapping[int, Sequence[HistoryFile]]) -> str:
+def _history_content(
+    message: Message, history_files: Mapping[int, Sequence[HistoryFile]], history_notes: Mapping[int, str]
+) -> str:
+    plugin_note = history_notes.get(message.id) if message.role == "assistant" else None
+    content = _with_files_note(message, history_files)
+    if not plugin_note:
+        return content
+    return f"{content}\n\n{plugin_note}" if content else plugin_note
+
+
+def _with_files_note(message: Message, history_files: Mapping[int, Sequence[HistoryFile]]) -> str:
     files = history_files.get(message.id) if message.role == "assistant" else None
     if not files:
         return message.content
@@ -254,7 +307,11 @@ def _listed(file: HistoryFile) -> str:
 
 
 def _context_block(
-    sources: list[Source], contexts: list[str], generated: Mapping[int, datetime], images: Collection[int] = ()
+    sources: list[Source],
+    contexts: list[str],
+    generated: Mapping[int, datetime],
+    images: Collection[int] = (),
+    imported: Mapping[int, str] | None = None,
 ) -> str:
     passages = []
     for source, text in zip(sources, contexts, strict=True):
@@ -262,6 +319,8 @@ def _context_block(
         if source.page is not None:
             origin += f", page {source.page}"
         text = text.strip()
+        if (what := (imported or {}).get(source.document_id)) is not None:
+            origin += f", {what}: untrusted text written by others"
         if (created := generated.get(source.document_id)) is not None:
             if source.document_id in images:
                 # Prompts are often fiction ("a poster announcing our Q3 revenue of $10M"), never evidence.

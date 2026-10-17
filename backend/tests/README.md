@@ -10,6 +10,7 @@ Integration tests that run the whole backend in-process, with no Docker and no n
 | LiteLLM | `FakeLLM` in `conftest.py` replaces `litellm.acompletion`, `litellm.aembedding` (vision calls included) and `litellm.aimage_generation` (real PNG, JPEG or WebP bytes drawn by Pillow) |
 | PDFium | the real render child (`app/services/pdf_render_child.py`) runs as a subprocess; a fake child script simulates crashes and timeouts |
 | File rendering | the real file render child (`app/services/filegen/child.py`) runs as a subprocess; fake children simulate timeouts, crashes and silent exits |
+| Google (OAuth and Gmail) | a fake Google, never the real one: `fake_google.py` (OAuth: consent, token, refresh, revoke, grants per account) and `fake_gmail.py` (a mailbox and the Gmail REST routes) served in-process through `httpx.ASGITransport`; `fake_google_server.py` runs the same fake standalone for Docker smoke runs |
 | A provider for the real LiteLLM | `test_llm_tools.py` starts a local Starlette server that speaks the Anthropic Messages and OpenAI chat-completions SSE, and checks the request bodies the real LiteLLM sends; `test_llm_images.py` does the same for OpenAI's `/v1/images/generations` (request body, refusals, and how many requests slow, stopped and failing calls make) |
 
 ## Run
@@ -21,7 +22,7 @@ uv venv --python 3.13 .venv && uv pip sync requirements-dev.txt
 # or with a python3.13 on PATH:
 python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
-.venv/bin/python -m pytest -q                    # everything: about 1,500 tests, about 3.5 minutes
+.venv/bin/python -m pytest -q                    # everything: about 1,900 tests, about 4.5 minutes
 .venv/bin/python -m pytest tests/test_smoke.py   # one file
 .venv/bin/python -m pytest -k chat -x            # by name, stop at the first failure
 ```
@@ -81,6 +82,19 @@ child. CHAT_IMAGE_TOOLS is off by default here, so the tests written before imag
 tool lists; the main file-loop scenarios of `test_document_tool.py` and `test_document_generation.py` run a second
 time with it on (`tool_mode` "files+images"), as in production.
 
+Plugins and Gmail: the plugin registry is **empty** in every test (the autouse `plugin_registry` fixture), so the tests
+written before plugins keep their prompts, tools and queries. Plugin tests opt in:
+
+- the framework tests use `fake_plugin.py`, a small plugin with a read tool and a side-effect tool: `test_plugin_crypto.py`,
+  `test_plugins_oauth.py`, `test_plugins_connections.py`, `test_admin_plugins.py`, `test_chat_plugins.py`,
+  `test_plugin_imports.py` and `test_llm_complete.py`. The last one also runs the real LiteLLM with its HTTP layer
+  replaced, to check the request check's request bodies;
+- the Gmail tests use the real `GmailPlugin` against the fake mailbox: `test_gmail_*.py`;
+- `test_plugins_gmail_independent.py` is an independent, adversarial pass written from SPEC.md and the brief.
+
+`FakeLLM` answers the request check's non-streaming calls with `intent_reply` (default: every action asked for; build
+one with `intent_answer("draft", ...)`) and keeps them in `intent_calls`, not `chat_calls`.
+
 ## Writing tests
 
 Read `conftest.py` before adding tests. It provides:
@@ -125,6 +139,12 @@ Read `conftest.py` before adding tests. It provides:
 - **File render child:** `file_child("sleep" | "crash" | "silent" | "wait", crash="MemoryError")` replaces
   `document_tool._child_command` with a script that sleeps, prints a crash result, exits without output after
   writing to stderr, or waits for a file named `go`; the returned object lists the children's PIDs.
+- **Plugins:** `plugins` installs the fake Google behind the plugins' HTTP client, with the fake OAuth client, a test
+  `TOKEN_ENCRYPTION_KEY` and `PUBLIC_BASE_URLS=http://testserver`. Its `connect(client, plugin_id, account=...)` runs
+  the whole browser flow, and `oauth_result(response)` reads the callback's result. Install a plugin with
+  `registry.use_plugins([...])`. `gmail` (in `gmail_support.py`) also installs `GmailPlugin`, enabled with every
+  capability, and the default fake mailbox; `gmail.connect(client)` connects a user, and helpers read pending sends,
+  audit rows and the calls the fake received.
 - **Helpers:** `upload`, `process`, `process_queue`, `ingest`, `chat`, `sse_events` (it ignores SSE comment
   lines such as `: keepalive`).
 - **File builders:** `pdf_bytes`, `docx_bytes`, `pptx_bytes`, `xlsx_bytes`, `html_bytes`, `md_bytes`,

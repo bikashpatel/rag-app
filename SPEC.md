@@ -47,6 +47,13 @@ Single-tenant, locally hosted Retrieval-Augmented-Generation chat app.
   embedded in PDF and DOCX files the assistant creates in the same conversation
   (section 6, Chat; brief `docs/briefs/image-generation.md`). Image costs are
   `image` usage events and don't count toward the token budget.
+- **Plugins:** connectors the admin turns on (Admin → Plugins) and each user
+  connects to their **own** account (account menu → Connections, OAuth 2.0);
+  nobody can see or use another user's connection. The first plugin is
+  **Gmail**: search and read email in chat (emails are cited like passages),
+  import threads and attachments into the user's documents, create drafts on
+  explicit request, and **propose** emails that only the user's click on Send
+  sends (section 6, Plugins and Chat; brief `docs/briefs/plugins-gmail.md`).
 
 ## 2. Repository layout and ownership
 
@@ -86,11 +93,19 @@ rag-app/
         image_tool.py       CHAT        create_image tool: schema, validation, the monthly limit's reservation, generating, storing the image as a document, the image model Test
         filegen/            CHAT        Markdown / sheets -> PDF (fpdf2), DOCX, XLSX, MD bytes, and image validation (images.py) (pure, no app imports; run by filegen/child.py in a time- and memory-limited child process)
       fonts/                CHAT        Noto Sans TTFs for generated PDFs (SIL OFL 1.1, fonts/OFL.txt)
+      schemas_plugins.py    PLUGINS     plugin API shapes (the Gmail ones are in plugins/gmail/schemas.py)
+      plugins/              PLUGINS     framework: base (interfaces), registry, crypto (token encryption), http, oauth,
+                                        connections (tokens, refresh, revoke), audit, intent (request check), answer
+                                        (sources and cards of one answer), importing (store_import), tasks
+                                        (tracked background work, drained at shutdown)
+        gmail/              GMAIL       plugin, client (REST), mime, links, render, tools (chat), sends, importer, router
       routers/
         __init__.py
         auth.py             AUTH-ADMIN  /api/auth/*
         models.py           AUTH-ADMIN  /api/models
         admin.py            AUTH-ADMIN  /api/admin/*
+        admin_plugins.py    PLUGINS     /api/admin/plugins/*
+        plugins.py          PLUGINS     /api/plugins/* (and each plugin's own router under /api/plugins/<id>)
         documents.py        INGESTION   /api/documents/*
         conversations.py    CHAT        /api/conversations/*
         chat.py             CHAT        /api/chat/stream
@@ -109,6 +124,7 @@ rag-app/
       pages/ChatPage.tsx + components/chat/*   FE-CHAT
       components/documents/*                   FE-DOCS
       pages/AdminPage.tsx + components/admin/* FE-ADMIN
+      components/connections/*                 FE-CONN (Connections, Gmail browser and import; CSS prefix conn-)
 ```
 
 Each router module exposes `router = APIRouter(prefix="/<area>", tags=[...])`;
@@ -154,6 +170,16 @@ See `backend/app/config.py` for defaults. Important ones:
 | `IMAGE_OUTPUT_FORMAT` (png) | format asked of the image model: `png`, `jpeg` or `webp`; the image is stored as returned |
 | `IMAGE_TIMEOUT_SECONDS` (180) | one image call, waiting for an image slot and quick provider retries included; the call is abandoned after it |
 | `IMAGE_CONCURRENCY` (3) | image calls at once in one backend process |
+| `PUBLIC_BASE_URLS` (`http://localhost:8080`) | comma-separated origins the app is opened at; OAuth redirect URIs are `<origin>/api/plugins/<id>/oauth/callback` for these only, chosen by matching the request's `Origin` header (never `Host`) |
+| `TOKEN_ENCRYPTION_KEY` | comma-separated Fernet keys encrypting users' OAuth tokens (the first encrypts, all decrypt; every start re-encrypts rows under the first key); independent of `SECRET_KEY`; empty or invalid: OAuth plugins are not configured. Remove an old key only when Admin → Plugins shows 0 connections on an older key |
+| `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | Gmail's Google "Web application" OAuth client; either empty: Gmail is not configured |
+| `GOOGLE_OAUTH_TESTING_MODE` (true) | the Google app is in "Testing": only its test users can connect, and Google ends refresh tokens after 7 days (connections older than that read as reconnect needed; shown to users) |
+| `GOOGLE_OAUTH_AUTHORIZE_URL`, `GOOGLE_OAUTH_TOKEN_URL`, `GOOGLE_OAUTH_REVOKE_URL`, `GMAIL_API_BASE_URL` | Google's endpoints by default; other values only for a fake Google (tests, smoke runs), shown as "test endpoints" to the admin |
+| `GMAIL_TOOL_CALLS_PER_ANSWER` (5), `GMAIL_MAX_CHARS_PER_ANSWER` (40000) | Gmail tool calls, and characters of email text returned to the model, per chat answer |
+| `GMAIL_DAILY_SEND_LIMIT` (20) | emails a user (the admin too) may send per UTC day |
+| `GMAIL_SEND_CONFIRM_MINUTES` (30) | how long a proposed email can be sent |
+| `GMAIL_MAX_ATTACHMENT_MB` (15, at most 18) | total attachment size of one draft or email (the built message must also stay under Gmail's 25 MB) |
+| `GMAIL_IMPORT_MAX_ITEMS` (20) | threads plus attachments per import, from the Gmail browser or from chat |
 
 ## 4. Data model (SQLAlchemy, `app/models.py`)
 
@@ -193,7 +219,8 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   (long edge 256); sidecars don't count toward storage.
 - **conversations**: `id, user_id → users (CASCADE), title, created_at, updated_at`.
 - **messages**: `id, conversation_id → conversations (CASCADE), role
-  ("user"|"assistant"), content, sources (JSON list, see Source), model_id,
+  ("user"|"assistant"), content, sources (JSON list, see Source and
+  EmailSource: entries without `kind` are document passages), model_id,
   model_name, prompt_tokens, completion_tokens, error, created_at`.
 - **usage_events**: `id, user_id → users (CASCADE), model_id (SET NULL),
   model_name, kind ("chat"|"embedding"|"vision"|"image"), prompt_tokens, completion_tokens,
@@ -237,10 +264,48 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   update; on the first start with this table every existing non-admin user
   gets a row with `DEFAULT_MONTHLY_IMAGE_LIMIT` (`app_state` key
   `image_limits_backfilled`). A user without a row gets the env default.
+- **plugin_settings**: `plugin_id` (primary key), `enabled` (false), `capabilities`
+  (JSON object: capability id → bool; a missing id uses the plugin's default),
+  `updated_at`. The admin's switches; no row = disabled.
+- **plugin_connections**: `id, user_id → users (CASCADE), plugin_id` (unique
+  together), `account_subject` (the provider's account id), `account_email`,
+  `scopes` (JSON list), `status` ("connected"|"reconnect_needed"),
+  `status_reason` ("revoked"|"expired_testing"|"key_changed"|"scopes_missing"|null),
+  `refresh_token_enc, access_token_enc` (encrypted with `TOKEN_ENCRYPTION_KEY`,
+  bound to the user and plugin), `access_expires_at, key_id, chat_enabled,
+  connected_at, refreshed_at, last_used_at, created_at, updated_at`. A user's own
+  account at a plugin's provider; deleted on disconnect and with the user, and
+  revoked at the provider then unless another connection (any user) uses the
+  same provider account (revoking ends the whole grant).
+- **message_plugin_items**: `id, message_id → messages (CASCADE), plugin_id,
+  card_type, data` (JSON: the card as last sent), `created_at`. The cards of an
+  answer (`ChatMessage.plugin_cards`), in order.
+- **imported_documents**: `document_id` (primary key) `→ documents (CASCADE),
+  plugin_id, kind ("email"|"attachment"), external_ref` (Gmail: the thread id, or
+  `<message id>/<part id>`), `account_email, created_at`. Source of
+  `DocumentItem.imported_from`.
+- **plugin_audit_events**: `id, user_id → users (CASCADE), plugin_id, action,
+  outcome ("ok"|"error"|"refused"), origin ("chat"|"ui"|"system"), items,
+  created_at`. Metadata only: no subjects, addresses, queries or text.
+- **gmail_pending_sends**: `id, user_id → users (CASCADE), conversation_id →
+  conversations (SET NULL), account_email, account_subject, to_addrs, cc_addrs,
+  bcc_addrs` (JSON lists of `{name, address, unmentioned}`), `subject` (text),
+  `body, attachments` (JSON: document id, file name, size, sha256, content type,
+  unrequested), `thread_id, in_reply_to, references_header, reply_to` (JSON: the
+  email replied to as shown), `content_hash, status` ("pending"|"sending"|"sent"|
+  "failed"|"cancelled"|"expired"|"replaced"), `error, origin` ("chat"|"edit"),
+  `replaced_by_id → gmail_pending_sends (SET NULL), created_at, expires_at,
+  attempted_at, sent_at, gmail_message_id, gmail_thread_id`. An email the
+  assistant proposed: exactly what Send sends, once. Retention: the content lives
+  as long as its conversation. Deleting the conversation cancels a pending row
+  and scrubs every row of it (subject, body, recipients, attachments, reply
+  details emptied); id, status and times stay for the daily cap. Startup scrubs
+  rows left without a conversation.
 - New tables are created by `create_all` on an existing database; no column is
   added to an existing table, so no migration is needed (the choice against
   introducing Alembic for the image limit is explained in
-  `docs/briefs/image-generation.md` section 3.3).
+  `docs/briefs/image-generation.md` section 3.3, and holds for the plugin tables;
+  rolling back past plugins needs the SQL in `docs/briefs/plugins-gmail.md` 3.3).
 
 ## 5. Qdrant layout
 
@@ -294,13 +359,19 @@ type DocumentItem = { id: number; filename: string; scope: "private"|"shared";
   vision_pages: number /* pages read with the vision model (vision_pages rows); 0 unless status is "ready" */;
   generated: boolean /* the assistant created this file in a chat (generated_documents row) */;
   image: GeneratedImage|null /* an image the assistant generated (generated_images row); always null in GET /admin/documents */;
+  imported_from: string|null /* the plugin's name ("Gmail") when imported through a plugin (imported_documents row) */;
   created_at: string; updated_at: string }
 type DocumentConfig = { supported_extensions: string[] /* e.g. [".pdf", ".docx"] */;
   max_upload_mb: number; max_documents: number; max_storage_mb: number;
   document_count: number; storage_bytes: number; can_upload_shared: boolean }
 type Source = { index: number /* 1-based citation number */; document_id: number;
   filename: string; page: number|null; chunk_index: number; score: number;
-  snippet: string /* ≤ 500 chars of the chunk */ }
+  snippet: string /* ≤ 500 chars of the chunk */ }   // a document passage: no `kind`
+type EmailSource = { kind: "email"; index: number /* after the document passages, same [n] sequence */;
+  plugin_id: string /* "gmail" */; message_id: string; thread_id: string; subject: string;
+  sender: string /* "Name <address>" or "address" */; date: string|null; snippet: string /* ≤ 300 chars */;
+  url: string /* the conversation in Gmail */ }       // subject, sender and snippet are untrusted text
+type AnswerSource = Source | EmailSource
 type ConversationSummary = { id: number; title: string; created_at: string; updated_at: string }
 type GeneratedFileFormat = "pdf"|"docx"|"xlsx"|"md"|"png"|"jpeg"|"webp"
 type GeneratedFileKind = "file"|"image"
@@ -309,9 +380,11 @@ type GeneratedFile = { document_id: number|null /* null once the document was de
   status: "pending"|"processing"|"ready"|"failed"|null /* the document's status now; null when deleted */;
   image: GeneratedImage|null /* a generated image whose document still exists */ }
 type ChatMessage = { id: number; role: "user"|"assistant"; content: string;
-  sources: Source[]; model_name: string|null; prompt_tokens: number;
+  sources: AnswerSource[] /* document passages, then the emails the answer cites */;
+  model_name: string|null; prompt_tokens: number;
   completion_tokens: number; error: string|null;
   files: GeneratedFile[] /* files the assistant created in this answer, in order; [] for user messages */;
+  plugin_cards: PluginCard[] /* cards plugins added to this answer, in order (card_id "p<n>"); [] for user messages */;
   created_at: string }
 type ConversationDetail = ConversationSummary & { messages: ChatMessage[] }
 ```
@@ -414,10 +487,11 @@ model not allowed), conversation ownership (404). Then responds `200 text/event-
 | event | data |
 |---|---|
 | `meta` | `{conversation_id, title, user_message_id, model: {id, display_name}}` (always first) |
-| `sources` | `{sources: Source[]}` (always sent, possibly empty) |
+| `sources` | `{sources: AnswerSource[]}` (always sent once after `meta`, possibly empty; sent **again**, with the whole list, after a plugin tool adds emails, and once more before `done`/`error` when emails the answer doesn't cite are dropped; the client replaces its list each time) |
 | `warning` | `{message}` (0..n, e.g. "Document search unavailable: …") |
 | `delta` | `{content: string}` (many) |
 | `file` | `FileEventData` (0..n, interleaved with `delta`; see "Files" and "Images" below) |
+| `plugin` | `PluginCard` (0..n, interleaved; the card's whole state, replacing the card with the same `card_id`; see "Plugins" below) |
 | `done` | `{assistant_message_id, usage: {prompt_tokens, completion_tokens, total_tokens, cost_usd}}` (usage sums every billed model call of the answer) |
 | `error` | `{message, assistant_message_id: number|null}` (terminal, instead of `done`) |
 
@@ -548,6 +622,197 @@ have been sent, the job finishes on its own: the answer is saved at once as
 stopped, and the image is stored, counted and linked to that message when it
 arrives.
 
+**Plugins (Gmail).** When the Gmail plugin is enabled and configured, the user's
+connection is `connected` with `chat_enabled`, and the chat model gets tools,
+the tool list also holds (after `create_document` and `create_image`, only for
+capabilities the admin enabled and the user granted): `gmail_search` (`query` in
+Gmail syntax, `max_results` 1..20, `page_token`), `gmail_read_message`
+(`message_ids`, 1..5), `gmail_read_thread` (`thread_id`, `max_messages` 1..20)
+and `gmail_import` (`thread_ids` 1..5, `include_attachments`) for `read`;
+`gmail_create_draft` for `draft`; `gmail_propose_send` for `send` (both: `to`,
+`cc`, `bcc`, `subject`, `body` plain text, `reply_to_message_id` (with `read`),
+`attachment_filenames` of the user's own documents). Otherwise the system prompt
+gets at most one sentence (connect from Connections, reconnect needed, this
+model can't use Gmail). The same loop rules apply (one tool call per model call,
+identical tools and system prompt, the last call without tools); an answer makes
+at most `GENERATED_FILES_PER_ANSWER` + `GENERATED_IMAGES_PER_ANSWER` +
+`GMAIL_TOOL_CALLS_PER_ANSWER` (offered sets only) + 2 model calls, and returns at
+most `GMAIL_MAX_CHARS_PER_ANSWER` characters of email text. Tool results present
+emails as **untrusted data** (`<email cite_as="N">…</email>`, a notice, tags
+defused, invisible and hidden content removed); each returned message gets the
+next citation number after the document passages (an `EmailSource`, sent in a
+repeated `sources` event), and the answer cites it as `[N]`. Emails the final
+text doesn't cite are dropped before `done`. **Side effects need the user's own
+request:** before `gmail_create_draft`, `gmail_propose_send` or `gmail_import`
+runs, and before `create_document` or `create_image` runs in an answer that
+read email (a Gmail tool returned email text, or a retrieved passage comes from
+a document imported through a plugin: an email or an email's attachment), the
+server classifies the user's own words with the chat model in a separate call
+(once per answer, low reasoning effort, billed in the
+answer's usage, fail-closed). It sees only the user's latest message, up to two
+of their earlier messages in this conversation and, only when no earlier answer
+in the model's history used email or plugin tools, the end of the previous
+assistant reply; never emails, documents or tool results. A refused call gets a
+tool error and a failed card. Each Gmail action re-checks, just before it runs,
+that the plugin, the capability, "Use in chat" and the same connected account
+are still on (turning any off takes effect at the next Gmail action, also in an
+answer already streaming). `gmail_create_draft` creates the draft in Gmail.
+`gmail_propose_send` **never sends**: it stores a pending send (exact
+recipients, subject, body, attachments, reply headers, `content_hash`) that only
+`POST /plugins/gmail/sends/{id}/send` sends. Draft and send cards show each
+recipient's address apart from its display name (flagged when the user never
+typed it and it isn't in the email replied to; Bcc always highlighted), the
+email replied to, and attachments the user didn't name (a file the assistant
+created in this conversation, earlier in the same answer included, isn't
+flagged). The card shows everything that is sent: a body or subject the model
+writes with invisible, format or control characters (tag characters, bidi
+controls, zero-width characters, …) is refused with a tool error, and every
+drafted or sent body, subject and display name (the user's edits too, cleaned
+without refusing) loses them and keeps at most one blank line in a row. Threads
+are read (in chat, the Gmail browser and imports) without the user's unsent
+drafts, and without messages in Trash or Spam unless the whole thread is there;
+a draft read on its own is marked as never sent. Cards (`plugin` events, saved in
+`message_plugin_items` and returned as `ChatMessage.plugin_cards`, hydrated with
+the live pending-send and document state): `gmail_activity` (search or read),
+`gmail_draft`, `gmail_send`, `gmail_import`. In later turns an answer that used
+Gmail carries an App note in the model's history listing the cited emails (ids,
+subjects as untrusted text) and the drafts and proposals with their outcome. A
+created file's Sources section may list cited emails ("Email: subject (sender,
+date)"). Stop waits for a draft, import or proposal being stored; reads stop at
+once.
+
+### Plugins — `routers/plugins.py`, `plugins/gmail/router.py`
+
+```ts
+type PluginCapabilityInfo = { id: string /* Gmail: "read"|"draft"|"send" */; name: string; description: string;
+  enabled: boolean /* by the admin */; granted: boolean /* by the caller's connection */ }
+type PluginConnectionStatus = { account_email: string; status: "connected"|"reconnect_needed";
+  status_reason: "revoked"|"expired_testing"|"key_changed"|"scopes_missing"|null; status_message: string|null;
+  granted_scopes: string[]; chat_enabled: boolean; connected_at: string; last_used_at: string|null;
+  refresh_expires_at: string|null /* testing mode: when Google ends it */ }
+type PluginInfo = { id: string; name: string; description: string; auth_type: "oauth2";
+  enabled: boolean /* false: turned off, listed only while the caller is still connected */;
+  testing_mode: boolean /* only the provider app's test users can connect; connections end after 7 days */;
+  supports_import: boolean; import_max_items: number|null; capabilities: PluginCapabilityInfo[];
+  connection: PluginConnectionStatus|null /* the caller's own; never anyone else's */ }
+type PluginConnectRequest = { capabilities?: string[] }   type PluginConnectResponse = { authorize_url: string }
+type PluginConnectionUpdate = { chat_enabled: boolean }
+type PluginOAuthResult = "connected"|"denied"|"expired"|"invalid"|"no_access"|"disabled"|"error"
+type GmailThreadSearch = { q?: string|null; page_token?: string|null; max_results?: number }
+type GmailThreadSummary = { thread_id: string; subject: string; sender: string; date: string|null; snippet: string;
+  message_count: number; unread: boolean; gmail_url: string }   // sender, date, snippet: of the newest message;
+  // drafts, and Trash/Spam messages of a thread not wholly there, aren't counted
+type GmailThreadPage = { threads: GmailThreadSummary[]; next_page_token: string|null; result_size_estimate: number }
+type GmailAttachmentInfo = { part_id: string; filename: string; mime_type: string; size_bytes: number;
+  importable: boolean; reason: string|null }
+type GmailMessageView = { message_id: string; thread_id: string; sender: string; to: string[]; cc: string[];
+  date: string|null; subject: string; snippet: string; body_text: string /* plain text, ≤ 20000 chars */;
+  body_truncated: boolean; attachments: GmailAttachmentInfo[]; unread: boolean }
+type GmailThreadDetail = { thread_id: string; subject: string; gmail_url: string;
+  messages: GmailMessageView[] /* oldest first, the newest 50 */; messages_truncated: boolean }
+type GmailImportRequest = { threads: { thread_id: string; include_thread: boolean;
+  attachments: { message_id: string; part_id: string }[] }[] }
+type GmailImportItem = { kind: "thread"|"attachment"; thread_id: string; message_id: string|null;
+  part_id: string|null; label: string; status: "imported"|"already_existed"|"skipped"|"failed";
+  reason: string|null; document_id: number|null; document: DocumentItem|null }
+type GmailImportResult = { items: GmailImportItem[] }
+type EmailAddress = { address: string /* ASCII, what is sent; IDN domains in punycode */;
+  name: string|null /* untrusted; dropped when it contained "@" */;
+  unicode_domain: string|null /* the Unicode form of an internationalized domain: show both, with a warning */ }
+type EmailRecipient = EmailAddress & { unmentioned: boolean /* never typed by the user in this conversation and not
+  a participant of the email replied to (Bcc: only typed addresses count) */ }
+type EmailReplyInfo = { message_id: string; subject: string; sender: EmailAddress; date: string|null }
+type EmailAttachment = { document_id: number|null; filename: string; size_bytes: number;
+  unrequested: boolean /* not named by the user, not created in this conversation, not picked in Edit */ }
+type PendingSend = { id: number; status: "pending"|"sending"|"sent"|"failed"|"cancelled"|"expired"|"replaced"
+  /* "sending" for over 5 minutes reads as "failed" ("may have been sent") */;
+  account_email: string; to: EmailRecipient[]; cc: EmailRecipient[]; bcc: EmailRecipient[]; subject: string;
+  body: string; attachments: EmailAttachment[]; reply_to: EmailReplyInfo|null; content_hash: string;
+  created_at: string; expires_at: string; sent_at: string|null; error: string|null; gmail_url: string|null;
+  replaced_by: number|null }
+type PendingSendConfirm = { content_hash: string }
+type PendingSendRevision = { to: string[] /* "Name <address>" or "address" */; cc: string[]; bcc: string[];
+  subject: string; body: string; attachment_document_ids: number[] }
+type PluginCard =
+  | { card_id: string; plugin_id: "gmail"; type: "gmail_activity"; status: "running"|"done"|"failed";
+      action: "search"|"read_message"|"read_thread"; query: string|null; count: number; error: string|null }
+  | { card_id: string; plugin_id: "gmail"; type: "gmail_draft"; status: "writing"|"creating"|"created"|"failed";
+      account_email: string|null; to: EmailRecipient[]; cc: EmailRecipient[]; bcc: EmailRecipient[];
+      subject: string|null; preview: string /* first 500 chars */; attachments: EmailAttachment[];
+      reply_to: EmailReplyInfo|null; gmail_url: string|null; error: string|null }
+  | { card_id: string; plugin_id: "gmail"; type: "gmail_send"; status: "writing"|"proposed"|"failed";
+      pending: PendingSend|null; error: string|null }
+  | { card_id: string; plugin_id: "gmail"; type: "gmail_import"; status: "importing"|"done"|"failed";
+      items: GmailImportItem[]; error: string|null }
+  // card_id: "g1", "g2", … while streaming; "p<n>" when loaded with the conversation. Unknown types: ignore.
+```
+
+Plugin problems never answer 401 (that means "signed out"): not connected,
+reconnect needed or another Google account → 409; the plugin or the capability
+turned off → 403; Gmail unreachable or rate limited → 503; an unknown Gmail id →
+404; another user's pending send → 404. In Google's testing mode a connection
+reads as reconnect needed (`expired_testing`) once it is 7 days old, without
+waiting for a failed call.
+
+- `GET /plugins` → `PluginInfo[]`: enabled and configured plugins, plus any the
+  caller still has a connection to.
+- `POST /plugins/{id}/connect` `PluginConnectRequest` → `PluginConnectResponse`
+  (the client navigates there). The request's `Origin` must be one of
+  `PUBLIC_BASE_URLS` (else 400); `redirect_uri` = that origin +
+  `/api/plugins/{id}/oauth/callback`. Starts an authorization-code flow with
+  `state` (kept in Redis 10 minutes, one-time) and PKCE S256, `access_type=offline`,
+  `prompt=consent`, `include_granted_scopes=true`, scopes `openid email` plus the
+  requested capabilities' (Gmail: `gmail.readonly` for read; `gmail.compose` for
+  draft, which Google also lets send, so send adds nothing when draft is
+  requested too, else `gmail.send`), and `login_hint` when reconnecting; sets the cookie
+  `rag_oauth_<id>` (a nonce; `HttpOnly`, `SameSite=Lax`, path
+  `/api/plugins/<id>/oauth/`, 10 minutes). 404 unknown plugin, 403 turned off,
+  409 not configured, 422 unknown capability, 429 more than 10 a minute.
+- `GET /plugins/{id}/oauth/callback?state&code&scope|error` (Gmail's is fixed:
+  `/api/plugins/gmail/oauth/callback`; no session cookie needed, the user comes
+  from the state and must still be active with the same `token_version`; the
+  nonce cookie must match) → **303** to `<origin>/?plugin=<id>&oauth=<PluginOAuthResult>`.
+  On success the tokens are stored encrypted; reconnecting the same account keeps
+  the connection, another account replaces it (the old grant is revoked unless
+  another connection uses that account).
+- `PATCH /plugins/{id}/connection` `PluginConnectionUpdate` → `PluginConnectionStatus` (404 without one).
+- `DELETE /plugins/{id}/connection` → 204 (also while the plugin is off): deletes
+  the connection, cancels pending sends and revokes the grant at Google (best
+  effort) unless another connection of this app, any user's, uses the same
+  Google account (revoking would end that one too). Imported documents, drafts
+  and sent mail stay.
+- `POST /plugins/gmail/threads/search` `GmailThreadSearch` `{q?, page_token?,
+  max_results?}` (`q` ≤ 500 chars, empty or absent: `in:inbox`; `max_results`
+  1..25, default 20) → `GmailThreadPage` (read). A POST body, never a URL query:
+  search terms must not reach the nginx or uvicorn access logs, which record
+  plugin paths without their query string anyway.
+- `GET /plugins/gmail/threads/{thread_id}` → `GmailThreadDetail` (read).
+- `POST /plugins/gmail/import` `GmailImportRequest` → `GmailImportResult` (read):
+  1..`GMAIL_IMPORT_MAX_ITEMS` items (threads with `include_thread` plus
+  attachments; else 422), one import per user at a time, chat imports included
+  (409); items not reached within 90 seconds are `skipped`. A thread becomes a
+  private Markdown document (`<subject> (Gmail <date>).md`: headers and text of
+  each message); attachments with a supported extension become documents of their
+  own. Quotas, per-file size and duplicates as for uploads, except that identical
+  bytes link the existing private document (`already_existed`). Each item reports
+  its own outcome.
+- `GET /plugins/gmail/sends/{id}` → `PendingSend` (owner; also while Gmail is off).
+- `POST /plugins/gmail/sends/{id}/send` `PendingSendConfirm` → `PendingSend`
+  (send): sends exactly the stored email once. 409 when it isn't `pending`, has
+  expired (`GMAIL_SEND_CONFIRM_MINUTES`), `content_hash` differs, or the connected
+  account (its provider id) changed; 429 at `GMAIL_DAILY_SEND_LIMIT` emails today (UTC, the admin
+  too); 409 when an attachment was changed or deleted since (checked before the
+  claim, so no daily slot is used). The claim `pending → sending` is atomic, and
+  the send plus its status update finish even if the request is cancelled.
+  Afterwards the status is `sent` (with `gmail_url`) or `failed` (with `error`;
+  "may have been sent" when Gmail didn't answer, or when a row stayed `sending`
+  over 5 minutes, e.g. after a restart).
+- `POST /plugins/gmail/sends/{id}/cancel` → `PendingSend` (`pending` → `cancelled`).
+- `POST /plugins/gmail/sends/{id}/revise` `PendingSendRevision` → `PendingSend`
+  (send): a new proposal (new expiry; a reply keeps its thread and subject); the
+  old one, if pending, becomes `replaced`. Only from `pending`, `expired`,
+  `failed` (a stale `sending` included) or `cancelled` (409 otherwise).
+
 ### Admin — `routers/admin.py` (all require admin; non-admin → 403)
 ```ts
 type AdminUser = { id: number; username: string; is_admin: boolean; is_active: boolean;
@@ -660,6 +925,47 @@ Endpoints:
   `image` is always null there: prompts are the owner's private content).
   `DELETE /admin/documents/{id}` → 204 (any document).
 
+Plugins — `routers/admin_plugins.py`:
+
+```ts
+type PluginAction = "connect"|"disconnect"|"reconnect_needed"|"search"|"read"|"import"|"draft"|"send_proposed"|"send"|"send_cancelled"
+type PluginActionCount = { action: PluginAction; ok: number; failed: number; refused: number /* by the request check */ }
+type AdminPlugin = { id: string; name: string; description: string; auth_type: "oauth2"; supports_import: boolean;
+  configured: boolean; missing_settings: string[] /* env vars, e.g. "GOOGLE_OAUTH_CLIENT_ID", "TOKEN_ENCRYPTION_KEY" */;
+  test_endpoints: boolean; enabled: boolean;
+  capabilities: { id: string; name: string; description: string; scopes: string[]; enabled: boolean;
+    note: string|null /* e.g. drafts: Google's draft permission also allows sending; the app still needs the click */ }[];
+  requested_scopes: string[] /* exactly what a connect asks for with the current switches */;
+  redirect_uris: string[] /* one per PUBLIC_BASE_URLS entry */; testing_mode: boolean;
+  connections: { connected: number; reconnect_needed: number;
+    old_key: number /* still encrypted with a key other than the first TOKEN_ENCRYPTION_KEY */ };
+  activity: { month: string; actions: PluginActionCount[] } /* this month */ }
+type AdminPluginUpdate = { enabled?: boolean; capabilities?: Record<string, boolean> }
+type PluginActivityReport = { month: string; totals: PluginActionCount[];
+  by_user: { user_id: number; username: string; actions: PluginActionCount[] }[] }
+type RequestCheckTest = { model_id: number }
+type RequestCheckTestResult = { ok: boolean; message: string; latency_ms: number;
+  answer: { file: boolean; image: boolean; draft: boolean; send: boolean; import: boolean }|null }
+```
+- `GET /admin/plugins` → `AdminPlugin[]` (counts only: account emails are never shown to the admin).
+- `PATCH /admin/plugins/{id}` `AdminPluginUpdate` → `AdminPlugin`. Turning on a
+  plugin that isn't configured → 409 (names the missing settings); an unknown
+  capability, or every capability off → 422. Turning a plugin or capability off
+  takes its tools out of the next chat turn, refuses its next action in answers
+  already streaming, and takes its UI out of the next load (the client also
+  reloads plugin state when the window regains focus); connections stay.
+- `GET /admin/plugins/{id}/activity?month=YYYY-MM` → `PluginActivityReport`.
+- `POST /admin/plugins/{id}/disconnect-all` → `{disconnected: number}` (each as
+  `DELETE /plugins/{id}/connection`).
+- `POST /admin/plugins/request-check/test` `RequestCheckTest` → `RequestCheckTestResult`:
+  runs the request check (the model call that gates drafts, sends, imports and,
+  in answers that read email, files and images) once with the given chat model
+  and a fixed message asking for a draft; `ok` when it answers with valid JSON
+  asking for a draft only. 404 unknown model, 422 not a chat model. No usage is
+  recorded (like the model Test).
+- Deleting a user also deletes their connections (revoked at the provider after
+  the commit, best effort), pending sends and plugin audit events.
+
 ## 7. Ingestion pipeline
 
 1. `POST /documents` stores the file under `UPLOAD_DIR/<stored_name>`, creates
@@ -758,7 +1064,12 @@ Endpoints:
    labelled as files the assistant created (section 6, Chat); passages of a
    generated image as an image the assistant generated (its title, description
    and prompt, not a factual source).
-6. Supported uploads: `.pdf .docx .pptx .xlsx .html .htm .md .markdown .txt .csv .json`
+6. **Documents imported through a plugin** (Gmail threads as `.md`, attachments
+   as themselves) are ingested like uploads. Their passages are labelled in chat
+   prompts as emails imported from Gmail, or files attached to them (untrusted
+   text written by others), and an answer that retrieves either counts as having
+   read email (section 6, Chat, Plugins).
+7. Supported uploads: `.pdf .docx .pptx .xlsx .html .htm .md .markdown .txt .csv .json`
    (images can't be uploaded; only generated images are image documents).
    Legacy `.doc`/`.ppt`/`.xls` are rejected with a hint to save as the modern
    format. Without an active vision model, PDFs without any text fail with "No
@@ -847,6 +1158,35 @@ Endpoints:
   composer hint and empty state mention images when the selected model's
   `can_create_images` is true, and the usage meter shows images this month
   against `limits.monthly_image_limit`.
+- **Plugins** (FE-CONN, `src/components/connections/`): the account menu has
+  **Connections** when `GET /plugins` lists anything: per plugin its status,
+  account, capabilities ("Grant access" for enabled ones not granted), "Use in
+  chat", the testing-mode end date (with a "reconnect now" hint in its last
+  day), Connect / Reconnect / Disconnect (inline confirmation), and "Browse
+  Gmail". In testing mode the modal says before connecting that only accounts
+  the admin added as Google test users can connect. Plugin state reloads when the
+  window regains focus (at most every 30 seconds). Connecting navigates to `authorize_url`;
+  back on `/?plugin=<id>&oauth=<result>` the chat page opens Connections with a
+  message for the result and replaces the URL with `/`. A Gmail browser (search,
+  threads, messages as plain text, attachments) imports selected threads and
+  attachments (also from an "Import from Gmail" button in the document panel);
+  imported documents are announced like created files, and their rows say
+  "Imported from <imported_from>". Chat: repeated `sources` events replace the
+  list; `EmailSource` entries show subject, sender, date, snippet and "Open in
+  Gmail"; `plugin` events and `ChatMessage.plugin_cards` render cards under the
+  file cards: activity lines, draft cards (recipients, subject, preview, the
+  email replied to, "Open in Gmail"), send cards (the whole email, the time left,
+  **Send** / **Edit** / **Cancel**; Send posts the `content_hash`; then Sent with
+  a link, or failed, cancelled, expired, replaced) and import cards. Draft and
+  send cards show each recipient's address apart from its display name, both
+  forms of an internationalized domain with a warning, "not mentioned by you"
+  on `unmentioned` recipients and "not named by you" on `unrequested`
+  attachments, and Bcc highlighted. Email text is always rendered as text, never HTML.
+  Admin → **Plugins**: configured or the missing settings, test-endpoint warning,
+  enable and capability switches (with their notes), the scopes requested,
+  redirect URIs to register, testing mode, connection counts (and connections on
+  an older encryption key), a request-check Test per chat model, this month's
+  activity, per-user activity, Disconnect all.
 - Streaming uses `postSSE` from `src/api/client.ts` (fetch + ReadableStream,
   `AbortController` for the Stop button). Assistant messages render Markdown
   (`react-markdown` + `remark-gfm`, raw HTML disabled) with `[n]` citations
@@ -876,6 +1216,11 @@ file-rendering child runs for real, with fake children for timeouts and
 crashes; image generation is mocked at `litellm.aimage_generation` with real
 PNG, JPEG and WebP bytes made with Pillow, and one test runs the real LiteLLM
 against a local fake OpenAI images endpoint; tests marked `postgres` run only
-with `TEST_POSTGRES_URL`, against a throwaway Postgres).
+with `TEST_POSTGRES_URL`, against a throwaway Postgres; plugins never call
+Google: a fake Google (OAuth and Gmail, a FastAPI app in `tests/`) is reached
+through `httpx.ASGITransport`, client edge cases use `httpx.MockTransport`, the
+plugin registry is empty unless a test opts in, the same fake runs
+standalone for Docker smoke runs, and one test runs the real LiteLLM for the
+request check with the HTTP layer replaced and checks the request bodies).
 Models therefore stick to portable column types (`JSON`, not `JSONB`).
 Run with `pytest` from `backend/` (see `backend/tests/README.md`).

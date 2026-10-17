@@ -1,0 +1,406 @@
+/* Cards plugins add to answers (Gmail: activity lines, drafts, emails to send, imports) and the Edit email dialog.
+   Part of the chat area: chat- prefix, tokens from global.css (light and dark). */
+
+.chat-plugin-cards {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ---------- Activity line ---------- */
+.chat-mail-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+.chat-mail-chip > svg {
+  flex: none;
+  color: var(--text-3);
+}
+.chat-mail-chip-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.chat-mail-chip-spinner {
+  width: 11px;
+  height: 11px;
+}
+.chat-mail-chip-failed {
+  border-color: transparent;
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.chat-mail-chip-failed > svg {
+  color: var(--danger);
+}
+
+/* ---------- Draft, send and import cards ---------- */
+.chat-mail-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.chat-mail-card-send {
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+.chat-mail-card-failed {
+  border-color: transparent;
+  background: var(--danger-soft);
+}
+.chat-mail-card-failed .chat-mail-lead,
+.chat-mail-card-failed .chat-mail-title {
+  color: var(--danger);
+}
+.chat-mail-card-muted {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+.chat-mail-card-muted .chat-mail-title {
+  color: var(--text-2);
+}
+.chat-mail-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.chat-mail-lead {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  color: var(--accent);
+}
+.chat-mail-spinner {
+  width: 16px;
+  height: 16px;
+}
+.chat-mail-title {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.chat-mail-open:hover {
+  text-decoration: none;
+}
+.chat-mail-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--space-3);
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+.chat-mail-countdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.chat-mail-reply {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.chat-mail-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.chat-mail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Recipients: the address first, the untrusted display name muted after it, never the name alone. */
+.chat-mail-recipients {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  font-size: 12.5px;
+}
+.chat-mail-row,
+.chat-mail-subject {
+  display: grid;
+  grid-template-columns: 4.5rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: 2px var(--space-2);
+}
+.chat-mail-row dt {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-3);
+  font-weight: 600;
+}
+.chat-mail-row dd {
+  min-width: 0;
+  margin: 0;
+}
+/* Bcc recipients get the email without the others seeing them: always highlighted, the label above the list. */
+.chat-mail-row-bcc {
+  grid-template-columns: minmax(0, 1fr);
+  padding: 6px var(--space-2);
+  border: 1px solid color-mix(in srgb, var(--warning) 35%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--warning-soft);
+}
+.chat-mail-row-bcc dt {
+  color: var(--warning);
+}
+.chat-mail-recipient-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-mail-recipient {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--space-2);
+  min-width: 0;
+}
+.chat-mail-address {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.chat-mail-name {
+  min-width: 0;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+.chat-mail-idn {
+  display: inline-flex;
+  flex-basis: 100%;
+  align-items: flex-start;
+  gap: 4px;
+  color: var(--warning);
+}
+.chat-mail-idn > svg {
+  flex: none;
+  margin-top: 3px;
+}
+.chat-mail-idn .chat-mail-address {
+  color: var(--warning);
+}
+.chat-mail-flag {
+  align-self: center;
+}
+.chat-mail-none {
+  color: var(--text-3);
+}
+
+.chat-mail-label {
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.chat-mail-subject-text {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.chat-mail-preview {
+  margin: 0;
+  padding: 2px var(--space-3);
+  border-left: 3px solid var(--border-strong);
+  color: var(--text-2);
+  font-size: 13px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* The whole text of an email to send, exactly as it would go out (scrollable when long). */
+.chat-mail-body {
+  position: relative;
+  max-height: 20rem;
+  overflow: auto;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.chat-mail-card-muted .chat-mail-body {
+  background: var(--surface);
+}
+
+.chat-mail-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.chat-mail-attachments ul {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-mail-attachment,
+.chat-mail-chip-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--space-2);
+  min-width: 0;
+  font-size: 12.5px;
+}
+.chat-mail-attachment > svg,
+.chat-mail-chip-item > svg {
+  flex: none;
+  color: var(--text-3);
+}
+.chat-mail-attachment-name {
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.chat-mail-attachment-size {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Import card */
+.chat-mail-import-items {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-mail-import-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--space-2);
+  min-width: 0;
+  font-size: 12.5px;
+}
+.chat-mail-import-item > svg {
+  flex: none;
+  color: var(--text-3);
+}
+.chat-mail-import-label {
+  flex: 1 1 10rem;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.chat-mail-import-reason {
+  flex-basis: 100%;
+  padding-left: 22px;
+  color: var(--text-3);
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Edit email dialog ---------- */
+.chat-mail-form .chat-modal-text {
+  font-size: 13px;
+}
+.chat-mail-form .field-hint {
+  overflow-wrap: anywhere;
+}
+.chat-mail-form .input[readonly] {
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.chat-mail-textarea {
+  min-height: 12rem;
+}
+.chat-mail-fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.chat-mail-fieldset > legend {
+  margin-bottom: var(--space-2);
+  padding: 0;
+}
+.chat-mail-chips {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chat-mail-chip-item {
+  padding: 2px 2px 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+}
+.chat-mail-chip-item .chat-mail-attachment-name {
+  flex: 1;
+}
+.btn.chat-mail-chip-remove {
+  width: 26px;
+  height: 26px;
+}
+.chat-mail-add > .select {
+  flex: 1;
+  min-width: 0;
+}
+.chat-mail-add > .btn {
+  flex: none;
+}
+
+@media (max-width: 479.98px) {
+  .chat-mail-card {
+    padding: 10px;
+  }
+  .chat-mail-row,
+  .chat-mail-subject {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+  }
+  .chat-mail-body {
+    max-height: 16rem;
+  }
+}

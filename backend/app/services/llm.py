@@ -12,7 +12,7 @@ from base64 import b64encode
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass, field
 from email.utils import parsedate_to_datetime
-from typing import Any
+from typing import Any, NamedTuple
 
 import litellm
 
@@ -407,6 +407,54 @@ async def stream_chat(
         completion = "".join(parts) + "".join(call.arguments for call in step.tool_calls)
         _fill_usage(usage, model, messages, completion, reported)
         await _close_stream(response)
+
+
+class Completion(NamedTuple):
+    text: str
+    usage: Usage
+    finish_reason: str | None
+
+
+async def complete(
+    model: LLMModel,
+    messages: list[dict],
+    *,
+    output_cap: int,
+    reasoning_effort: str = "low",
+    timeout: float = 30,
+) -> Completion:
+    """One non-streaming call without tools, made as one HTTP request (no SDK retries): the plugins' request check.
+    max_tokens is the model's own limit or `output_cap`, whichever is lower; thinking counts toward it, so the effort is
+    kept low (sent to adaptive-thinking Claude models missing from LiteLLM's map too, see _allow_effort). Usage is the
+    provider's, else estimated. Failures are raised as LLMError with a user-safe message."""
+    _allow_effort(model.litellm_model)  # first: it can change what resolve_max_tokens finds in the map
+    kwargs = _base_kwargs(model)
+    kwargs.update(
+        messages=messages,
+        max_tokens=min(resolve_max_tokens(model, output_cap), output_cap),
+        reasoning_effort=reasoning_effort,
+        max_retries=0,
+        timeout=timeout,
+    )
+    if model.temperature is not None:
+        kwargs["temperature"] = model.temperature
+    try:
+        response = await litellm.acompletion(**kwargs)
+    except Exception as exc:
+        logger.warning("Completion failed for %s: %s", model.litellm_model, _short(str(exc), 300))
+        raise LLMError(friendly_error(exc), detail=_short(str(exc), 300)) from exc
+    choices = _get(response, "choices") or []
+    choice = choices[0] if choices else None
+    content = _get(_get(choice, "message"), "content")
+    text = content if isinstance(content, str) else ""
+    reported = _get(response, "usage")
+    prompt_tokens = int(_get(reported, "prompt_tokens", 0) or 0)
+    completion_tokens = int(_get(reported, "completion_tokens", 0) or 0)
+    if not (prompt_tokens or completion_tokens):
+        reported = None
+    usage = Usage()
+    _fill_usage(usage, model, messages, text, (prompt_tokens, completion_tokens) if reported is not None else None)
+    return Completion(text, usage, _get(choice, "finish_reason"))
 
 
 def _add_tool_delta(step: ChatStep, item: Any) -> list[ToolCallStarted | ToolCallProgress]:

@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from collections import defaultdict
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Annotated, Any
@@ -19,9 +19,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import SessionLocal, get_db
 from app.deps import get_current_user
-from app.models import Conversation, Document, GeneratedImage, LLMModel, Message, MessageFile, User, utcnow
+from app.models import (
+    Conversation,
+    Document,
+    GeneratedImage,
+    LLMModel,
+    Message,
+    MessageFile,
+    MessagePluginItem,
+    User,
+    utcnow,
+)
+from app.plugins import registry
+from app.plugins.answer import AnswerContext, CardSink, SourceRegistry, Taint
+from app.plugins.base import LoopEvent, PluginEvent, SideEffect, ToolRunner, tool_names
+from app.plugins.intent import RequestCheck, earlier_user_messages, previous_reply
 from app.routers.conversations import get_owned_conversation
-from app.schemas import MAX_INT, GeneratedFile, Source
+from app.schemas import MAX_INT, AnswerSource, GeneratedFile, Source
 from app.services import document_tool, image_tool, llm, rag
 from app.services.model_registry import resolve_chat_model
 from app.services.usage import (
@@ -73,6 +87,8 @@ _OUTPUT_LIMIT = re.compile(
 )
 
 _IMAGE_FORMATS = frozenset({"png", "jpeg", "webp"})  # message_files.format of a generated image
+# The built-in tools that need the request check in an answer that has seen untrusted text (brief P11).
+_SIDE_EFFECTS: dict[str, SideEffect] = {document_tool.TOOL_NAME: "file", image_tool.TOOL_NAME: "image"}
 _EARLIER_IMAGES_LISTED = 20  # the conversation's newest images listed when their answers left the history window
 
 _Id = Annotated[int, Field(ge=1, le=MAX_INT)]
@@ -111,12 +127,16 @@ class _Turn:
     # The conversation's images that no answer in `history` lists, so create_document can still embed them.
     earlier_images: list[rag.HistoryFile] = field(default_factory=list)
     budget_left: int | None = None  # chat tokens left this month when the answer started (None: no budget)
+    plugin_plan: registry.PluginChatPlan = field(default_factory=registry.PluginChatPlan)
+    plugin_notes: dict[int, str] = field(default_factory=dict)  # message id -> the plugins' App note
+    history_tainted: bool = False  # an answer of the conversation saw untrusted text (email, plugin output)
 
 
 @dataclass
 class _Answer:
     parts: list[str] = field(default_factory=list)
     sources: list[Source] = field(default_factory=list)
+    ctx: AnswerContext | None = None  # the plugins' state of this answer, once generation started
     usage: llm.Usage = field(default_factory=llm.Usage)
     error: str | None = None
     # Files and images created this answer, in order (see document_tool and image_tool).
@@ -143,6 +163,17 @@ _answer_tasks: set[asyncio.Task[None]] = set()
 
 def _event(name: str, data: dict[str, Any]) -> str:
     return f"event: {name}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _loop_event(event: LoopEvent) -> str:
+    """A runner's event: a plugin's own (`plugin`, `sources`), else a `file` event."""
+    if isinstance(event, PluginEvent):
+        return _event(event.name, event.data)
+    return _event("file", event)
+
+
+def _sources_data(sources: Sequence[AnswerSource]) -> dict[str, Any]:
+    return {"sources": [source.model_dump(mode="json") for source in sources]}
 
 
 def _title_for(message: str) -> str:
@@ -182,7 +213,12 @@ async def _save_answer(turn: _Turn, answer: _Answer) -> int | None:
             await asyncio.wait({storing})
             if not storing.cancelled():
                 storing.exception()  # retrieved: a file that couldn't be stored just isn't linked
+        if answer.ctx is not None:  # drafts, imports and proposals still being stored: their cards show the outcome
+            await answer.ctx.cards.settle()
         files = answer.close_files()
+        text = "".join(answer.parts)
+        sources: Sequence[AnswerSource] = answer.ctx.sources.final(text) if answer.ctx is not None else answer.sources
+        cards = answer.ctx.cards.cards() if answer.ctx is not None else []
         async with SessionLocal() as db:
             if answer.usage.total_tokens > 0:
                 # Committed on its own: the answer is billed even if storing the message fails.
@@ -201,8 +237,8 @@ async def _save_answer(turn: _Turn, answer: _Answer) -> int | None:
             message = Message(
                 conversation_id=conversation.id,
                 role="assistant",
-                content="".join(answer.parts),
-                sources=[source.model_dump() for source in answer.sources],
+                content=text,
+                sources=[source.model_dump(mode="json") for source in sources],
                 model_id=await _existing_model_id(db, turn.model.id),
                 model_name=turn.model.display_name,
                 prompt_tokens=answer.usage.prompt_tokens,
@@ -211,8 +247,15 @@ async def _save_answer(turn: _Turn, answer: _Answer) -> int | None:
             )
             db.add(message)
             conversation.updated_at = utcnow()
-            if files:
+            if files or cards:
                 await db.flush()
+            db.add_all(
+                MessagePluginItem(
+                    message_id=message.id, plugin_id=plugin_id, card_type=card.type, data=card.model_dump(mode="json")
+                )
+                for plugin_id, card in cards
+            )
+            if files:
                 existing = await _existing_document_ids(db, [file.document_id for file in files])
                 db.add_all(
                     MessageFile(
@@ -295,7 +338,7 @@ async def _stream_answer(turn: _Turn) -> AsyncIterator[str]:
             async with SessionLocal() as db:
                 retrieval = await rag.retrieve(db, turn.user, turn.retrieval_query, turn.document_ids)
             answer.sources = retrieval.sources
-            yield _event("sources", {"sources": [source.model_dump() for source in retrieval.sources]})
+            yield _event("sources", _sources_data(retrieval.sources))
             if retrieval.warning:
                 yield _event("warning", {"message": retrieval.warning})
             # aclosing: if this generator is closed mid-answer, the model stream is closed (and its usage
@@ -308,12 +351,18 @@ async def _stream_answer(turn: _Turn) -> AsyncIterator[str]:
         except (asyncio.CancelledError, GeneratorExit):
             # The client went away (e.g. the Stop button). Keep the partial answer, then stop without yielding.
             answer.error = _STOPPED
+            if answer.ctx is not None:
+                answer.ctx.cards.stopping.set()  # long plugin runs (imports) stop between items
             await _save_answer_shielded(turn, answer)
             raise
         except Exception:
             logger.exception("Answer generation failed in conversation %s", turn.conversation_id)
             answer.error = _FAILED
 
+        if answer.ctx is not None:  # emails the answer doesn't cite are dropped
+            final = answer.ctx.sources.final("".join(answer.parts))
+            if len(final) != len(answer.ctx.sources.entries):
+                yield _event("sources", _sources_data(final))
         assistant_message_id = await _save_answer_shielded(turn, answer)
         if answer.error is None and assistant_message_id is not None:
             usage = answer.usage
@@ -337,13 +386,36 @@ async def _stream_answer(turn: _Turn) -> AsyncIterator[str]:
 
 
 async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer) -> AsyncGenerator[str]:
-    """The model calls of one answer: text deltas, and while the model creates files or images, the calls that run
-    its tools and the follow-up calls with the results (docs/briefs/document-generation.md, section 7, and
-    docs/briefs/image-generation.md, section 6). Raises LLMError when a call fails; budget, refusal and cut-off endings
-    set answer.error instead."""
-    plan, images = turn.file_plan, turn.image_plan
+    """The model calls of one answer: text deltas, and while the model creates files or images or uses plugin tools,
+    the calls that run its tools and the follow-up calls with the results (docs/briefs/document-generation.md, section
+    7, docs/briefs/image-generation.md, section 6, and docs/briefs/plugins-gmail.md, section 7). Raises LLMError when a
+    call fails; budget, refusal and cut-off endings set answer.error instead."""
+    plan, images, plugins = turn.file_plan, turn.image_plan, turn.plugin_plan
+    ctx = answer.ctx = AnswerContext(
+        user=turn.user,
+        chat_model=turn.model,
+        conversation_id=turn.conversation_id,
+        user_message=turn.message,
+        sources=SourceRegistry(retrieval.sources),
+        cards=CardSink(),
+        taint=Taint(bool(retrieval.imported)),
+        request_check=RequestCheck(
+            turn.model,
+            latest=turn.message,
+            earlier=earlier_user_messages(turn.history),
+            previous_reply=None if turn.history_tainted else previous_reply(turn.history),
+            usage=answer.usage,
+        ),
+        created_files=answer.files,
+    )
 
-    def prompt(file_instructions: str | None, image_instructions: str | None, *, file_tool: bool = True) -> list[dict]:
+    def prompt(
+        file_instructions: str | None,
+        image_instructions: str | None,
+        plugin_instructions: str | None,
+        *,
+        file_tool: bool = True,
+    ) -> list[dict]:
         return rag.build_messages(
             sources=retrieval.sources,
             contexts=retrieval.contexts,
@@ -357,17 +429,42 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
             history_files=turn.history_files,
             generated_images=retrieval.generated_images,
             earlier_images=turn.earlier_images if file_tool else (),
+            plugin_instructions=plugin_instructions,
+            history_notes=turn.plugin_notes,
+            imported=retrieval.imported,
         )
 
-    messages = prompt(plan.instructions, images.instructions)
-    tools = plan.tools + images.tools  # create_document first; the same list for every call of the answer
+    def with_tools(file_instructions: str | None, image_instructions: str | None) -> list[dict]:
+        other = "\n\n".join(text for text in (file_instructions, image_instructions) if text)
+        return prompt(file_instructions, image_instructions, plugins.instructions(other))
+
+    plugin_runners: dict[str, ToolRunner] = {}
+    errors: dict[str, Mapping[str, str]] = dict(_OPEN_CALL_ERRORS)
+    plugin_tools: list[dict[str, Any]] = []
+    plugin_calls = 0
+    for toolset in plugins.toolsets:
+        try:
+            session = toolset.start(ctx)
+            own = {name: session.runner(name) for name in tool_names(toolset)}
+        except Exception:  # a broken plugin never breaks the answer: its tools just aren't offered
+            logger.exception("The %s plugin failed to start its tools", toolset.plugin_id)
+            continue
+        plugin_runners.update(own)
+        errors.update((name, toolset.open_call_errors) for name in own)
+        plugin_tools.extend(toolset.tools)
+        plugin_calls += toolset.max_calls
+
+    messages = with_tools(plan.instructions, images.instructions)
+    # create_document, create_image, then the plugins' tools; the same list for every call of the answer
+    all_tools = plan.tools + images.tools + plugin_tools
+    tools = all_tools
     file_max_tokens = plan.max_tokens  # sent by the calls that offer create_document; the max_tokens recovery lowers it
     default_max_tokens = llm.resolve_max_tokens(turn.model)  # what a call without the file tool sends
     files = document_tool.FileSession(
-        turn.user, retrieval.sources, answer, file_max_tokens, conversation_id=turn.conversation_id
+        turn.user, ctx.sources.entries, answer, file_max_tokens, conversation_id=turn.conversation_id
     )
     pictures = image_tool.ImageSession(turn.user, turn.conversation_id, answer)
-    all_runners: dict[str, document_tool.FileSession | image_tool.ImageSession] = {
+    all_runners: dict[str, ToolRunner] = {
         name: runner
         for name, runner, offered in (
             (document_tool.TOOL_NAME, files, bool(plan.tools)),
@@ -375,9 +472,12 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
         )
         if offered
     }
+    all_runners.update(plugin_runners)
     runners = all_runners
-    caps = (settings.generated_files_per_answer if plan.tools else 0) + (
-        settings.generated_images_per_answer if images.tools else 0
+    caps = (
+        (settings.generated_files_per_answer if plan.tools else 0)
+        + (settings.generated_images_per_answer if images.tools else 0)
+        + plugin_calls
     )
     all_calls = caps + 2 if tools else 1
     max_calls = all_calls
@@ -412,14 +512,15 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
             ) as items:
                 async for item in items:
                     if isinstance(item, llm.ToolCallStarted):
-                        if offer and (announcer := runners.get(item.name)) is not None:
-                            yield _event("file", announcer.started(item.index))
+                        announcer = runners.get(item.name)
+                        if offer and announcer is not None and (started := announcer.started(item.index)) is not None:
+                            yield _loop_event(started)
                         continue
                     if isinstance(item, llm.ToolCallProgress):
                         if offer:
                             for runner in runners.values():
                                 if (progress := runner.progress(item.index, step)) is not None:
-                                    yield _event("file", progress)
+                                    yield _loop_event(progress)
                         continue
                     text = item.replace("\x00", "")  # Postgres text can't hold NUL characters; models can emit them
                     if not text:
@@ -433,7 +534,7 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
         except llm.LLMError as exc:
             if step.received or not call_usage.estimated:  # a call that failed before any output costs nothing
                 answer.usage.add(call_usage)
-            first_call = call_no == 1 and bool(plan.tools or images.tools) and not step.received
+            first_call = call_no == 1 and bool(all_tools) and not step.received
             can_lower = (
                 "max_tokens" not in recovered and file_max_tokens is not None and default_max_tokens < file_max_tokens
             )
@@ -445,10 +546,10 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
                 recovered.add("max_tokens")
                 recovered.discard("tools")  # the tools may still be rejected at the lower max_tokens
                 file_max_tokens = files.max_tokens = default_max_tokens
-                tools, runners, max_calls = plan.tools + images.tools, all_runners, all_calls
+                tools, runners, max_calls = all_tools, all_runners, all_calls
                 retrying, rejection = ("context" if exc.context_window else "max_tokens"), exc.detail
                 file_text = document_tool.file_instructions(file_max_tokens, settings.chat_image_tools)
-                messages = prompt(file_text, images.instructions)
+                messages = with_tools(file_text, images.instructions)
                 call_no -= 1
                 continue
             if first_call and exc.bad_request and tools and "tools" not in recovered:
@@ -460,6 +561,7 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
                 messages = prompt(
                     document_tool.NO_FILE_TOOLS_NOTE if plan.tools else plan.instructions,
                     image_tool.no_tools_note() if images.tools else images.instructions,
+                    plugins.no_tools_instructions(),
                     file_tool=False,
                 )
                 call_no -= 1
@@ -473,8 +575,8 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
                 messages[first_added:] = added
                 call_no -= 1
                 continue
-            for event in _open_calls(runners, "failed"):
-                yield _event("file", event)
+            for event in _open_calls(runners, errors, "failed"):
+                yield _loop_event(event)
             raise
         except BaseException:  # Stop: the call's usage is billed
             answer.usage.add(call_usage)
@@ -499,10 +601,9 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
             return
         if step.finish_reason not in ("tool_calls", "length"):
             ending = "declined" if step.finish_reason == "content_filter" else "incomplete"
-            for event in _open_calls(runners, ending):
-                yield _event("file", event)
-            image_call = all(call.name == image_tool.TOOL_NAME for call in step.tool_calls)
-            answer.error = _OPEN_CALL_ERRORS[image_tool.TOOL_NAME if image_call else document_tool.TOOL_NAME][ending]
+            for event in _open_calls(runners, errors, ending):
+                yield _loop_event(event)
+            answer.error = errors[_wording_tool(step.tool_calls, errors)][ending]
             return
         ids = [call.id or f"call_{call_no}_{call.index}" for call in step.tool_calls]
         messages.extend(llm.assistant_turn(step, ids))
@@ -510,6 +611,16 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
             result: dict[str, Any] = {"ok": False, "error": document_tool.SERVER_ERROR}
             if (tool := runners.get(call.name)) is None:
                 result = {"ok": False, "error": _unknown_tool(call.name, list(runners))}
+            elif (
+                (action := _SIDE_EFFECTS.get(call.name)) is not None
+                and ctx.taint.tainted
+                and step.finish_reason == "tool_calls"
+                and not await ctx.request_check.allows(action)
+            ):
+                # The answer has seen untrusted text: a file or image only when the user asked for one (P11).
+                for event in tool.open_calls(ctx.request_check.card_reason(action)):
+                    yield _loop_event(event)
+                result = {"ok": False, "error": ctx.request_check.reason(action)}
             else:
                 outcomes = tool.run(call) if step.finish_reason == "tool_calls" else tool.cut_off(call)
                 async with aclosing(outcomes) as running:
@@ -517,21 +628,32 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
                         if isinstance(outcome, document_tool.ToolResult):
                             result = outcome.content
                         else:
-                            yield _event("file", outcome)
+                            yield _loop_event(outcome)
             messages.append(llm.tool_result_message(call_id, result))
 
 
 def _open_calls(
-    runners: dict[str, document_tool.FileSession | image_tool.ImageSession], ending: str
-) -> list[dict[str, Any]]:
+    runners: Mapping[str, ToolRunner], errors: Mapping[str, Mapping[str, str]], ending: str
+) -> list[LoopEvent]:
     """Failed events for every announced call that hasn't ended, each with its tool's wording of `ending`."""
-    return [event for name, runner in runners.items() for event in runner.open_calls(_OPEN_CALL_ERRORS[name][ending])]
+    return [event for name, runner in runners.items() for event in runner.open_calls(errors[name][ending])]
+
+
+def _wording_tool(calls: Sequence[llm.ToolCall], errors: Mapping[str, Mapping[str, str]]) -> str:
+    """Whose wording the answer's error uses when a response with tool calls didn't finish: the first call's tool
+    other than create_image, or create_image when every call is one, else create_document."""
+    for call in calls:
+        if call.name != image_tool.TOOL_NAME and call.name in errors:
+            return call.name
+    if calls and all(call.name == image_tool.TOOL_NAME for call in calls):
+        return image_tool.TOOL_NAME
+    return document_tool.TOOL_NAME
 
 
 def _unknown_tool(name: str, offered: list[str]) -> str:
     if len(offered) == 1:
         return f"Unknown tool: {name}. The only tool is {offered[0]}."
-    return f"Unknown tool: {name}. The tools are {' and '.join(offered)}."
+    return f"Unknown tool: {name}. The tools are {', '.join(offered[:-1])} and {offered[-1]}."
 
 
 async def _produce(events: AsyncIterator[str], queue: "asyncio.Queue[str | None]") -> None:
@@ -595,6 +717,7 @@ async def _start_turn(
     model = await resolve_chat_model(db, user, body.model_id)
     file_plan = await document_tool.plan(db, user, model)
     image_plan = await image_tool.plan(db, user, model)
+    plugin_plan = await registry.plan_chat(db, user, model)
 
     history: list[Message] = []
     if body.conversation_id is None:
@@ -606,6 +729,15 @@ async def _start_turn(
         history = await _recent_messages(db, conversation.id)
         conversation.updated_at = utcnow()
     history_files = await _history_files(db, history)
+    plugin_notes: dict[int, str] = {}
+    history_tainted = False
+    if history and registry.all_plugins():
+        items = await registry.history_items(db, history)
+        plugin_notes = await registry.history_notes(db, user, history, items)
+        history_tainted = bool(await registry.tainted_messages(db, history, items))
+        if not history_tainted and len(history) >= settings.history_messages:
+            # Older answers left the window; one of them may have read email that the answers since repeat (P11).
+            history_tainted = await registry.conversation_tainted(db, conversation.id)
     earlier_images: list[rag.HistoryFile] = []
     if body.conversation_id is not None and file_plan.tools and settings.chat_image_tools:
         earlier_images = await _earlier_images(db, user, conversation.id, history_files)
@@ -631,6 +763,9 @@ async def _start_turn(
         history_files=history_files,
         earlier_images=earlier_images,
         budget_left=budget_left,
+        plugin_plan=plugin_plan,
+        plugin_notes=plugin_notes,
+        history_tainted=history_tainted,
     )
     return StreamingResponse(_sse_with_keepalive(turn), media_type="text/event-stream", headers=_SSE_HEADERS)
 

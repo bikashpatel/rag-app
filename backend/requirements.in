@@ -17,7 +17,7 @@ argon2-cffi==25.1.0
 python-multipart==0.0.32
 pypdf==6.19.0
 pypdfium2==5.13.0  # renders PDF pages for the vision model (child process)
-cryptography==50.0.1  # pypdf needs it to read AES-encrypted PDFs
+cryptography==50.0.1  # pypdf needs it to read AES-encrypted PDFs; plugin tokens are encrypted with its Fernet
 python-docx==1.2.0
 python-pptx==1.0.2
 openpyxl==3.1.5
@@ -28,3 +28,4 @@ pillow==12.3.0  # page images for the vision model (python-pptx needs it too)
 fpdf2==2.8.9  # PDF files the chat assistant creates (services/filegen)
 uharfbuzz==0.56.2  # text shaping for fpdf2 (Indian scripts); fpdf2 imports it when shaping is on
 markdown-it-py==4.2.0  # parses the Markdown of the files the chat assistant creates
+httpx==0.28.1  # OAuth and Gmail REST calls (app/plugins); LiteLLM depends on it too

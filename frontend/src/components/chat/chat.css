@@ -1091,6 +1091,24 @@
   flex: none;
   font-variant-numeric: tabular-nums;
 }
+/* An email source (a plugin tool's result): untrusted text, shown as text only. */
+.chat-source-email-meta {
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.chat-source-sender {
+  color: var(--text-2);
+}
+.chat-source-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+}
 .chat-source-snippet {
   margin: 6px 0 0;
   color: var(--text-2);

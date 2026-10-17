@@ -22,6 +22,7 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
               └── /api/* ─> FastAPI backend ──> Postgres  users, documents, chats, usage
                                │           ├──> Redis     ingest queue, login/rate limits, answer slots
                                │           ├──> Qdrant    one vector collection per embedding model
+                               │           ├──> Google    OAuth 2.0 + Gmail REST API (Gmail plugin, httpx)
                                │           └──> LiteLLM ─> OpenAI / Anthropic / Ollama / …
                                │           └──> file render child (create_document: PDF/DOCX/XLSX/MD;
                                │                                   create_image: validate and re-encode images)
@@ -55,6 +56,12 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
   bytes in the same child process, stores the image as one of the user's private documents (indexed by its prompt
   and description), and calls the model again with the result. The answer shows the image; `create_document` can
   embed it in PDF and Word files.
+- **Plugins (Gmail):** a small plugin framework (`app/plugins/`) with Gmail as the first plugin. The admin turns a
+  plugin on, and each user connects their own account with OAuth 2.0. Tokens are stored encrypted, and nobody sees or
+  uses another user's connection. Connected users get Gmail tools in the same chat loop: search and read with emails
+  cited as sources, import into their documents, drafts, and proposed emails that are sent only when the user clicks
+  **Send**. A separate model call (the "request check") confirms that the user asked for each draft, proposal or
+  import in their own words. Setup: [`docs/gmail-setup.md`](docs/gmail-setup.md).
 - **Admin:** one admin account, defined in `.env`. Users exist only if the admin creates them.
 
 Code layout:
@@ -62,13 +69,14 @@ Code layout:
 | Path | What |
 |---|---|
 | `backend/app/main.py`, `config.py`, `db.py`, `models.py` | app factory, settings, async SQLAlchemy, ORM |
-| `backend/app/routers/` | `auth`, `models`, `documents`, `conversations`, `chat`, `admin` (all under `/api`) |
+| `backend/app/routers/` | `auth`, `models`, `documents`, `conversations`, `chat`, `admin`, `plugins`, `admin_plugins` (all under `/api`) |
 | `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `document_tool` (the chat's `create_document` tool) + `filegen/` (PDF, DOCX, XLSX and MD rendering and image validation, run by `filegen/child.py`), `image_tool` (the chat's `create_image` tool and the monthly image count), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
+| `backend/app/plugins/` | plugin framework: `base` (the `Plugin` interface), `registry`, `oauth` + `connections` + `crypto` (OAuth, token refresh, encryption), `intent` (the request check), `answer`, `importing`, `audit`, `tasks`, `http`; `gmail/` is the Gmail plugin (`plugin`, `client`, `mime`, `tools`, `sends`, `importer`, `render`, `router`) |
 | `backend/app/fonts/` | Noto Sans fonts for generated PDFs (SIL Open Font License, `OFL.txt`) |
 | `backend/app/worker.py` | ingestion worker (`python -m app.worker`) |
 | `backend/tests/` | integration tests, no Docker needed ([README](backend/tests/README.md)) |
 | `frontend/src/pages/` | `LoginPage`, `ChatPage`, `AdminPage` |
-| `frontend/src/components/` | `chat/`, `documents/` (right-hand panel), `admin/`, `ui/` |
+| `frontend/src/components/` | `chat/` (with `chat/plugins/`: Gmail cards), `documents/` (right-hand panel), `connections/` (Connections dialog, Gmail browser), `admin/`, `ui/` |
 | `frontend/nginx.conf`, `upload-limit.envsh` | nginx template (security headers, body limits, upload auth check) |
 
 ## 1. Prerequisites
@@ -150,6 +158,17 @@ Notes:
   - Measured with GPT Image 2: about $0.006 for a square low-quality image and $0.042 for a landscape medium one.
     Offering the image tool adds about 1,040 input tokens to every model call of a capable chat model, whether or not
     an image is requested.
+- **Gmail** (the Plugins block in `.env.example`; step by step in [`docs/gmail-setup.md`](docs/gmail-setup.md)): Gmail
+  stays "not configured" until `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` (a Google "Web application" OAuth
+  client) and `TOKEN_ENCRYPTION_KEY` are set, and stays off until the admin turns it on in Admin → Plugins.
+  - `PUBLIC_BASE_URLS` (`http://localhost:8080`) lists the addresses users connect from. Each one also needs
+    `<address>/api/plugins/gmail/oauth/callback` registered in Google.
+  - `GOOGLE_OAUTH_TESTING_MODE` (true) matches the Google app's "Testing" status, where Google ends connections after
+    7 days.
+  - `GMAIL_*` are the limits: per answer, 5 Gmail tool calls and 40,000 characters of email; per user, 20 sends per UTC
+    day and 30 minutes to click Send; per email, 15 MB of attachments; per import, 20 items.
+  - A connected user with "Use in chat" on adds about 1,900 input tokens to every model call of a tool-capable chat
+    model (measured: 4,882 instead of 3,010 for the same Claude Haiku 5.5 "pong").
 - `WORKER_MEM_LIMIT` (default `4g`) is the worker container's memory limit (Compose `mem_limit` and
   `memswap_limit`); PDF pages are rendered in child processes limited to 1 GiB each.
 
@@ -238,6 +257,29 @@ landscape or portrait.
   text stops: the image is still finished, saved to your documents and counted, and it appears on the answer after
   a reload.
 
+**Gmail** (once the admin has set it up and turned it on; see [`docs/gmail-setup.md`](docs/gmail-setup.md)): open the
+account menu → **Connections** → **Connect Gmail** and sign in at Google. Each user connects their own account; nobody
+else can see or use it. Then:
+
+- **Ask about your email** in chat ("what did Alice say about the invoice?"). The assistant searches and reads your
+  mail with Gmail's search syntax and cites emails as `[n]` sources with an **Open in Gmail** link. This works with
+  chat models that support function calling while **Use in chat** is on in Connections.
+- **Import** threads and their supported attachments into your private documents: **Import from Gmail** in the
+  document panel (search, open a thread, tick the conversation and attachments, Import), or ask in chat. Imports are
+  marked "Imported from Gmail", count toward your limits, and an unchanged thread imported again links the same
+  document.
+- **Drafts:** "draft a reply to Bob saying we'll pay on Friday" creates a draft in your Gmail (threaded when it is a
+  reply) and shows a card with **Open in Gmail**. Nothing is sent.
+- **Sending:** the assistant can only *propose* an email. The card shows the exact recipients, subject, body and
+  attachments with **Send**, **Edit** and **Cancel**. Only your click sends it, within 30 minutes and up to 20 emails a
+  day. The card flags recipients you never typed, attachments you never named, any Bcc, and which email it replies to.
+- The assistant drafts, proposes or imports only when your own message asks for it, never because an email says so.
+  In a conversation that has touched email, a bare "yes" doesn't count; say what you want ("yes, draft the reply to
+  Alice").
+- **Disconnect** in Connections removes the app's access (also at Google, unless another app user connected the same
+  Google account). While the Google app is in testing mode, Google ends connections after 7 days, and Connections asks
+  you to reconnect.
+
 **Admin page** (`/admin`, admin only). An overview at the top shows users, documents, failed
 and stale documents, the ingestion queue and the active embedding, vision and image models ("Off" when no
 vision or image model is active), and offers a re-index when documents are stale or failed.
@@ -270,6 +312,11 @@ vision or image model is active), and offers a re-index when documents are stale
 - **Usage:** chat, embedding and vision tokens, generated images and the estimated cost per user, per model and
   per day, for any month. Only chat tokens count toward user budgets; vision tokens have their own monthly allowance
   (`VISION_MONTHLY_TOKEN_LIMIT`) and images their monthly count.
+- **Plugins:** each plugin with its configuration status (the `.env` settings still missing), an **Enabled** switch,
+  capability switches (Gmail: Search and read, Drafts, Send), the scopes it requests and the redirect URIs to register
+  at Google (with Copy), connection counts (connected, reconnect needed, still on an older encryption key), this month's
+  activity per action and per user (counts only: no subjects, addresses or account emails), and **Disconnect all
+  users**. **Request check → Test** checks that a chat model can run the request check (one short model call).
 - **Documents:** every document (uploads, and files and images created in chat), with re-index and delete actions,
   and **Re-index all documents**. Users' generated images show only their type tag here; their prompts and the
   images themselves stay private to their owner.
@@ -344,7 +391,7 @@ cd backend
 uv venv --python 3.13 .venv            # once (uv downloads Python 3.13 if needed)
 uv pip sync requirements-dev.txt       # again whenever the locks change
 #   or, with python3.13 on PATH: python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # about 1,500 tests, about 3.5 minutes
+.venv/bin/python -m pytest -q          # about 1,900 tests, about 4.5 minutes
 
 # Lint and type-check (tools not in the requirements; run through uvx)
 uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests
@@ -391,6 +438,8 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
 - If you `source .env` in a shell, use single quotes for values with `$`; the `$$` form only works for Compose.
 - Without nginx, the backend has no 1 MB body limit and reads upload bodies before checking the
   session. Don't expose port 8000.
+- To connect Gmail from the Vite dev server, add `http://localhost:5173` to `PUBLIC_BASE_URLS` and register
+  `http://localhost:5173/api/plugins/gmail/oauth/callback` in Google (not tried yet).
 - FastAPI's interactive docs (`/api/docs`) load Swagger UI from a CDN, which nginx's CSP blocks, so
   they render blank on port 8080; open them on the backend directly (`http://localhost:8000/api/docs`).
   `/api/openapi.json` works on both.
@@ -451,6 +500,26 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
 - Downloads (`GET /api/documents/{id}/download`) follow the listing's visibility rules (anything else is a 404)
   and are sent as attachments with `nosniff`, `no-store` and a sandbox CSP. PDF, Office and generated image files
   get their own content type; everything else, Markdown and HTML included, is `application/octet-stream`.
+- **Plugins (Gmail):**
+  - OAuth uses the authorization-code flow with state, PKCE (S256), and a one-time server-side state bound to the
+    browser by an `HttpOnly` cookie. The session cookie stays `SameSite=Strict`.
+  - Redirect URIs are built only from `PUBLIC_BASE_URLS` entries matching the request's `Origin`, never from `Host`.
+  - Refresh and access tokens are encrypted with `TOKEN_ENCRYPTION_KEY` (Fernet), bound to their user and plugin, and
+    never logged. The key is separate from `SECRET_KEY`.
+  - A user only ever sees and uses their own connection. Other users' resources answer 404, and plugin problems answer
+    409 or 403, never 401.
+  - Email text reaches the model as untrusted data in `<email>` blocks. That is only defense in depth; the guards are:
+    - drafts, send proposals and imports (and files or images in an answer that read email) need a separate request
+      check that sees only the user's own messages;
+    - every Gmail action re-checks that the plugin, the capability and the connection are still on;
+    - sending needs the user's click on the exact previewed content (hash-checked, once, before it expires, within a
+      daily cap);
+    - the card flags recipients the user never typed, unnamed attachments, Bcc and the email being replied to.
+  - Access logs keep plugin paths without their query strings, the OAuth callback isn't logged by nginx, and the Gmail
+    browser's search goes in a POST body. Logs never hold tokens, codes, search terms, subjects, addresses or email
+    text.
+  - The admin sees counts, never mail content or account emails. Disconnecting revokes the grant at Google unless
+    another app user shares the same Google account.
 - Secrets are never logged; provider errors are turned into user-facing messages (`llm.friendly_error`).
 
 ## 8. Known limitations
@@ -485,12 +554,23 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
   AI-generated. PNG (the default) takes about 0.7 to 3 MB per image.
 - The admin can't download users' private documents or view their images; downloads follow the same visibility as
   the document list.
+- **Gmail has been tested only against a fake Google server**, never against real Google; `docs/gmail-setup.md`
+  (section 13) lists what to check on the first real run.
+  - Plain-text emails only (no HTML composition).
+  - No labels, archiving, deleting or marking read.
+  - Imported threads aren't refreshed; a changed thread imported again becomes a second document.
+  - "Open in Gmail" links use `/mail/u/0/`, the browser's first signed-in Google account.
+  - In Google's testing mode, connections end after 7 days.
+  - The request check is a model judgement on the action type, not its arguments; the flags on the cards and the Send
+    click are what remains.
+  - The plugin locks are per process, so run one backend process.
 - Deleting a user deletes their usage history too (chat, embedding, vision and images), so their costs leave the
   usage report.
 - Legacy `.doc`, `.ppt` and `.xls` files must be saved in the modern format first.
 - Database tables are created automatically on start. There are no migrations yet: add Alembic
   before changing the schema of a database with real data. Rolling the code back to a release before images needs
-  the SQL in `docs/HANDOFF.md` ("Images from chat") first.
+  the SQL in `docs/HANDOFF.md` ("Images from chat") first, and back to a release before plugins the SQL in
+  `docs/briefs/plugins-gmail.md` (section 3.3).
 - Run exactly one worker container. Scale with `WORKER_CONCURRENCY` instead.
 - No backups are configured.
 

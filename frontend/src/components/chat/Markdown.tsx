@@ -1,20 +1,23 @@
 import { memo, useId, useMemo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import type { Source } from "../../api/types";
+import type { AnswerSource } from "../../api/types";
 import { CITATION_PROPERTY, rehypeCitations } from "./citations";
 
 const remarkPlugins = [remarkGfm];
 
 type MarkdownProps = {
   content: string;
-  sources: Source[];
+  sources: AnswerSource[];
   /** Called with the source number when a citation chip is clicked. */
   onCite: (index: number) => void;
 };
 
-function sourceLabel(source: Source): string {
-  return source.page === null ? source.filename : `${source.filename}, page ${source.page}`;
+/** The citation chip's accessible name: "Source 2: report.pdf, page 4" or "Email 7: Invoice 42". */
+function citationLabel(index: number, source: AnswerSource | undefined): string {
+  if (!source) return `Source ${index}`;
+  if (source.kind === "email") return `Email ${index}: ${source.subject || "(no subject)"}`;
+  return `Source ${index}: ${source.page === null ? source.filename : `${source.filename}, page ${source.page}`}`;
 }
 
 /** Assistant answer: GFM markdown without raw HTML; links open in a new tab and "[n]" becomes a citation chip. */
@@ -51,8 +54,7 @@ function Markdown({ content, sources, onCite }: MarkdownProps) {
       sup: ({ node, ...props }) => {
         const index = node?.properties[CITATION_PROPERTY];
         if (typeof index !== "number") return <sup {...props} />;
-        const source = byIndex.get(index);
-        const label = source ? `Source ${index}: ${sourceLabel(source)}` : `Source ${index}`;
+        const label = citationLabel(index, byIndex.get(index));
         return (
           <button type="button" className="chat-cite" onClick={() => onCite(index)} aria-label={label} title={label}>
             {index}

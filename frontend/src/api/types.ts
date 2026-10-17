@@ -76,6 +76,7 @@ export type DocumentItem = {
   vision_pages: number; // pages read with the vision model; 0 unless status is "ready"
   generated: boolean; // the assistant created this file in a chat
   image: GeneratedImage | null; // a generated image (GET /documents/{id}/image serves it); always null in GET /admin/documents
+  imported_from: string | null; // the plugin's name ("Gmail") when imported through a plugin: "Imported from Gmail"
   created_at: string;
   updated_at: string;
 };
@@ -93,7 +94,9 @@ export type DocumentConfig = {
 /** null = all accessible documents; number[] = only these ids ([] = don't use documents). */
 export type DocumentSelection = number[] | null;
 
+/** A retrieved document passage. It carries no `kind` (narrow with `source.kind === "email"`). */
 export type Source = {
+  kind?: undefined;
   index: number; // 1-based citation number, matches [n] in the answer
   document_id: number;
   filename: string;
@@ -102,6 +105,26 @@ export type Source = {
   score: number;
   snippet: string;
 };
+
+/**
+ * An email a plugin tool returned in this answer, numbered after the document passages (same [n] sequence).
+ * Subject, sender and snippet are untrusted text from the mailbox: render as text only.
+ */
+export type EmailSource = {
+  kind: "email";
+  index: number;
+  plugin_id: string; // "gmail"
+  message_id: string;
+  thread_id: string;
+  subject: string;
+  sender: string; // "Name <address>" or "address"
+  date: string | null;
+  snippet: string; // at most 300 characters
+  url: string; // the conversation in Gmail (open in a new tab)
+};
+
+/** A source of an answer: document passages first, then the emails it cites. */
+export type AnswerSource = Source | EmailSource;
 
 export type ConversationSummary = {
   id: number;
@@ -128,12 +151,13 @@ export type ChatMessage = {
   id: number;
   role: "user" | "assistant";
   content: string;
-  sources: Source[];
+  sources: AnswerSource[]; // document passages, then the emails the answer cites
   model_name: string | null;
   prompt_tokens: number;
   completion_tokens: number;
   error: string | null;
   files: GeneratedFile[]; // in creation order; [] for user messages
+  plugin_cards: PluginCard[]; // cards plugins added to this answer, in order (card_id "p<n>"); [] for user messages
   created_at: string;
 };
 
@@ -206,10 +230,13 @@ export type ChatStreamEvent =
         model: { id: number; display_name: string };
       };
     }
-  | { event: "sources"; data: { sources: Source[] } }
+  // Always sent once after meta; sent again (whole list) when a plugin tool adds emails and, before done, when emails
+  // the answer doesn't cite are dropped. Replace the list each time.
+  | { event: "sources"; data: { sources: AnswerSource[] } }
   | { event: "warning"; data: { message: string } }
   | { event: "delta"; data: { content: string } }
   | { event: "file"; data: FileEventData }
+  | { event: "plugin"; data: PluginCard } // the card's whole state; replace the card with the same card_id
   | { event: "done"; data: { assistant_message_id: number; usage: TokenUsage } } // usage sums every model call
   | { event: "error"; data: { message: string; assistant_message_id: number | null } };
 
@@ -352,4 +379,304 @@ export type UsageReport = {
     images: number;
     cost_usd: number;
   }[];
+};
+
+// ---------------- Plugins (docs/briefs/plugins-gmail.md) ----------------
+
+export type PluginCapabilityInfo = {
+  id: string; // Gmail: "read" | "draft" | "send"
+  name: string;
+  description: string;
+  enabled: boolean; // by the admin
+  granted: boolean; // by the caller's connection (false without one); enabled && !granted -> offer "Grant access"
+};
+
+export type PluginConnectionReason = "revoked" | "expired_testing" | "key_changed" | "scopes_missing";
+
+/** The caller's own connection; nobody else's is ever returned. */
+export type PluginConnectionStatus = {
+  account_email: string;
+  status: "connected" | "reconnect_needed";
+  status_reason: PluginConnectionReason | null;
+  status_message: string | null; // what to show when a reconnect is needed
+  granted_scopes: string[];
+  chat_enabled: boolean; // "Use in chat"
+  connected_at: string;
+  last_used_at: string | null;
+  refresh_expires_at: string | null; // Google testing mode: when Google ends the connection (estimate)
+};
+
+/** GET /plugins: plugins the admin turned on (plus, with enabled false, any the caller is still connected to). */
+export type PluginInfo = {
+  id: string; // also the URL segment: /api/plugins/<id>/...
+  name: string;
+  description: string;
+  auth_type: "oauth2";
+  enabled: boolean;
+  // The provider app is in testing mode: only accounts the admin added as test users can connect (others see Google's
+  // "Access blocked" page and never come back): say so before redirecting. Connections end after 7 days.
+  testing_mode: boolean;
+  supports_import: boolean;
+  import_max_items: number | null; // GMAIL_IMPORT_MAX_ITEMS for plugins that import
+  capabilities: PluginCapabilityInfo[];
+  connection: PluginConnectionStatus | null;
+};
+
+export type PluginConnectRequest = { capabilities?: string[] }; // default: every capability the admin enabled
+export type PluginConnectResponse = { authorize_url: string }; // navigate the window there
+export type PluginConnectionUpdate = { chat_enabled: boolean };
+
+/** After Google, the browser lands on /?plugin=<id>&oauth=<result>. */
+export type PluginOAuthResult = "connected" | "denied" | "expired" | "invalid" | "no_access" | "disabled" | "error";
+
+// ---------------- Gmail: browsing and importing ----------------
+
+/** POST /plugins/gmail/threads/search: the query travels in the body, never in the URL (access logs). */
+export type GmailThreadSearch = {
+  q?: string | null; // Gmail search syntax; empty or absent: "in:inbox"
+  page_token?: string | null;
+  max_results?: number; // 1-25, default 20
+};
+
+export type GmailThreadSummary = {
+  thread_id: string;
+  subject: string;
+  sender: string; // of the newest message
+  date: string | null; // of the newest message
+  snippet: string;
+  message_count: number;
+  unread: boolean;
+  gmail_url: string;
+};
+
+export type GmailThreadPage = {
+  threads: GmailThreadSummary[];
+  next_page_token: string | null;
+  result_size_estimate: number;
+};
+
+export type GmailAttachmentInfo = {
+  part_id: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  importable: boolean;
+  reason: string | null; // why it can't be imported
+};
+
+export type GmailMessageView = {
+  message_id: string;
+  thread_id: string;
+  sender: string;
+  to: string[];
+  cc: string[];
+  date: string | null;
+  subject: string;
+  snippet: string;
+  body_text: string; // plain text only (render as text, never as HTML); at most 20,000 characters
+  body_truncated: boolean;
+  attachments: GmailAttachmentInfo[];
+  unread: boolean;
+};
+
+export type GmailThreadDetail = {
+  thread_id: string;
+  subject: string;
+  gmail_url: string;
+  messages: GmailMessageView[]; // oldest first; at most the newest 50
+  messages_truncated: boolean;
+};
+
+export type GmailImportRequest = {
+  // Threads with include_thread plus attachments: 1..PluginInfo.import_max_items items
+  threads: {
+    thread_id: string;
+    include_thread: boolean; // the conversation itself as a text document
+    attachments: { message_id: string; part_id: string }[];
+  }[];
+};
+
+export type GmailImportItem = {
+  kind: "thread" | "attachment";
+  thread_id: string;
+  message_id: string | null; // attachments only
+  part_id: string | null; // attachments only
+  label: string; // the thread's subject or the attachment's file name
+  status: "imported" | "already_existed" | "skipped" | "failed";
+  reason: string | null;
+  document_id: number | null;
+  document: DocumentItem | null; // current state; null when not imported or deleted since (announce it when set)
+};
+
+export type GmailImportResult = { items: GmailImportItem[] }; // in request order
+
+// ---------------- Gmail: drafts and pending sends ----------------
+
+/** One address. Show `address` separately from `name` (untrusted); when `unicode_domain` is set, show both forms with a
+ * warning (an internationalized domain can imitate another). */
+export type EmailAddress = {
+  address: string; // ASCII, what is sent; an internationalized domain in punycode ("xn--…")
+  name: string | null; // null when absent or dropped because it contained "@"
+  unicode_domain: string | null;
+};
+
+/** unmentioned: the user never typed this exact address in this conversation and it isn't a participant of the email
+ * replied to (Bcc: only typed addresses count). Flag it "not mentioned by you". */
+export type EmailRecipient = EmailAddress & { unmentioned: boolean };
+
+/** The email a draft or proposed email replies to: show "Replying to <subject> from <sender> · <date>". */
+export type EmailReplyInfo = { message_id: string; subject: string; sender: EmailAddress; date: string | null };
+
+export type EmailAttachment = {
+  document_id: number | null;
+  filename: string;
+  size_bytes: number;
+  unrequested: boolean; // not named in the user's messages, not created in this conversation, not picked in Edit: flag it
+};
+
+export type PendingSendStatus = "pending" | "sending" | "sent" | "failed" | "cancelled" | "expired" | "replaced";
+
+/** An email the assistant proposed: exactly what Send would send (POST /plugins/gmail/sends/{id}/send), once. */
+export type PendingSend = {
+  id: number;
+  status: PendingSendStatus; // "sending" for over 5 minutes is reported as "failed" ("may have been sent")
+  account_email: string; // From
+  to: EmailRecipient[];
+  cc: EmailRecipient[];
+  bcc: EmailRecipient[]; // hidden from the other recipients: always highlight
+  subject: string;
+  body: string; // the whole plain-text body
+  attachments: EmailAttachment[];
+  reply_to: EmailReplyInfo | null; // null for a new email
+  content_hash: string; // send it back with Send
+  created_at: string;
+  expires_at: string;
+  sent_at: string | null;
+  error: string | null;
+  gmail_url: string | null; // once sent
+  replaced_by: number | null;
+};
+
+export type PendingSendConfirm = { content_hash: string };
+
+/** Edit = a new proposal (POST /plugins/gmail/sends/{id}/revise); the subject of a reply can't change.
+ * Addresses as "Name <address>" or "address" (format EmailRecipient back to this for the form). */
+export type PendingSendRevision = {
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string;
+  body: string;
+  attachment_document_ids: number[]; // the user's own documents, at most 5
+};
+
+// ---------------- Plugin cards on answers (SSE `plugin`, ChatMessage.plugin_cards) ----------------
+
+export type GmailActivityCard = {
+  card_id: string; // "g1", "g2", … while streaming; "p<n>" when loaded with the conversation
+  plugin_id: "gmail";
+  type: "gmail_activity";
+  status: "running" | "done" | "failed";
+  action: "search" | "read_message" | "read_thread";
+  query: string | null; // search only
+  count: number; // messages found or read
+  error: string | null;
+};
+
+export type GmailDraftCard = {
+  card_id: string;
+  plugin_id: "gmail";
+  type: "gmail_draft";
+  status: "writing" | "creating" | "created" | "failed";
+  account_email: string | null;
+  to: EmailRecipient[];
+  cc: EmailRecipient[];
+  bcc: EmailRecipient[];
+  subject: string | null;
+  preview: string; // the first 500 characters of the body
+  attachments: EmailAttachment[];
+  reply_to: EmailReplyInfo | null;
+  gmail_url: string | null; // "Open in Gmail", once created
+  error: string | null;
+};
+
+export type GmailSendCard = {
+  card_id: string;
+  plugin_id: "gmail";
+  type: "gmail_send";
+  status: "writing" | "proposed" | "failed";
+  pending: PendingSend | null; // set once proposed; live state when loaded with the conversation
+  error: string | null;
+};
+
+export type GmailImportCard = {
+  card_id: string;
+  plugin_id: "gmail";
+  type: "gmail_import";
+  status: "importing" | "done" | "failed";
+  items: GmailImportItem[];
+  error: string | null;
+};
+
+/** Unknown `type`s must be ignored (a later plugin may add more). */
+export type PluginCard = GmailActivityCard | GmailDraftCard | GmailSendCard | GmailImportCard;
+
+// ---------------- Admin: plugins ----------------
+
+export type PluginAction =
+  | "connect"
+  | "disconnect"
+  | "reconnect_needed"
+  | "search"
+  | "read"
+  | "import"
+  | "draft"
+  | "send_proposed"
+  | "send"
+  | "send_cancelled";
+
+export type PluginActionCount = { action: PluginAction; ok: number; failed: number; refused: number };
+
+export type AdminPlugin = {
+  id: string;
+  name: string;
+  description: string;
+  auth_type: "oauth2";
+  supports_import: boolean;
+  configured: boolean;
+  missing_settings: string[]; // env vars to set in .env, e.g. ["GOOGLE_OAUTH_CLIENT_ID", "TOKEN_ENCRYPTION_KEY"]
+  test_endpoints: boolean; // the OAuth or API endpoints aren't Google's (a test setup): show a warning
+  enabled: boolean;
+  capabilities: {
+    id: string;
+    name: string;
+    description: string;
+    scopes: string[]; // what it requests on its own
+    enabled: boolean;
+    note: string | null; // show under the switch (Gmail drafts: Google's draft permission also allows sending)
+  }[];
+  requested_scopes: string[]; // exactly what a connect asks for with the current switches
+  redirect_uris: string[]; // register each in Google Cloud (one per PUBLIC_BASE_URLS entry)
+  testing_mode: boolean; // GOOGLE_OAUTH_TESTING_MODE: only test users can connect; connections end after 7 days
+  // old_key: connections still encrypted with a key other than the first TOKEN_ENCRYPTION_KEY: keep old keys until 0
+  connections: { connected: number; reconnect_needed: number; old_key: number };
+  activity: { month: string; actions: PluginActionCount[] }; // this month
+};
+
+export type AdminPluginUpdate = { enabled?: boolean; capabilities?: Record<string, boolean> };
+
+export type PluginActivityReport = {
+  month: string;
+  totals: PluginActionCount[];
+  by_user: { user_id: number; username: string; actions: PluginActionCount[] }[];
+};
+
+/** POST /admin/plugins/request-check/test: the request check (which gates drafts, sends and imports) with one chat
+ * model and a fixed message; ok when the model answered with valid JSON asking for a draft only. No usage recorded. */
+export type RequestCheckTest = { model_id: number };
+export type RequestCheckTestResult = {
+  ok: boolean;
+  message: string;
+  latency_ms: number;
+  answer: Record<"file" | "image" | "draft" | "send" | "import", boolean> | null; // null without valid JSON
 };

@@ -79,6 +79,7 @@ DOCUMENT_ITEM_KEYS = {
     "vision_pages",
     "generated",
     "image",
+    "imported_from",
     "created_at",
     "updated_at",
 }
@@ -92,6 +93,7 @@ CHAT_MESSAGE_KEYS = {
     "completion_tokens",
     "error",
     "files",
+    "plugin_cards",
     "created_at",
 }
 DOWNLOAD_TYPES = {

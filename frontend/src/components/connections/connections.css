@@ -1,0 +1,595 @@
+/* Connections (account menu) and the Gmail browser: conn- prefix, tokens from global.css (light and dark). */
+
+.conn-modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+.conn-intro,
+.conn-empty {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.conn-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: 8px 6px 8px 12px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  animation: fade-in 0.15s ease-out;
+}
+.conn-banner > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.conn-banner-text {
+  flex: 1;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.conn-banner-success {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.conn-banner-info {
+  background: var(--info-soft);
+  color: var(--info);
+}
+.conn-banner-error {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.btn.conn-banner-close {
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+
+.conn-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-5) 0;
+  color: var(--text-2);
+}
+.conn-state p {
+  margin: 0;
+}
+
+.conn-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.conn-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.conn-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.conn-card-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.conn-card-heading {
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+.conn-card-title {
+  font-size: 15px;
+  font-weight: 650;
+}
+.conn-card-description {
+  margin: 2px 0 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+.conn-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+  font-size: 13px;
+}
+.conn-facts > div {
+  min-width: 0;
+}
+.conn-facts dt {
+  color: var(--text-3);
+  font-size: 12px;
+  font-weight: 600;
+}
+.conn-facts dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.conn-account {
+  font-weight: 600;
+}
+
+.conn-note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+.conn-warning,
+.conn-hint,
+.conn-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2) var(--space-3);
+  padding: 10px var(--space-3);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.conn-warning p,
+.conn-hint p,
+.conn-confirm p {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+}
+.conn-warning {
+  background: var(--warning-soft);
+  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
+}
+.conn-warning > svg {
+  flex: none;
+  color: var(--warning);
+}
+.conn-hint {
+  background: var(--info-soft);
+  border-color: color-mix(in srgb, var(--info) 30%, transparent);
+}
+.conn-confirm {
+  background: var(--danger-soft);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+.conn-hint-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.conn-caps {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.conn-cap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px var(--space-2);
+  font-size: 13px;
+}
+.conn-cap-mark {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  color: var(--success);
+}
+.conn-cap-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+.conn-cap-text {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-direction: column;
+  min-width: 0;
+}
+.conn-cap-name {
+  color: var(--text);
+  font-weight: 600;
+}
+.conn-cap-description {
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+.conn-cap-off .conn-cap-name {
+  color: var(--text-3);
+  font-weight: 500;
+}
+.conn-cap-status {
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.conn-switch-field {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+}
+.conn-switch-field .switch {
+  margin-top: 1px;
+}
+.conn-switch-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.conn-switch-label {
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.conn-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.btn.conn-disconnect {
+  margin-left: auto;
+  color: var(--danger);
+}
+.btn.conn-disconnect:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ---------- Gmail browser and import ---------- */
+.conn-browser {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.conn-search {
+  display: flex;
+  gap: var(--space-2);
+}
+.conn-search .input {
+  flex: 1;
+  min-width: 0;
+}
+.conn-search-meta {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12.5px;
+}
+.conn-threads {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  list-style: none;
+  overflow: hidden;
+}
+.conn-thread + .conn-thread {
+  border-top: 1px solid var(--border);
+}
+.conn-thread-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-2);
+  padding: 10px var(--space-3);
+}
+.conn-thread-open .conn-thread-row {
+  background: var(--surface-2);
+}
+.conn-thread-check {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 22px;
+}
+.conn-thread-check input,
+.conn-attachment input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+.conn-thread-toggle {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.conn-thread-toggle:focus-visible {
+  border-radius: 4px;
+}
+.conn-thread-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.conn-thread-sender {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.conn-thread-date {
+  flex: none;
+  color: var(--text-3);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.conn-thread-subject {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 550;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.conn-thread-unread .conn-thread-subject {
+  font-weight: 700;
+}
+.conn-unread-dot {
+  display: inline-block;
+  flex: none;
+  width: 7px;
+  height: 7px;
+  margin-right: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  vertical-align: middle;
+}
+.conn-thread-count {
+  flex: none;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+.conn-thread-snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.conn-thread-detail {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 28px);
+  border-top: 1px dashed var(--border);
+  background: var(--surface);
+}
+.conn-message {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.conn-message + .conn-message {
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+.conn-message-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px var(--space-2);
+  font-size: 12.5px;
+}
+.conn-message-sender {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.conn-message-recipients {
+  color: var(--text-3);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+/* Email text as text only (React escapes it), collapsed after 12 lines until "Show more". */
+.conn-message-body {
+  margin: 0;
+  color: var(--text-2);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.conn-message-body-collapsed {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 12;
+  line-clamp: 12;
+  -webkit-box-orient: vertical;
+}
+.conn-link-btn {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.conn-link-btn:hover {
+  text-decoration: underline;
+}
+.conn-attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.conn-attachment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--space-2);
+  font-size: 12.5px;
+}
+.conn-attachment label {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  cursor: pointer;
+}
+.conn-attachment-name {
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.conn-attachment-size {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.conn-attachment-reason {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.conn-attachment-off .conn-attachment-name {
+  color: var(--text-3);
+}
+.conn-detail-note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.conn-footer {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+.conn-footer-count {
+  margin-right: auto;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.conn-footer-count-over {
+  color: var(--danger);
+}
+
+.conn-progress {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-5) 0;
+  color: var(--text-2);
+}
+/* Text that takes focus only so it is read out and focus isn't lost (GmailImportModal): no focus ring. */
+.conn-focus-target:focus,
+.conn-focus-target:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+.conn-results {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.conn-result {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+}
+.conn-result > svg {
+  flex: none;
+  color: var(--text-3);
+}
+.conn-result-label {
+  flex: 1 1 12rem;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.conn-result-reason {
+  flex-basis: 100%;
+  color: var(--text-3);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 479.98px) {
+  .conn-card {
+    padding: var(--space-3);
+  }
+  .conn-thread-detail {
+    padding-left: var(--space-3);
+  }
+  .btn.conn-disconnect {
+    margin-left: 0;
+  }
+}
+.btn.conn-load-more {
+  align-self: center;
+}

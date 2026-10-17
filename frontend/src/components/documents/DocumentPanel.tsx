@@ -1,6 +1,9 @@
 import { useEffect, useId, useState, type JSX, type KeyboardEvent } from "react";
 import type { DocumentConfig, DocumentScope, DocumentSelection } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
+import { MailIcon } from "../chat/icons";
+import GmailImportModal from "../connections/GmailImportModal";
+import { gmailReady, requestConnections, usePlugins } from "../connections/pluginStore";
 import DocumentList from "./DocumentList";
 import "./documents.css";
 import { BYTES_PER_MB, supportedTypeLabels, uploadRules } from "./fileTypes";
@@ -62,6 +65,19 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
   } = useDocuments(uploadsActive);
   const [scope, setScope] = useState<DocumentScope>("private");
   const [announcement, setAnnouncement] = useState("");
+  const [importing, setImporting] = useState(false);
+  const { plugins } = usePlugins();
+  const gmail = gmailReady(plugins);
+  const gmailUsable = gmail !== null;
+  // Import would work again after reconnecting: offer that instead of hiding the button without a word.
+  const gmailPlugin = plugins?.find((plugin) => plugin.id === "gmail");
+  const gmailReconnect =
+    gmail === null &&
+    gmailPlugin !== undefined &&
+    gmailPlugin.enabled &&
+    gmailPlugin.supports_import &&
+    gmailPlugin.connection?.status === "reconnect_needed" &&
+    gmailPlugin.capabilities.some((capability) => capability.id === "read" && capability.enabled);
 
   const canUpload = config !== null && ownerId !== null;
   const canShare = config?.can_upload_shared ?? false;
@@ -85,6 +101,14 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
     [upsertDocument, reloadConfig],
   );
 
+  // The Gmail browser closes when Gmail stops being usable (often a search or import that got a 403/409), and doesn't
+  // reopen by itself later. The chat page then opens Connections, which says why and offers Reconnect.
+  useEffect(() => {
+    if (gmailUsable || !importing) return;
+    setImporting(false);
+    requestConnections("gmail");
+  }, [gmailUsable, importing]);
+
   useEffect(() => {
     if (documents === null || selection === null) return;
     const pruned = pruneSelection(selection, documents);
@@ -106,6 +130,22 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
         <h2 id={titleId} className="docs-title">
           Documents
         </h2>
+        {gmail ? (
+          <button type="button" className="btn btn-sm docs-import-btn" onClick={() => setImporting(true)}>
+            <MailIcon size={14} />
+            Import from Gmail
+          </button>
+        ) : gmailReconnect ? (
+          <button
+            type="button"
+            className="btn btn-sm docs-import-btn"
+            onClick={() => requestConnections()}
+            title="Gmail needs to be reconnected before you can import from it"
+          >
+            <AlertIcon size={14} />
+            Reconnect Gmail
+          </button>
+        ) : null}
         {onClose ? (
           <button
             type="button"
@@ -161,6 +201,7 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
       </div>
 
       {config ? <QuotaFooter config={config} /> : null}
+      {importing && gmail ? <GmailImportModal plugin={gmail} onClose={() => setImporting(false)} /> : null}
       <p className="sr-only" aria-live="polite">
         {announcement}
       </p>

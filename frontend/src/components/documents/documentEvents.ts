@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { DocumentItem } from "../../api/types";
 
 // Shared by the documents panel and the chat's file cards (SPEC section 8), so DocumentPanel's props stay as they are.
@@ -87,6 +87,12 @@ function requestCatchUp(id: number): void {
     catchUpQueued = false;
     requestDocumentsReload();
   });
+}
+
+/** The panel's latest list (announced documents included), or null until it has loaded. */
+export function useDocumentList(): DocumentItem[] | null {
+  const current = useSyncExternalStore(subscribeToSnapshot, () => snapshot);
+  return useMemo(() => (current ? Array.from(current.values()) : null), [current]);
 }
 
 /**

@@ -1,5 +1,6 @@
 """The caller's conversations. Other users' conversations are reported as not found."""
 
+import logging
 from collections import defaultdict
 from collections.abc import Collection
 from datetime import datetime
@@ -12,9 +13,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
 from app.deps import get_current_user
-from app.models import Conversation, Document, GeneratedImage, Message, MessageFile, User
-from app.schemas import MAX_INT, GeneratedFile, Source
+from app.models import Conversation, Document, GeneratedImage, Message, MessageFile, MessagePluginItem, User
+from app.plugins import registry
+from app.schemas import MAX_INT, AnswerSource, GeneratedFile
+from app.schemas_plugins import PluginCard
 from app.services.storage import image_item
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -34,12 +39,13 @@ class ChatMessage(BaseModel):
     id: int
     role: Literal["user", "assistant"]
     content: str
-    sources: list[Source]
+    sources: list[AnswerSource]  # document passages, then the emails the answer cites
     model_name: str | None
     prompt_tokens: int
     completion_tokens: int
     error: str | None
     files: list[GeneratedFile]  # in creation order; [] for user messages
+    plugin_cards: list[PluginCard] = Field(default_factory=list)  # in order; [] for user messages
     created_at: datetime
 
 
@@ -102,7 +108,42 @@ async def message_files(db: AsyncSession, message_ids: Collection[int]) -> dict[
     return files
 
 
-def _chat_message(message: Message, files: list[GeneratedFile]) -> ChatMessage:
+async def plugin_cards(db: AsyncSession, user: User, message_ids: Collection[int]) -> dict[int, list[PluginCard]]:
+    """message id -> the cards plugins added to that answer, in order, with their live state (one query, then one
+    hydration per plugin). Cards of an unknown or failing plugin are left out."""
+    if not message_ids:
+        return {}
+    items = list(
+        await db.scalars(
+            select(MessagePluginItem)
+            .where(MessagePluginItem.message_id.in_(message_ids))
+            .order_by(MessagePluginItem.id)
+        )
+    )
+    by_plugin: defaultdict[str, list[MessagePluginItem]] = defaultdict(list)
+    for item in items:
+        by_plugin[item.plugin_id].append(item)
+    hydrated: dict[int, PluginCard] = {}
+    for plugin_id, own in by_plugin.items():
+        plugin = registry.get_plugin(plugin_id)
+        if plugin is None:
+            continue
+        try:
+            cards = await plugin.hydrate_cards(db, user, own)
+        except Exception:
+            logger.exception("The %s plugin failed to load the cards of a conversation", plugin_id)
+            continue
+        for card in cards:  # matched by card_id "p<item id>": a plugin may leave out a card it can't load
+            if card.card_id.startswith("p") and card.card_id[1:].isdigit():
+                hydrated[int(card.card_id[1:])] = card
+    found: defaultdict[int, list[PluginCard]] = defaultdict(list)
+    for item in items:
+        if item.id in hydrated:
+            found[item.message_id].append(hydrated[item.id])
+    return found
+
+
+def _chat_message(message: Message, files: list[GeneratedFile], cards: list[PluginCard]) -> ChatMessage:
     return ChatMessage(
         id=message.id,
         role=message.role,  # type: ignore[arg-type]
@@ -113,6 +154,7 @@ def _chat_message(message: Message, files: list[GeneratedFile]) -> ChatMessage:
         completion_tokens=message.completion_tokens,
         error=message.error,
         files=files,
+        plugin_cards=cards,
         created_at=message.created_at,
     )
 
@@ -137,13 +179,17 @@ async def get_conversation(
     conversation = await get_owned_conversation(db, user, conversation_id)
     result = await db.execute(select(Message).where(Message.conversation_id == conversation.id).order_by(Message.id))
     messages = list(result.scalars())
-    files = await message_files(db, [message.id for message in messages if message.role == "assistant"])
+    answers = [message.id for message in messages if message.role == "assistant"]
+    files = await message_files(db, answers)
+    cards = await plugin_cards(db, user, answers)
     return ConversationDetail(
         id=conversation.id,
         title=conversation.title,
         created_at=conversation.created_at,
         updated_at=conversation.updated_at,
-        messages=[_chat_message(message, files.get(message.id, [])) for message in messages],
+        messages=[
+            _chat_message(message, files.get(message.id, []), cards.get(message.id, [])) for message in messages
+        ],
     )
 
 
@@ -165,7 +211,17 @@ async def delete_conversation(
     conversation_id: ConversationId, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> None:
     conversation = await get_owned_conversation(db, user, conversation_id)
-    # Explicit, so messages go even where the database doesn't enforce ON DELETE CASCADE (SQLite).
+    for plugin in registry.all_plugins():  # e.g. Gmail cancels and scrubs the conversation's proposed emails
+        try:
+            await plugin.on_conversation_deleted(db, user, conversation_id)
+        except Exception:
+            logger.exception("The %s plugin failed to clean up conversation %s", plugin.id, conversation_id)
+            await db.rollback()  # its partial changes go; the deletion below still happens
+            await db.refresh(user)
+            await db.refresh(conversation)
+    # Explicit, so these go even where the database doesn't enforce ON DELETE CASCADE (SQLite).
+    message_ids = select(Message.id).where(Message.conversation_id == conversation.id)
+    await db.execute(delete(MessagePluginItem).where(MessagePluginItem.message_id.in_(message_ids)))
     await db.execute(delete(Message).where(Message.conversation_id == conversation.id))
     await db.delete(conversation)
     await db.commit()

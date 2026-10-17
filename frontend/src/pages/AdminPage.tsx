@@ -5,6 +5,7 @@ import AdminHeader from "../components/admin/AdminHeader";
 import DocumentsTab from "../components/admin/DocumentsTab";
 import { useResource } from "../components/admin/hooks";
 import ModelsTab from "../components/admin/ModelsTab";
+import PluginsTab from "../components/admin/PluginsTab";
 import StatsBar from "../components/admin/StatsBar";
 import UsageTab from "../components/admin/UsageTab";
 import UsersTab from "../components/admin/UsersTab";
@@ -15,6 +16,7 @@ const TABS = [
   { id: "models", label: "Models" },
   { id: "usage", label: "Usage" },
   { id: "documents", label: "Documents" },
+  { id: "plugins", label: "Plugins" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -68,7 +70,7 @@ export default function AdminPage() {
       <main className="admin-main">
         <div className="admin-heading">
           <h1 className="admin-title">Administration</h1>
-          <p className="admin-card-subtitle">Accounts, models, usage and the document index.</p>
+          <p className="admin-card-subtitle">Accounts, models, usage, the document index and plugins.</p>
         </div>
         <StatsBar stats={stats} onOpenModels={() => selectTab("models")} />
         <div className="admin-tabs" role="tablist" aria-label="Admin sections" onKeyDown={onTabKeyDown}>
@@ -93,6 +95,7 @@ export default function AdminPage() {
           {active === "models" ? <ModelsTab onChanged={refreshStats} /> : null}
           {active === "usage" ? <UsageTab /> : null}
           {active === "documents" ? <DocumentsTab onChanged={refreshStats} /> : null}
+          {active === "plugins" ? <PluginsTab /> : null}
         </div>
       </main>
     </div>

@@ -24,6 +24,7 @@ function metaParts(doc: DocumentItem): string[] {
   const parts = [formatBytes(doc.size_bytes)];
   if (doc.image) parts.unshift(`${doc.image.width} × ${doc.image.height}`);
   if (doc.generated) parts.unshift("Created in chat");
+  if (doc.imported_from) parts.unshift(`Imported from ${doc.imported_from}`);
   if (doc.status === "ready") parts.push(countLabel(doc.num_chunks, "chunk"));
   if (doc.num_pages) parts.push(countLabel(doc.num_pages, "page"));
   if (doc.status === "ready" && doc.vision_pages > 0) parts.push(`${countLabel(doc.vision_pages, "page")} read by vision`);
@@ -74,7 +75,7 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
   const canReprocess = doc.can_delete && (doc.status === "failed" || (ready && doc.is_stale));
   const badge = statusBadge(doc);
   const meta = metaParts(doc);
-  const added = `${doc.generated ? "Created" : "Uploaded"} ${formatDateTime(doc.created_at)}`;
+  const added = `${doc.generated ? "Created" : doc.imported_from ? "Imported" : "Uploaded"} ${formatDateTime(doc.created_at)}`;
 
   function closeConfirm() {
     setConfirming(false);

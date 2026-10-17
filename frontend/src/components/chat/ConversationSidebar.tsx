@@ -42,6 +42,8 @@ type ConversationSidebarProps = {
   onNewChat: () => void;
   onDeleted: (id: number) => void;
   onChangePassword: () => void;
+  /** Account menu → Connections (offered when any plugin is available). */
+  onOpenConnections: () => void;
   onLogout: () => void;
 };
 
@@ -58,6 +60,7 @@ function ConversationSidebar({
   onNewChat,
   onDeleted,
   onChangePassword,
+  onOpenConnections,
   onLogout,
 }: ConversationSidebarProps) {
   const rootRef = useRef<HTMLElement>(null);
@@ -151,7 +154,12 @@ function ConversationSidebar({
       {user ? (
         <div className="chat-sidebar-footer">
           <UsageMeter user={user} imagesOffered={imagesOffered} />
-          <UserMenu user={user} onChangePassword={onChangePassword} onLogout={onLogout} />
+          <UserMenu
+            user={user}
+            onChangePassword={onChangePassword}
+            onOpenConnections={onOpenConnections}
+            onLogout={onLogout}
+          />
         </div>
       ) : null}
     </aside>

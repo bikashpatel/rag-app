@@ -583,9 +583,15 @@ def _read_html(path: Path, budget: _TextBudget) -> tuple[list[Segment], int | No
         raise DocumentParseError(_TOO_COMPLEX)
     soup = BeautifulSoup(path.read_bytes(), "lxml")
     title = " ".join(soup.title.get_text(" ").split()) if soup.title else ""
-    body = "\n".join(" ".join(line.split()) for line in _html_text(soup).splitlines())
+    body = html_to_text(soup)
     text = f"{title}\n\n{body}" if title else body
     return [Segment(text=budget.take(text), page=None)], None
+
+
+def html_to_text(root: Tag) -> str:
+    """The text of parsed HTML: blocks on lines of their own, table cells joined by " | ", whitespace collapsed within
+    each line. Scripts, styles and the other dropped elements leave no text."""
+    return "\n".join(" ".join(line.split()) for line in _html_text(root).splitlines())
 
 
 def _html_text(root: Tag) -> str:

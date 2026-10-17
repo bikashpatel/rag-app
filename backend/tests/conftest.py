@@ -20,7 +20,7 @@ import shutil
 import sys
 import tempfile
 import zlib
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from html import escape
 from pathlib import Path
@@ -55,7 +55,9 @@ os.environ.update(
 import httpx  # noqa: E402
 import litellm  # noqa: E402
 import pytest  # noqa: E402
+from cryptography.fernet import Fernet  # noqa: E402
 from docx import Document as new_docx  # noqa: E402
+from fake_google import CLIENT_ID, CLIENT_SECRET, FakeGoogle, fake_google_app  # noqa: E402
 from fakeredis import FakeServer  # noqa: E402
 from fakeredis.aioredis import FakeRedis  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
@@ -69,6 +71,8 @@ from app import db  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
 from app.models import Document  # noqa: E402
+from app.plugins import connections, intent, registry  # noqa: E402
+from app.plugins import http as plugin_http  # noqa: E402
 from app.redis_client import INGEST_QUEUE, close_redis, get_redis, set_redis  # noqa: E402
 from app.services import document_tool, image_tool, llm, pdf_images, vision  # noqa: E402
 from app.services.ingestion import process_document  # noqa: E402
@@ -240,6 +244,14 @@ def refusal(code: str = "moderation_blocked") -> Exception:
     )
 
 
+ALL_ACTIONS = '{"file": true, "image": true, "draft": true, "send": true, "import": true}'
+
+
+def intent_answer(*actions: str) -> str:
+    """A request-check reply asking for exactly `actions` (e.g. "draft")."""
+    return json.dumps({action: action in actions for action in intent.ACTIONS})
+
+
 @dataclass
 class FakeLLM:
     """Stand-in for `litellm.acompletion` and `litellm.aembedding`; change its attributes inside a test.
@@ -268,6 +280,11 @@ class FakeLLM:
     output_format, at 1/16 of the requested size (64x64, 96x64 or 64x96), unless `image_reply` gives the bytes.
     `image_url_only` returns only a URL; `image_usage` = (input_tokens, output_tokens) or None (not reported);
     `image_revised_prompt` is the item's revised_prompt.
+
+    Request checks (app.plugins.intent: non-streaming calls whose system prompt is intent.SYSTEM_PROMPT) go to
+    `intent_calls` instead of `chat_calls`. They answer `intent_reply` (a string, or a function of the user message
+    holding the tagged blocks), default every action true, with `intent_finish_reason` and `intent_usage`; with
+    `intent_error` set they raise it.
     """
 
     chunks: list[str] = field(default_factory=lambda: ["Hello", " from", " the", " fake", " model."])
@@ -299,10 +316,18 @@ class FakeLLM:
     image_url_only: bool = False
     image_usage: tuple[int, int] | None = (50, 272)
     image_revised_prompt: str | None = None
+    intent_reply: str | Callable[[str], str] = ALL_ACTIONS
+    intent_finish_reason: str = "stop"
+    intent_usage: tuple[int, int] | None = (300, 20)
+    intent_error: BaseException | None = None
+    intent_calls: list[dict[str, Any]] = field(default_factory=list)
 
     async def acompletion(self, **kwargs: Any) -> Any:
         if not kwargs.get("stream") and vision_part(kwargs, "image_url") is not None:
             return await self._vision(kwargs)
+        messages = kwargs.get("messages") or []
+        if not kwargs.get("stream") and messages and messages[0].get("content") == intent.SYSTEM_PROMPT:
+            return self._intent(kwargs)
         # A snapshot: the app keeps extending (and may strip) the same message list across the calls of an answer.
         self.chat_calls.append({**kwargs, "messages": copy.deepcopy(kwargs.get("messages"))})
         if kwargs.get("stream") and self.script:
@@ -318,6 +343,27 @@ class FakeLLM:
                 usage=SimpleNamespace(prompt_tokens=5, completion_tokens=1, total_tokens=6),
             )
         return self._stream()
+
+    def _intent(self, kwargs: dict[str, Any]) -> Any:
+        self.intent_calls.append({**kwargs, "messages": copy.deepcopy(kwargs.get("messages"))})
+        if self.intent_error is not None:
+            raise self.intent_error
+        latest = kwargs["messages"][-1]["content"]
+        reply = self.intent_reply(latest) if callable(self.intent_reply) else self.intent_reply
+        usage = None
+        if self.intent_usage is not None:
+            prompt_tokens, completion_tokens = self.intent_usage
+            usage = SimpleNamespace(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            )
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(message=SimpleNamespace(content=reply), finish_reason=self.intent_finish_reason)
+            ],
+            usage=usage,
+        )
 
     async def _vision(self, kwargs: dict[str, Any]) -> Any:
         self.vision_calls.append(kwargs)
@@ -496,7 +542,98 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
     monkeypatch.setattr(image_tool, "_unusable", {})
     monkeypatch.setattr(image_tool, "_warned_broken", set())
     monkeypatch.setattr(settings, "chat_image_tools", False)
+    monkeypatch.setattr(intent, "_length_warned", set())
     return fake
+
+
+@pytest.fixture(autouse=True)
+def plugin_registry(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """An empty plugin registry, so the tests written before plugins keep their prompts, tools and queries; plugin
+    tests install theirs with `registry.use_plugins([...])` (or the `plugins` fixture's helpers). Also forgets the
+    connection state the app keeps for its lifetime."""
+    monkeypatch.setattr(connections, "_client_rejected", set())
+    monkeypatch.setattr(connections, "_unreadable_logged", set())
+    with registry.use_plugins([]):
+        yield
+    plugin_http.set_transport(None)
+
+
+TEST_TOKEN_KEY = Fernet.generate_key().decode()
+TEST_ORIGIN = "http://testserver"
+
+
+@dataclass
+class PluginHarness:
+    """The fake Google the `plugins` fixture installed. `app` is its FastAPI app: add Gmail routes with
+    `app.include_router(...)`."""
+
+    google: FakeGoogle
+    app: FastAPI
+
+    def consent_client(self) -> httpx.AsyncClient:
+        return httpx.AsyncClient(transport=httpx.ASGITransport(app=self.app), base_url="https://accounts.google.com")
+
+    async def start(
+        self, client: httpx.AsyncClient, plugin_id: str, *, capabilities: list[str] | None = None
+    ) -> httpx.Response:
+        """POST connect from TEST_ORIGIN; returns the response (200: `authorize_url`, and the nonce cookie set)."""
+        body = {"capabilities": capabilities} if capabilities is not None else None
+        return await client.post(f"/api/plugins/{plugin_id}/connect", json=body, headers={"Origin": TEST_ORIGIN})
+
+    async def consent(self, authorize_url: str) -> str:
+        """The fake's consent: the URL it redirects the browser to (the app's callback)."""
+        async with self.consent_client() as google:
+            response = await google.get(authorize_url)
+        assert response.status_code == 302, response.text
+        return response.headers["location"]
+
+    async def connect(
+        self,
+        client: httpx.AsyncClient,
+        plugin_id: str,
+        *,
+        account: str | None = None,
+        capabilities: list[str] | None = None,
+    ) -> httpx.Response:
+        """The whole flow as a browser: connect, consent at the fake as `account`, follow the redirect to the callback.
+        Returns the callback's response (303 to `/?plugin=<id>&oauth=<result>`)."""
+        if account is not None:
+            self.google.login_as = account
+        started = await self.start(client, plugin_id, capabilities=capabilities)
+        assert started.status_code == 200, started.text
+        location = await self.consent(started.json()["authorize_url"])
+        return await client.get(location)
+
+
+def oauth_result(response: httpx.Response) -> str:
+    """The `oauth` result of a callback's redirect."""
+    assert response.status_code == 303, response.text
+    return httpx.URL(response.headers["location"]).params["oauth"]
+
+
+@pytest.fixture
+def plugins(monkeypatch: pytest.MonkeyPatch) -> PluginHarness:
+    """A fake Google behind the plugins' HTTP client, the fake OAuth client in the settings, a test
+    TOKEN_ENCRYPTION_KEY and PUBLIC_BASE_URLS=http://testserver. Install a plugin with registry.use_plugins."""
+    google = FakeGoogle()
+    google.add_client(
+        CLIENT_ID,
+        CLIENT_SECRET,
+        [f"{TEST_ORIGIN}/api/plugins/{plugin_id}/oauth/callback" for plugin_id in ("fake", "gmail")],
+    )
+    google.accounts.update({"bob@example.test": "100000000000000000002", "carol@example.test": "100000000000000000003"})
+    app = fake_google_app(google)
+    monkeypatch.setattr(settings, "google_oauth_client_id", CLIENT_ID)
+    monkeypatch.setattr(settings, "google_oauth_client_secret", CLIENT_SECRET)
+    monkeypatch.setattr(settings, "token_encryption_key", TEST_TOKEN_KEY)
+    monkeypatch.setattr(settings, "public_base_urls", TEST_ORIGIN)
+    monkeypatch.setattr(connections, "_sleep", _no_sleep)
+    plugin_http.set_transport(httpx.ASGITransport(app=app))
+    return PluginHarness(google, app)
+
+
+async def _no_sleep(seconds: float) -> None:
+    return None
 
 
 @pytest.fixture

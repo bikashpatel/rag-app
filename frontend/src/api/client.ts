@@ -1,6 +1,26 @@
 // Minimal fetch wrapper. Auth is an httpOnly cookie, so requests just need same-origin credentials.
 
-import type { GeneratedImageDetails } from "./types";
+import type {
+  AdminPlugin,
+  AdminPluginUpdate,
+  GeneratedImageDetails,
+  GmailImportRequest,
+  GmailImportResult,
+  GmailThreadDetail,
+  GmailThreadPage,
+  GmailThreadSearch,
+  PendingSend,
+  PendingSendConfirm,
+  PendingSendRevision,
+  PluginActivityReport,
+  PluginConnectionStatus,
+  PluginConnectionUpdate,
+  PluginConnectRequest,
+  PluginConnectResponse,
+  PluginInfo,
+  RequestCheckTest,
+  RequestCheckTestResult,
+} from "./types";
 
 export class ApiError extends Error {
   status: number;
@@ -103,6 +123,117 @@ export function documentImageUrl(id: number, size: ImageRendition = "full"): str
 /** The prompt, revised prompt and image model of a generated image (only its owner gets them). */
 export function getImageDetails(id: number, options?: { signal?: AbortSignal }): Promise<GeneratedImageDetails> {
   return api.get<GeneratedImageDetails>(`/documents/${id}/image/details`, options);
+}
+
+// ---------------- Plugins (SPEC section 6, "Plugins"; docs/briefs/plugins-gmail.md section 15) ----------------
+
+const pluginProblemListeners = new Set<() => void>();
+
+/**
+ * Called after any 403 (plugin or capability turned off) or 409 (not connected, reconnect needed, another account)
+ * from a plugin endpoint, so the plugin store can reload. Returns the unsubscribe function.
+ */
+export function onPluginProblem(listener: () => void): () => void {
+  pluginProblemListeners.add(listener);
+  return () => pluginProblemListeners.delete(listener);
+}
+
+async function pluginRequest<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+  try {
+    return await request<T>(method, path, body, { signal });
+  } catch (err) {
+    if (err instanceof ApiError && (err.status === 403 || err.status === 409)) {
+      pluginProblemListeners.forEach((listener) => listener());
+    }
+    throw err;
+  }
+}
+
+const pluginPath = (pluginId: string) => `/plugins/${encodeURIComponent(pluginId)}`;
+
+export function listPlugins(signal?: AbortSignal): Promise<PluginInfo[]> {
+  return api.get<PluginInfo[]>("/plugins", { signal });
+}
+
+/** Starts the OAuth flow and navigates this window to the provider's consent page (resolves only on failure). */
+export async function startPluginConnect(pluginId: string, capabilities?: string[]): Promise<void> {
+  const body: PluginConnectRequest = capabilities ? { capabilities } : {};
+  const { authorize_url } = await pluginRequest<PluginConnectResponse>("POST", `${pluginPath(pluginId)}/connect`, body);
+  window.location.assign(authorize_url);
+}
+
+export function updatePluginConnection(pluginId: string, update: PluginConnectionUpdate): Promise<PluginConnectionStatus> {
+  return pluginRequest<PluginConnectionStatus>("PATCH", `${pluginPath(pluginId)}/connection`, update);
+}
+
+export function disconnectPlugin(pluginId: string): Promise<void> {
+  return pluginRequest<void>("DELETE", `${pluginPath(pluginId)}/connection`);
+}
+
+export function searchGmailThreads(
+  query: { q?: string; pageToken?: string | null; maxResults?: number },
+  signal?: AbortSignal,
+): Promise<GmailThreadPage> {
+  // A POST body, never a URL query: search terms must not reach the access logs.
+  const body: GmailThreadSearch = {
+    q: query.q || null,
+    page_token: query.pageToken || null,
+    ...(query.maxResults ? { max_results: query.maxResults } : {}),
+  };
+  return pluginRequest<GmailThreadPage>("POST", "/plugins/gmail/threads/search", body, signal);
+}
+
+export function getGmailThread(threadId: string, signal?: AbortSignal): Promise<GmailThreadDetail> {
+  return pluginRequest<GmailThreadDetail>("GET", `/plugins/gmail/threads/${encodeURIComponent(threadId)}`, undefined, signal);
+}
+
+export function importFromGmail(body: GmailImportRequest): Promise<GmailImportResult> {
+  return pluginRequest<GmailImportResult>("POST", "/plugins/gmail/import", body);
+}
+
+export function getPendingSend(id: number): Promise<PendingSend> {
+  return pluginRequest<PendingSend>("GET", `/plugins/gmail/sends/${id}`);
+}
+
+/** Sends exactly the email the card showed (identified by its content hash), once. */
+export function confirmPendingSend(id: number, contentHash: string): Promise<PendingSend> {
+  const body: PendingSendConfirm = { content_hash: contentHash };
+  return pluginRequest<PendingSend>("POST", `/plugins/gmail/sends/${id}/send`, body);
+}
+
+export function cancelPendingSend(id: number): Promise<PendingSend> {
+  return pluginRequest<PendingSend>("POST", `/plugins/gmail/sends/${id}/cancel`, {});
+}
+
+/** Edit: a new proposal replaces this one (returned). */
+export function revisePendingSend(id: number, revision: PendingSendRevision): Promise<PendingSend> {
+  return pluginRequest<PendingSend>("POST", `/plugins/gmail/sends/${id}/revise`, revision);
+}
+
+export function listAdminPlugins(signal?: AbortSignal): Promise<AdminPlugin[]> {
+  return api.get<AdminPlugin[]>("/admin/plugins", { signal });
+}
+
+export function updateAdminPlugin(pluginId: string, update: AdminPluginUpdate): Promise<AdminPlugin> {
+  return api.patch<AdminPlugin>(`/admin${pluginPath(pluginId)}`, update);
+}
+
+export function adminPluginActivityPath(pluginId: string, month: string): string {
+  return `/admin${pluginPath(pluginId)}/activity?month=${encodeURIComponent(month)}`;
+}
+
+export function getAdminPluginActivity(pluginId: string, month: string, signal?: AbortSignal): Promise<PluginActivityReport> {
+  return api.get<PluginActivityReport>(adminPluginActivityPath(pluginId, month), { signal });
+}
+
+export function disconnectAllPluginUsers(pluginId: string): Promise<{ disconnected: number }> {
+  return api.post<{ disconnected: number }>(`/admin${pluginPath(pluginId)}/disconnect-all`);
+}
+
+/** Runs the request check (the model call that gates drafts, sends and imports) once with this chat model. */
+export function testRequestCheck(modelId: number): Promise<RequestCheckTestResult> {
+  const body: RequestCheckTest = { model_id: modelId };
+  return api.post<RequestCheckTestResult>("/admin/plugins/request-check/test", body);
 }
 
 export type SSEMessage = { event: string; data: unknown };

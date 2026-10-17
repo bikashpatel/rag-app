@@ -14,13 +14,18 @@ from app.deps import get_current_admin
 from app.models import (
     Conversation,
     Document,
+    GmailPendingSend,
     LLMModel,
     Message,
+    MessagePluginItem,
+    PluginAuditEvent,
+    PluginConnection,
     UsageEvent,
     User,
     UserImageLimit,
     user_allowed_models,
 )
+from app.plugins import connections
 from app.redis_client import INGEST_QUEUE, forget_ingest_attempts, get_redis
 from app.schemas import MAX_INT, DocumentItem
 from app.schemas_admin import (
@@ -55,6 +60,7 @@ from app.services.storage import (
     delete_document_completely,
     document_item,
     generated_ids,
+    imported_sources,
     lock_documents,
     remove_document_vectors,
     remove_file,
@@ -296,21 +302,30 @@ async def update_user(user_id: Id, body: AdminUserUpdate, db: AsyncSession = Dep
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(user_id: Id, db: AsyncSession = Depends(get_db)) -> None:
     user = _editable_user(await _get_user(db, user_id))
+    # Their plugin grants, revoked at the providers once the rows are gone (unless another connection shares one).
+    revocations = await connections.revoke_all_for_user(db, user.id)
     documents = await lock_documents(db, Document.owner_id == user.id)
     for doc in documents:
         await remove_document_vectors(db, doc)
         await db.delete(doc)
     # Explicit, so these go even where the database doesn't enforce ON DELETE CASCADE (SQLite).
     conversation_ids = select(Conversation.id).where(Conversation.user_id == user.id)
+    message_ids = select(Message.id).where(Message.conversation_id.in_(conversation_ids))
+    await db.execute(delete(MessagePluginItem).where(MessagePluginItem.message_id.in_(message_ids)))
+    await db.execute(delete(GmailPendingSend).where(GmailPendingSend.user_id == user.id))
     await db.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
     await db.execute(delete(Conversation).where(Conversation.user_id == user.id))
     await db.execute(delete(UsageEvent).where(UsageEvent.user_id == user.id))
     await db.execute(delete(UserImageLimit).where(UserImageLimit.user_id == user.id))
+    await db.execute(delete(PluginConnection).where(PluginConnection.user_id == user.id))
+    await db.execute(delete(PluginAuditEvent).where(PluginAuditEvent.user_id == user.id))
     await db.delete(user)
     await db.commit()
     for doc in documents:
         remove_file(doc.stored_name)
     await forget_ingest_attempts(doc.id for doc in documents)
+    for plugin, account_subject, token in revocations:
+        await connections.revoke_unless_shared(plugin, account_subject, token)
 
 
 # ---------------- Models ----------------
@@ -574,6 +589,7 @@ async def list_documents(
     documents = await db.scalars(select(Document).order_by(Document.created_at.desc(), Document.id.desc()))
     vision_pages = await vision_page_counts(db, select(Document.id).where(Document.status == "ready"))
     generated = await generated_ids(db, select(Document.id))
+    imported = await imported_sources(db, select(Document.id))
     return [
         document_item(
             doc,
@@ -582,6 +598,7 @@ async def list_documents(
             admin_view=True,
             vision_pages=vision_pages.get(doc.id, 0),
             generated=doc.id in generated,
+            imported_from=imported.get(doc.id),
         )
         for doc in documents
     ]

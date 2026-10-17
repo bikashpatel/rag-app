@@ -26,6 +26,7 @@ MESSAGE_FIELDS = {
     "completion_tokens",
     "error",
     "files",
+    "plugin_cards",
     "created_at",
 }
 

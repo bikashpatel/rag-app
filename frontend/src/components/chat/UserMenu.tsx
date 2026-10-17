@@ -1,16 +1,22 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
 import type { Me } from "../../api/types";
-import { KeyIcon, LogoutIcon, MoreIcon, ShieldIcon } from "./icons";
+import { usePlugins } from "../connections/pluginStore";
+import { KeyIcon, LogoutIcon, MoreIcon, PlugIcon, ShieldIcon } from "./icons";
 
 type UserMenuProps = {
   user: Me;
   onChangePassword: () => void;
+  onOpenConnections: () => void;
   onLogout: () => void;
 };
 
-/** Account button in the sidebar footer with a popup menu: Admin, Change password (not for the admin), Log out. */
-export default function UserMenu({ user, onChangePassword, onLogout }: UserMenuProps) {
+/**
+ * Account button in the sidebar footer with a popup menu: Admin, Change password (not for the admin), Connections
+ * (when any plugin is available to the user), Log out.
+ */
+export default function UserMenu({ user, onChangePassword, onOpenConnections, onLogout }: UserMenuProps) {
+  const { plugins } = usePlugins();
   const [open, setOpen] = useState(false);
   const menuId = useId();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -89,6 +95,18 @@ export default function UserMenu({ user, onChangePassword, onLogout }: UserMenuP
               Change password
             </button>
           )}
+          {plugins && plugins.length > 0 ? (
+            <button
+              type="button"
+              role="menuitem"
+              tabIndex={-1}
+              className="chat-menu-item"
+              onClick={() => choose(onOpenConnections)}
+            >
+              <PlugIcon size={15} />
+              Connections
+            </button>
+          ) : null}
           <button type="button" role="menuitem" tabIndex={-1} className="chat-menu-item" onClick={() => choose(onLogout)}>
             <LogoutIcon size={15} />
             Log out

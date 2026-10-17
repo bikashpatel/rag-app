@@ -38,11 +38,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 _MIB = 1024 * 1024
-_MAX_FILENAME_CHARS = 255
-# Control, format (e.g. bidi overrides) and surrogate code points never belong in a display name, nor U+FFFE and
-# U+FFFF, which XML can't hold (the name can be listed in the Sources of a generated Word or Excel file).
-_HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
-_NONCHARACTERS = frozenset("\ufffe\uffff")
 _MIME_TYPE = re.compile(r"[a-z0-9][a-z0-9!#$&^_.+-]{0,63}/[a-z0-9][a-z0-9!#$&^_.+-]{0,63}")
 
 DocumentId = Annotated[int, Path(ge=1, le=MAX_INT)]
@@ -93,6 +88,7 @@ async def list_documents(
     vision_pages = await storage.vision_page_counts(db, select(Document.id).where(visible, Document.status == "ready"))
     generated = await storage.generated_ids(db, select(Document.id).where(visible))
     images = await storage.generated_images(db, select(Document.id).where(visible))
+    imported = await storage.imported_sources(db, select(Document.id).where(visible))
     return [
         storage.document_item(
             doc,
@@ -101,6 +97,7 @@ async def list_documents(
             vision_pages=vision_pages.get(doc.id, 0),
             generated=doc.id in generated,
             image=images.get(doc.id),
+            imported_from=imported.get(doc.id),
         )
         for doc in result.scalars()
     ]
@@ -132,7 +129,7 @@ async def upload_document(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Only the admin can upload to the shared knowledge base."
         )
-    extension = _extension(file.filename)
+    extension = storage.extension_of(file.filename)
     _check_extension(extension)
 
     limits = user_limits(user)
@@ -143,7 +140,7 @@ async def upload_document(
     if file.size is not None and file.size > max_bytes:
         raise _too_large(limits["max_upload_mb"])
 
-    filename = _display_filename(file.filename, extension)
+    filename = storage.display_filename(file.filename, extension)
     stored_name = storage.new_stored_name(extension)
     try:
         saved = await asyncio.to_thread(_save_upload, file.file, storage.stored_path(stored_name), max_bytes)
@@ -207,7 +204,9 @@ async def reprocess_document(
     if active is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=NO_EMBEDDING_MODEL)
     generated = await storage.is_generated(db, doc.id)
-    image = (await storage.generated_images(db, select(Document.id).where(Document.id == doc.id))).get(doc.id)
+    this = select(Document.id).where(Document.id == doc.id)
+    image = (await storage.generated_images(db, this)).get(doc.id)
+    imported_from = (await storage.imported_sources(db, this)).get(doc.id)
     if doc.status != "pending":
         # When pending, it is already queued, and that run uses the active model: another queue entry would only be a
         # duplicate run. (One lost from the queue is re-queued by the worker's sweep.)
@@ -217,7 +216,12 @@ async def reprocess_document(
         await forget_ingest_attempts([doc.id])
         await _enqueue(doc.id)
     return storage.document_item(
-        doc, viewer=user, active_embedding_model_id=active.id, generated=generated, image=image
+        doc,
+        viewer=user,
+        active_embedding_model_id=active.id,
+        generated=generated,
+        image=image,
+        imported_from=imported_from,
     )
 
 
@@ -362,14 +366,6 @@ async def _enqueue(doc_id: int) -> None:
         logger.warning("Could not queue document %s for ingestion: %s", doc_id, exc)
 
 
-def _basename(filename: str | None) -> str:
-    return (filename or "").replace("\\", "/").rsplit("/", 1)[-1]
-
-
-def _extension(filename: str | None) -> str:
-    return PurePosixPath(_basename(filename)).suffix.lower()
-
-
 def _check_extension(extension: str) -> None:
     if extension in SUPPORTED_EXTENSIONS:
         return
@@ -387,21 +383,6 @@ def _too_large(max_upload_mb: int) -> HTTPException:
         status_code=status.HTTP_413_CONTENT_TOO_LARGE,
         detail=f"The file is too large. The limit is {max_upload_mb} MB per file.",
     )
-
-
-def _display_filename(filename: str | None, extension: str) -> str:
-    """Basename without control/format characters, whitespace collapsed, at most 255 chars keeping the extension."""
-    name = unicodedata.normalize("NFC", _basename(filename))
-    visible = "".join(
-        ch
-        for ch in name
-        if ch.isspace() or (unicodedata.category(ch) not in _HIDDEN_CATEGORIES and ch not in _NONCHARACTERS)
-    )
-    name = " ".join(visible.split())
-    stem, suffix = name[: len(name) - len(extension)], name[len(name) - len(extension) :]
-    if not stem or suffix.lower() != extension:
-        return f"document{extension}"
-    return stem[: _MAX_FILENAME_CHARS - len(suffix)] + suffix
 
 
 def _disposition(filename: str, kind: Literal["attachment", "inline"] = "attachment") -> str:

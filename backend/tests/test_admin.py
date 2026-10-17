@@ -89,6 +89,7 @@ DOCUMENT_ITEM_KEYS = {
     "vision_pages",
     "generated",
     "image",
+    "imported_from",
     "created_at",
     "updated_at",
 }
@@ -110,6 +111,11 @@ ADMIN_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/api/admin/usage", None),
     ("GET", "/api/admin/documents", None),
     ("DELETE", "/api/admin/documents/{document_id}", None),
+    ("GET", "/api/admin/plugins", None),
+    ("PATCH", "/api/admin/plugins/{plugin_id}", {"enabled": True}),
+    ("GET", "/api/admin/plugins/{plugin_id}/activity", None),
+    ("POST", "/api/admin/plugins/{plugin_id}/disconnect-all", None),
+    ("POST", "/api/admin/plugins/request-check/test", {"model_id": 1}),
 ]
 
 
@@ -255,7 +261,8 @@ async def _route_targets(create_user: CreateUser, model_ids: dict[str, int]) -> 
     document = await upload(user, "notes.txt", txt_bytes("Quarterly planning notes for the platform team."))
     assert document.status_code == 201, document.text
     assert user.user_id is not None
-    return user, {"user_id": user.user_id, "model_id": model_ids[OPUS], "document_id": document.json()["id"]}
+    targets = {"user_id": user.user_id, "model_id": model_ids[OPUS], "document_id": document.json()["id"]}
+    return user, {**targets, "plugin_id": "gmail"}
 
 
 @pytest.mark.parametrize(("method", "path", "body"), ADMIN_ROUTES, ids=[f"{m} {p}" for m, p, _ in ADMIN_ROUTES])

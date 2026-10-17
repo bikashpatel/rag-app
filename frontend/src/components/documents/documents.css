@@ -30,6 +30,9 @@
   font-size: 15px;
   font-weight: 600;
 }
+.btn.docs-import-btn {
+  flex: none;
+}
 
 /* ---------- Upload area ---------- */
 .docs-upload {

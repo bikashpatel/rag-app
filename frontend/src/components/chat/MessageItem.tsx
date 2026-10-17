@@ -4,8 +4,9 @@ import GeneratedFileCard from "./GeneratedFileCard";
 import GeneratedImageCard from "./GeneratedImageCard";
 import { AlertIcon, CheckIcon, ChevronDownIcon, CopyIcon, RetryIcon, SparkleIcon } from "./icons";
 import Markdown from "./Markdown";
+import PluginCard, { isKnownPluginCard } from "./plugins/PluginCard";
 import SourcesList, { type SourceHighlight } from "./SourcesList";
-import { isImageCard, type FileCard, type ThreadMessage } from "./useChatStream";
+import { isImageCard, pluginCardBusy, type FileCard, type ThreadMessage } from "./useChatStream";
 
 const HIGHLIGHT_MS = 2400;
 const COPY_FEEDBACK_MS = 1600;
@@ -53,6 +54,7 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
   }, []);
 
   const { content, sources, streaming, cards } = message;
+  const pluginCards = message.pluginCards.filter(isKnownPluginCard);
   const tokens = message.prompt_tokens + message.completion_tokens;
   const retry =
     prompt !== null ? (
@@ -86,9 +88,21 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
             ))}
           </ul>
         ) : null}
+        {pluginCards.length > 0 ? (
+          <ul className="chat-plugin-cards" aria-label="Plugin activity">
+            {pluginCards.map((card) => (
+              <li key={card.card_id}>
+                <PluginCard card={card} />
+              </li>
+            ))}
+          </ul>
+        ) : null}
         {/* Below the cards, so they also cover the follow-up call after a file is created or fails. A card being written
             or generated shows its own spinner, and once text streams the cursor at its end takes over. */}
-        {streaming && !content && !cards.some((card) => card.kind === "writing" || card.kind === "generating") ? (
+        {streaming &&
+        !content &&
+        !cards.some((card) => card.kind === "writing" || card.kind === "generating") &&
+        !pluginCards.some((card) => pluginCardBusy(card) && !card.stopped) ? (
           <div className="chat-typing" aria-hidden="true">
             <span />
             <span />
