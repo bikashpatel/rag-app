@@ -3,10 +3,16 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Discriminator, Tag
+from pydantic import BaseModel, Discriminator, Field, Tag
 
 # Largest Postgres INTEGER: no id or INTEGER column can hold more, and bigger values make the driver fail (a 500).
 MAX_INT = 2_147_483_647
+
+# The user's own UI settings (docs/briefs/ui-shell-settings.md, section 7). Adding a value is a contract change:
+# SPEC.md, frontend/src/api/types.ts, frontend/public/theme-boot.js and src/theme/appearance.ts together.
+ThemePreference = Literal["system", "light", "dark"]
+AccentColor = Literal["clay", "ocean", "sage", "plum", "slate"]
+ChatFontSize = Literal["small", "default", "large"]
 
 
 class UserLimits(BaseModel):
@@ -28,12 +34,24 @@ class UsageSummary(BaseModel):
     monthly_token_limit: int
 
 
+class Preferences(BaseModel):
+    """The caller's settings (user_preferences row, read leniently: a missing or invalid value is its default)."""
+
+    theme: ThemePreference = "system"  # "system" follows the browser's prefers-color-scheme
+    accent: AccentColor = "clay"
+    chat_font_size: ChatFontSize = "default"
+    enter_to_send: bool = True  # False: Ctrl/Cmd+Enter sends and Enter adds a new line
+    # The chat model new chats start with; None when unset or no longer one the user may use (the server's default)
+    default_model_id: int | None = None
+
+
 class Me(BaseModel):
     id: int
     username: str
     is_admin: bool
     limits: UserLimits
     usage: UsageSummary
+    preferences: Preferences = Field(default_factory=Preferences)
 
 
 ImageQuality = Literal["low", "medium", "high"]

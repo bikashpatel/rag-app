@@ -6,7 +6,7 @@ import Spinner from "../ui/Spinner";
 import { errorMessage } from "./adminApi";
 import { Field, SwitchField } from "./Field";
 import { FormValidator, numberText, type FieldErrors } from "./form";
-import { AlertIcon } from "./icons";
+import { AlertCircleIcon, AlertIcon } from "../ui/icons";
 
 // Same rules as the backend schema.
 const API_BASE_PATTERN = /^https?:\/\/[^\s\x00-\x1f\x7f/?#]+[^\s\x00-\x1f\x7f]*$/;
@@ -263,9 +263,9 @@ export default function ModelFormModal({ model, kind, onClose, onSaved }: ModelF
         {creating ? (
           <fieldset className="admin-segmented">
             <legend className="field-label">Kind</legend>
-            <div className="admin-segmented-options">
+            <div className="ui-segmented admin-segmented-options">
               {(Object.keys(KINDS) as ModelKind[]).map((option) => (
-                <label key={option} className="admin-segment">
+                <label key={option} className="ui-segment">
                   <input
                     type="radio"
                     name={`${formId}-kind`}
@@ -381,9 +381,9 @@ export default function ModelFormModal({ model, kind, onClose, onSaved }: ModelF
         </div>
 
         {indexInvalidated ? (
-          <div className="admin-notice admin-notice-warning">
-            <AlertIcon size={16} />
-            <span className="admin-notice-text">
+          <div className="ui-notice ui-notice-warning">
+            <AlertIcon size={15} />
+            <span className="ui-notice-text">
               Changing the model or API base discards this model's search index. Documents indexed with it will need
               re-indexing.
             </span>
@@ -391,8 +391,9 @@ export default function ModelFormModal({ model, kind, onClose, onSaved }: ModelF
         ) : null}
 
         {serverError ? (
-          <div className="admin-notice admin-notice-danger" role="alert">
-            <span className="admin-notice-text">{serverError}</span>
+          <div className="ui-notice ui-notice-danger" role="alert">
+            <AlertCircleIcon size={15} />
+            <span className="ui-notice-text">{serverError}</span>
           </div>
         ) : null}
       </form>

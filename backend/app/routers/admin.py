@@ -16,6 +16,7 @@ from app.models import (
     Document,
     GmailPendingSend,
     LLMModel,
+    LoginEvent,
     Message,
     MessagePluginItem,
     PluginAuditEvent,
@@ -23,6 +24,7 @@ from app.models import (
     UsageEvent,
     User,
     UserImageLimit,
+    UserPreference,
     user_allowed_models,
 )
 from app.plugins import connections
@@ -319,6 +321,8 @@ async def delete_user(user_id: Id, db: AsyncSession = Depends(get_db)) -> None:
     await db.execute(delete(UserImageLimit).where(UserImageLimit.user_id == user.id))
     await db.execute(delete(PluginConnection).where(PluginConnection.user_id == user.id))
     await db.execute(delete(PluginAuditEvent).where(PluginAuditEvent.user_id == user.id))
+    await db.execute(delete(UserPreference).where(UserPreference.user_id == user.id))
+    await db.execute(delete(LoginEvent).where(LoginEvent.user_id == user.id))
     await db.delete(user)
     await db.commit()
     for doc in documents:

@@ -21,7 +21,7 @@ import ConfirmAction from "./ConfirmAction";
 import { SwitchField } from "./Field";
 import FlashMessage from "./FlashMessage";
 import { useFlash, useResource } from "./hooks";
-import { AlertIcon, CheckIcon, CloseIcon } from "./icons";
+import { AlertCircleIcon, AlertIcon, CheckCircleIcon, CheckIcon, CloseIcon } from "../ui/icons";
 import MonthPicker, { currentMonth, monthLabel } from "./MonthPicker";
 import { EmptyState, ResourceGate } from "./StateViews";
 
@@ -64,8 +64,9 @@ export default function PluginsTab() {
         <div>
           <h2 className="admin-card-title">Plugins</h2>
           <p className="admin-card-subtitle">
-            Connectors each user links to their own account (account menu → Connections). Turning a plugin or a
-            capability off takes it out of chat right away; users' connections stay until they disconnect.
+            Connectors each user links to their own account (Settings → Plugins & data, or the Plugins menu in chat).
+            Turning a plugin or a capability off takes it out of chat right away; users' connections stay until they
+            disconnect.
           </p>
         </div>
       </div>
@@ -116,7 +117,7 @@ function PluginSection({ plugin: saved, onSaved, onReload }: PluginSectionProps)
       { enabled },
       { ...plugin, enabled },
       enabled
-        ? `${name} is on. Users can connect their accounts from Connections.`
+        ? `${name} is on. Users can connect their accounts in Settings → Plugins & data.`
         : `${name} is off. Its tools and screens are gone from chat; connections stay until users disconnect.`,
       `Couldn't turn ${name} ${enabled ? "on" : "off"}.`,
     );
@@ -165,18 +166,18 @@ function PluginSection({ plugin: saved, onSaved, onReload }: PluginSectionProps)
       </div>
       <FlashMessage flash={flash} />
       {!plugin.configured ? (
-        <div className="admin-notice admin-notice-warning">
-          <AlertIcon size={16} />
-          <span className="admin-notice-text">
+        <div className="ui-notice ui-notice-warning admin-inline-notice">
+          <AlertIcon size={15} />
+          <span className="ui-notice-text">
             Missing in .env: {plugin.missing_settings.join(", ") || "unknown settings"}. Set them, then run{" "}
             <code className="admin-code">docker compose up -d backend</code>.
           </span>
         </div>
       ) : null}
       {plugin.test_endpoints ? (
-        <div className="admin-notice admin-notice-warning">
-          <AlertIcon size={16} />
-          <span className="admin-notice-text">
+        <div className="ui-notice ui-notice-warning admin-inline-notice">
+          <AlertIcon size={15} />
+          <span className="ui-notice-text">
             The OAuth or API endpoints aren't Google's (a test setup). Real accounts can't connect until the
             GOOGLE_OAUTH_*_URL and GMAIL_API_BASE_URL settings are removed.
           </span>
@@ -266,9 +267,9 @@ function PluginSection({ plugin: saved, onSaved, onReload }: PluginSectionProps)
           </p>
           <p className="admin-subtext">Account emails are never shown here.</p>
           {connections.old_key > 0 ? (
-            <div className="admin-notice admin-notice-warning">
-              <AlertIcon size={16} />
-              <span className="admin-notice-text">
+            <div className="ui-notice ui-notice-warning">
+              <AlertIcon size={15} />
+              <span className="ui-notice-text">
                 {plural(connections.old_key, "connection")} still {connections.old_key === 1 ? "uses" : "use"} an older
                 encryption key: keep the old key in TOKEN_ENCRYPTION_KEY until this is 0.
               </span>
@@ -554,14 +555,14 @@ function CheckResult({ state, onDismiss }: { state: CheckState; onDismiss: () =>
   if (asked) facts.push(asked.length === 0 ? "the model found no request" : `the model found: ${asked.join(", ")}`);
   return (
     <div className={`admin-test ${ok ? "admin-test-ok" : "admin-test-fail"}`} role={ok ? "status" : "alert"}>
-      {ok ? <CheckIcon size={16} /> : <AlertIcon size={16} />}
+      {ok ? <CheckCircleIcon size={16} /> : <AlertCircleIcon size={16} />}
       <span className="admin-test-text">
         <strong>{ok ? `The request check works with ${state.model}` : `The request check failed with ${state.model}`}</strong>
         {facts.length ? <span className="admin-test-facts"> · {facts.join(" · ")}</span> : null}
         {message ? <span className="admin-test-message">{message}</span> : null}
       </span>
       <button type="button" className="btn btn-ghost btn-icon admin-test-close" aria-label="Dismiss test result" onClick={onDismiss}>
-        <CloseIcon size={14} />
+        <CloseIcon size={15} />
       </button>
     </div>
   );

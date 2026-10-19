@@ -2,7 +2,9 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { api, ApiError } from "../../api/client";
 import type { AdminConfig, AdminModel, AdminUser, AdminUserCreate, AdminUserUpdate } from "../../api/types";
 import Modal from "../ui/Modal";
+import PasswordInput from "../ui/PasswordInput";
 import Spinner from "../ui/Spinner";
+import { AlertCircleIcon, AlertIcon } from "../ui/icons";
 import { errorMessage } from "./adminApi";
 import { Field, SwitchField } from "./Field";
 import { FormValidator, MAX_INT32, type FieldErrors } from "./form";
@@ -199,10 +201,8 @@ export default function UserFormModal({ user, config, chatModels, modelsError, o
               className={creating ? undefined : "admin-span-2"}
             >
               {(control) => (
-                <input
+                <PasswordInput
                   {...control}
-                  type="password"
-                  className="input"
                   autoComplete="new-password"
                   value={form.password}
                   onChange={(e) => update("password", e.target.value)}
@@ -257,8 +257,9 @@ export default function UserFormModal({ user, config, chatModels, modelsError, o
         </fieldset>
 
         {serverError ? (
-          <div className="admin-notice admin-notice-danger" role="alert">
-            <span className="admin-notice-text">{serverError}</span>
+          <div className="ui-notice ui-notice-danger" role="alert">
+            <AlertCircleIcon size={15} />
+            <span className="ui-notice-text">{serverError}</span>
           </div>
         ) : null}
       </form>
@@ -275,7 +276,14 @@ type ModelChecklistProps = {
 
 function ModelChecklist({ models, error, selected, onChange }: ModelChecklistProps) {
   if (!models) {
-    return error ? <p className="error-text">{error}</p> : <p className="field-hint">Loading models…</p>;
+    return error ? (
+      <p className="error-text">
+        <AlertCircleIcon size={13} />
+        {error}
+      </p>
+    ) : (
+      <p className="field-hint">Loading models…</p>
+    );
   }
   if (models.length === 0) {
     return <p className="field-hint">No chat models are configured yet. Add one in the Models tab.</p>;
@@ -288,6 +296,7 @@ function ModelChecklist({ models, error, selected, onChange }: ModelChecklistPro
         <label key={model.id} className="admin-check">
           <input
             type="checkbox"
+            className="ui-check"
             checked={selected.includes(model.id)}
             onChange={(e) =>
               onChange(e.target.checked ? [...selected, model.id] : selected.filter((id) => id !== model.id))
@@ -298,7 +307,12 @@ function ModelChecklist({ models, error, selected, onChange }: ModelChecklistPro
           {model.enabled ? null : <span className="badge badge-neutral">disabled</span>}
         </label>
       ))}
-      {noneSelected ? <p className="admin-text-warning">With no models selected, this user can't chat.</p> : null}
+      {noneSelected ? (
+        <p className="admin-text-warning">
+          <AlertIcon size={14} />
+          With no models selected, this user can't chat.
+        </p>
+      ) : null}
     </fieldset>
   );
 }

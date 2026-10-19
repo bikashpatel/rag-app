@@ -85,9 +85,9 @@ def create_app() -> FastAPI:
     )
 
     from app.plugins.base import PluginError
-    from app.routers import admin, admin_plugins, auth, chat, conversations, documents, models, plugins
+    from app.routers import admin, admin_plugins, auth, chat, conversations, documents, me, models, plugins
 
-    for module in (auth, models, documents, conversations, chat, admin, admin_plugins, plugins):
+    for module in (auth, me, models, documents, conversations, chat, admin, admin_plugins, plugins):
         app.include_router(module.router, prefix="/api")
     plugins.mount_plugin_routers(app)
 

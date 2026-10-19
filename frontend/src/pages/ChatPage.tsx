@@ -1,38 +1,47 @@
 import { memo, useCallback, useEffect, useId, useRef, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
-import type { DocumentSelection, PluginInfo } from "../api/types";
+import { useNavigate, useParams } from "react-router-dom";
+import { api } from "../api/client";
+import type { DocumentConfig, DocumentSelection } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
-import ChangePasswordModal from "../components/chat/ChangePasswordModal";
 import "../components/chat/chat.css";
-import ChatHeader from "../components/chat/ChatHeader";
 import Composer, { type ComposerHandle } from "../components/chat/Composer";
 import ConversationSidebar from "../components/chat/ConversationSidebar";
 import EmptyState from "../components/chat/EmptyState";
-import { AlertIcon, CloseIcon } from "../components/chat/icons";
 import MessageList from "../components/chat/MessageList";
+import PlusMenu from "../components/chat/PlusMenu";
 import { ThreadError, ThreadLoading } from "../components/chat/ThreadPlaceholders";
+import TopBar from "../components/chat/TopBar";
+import { useAttachments } from "../components/chat/useAttachments";
 import { useChatStream } from "../components/chat/useChatStream";
 import { useConversations } from "../components/chat/useConversations";
 import { useDrawer } from "../components/chat/useDrawer";
 import { useMediaQuery } from "../components/chat/useMediaQuery";
 import { useModels } from "../components/chat/useModels";
-import ConnectionsModal, { parseOAuthReturn, type OAuthReturn } from "../components/connections/ConnectionsModal";
 import GmailImportModal from "../components/connections/GmailImportModal";
 import {
   gmailReady,
-  onConnectionsRequest,
+  onPluginBrowserRequest,
+  requestConnections,
   usePluginLifecycle,
   usePlugins,
 } from "../components/connections/pluginStore";
 import DocumentPanel from "../components/documents/DocumentPanel";
+import { AlertCircleIcon, CloseIcon, InfoIcon } from "../components/ui/icons";
+import { onConversationsDeleted } from "../lib/appEvents";
+import { formatNumber } from "../lib/format";
+import { useOpenSettings, useReplacePath, type SettingsTab } from "../lib/settingsLink";
 
 // Keep in sync with the breakpoints in chat.css.
 const SIDEBAR_DRAWER_QUERY = "(max-width: 1099.98px)";
 const DOCUMENTS_SLIDE_OVER_QUERY = "(max-width: 799.98px)";
 const FINE_POINTER_QUERY = "(pointer: fine)";
+/** "hidden" while the documents column is collapsed on this device (800 px and wider; functional brief 8.4). */
+const DOCUMENTS_PANEL_KEY = "rag.documentsPanel";
 const MAX_ID = 2_147_483_647;
+const APP_TITLE = "RAG Assistant";
 const MISSING_NOTICE = "That conversation doesn't exist or has been deleted.";
 const LOGOUT_FAILED = "Couldn't sign out. Check your connection and try again.";
+const UPLOAD_SETTINGS_FAILED = "Couldn't check your upload settings, so nothing was attached. Try again.";
 /** A conversation created for a first message that was cut off can be committed just after the client gave up. */
 const LATE_SIDEBAR_RELOAD_MS = 1500;
 /** After Stop or a lost connection the server saves the partial answer's usage a moment later: check it again then. */
@@ -41,6 +50,8 @@ const LATE_USAGE_REFRESH_MS = [1500, 5000];
 // Streaming re-renders the page on every frame; the document panel only depends on the selection.
 const StableDocumentPanel = memo(DocumentPanel);
 
+type Notice = { text: string; tone: "info" | "danger" };
+
 /** The route's conversation id; null for "/" and for anything that isn't a valid id. */
 function parseConversationId(param: string | undefined): number | null {
   if (param === undefined || !/^\d{1,10}$/.test(param)) return null;
@@ -48,11 +59,29 @@ function parseConversationId(param: string | undefined): number | null {
   return id >= 1 && id <= MAX_ID ? id : null;
 }
 
+function readDocumentsCollapsed(): boolean {
+  try {
+    return localStorage.getItem(DOCUMENTS_PANEL_KEY) === "hidden";
+  } catch {
+    return false;
+  }
+}
+
+function storeDocumentsCollapsed(collapsed: boolean): void {
+  try {
+    if (collapsed) localStorage.setItem(DOCUMENTS_PANEL_KEY, "hidden");
+    else localStorage.removeItem(DOCUMENTS_PANEL_KEY);
+  } catch {
+    /* storage unavailable: the choice lasts until the page reloads */
+  }
+}
+
 export default function ChatPage() {
   const { conversationId: param } = useParams();
   const navigate = useNavigate();
-  const location = useLocation();
-  const { user, refresh, logout } = useAuth();
+  const replacePath = useReplacePath();
+  const openSettingsAt = useOpenSettings();
+  const { user, refresh, logout, preferences } = useAuth();
   const routeId = parseConversationId(param);
   const invalidRoute = param !== undefined && routeId === null;
 
@@ -61,60 +90,67 @@ export default function ChatPage() {
   const finePointer = useMediaQuery(FINE_POINTER_QUERY);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [documentsOpen, setDocumentsOpen] = useState(false);
-  const [passwordOpen, setPasswordOpen] = useState(false);
-  const [connectionsOpen, setConnectionsOpen] = useState(false);
-  const [oauthReturn, setOauthReturn] = useState<OAuthReturn | null>(null);
-  /** Connections opened because this plugin's browser closed by itself (it says why). */
-  const [closedPluginId, setClosedPluginId] = useState<string | null>(null);
+  const [documentsCollapsed, setDocumentsCollapsed] = useState(readDocumentsCollapsed);
   const [gmailBrowserOpen, setGmailBrowserOpen] = useState(false);
   const [selection, setSelection] = useState<DocumentSelection>(null);
-  const [notice, setNotice] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const sidebarId = useId();
   const documentsId = useId();
   const composerRef = useRef<ComposerHandle>(null);
+  const plusRef = useRef<HTMLButtonElement>(null);
   const documentsRef = useRef<HTMLDivElement>(null);
   const focusComposer = useRef(true);
   const lateReloadTimer = useRef<number | undefined>(undefined);
   const lateUsageTimers = useRef<number[]>([]);
-  const oauthChecked = useRef(false);
+  const routeIdRef = useRef(routeId);
+  routeIdRef.current = routeId;
 
   const conversations = useConversations();
-  const models = useModels();
-  const { touch, reload: reloadConversations } = conversations;
-  const { selectedId: modelId, reload: reloadModels } = models;
+  const models = useModels(preferences.default_model_id);
+  const attachments = useAttachments(user?.id ?? null);
+  const { touch, reload: reloadConversations, clearAll: clearConversations } = conversations;
+  const { selectedId: modelId, reload: reloadModels, resetToDefault: resetModel } = models;
+  const { add: addAttachments, take: takeAttachments, restore: restoreAttachments } = attachments;
   usePluginLifecycle();
-  const gmail = gmailReady(usePlugins().plugins);
+  const { plugins } = usePlugins();
+  const gmail = gmailReady(plugins);
   const gmailUsable = gmail !== null;
 
-  /** Opens Connections; `closed`: the id of a plugin whose browser just closed because it stopped being usable. */
-  const showConnections = useCallback((closed: string | null) => {
-    setSidebarOpen(false);
-    setOauthReturn(null);
-    setClosedPluginId(closed);
-    setConnectionsOpen(true);
-  }, []);
-  // The documents panel's Gmail browser asks for it too (pluginStore, so DocumentPanel needs no new props).
-  useEffect(() => onConnectionsRequest(showConnections), [showConnections]);
+  const openSettings = useCallback(
+    (tab: SettingsTab, focusPluginId?: string) => {
+      setSidebarOpen(false);
+      openSettingsAt(tab, focusPluginId ? { focusPluginId } : {});
+    },
+    [openSettingsAt],
+  );
+
+  // Settings → Plugins & data → Browse Gmail asks for the Gmail browser once its dialog has closed (U22).
+  useEffect(() => onPluginBrowserRequest((pluginId) => setGmailBrowserOpen(pluginId === "gmail")), []);
 
   // The Gmail browser closes by itself when Gmail stops being usable (turned off, disconnected, reconnect needed,
-  // access removed: often a search or import that got a 403/409, which reloads the list). Connections then says why
-  // and offers Reconnect, instead of the dialog just vanishing.
+  // access removed: often a search or import that got a 403/409, which reloads the list). Settings → Plugins & data
+  // then says why and offers Reconnect, instead of the dialog just vanishing. A list not loaded yet decides nothing.
   useEffect(() => {
-    if (gmailUsable || !gmailBrowserOpen) return;
+    if (gmailUsable || !gmailBrowserOpen || plugins === null) return;
     setGmailBrowserOpen(false);
-    showConnections("gmail");
-  }, [gmailUsable, gmailBrowserOpen, showConnections]);
+    requestConnections("gmail");
+  }, [gmailUsable, gmailBrowserOpen, plugins]);
 
-  // Back from Google (`/?plugin=<id>&oauth=<result>`): open Connections with the outcome, once, and drop the query.
+  // The Gmail browser returns focus to its opener; when that is gone (Settings' Browse button), use the "+" button.
+  const gmailWasOpen = useRef(false);
   useEffect(() => {
-    if (oauthChecked.current) return;
-    oauthChecked.current = true;
-    const returned = parseOAuthReturn(location.search);
-    if (!returned) return;
-    setOauthReturn(returned);
-    setConnectionsOpen(true);
-    navigate(location.pathname, { replace: true });
-  }, [location.search, location.pathname, navigate]);
+    if (gmailBrowserOpen) {
+      gmailWasOpen.current = true;
+      return;
+    }
+    if (!gmailWasOpen.current) return;
+    gmailWasOpen.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      const active = document.activeElement;
+      if (!active || active === document.body) plusRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [gmailBrowserOpen]);
 
   useEffect(
     () => () => {
@@ -124,7 +160,7 @@ export default function ChatPage() {
     [],
   );
 
-  /** Updates the sidebar's usage meter; `settled` = the answer's usage is already saved. */
+  /** Updates the avatar menu's usage meters; `settled` = the answer's usage is already saved. */
   const refreshUsage = useCallback(
     (settled: boolean) => {
       const load = () => void refresh().catch(() => undefined);
@@ -136,9 +172,9 @@ export default function ChatPage() {
   );
 
   const showMissing = useCallback(() => {
-    setNotice(MISSING_NOTICE);
-    navigate("/", { replace: true });
-  }, [navigate]);
+    setNotice({ text: MISSING_NOTICE, tone: "info" });
+    replacePath("/");
+  }, [replacePath]);
 
   useEffect(() => {
     if (invalidRoute) showMissing();
@@ -147,7 +183,8 @@ export default function ChatPage() {
   const thread = useChatStream(routeId, {
     onConversationCreated: (id, title) => {
       touch(id, title);
-      navigate(`/c/${id}`, { replace: true });
+      // Through useReplacePath, so Settings opened while the first answer streams stays open (U26).
+      replacePath(`/c/${id}`);
     },
     onConversationMissing: showMissing,
     onTurnFinished: (turn, settled) => {
@@ -162,7 +199,8 @@ export default function ChatPage() {
       lateReloadTimer.current = window.setTimeout(() => void reloadConversations(), LATE_SIDEBAR_RELOAD_MS);
     },
   });
-  const { send, reload: reloadThread, status: threadStatus, threadKey } = thread;
+  const { send, stop, reload: reloadThread, status: threadStatus, threadKey } = thread;
+  const threadEmpty = thread.messages.length === 0;
 
   useEffect(() => {
     if (!focusComposer.current || threadStatus !== "ready") return;
@@ -170,8 +208,29 @@ export default function ChatPage() {
     if (finePointer) composerRef.current?.focus();
   }, [threadKey, threadStatus, finePointer]);
 
+  // The account default changed in Settings while this chat has no messages: the picker follows it (8.2).
+  const threadEmptyRef = useRef(threadEmpty);
+  threadEmptyRef.current = threadEmpty;
+  useEffect(() => {
+    if (threadEmptyRef.current) resetModel();
+  }, [preferences.default_model_id, resetModel]);
+
+  // Settings → Delete all chats: the list empties, a stream stops, and a conversation route goes to "/" (Settings
+  // stays open: useReplacePath).
+  useEffect(
+    () =>
+      onConversationsDeleted(() => {
+        clearConversations();
+        stop();
+        if (routeIdRef.current !== null) replacePath("/");
+        else reloadThread();
+      }),
+    [clearConversations, stop, replacePath, reloadThread],
+  );
+
   const sidebarDrawerOpen = sidebarIsDrawer && sidebarOpen;
   const documentsSlideOverOpen = documentsIsSlideOver && documentsOpen;
+  const documentsHidden = !documentsIsSlideOver && documentsCollapsed;
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
   const closeDocuments = useCallback(() => setDocumentsOpen(false), []);
   useDrawer(documentsSlideOverOpen, documentsRef, closeDocuments);
@@ -184,27 +243,64 @@ export default function ChatPage() {
     if (!documentsIsSlideOver) setDocumentsOpen(false);
   }, [documentsIsSlideOver]);
 
-  const handleSend = useCallback(
-    async (text: string) => {
+  const setCollapsed = useCallback((collapsed: boolean) => {
+    storeDocumentsCollapsed(collapsed);
+    setDocumentsCollapsed(collapsed);
+  }, []);
+
+  const toggleDocuments = useCallback(() => {
+    if (documentsIsSlideOver) setDocumentsOpen((open) => !open);
+    else setCollapsed(!documentsCollapsed);
+  }, [documentsIsSlideOver, documentsCollapsed, setCollapsed]);
+
+  /** Sends a message; attached files go with it (ready ones join an explicit selection) unless it is a Retry. */
+  const sendMessage = useCallback(
+    async (text: string, withAttachments: boolean) => {
       setNotice(null);
-      const accepted = await send({ message: text, modelId, documentIds: selection });
+      const taken = withAttachments ? takeAttachments() : { documentIds: [], snapshot: [] };
+      let documentIds = selection;
+      if (selection !== null && taken.documentIds.length > 0) {
+        documentIds = [...selection, ...taken.documentIds.filter((id) => !selection.includes(id))];
+        setSelection(documentIds);
+      }
+      const accepted = await send({ message: text, modelId, documentIds });
       if (!accepted) {
         composerRef.current?.restore(text);
+        restoreAttachments(taken.snapshot);
         // The chosen model may have been disabled, deleted or withdrawn since the list was loaded (400/403): refetch
         // so the picker drops it and falls back to the default.
         reloadModels();
       }
     },
-    [send, modelId, reloadModels, selection],
+    [send, modelId, reloadModels, selection, takeAttachments, restoreAttachments],
+  );
+  const handleSend = useCallback((text: string) => void sendMessage(text, true), [sendMessage]);
+  const handleRetry = useCallback((text: string) => void sendMessage(text, false), [sendMessage]);
+
+  const attachFiles = useCallback(
+    async (files: File[], folders: string[], config: DocumentConfig | null) => {
+      let settings = config;
+      if (!settings) {
+        try {
+          settings = await api.get<DocumentConfig>("/documents/config");
+        } catch {
+          setNotice({ text: UPLOAD_SETTINGS_FAILED, tone: "danger" });
+          return;
+        }
+      }
+      addAttachments(files, folders, settings);
+    },
+    [addAttachments],
   );
 
   const startNewChat = useCallback(() => {
     setNotice(null);
     setSidebarOpen(false);
     focusComposer.current = true;
+    resetModel();
     if (routeId === null) reloadThread();
     else navigate("/");
-  }, [routeId, reloadThread, navigate]);
+  }, [routeId, reloadThread, navigate, resetModel]);
 
   const onNavigate = useCallback(() => {
     setNotice(null);
@@ -213,46 +309,41 @@ export default function ChatPage() {
 
   const onDeleted = useCallback(
     (id: number) => {
-      if (id === routeId) navigate("/", { replace: true });
+      if (id === routeIdRef.current) replacePath("/");
     },
-    [routeId, navigate],
+    [replacePath],
   );
 
-  const openChangePassword = useCallback(() => {
-    setSidebarOpen(false);
-    setPasswordOpen(true);
-  }, []);
-
-  const openConnections = useCallback(() => showConnections(null), [showConnections]);
-
-  const closeConnections = useCallback(() => {
-    setConnectionsOpen(false);
-    setOauthReturn(null);
-    setClosedPluginId(null);
-  }, []);
-
-  const browsePlugin = useCallback((plugin: PluginInfo) => {
-    setConnectionsOpen(false);
-    setOauthReturn(null);
-    setClosedPluginId(null);
-    setGmailBrowserOpen(plugin.id === "gmail");
-  }, []);
-
   const onLogout = useCallback(() => {
-    // On failure the session cookie is still set, so stay signed in and say so (close the drawer to show it).
+    // On failure the session cookie is still set, so stay signed in and say so.
     logout().catch(() => {
       setSidebarOpen(false);
-      setNotice(LOGOUT_FAILED);
+      setNotice({ text: LOGOUT_FAILED, tone: "danger" });
     });
   }, [logout]);
 
   const listed = routeId === null ? undefined : conversations.conversations?.find((item) => item.id === routeId);
-  const title = listed?.title ?? thread.title ?? (routeId === null ? "New chat" : "Conversation");
+  const knownTitle = listed?.title ?? thread.title;
+  const title = knownTitle ?? (routeId === null ? "New chat" : "Conversation");
+
+  useEffect(() => {
+    const previous = document.title;
+    document.title = knownTitle ? `${knownTitle} · ${APP_TITLE}` : APP_TITLE;
+    return () => {
+      document.title = previous;
+    };
+  }, [knownTitle]);
+
   const noModels = models.models !== null && models.models.length === 0;
-  const selectedModel = models.models?.find((model) => model.id === modelId);
+  const selectedModel = models.models?.find((model) => model.id === modelId) ?? null;
   const canCreateFiles = selectedModel?.can_create_files ?? false;
   const canCreateImages = selectedModel?.can_create_images ?? false;
   const imagesOffered = models.models?.some((model) => model.can_create_images) ?? false;
+  const imageLimit = user && !user.is_admin ? user.limits.monthly_image_limit : 0;
+  const imagesNote =
+    user && imageLimit > 0
+      ? `${formatNumber(Math.max(imageLimit - user.usage.images, 0))} of ${formatNumber(imageLimit)} left this month`
+      : "Saved to My documents";
   const disabledReason =
     thread.status === "loading"
       ? "Loading conversation…"
@@ -267,14 +358,16 @@ export default function ChatPage() {
     body = <ThreadLoading />;
   } else if (thread.status === "error") {
     body = <ThreadError message={thread.loadError} onRetry={reloadThread} />;
-  } else if (thread.messages.length === 0) {
+  } else if (threadEmpty) {
     body = (
       <div className="chat-thread chat-thread-empty">
         <EmptyState
           username={user?.username ?? null}
-          disabled={disabledReason !== null || thread.streaming}
+          disabled={disabledReason !== null || thread.streaming || attachments.waiting !== null}
           canCreateFiles={canCreateFiles}
           canCreateImages={canCreateImages}
+          selection={selection}
+          imagesNote={imagesNote}
           onPick={handleSend}
         />
       </div>
@@ -285,50 +378,60 @@ export default function ChatPage() {
         key={thread.threadKey}
         messages={thread.messages}
         streaming={thread.streaming}
-        onRetry={handleSend}
+        onRetry={handleRetry}
       />
     );
   }
 
+  // The scope chip opens the slide-over on phones and expands a collapsed column on wider screens.
+  const onScopeClick = documentsIsSlideOver
+    ? () => setDocumentsOpen(true)
+    : documentsCollapsed
+      ? () => setCollapsed(false)
+      : undefined;
+
   return (
-    <div className="chat-page">
+    <div className={documentsHidden ? "chat-page chat-page-docs-collapsed" : "chat-page"}>
       <ConversationSidebar
         id={sidebarId}
         conversations={conversations}
         activeId={routeId}
-        user={user}
-        imagesOffered={imagesOffered}
         drawer={sidebarIsDrawer}
         open={sidebarDrawerOpen}
         onClose={closeSidebar}
         onNavigate={onNavigate}
         onNewChat={startNewChat}
         onDeleted={onDeleted}
-        onChangePassword={openChangePassword}
-        onOpenConnections={openConnections}
-        onLogout={onLogout}
       />
 
       <main className="chat-main" inert={sidebarDrawerOpen || documentsSlideOverOpen}>
-        <ChatHeader
+        <TopBar
           title={title}
+          user={user}
           models={models}
+          imagesOffered={imagesOffered}
           sidebarToggle={
             sidebarIsDrawer
               ? { open: sidebarDrawerOpen, controls: sidebarId, onToggle: () => setSidebarOpen((open) => !open) }
               : null
           }
-          documentsToggle={
-            documentsIsSlideOver
-              ? { open: documentsSlideOverOpen, controls: documentsId, onToggle: () => setDocumentsOpen((open) => !open) }
-              : null
-          }
+          documentsToggle={{
+            open: documentsIsSlideOver ? documentsSlideOverOpen : !documentsCollapsed,
+            controls: documentsId,
+            onToggle: toggleDocuments,
+          }}
+          openSettings={openSettings}
+          onLogout={onLogout}
         />
         {notice ? (
-          <div className="chat-notice" role="status">
-            <span>{notice}</span>
-            <button type="button" className="btn btn-ghost btn-icon btn-sm" onClick={() => setNotice(null)} aria-label="Dismiss">
-              <CloseIcon size={14} />
+          <div
+            className={`ui-notice ui-notice-${notice.tone} chat-notice`}
+            role={notice.tone === "danger" ? "alert" : "status"}
+          >
+            {notice.tone === "danger" ? <AlertCircleIcon size={15} /> : <InfoIcon size={15} />}
+            <span className="ui-notice-text">{notice.text}</span>
+            <button type="button" className="btn btn-ghost btn-icon" onClick={() => setNotice(null)} aria-label="Dismiss">
+              <CloseIcon size={15} />
             </button>
           </div>
         ) : null}
@@ -337,16 +440,16 @@ export default function ChatPage() {
 
         <div className="chat-bottom">
           {thread.sendError ? (
-            <div className="chat-banner" role="alert">
-              <AlertIcon size={15} />
-              <span className="chat-banner-text">{thread.sendError}</span>
+            <div className="ui-notice ui-notice-danger chat-banner" role="alert">
+              <AlertCircleIcon size={15} />
+              <span className="ui-notice-text">{thread.sendError}</span>
               <button
                 type="button"
-                className="btn btn-ghost btn-icon btn-sm"
+                className="btn btn-ghost btn-icon"
                 onClick={thread.dismissSendError}
                 aria-label="Dismiss error"
               >
-                <CloseIcon size={14} />
+                <CloseIcon size={15} />
               </button>
             </div>
           ) : null}
@@ -354,16 +457,38 @@ export default function ChatPage() {
             ref={composerRef}
             streaming={thread.streaming}
             disabledReason={disabledReason}
+            replying={!threadEmpty}
             selection={selection}
             canCreateFiles={canCreateFiles}
             canCreateImages={canCreateImages}
+            enterToSend={preferences.enter_to_send}
+            attachments={attachments.views}
+            onRemoveAttachment={attachments.remove}
+            waiting={attachments.waiting}
+            onDropFiles={(files, folders) => void attachFiles(files, folders, null)}
+            plusMenu={
+              <PlusMenu
+                triggerRef={plusRef}
+                user={user}
+                models={models.models}
+                selectedModel={selectedModel}
+                composerDisabled={disabledReason}
+                plugins={plugins}
+                onStarter={(prefix) => composerRef.current?.insertStarter(prefix)}
+                onAttach={(files, config) => void attachFiles(files, [], config)}
+                onImportGmail={() => setGmailBrowserOpen(true)}
+                onOpenPluginSettings={(pluginId) => openSettings("plugins", pluginId)}
+              />
+            }
             onSend={handleSend}
             onStop={thread.stop}
-            onScopeClick={documentsIsSlideOver ? () => setDocumentsOpen(true) : undefined}
+            onScopeClick={onScopeClick}
           />
         </div>
       </main>
 
+      {/* Collapsed on wider screens it stays mounted (only hidden): it keeps polling and publishing its list, which
+          the attachment chips and the file cards read (8.4). */}
       <div
         ref={documentsRef}
         id={documentsId}
@@ -372,6 +497,7 @@ export default function ChatPage() {
         aria-modal={documentsSlideOverOpen || undefined}
         aria-label={documentsSlideOverOpen ? "Documents" : undefined}
         tabIndex={-1}
+        hidden={documentsHidden}
         inert={sidebarDrawerOpen}
       >
         <StableDocumentPanel
@@ -389,15 +515,6 @@ export default function ChatPage() {
             closeSidebar();
             closeDocuments();
           }}
-        />
-      ) : null}
-      {passwordOpen ? <ChangePasswordModal onClose={() => setPasswordOpen(false)} /> : null}
-      {connectionsOpen ? (
-        <ConnectionsModal
-          oauthReturn={oauthReturn}
-          closedPluginId={closedPluginId}
-          onClose={closeConnections}
-          onBrowse={browsePlugin}
         />
       ) : null}
       {gmailBrowserOpen && gmail ? <GmailImportModal plugin={gmail} onClose={() => setGmailBrowserOpen(false)} /> : null}

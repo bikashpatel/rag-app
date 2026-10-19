@@ -4,7 +4,7 @@ import type { GeneratedImage, GeneratedImageDetails } from "../../api/types";
 import { formatDateTime } from "../../lib/format";
 import Modal from "../ui/Modal";
 import { fileTypeTag } from "./fileTypes";
-import { AlertIcon, DownloadIcon } from "./icons";
+import { AlertCircleIcon, DownloadIcon } from "../ui/icons";
 
 export type ImageViewerProps = { documentId: number; filename: string; image: GeneratedImage; onClose: () => void };
 
@@ -42,11 +42,12 @@ export default function ImageViewer({ documentId, filename, image, onClose }: Im
       open
       title={filename}
       onClose={onClose}
-      width={1200}
+      width={1100}
+      className="docs-viewer-dialog"
       footer={
         <>
           <a className="btn btn-primary docs-viewer-download" href={documentDownloadUrl(documentId)} download>
-            <DownloadIcon size={15} />
+            <DownloadIcon size={16} />
             Download
           </a>
           <button type="button" className="btn" onClick={onClose}>
@@ -59,7 +60,7 @@ export default function ImageViewer({ documentId, filename, image, onClose }: Im
         <div className="docs-viewer-stage">
           {load === "failed" ? (
             <p className="docs-viewer-error docs-viewer-broken" role="alert" style={boxStyle}>
-              <AlertIcon size={16} />
+              <AlertCircleIcon size={16} />
               Couldn't load the image.
             </p>
           ) : (
@@ -91,7 +92,7 @@ export default function ImageViewer({ documentId, filename, image, onClose }: Im
         <div className="docs-viewer-prompt-body">
           {details.status === "loading" ? (
             <p className="docs-viewer-muted">
-              <span className="spinner docs-spinner" aria-hidden="true" />
+              <span className="spinner" aria-hidden="true" />
               Loading the prompt…
             </p>
           ) : details.status === "failed" ? (

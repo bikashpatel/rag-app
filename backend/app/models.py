@@ -379,3 +379,33 @@ class GmailPendingSend(Base):
     sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     gmail_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     gmail_thread_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+# ---------------- Account (docs/briefs/ui-shell-settings.md, section 3) ----------------
+
+
+class UserPreference(Base):
+    """A user's own UI settings (app.schemas.Preferences fields; unknown keys a newer version wrote are kept). No row:
+    every default. Read leniently, written strictly (app.services.account)."""
+
+    __tablename__ = "user_preferences"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    data: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+class LoginEvent(Base):
+    """One successful sign-in. The newest account.LOGIN_HISTORY_LIMIT per user are kept. The IP is approximate and the
+    User-Agent isn't stored, only what was parsed from it."""
+
+    __tablename__ = "login_events"
+    __table_args__ = (Index("ix_login_events_user_created", "user_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)  # "203.0.113.x" or an IPv6 /48 network
+    browser: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    os: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    device: Mapped[str] = mapped_column(String(16), default="unknown")  # "desktop" | "mobile" | "tablet" | "unknown"

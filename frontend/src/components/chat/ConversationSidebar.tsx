@@ -1,11 +1,9 @@
 import { memo, useCallback, useRef } from "react";
-import type { ConversationSummary, Me } from "../../api/types";
+import type { ConversationSummary } from "../../api/types";
 import ConversationItem from "./ConversationItem";
 import { CloseIcon, NewChatIcon, RetryIcon } from "./icons";
 import type { ConversationsState } from "./useConversations";
 import { useDrawer } from "./useDrawer";
-import UsageMeter from "./UsageMeter";
-import UserMenu from "./UserMenu";
 
 const DAY_MS = 86_400_000;
 
@@ -30,9 +28,6 @@ type ConversationSidebarProps = {
   id: string;
   conversations: ConversationsState;
   activeId: number | null;
-  user: Me | null;
-  /** A chat model the user can pick generates images (the usage meter then shows images). */
-  imagesOffered: boolean;
   /** Medium and narrow screens: the sidebar is an overlay drawer. */
   drawer: boolean;
   open: boolean;
@@ -41,27 +36,18 @@ type ConversationSidebarProps = {
   onNavigate: () => void;
   onNewChat: () => void;
   onDeleted: (id: number) => void;
-  onChangePassword: () => void;
-  /** Account menu → Connections (offered when any plugin is available). */
-  onOpenConnections: () => void;
-  onLogout: () => void;
 };
 
 function ConversationSidebar({
   id,
   conversations: { conversations, error, reload, rename, remove },
   activeId,
-  user,
-  imagesOffered,
   drawer,
   open,
   onClose,
   onNavigate,
   onNewChat,
   onDeleted,
-  onChangePassword,
-  onOpenConnections,
-  onLogout,
 }: ConversationSidebarProps) {
   const rootRef = useRef<HTMLElement>(null);
   const isOpenDrawer = drawer && open;
@@ -90,42 +76,43 @@ function ConversationSidebar({
       tabIndex={-1}
     >
       <div className="chat-sidebar-header">
-        <div className="chat-brand">
-          <span className="chat-brand-logo" aria-hidden="true">
+        <div className="ui-brand chat-brand">
+          <span className="ui-brand-mark" aria-hidden="true">
             R
           </span>
-          <span className="chat-brand-name">RAG Assistant</span>
+          <span className="ui-brand-name">RAG Assistant</span>
         </div>
         {drawer ? (
           <button type="button" className="btn btn-ghost btn-icon" onClick={onClose} aria-label="Close conversations">
-            <CloseIcon size={16} />
+            <CloseIcon size={18} />
           </button>
         ) : null}
       </div>
 
       <div className="chat-sidebar-new">
-        <button type="button" className="btn chat-new-chat" onClick={onNewChat}>
-          <NewChatIcon size={15} />
+        <button type="button" className="chat-new-chat" onClick={onNewChat}>
+          <NewChatIcon size={18} />
           New chat
         </button>
       </div>
 
       <nav className="chat-conv-nav" aria-label="Conversation history">
         {conversations === null && error ? (
-          <div className="chat-sidebar-message" role="alert">
-            <p>{error}</p>
+          <div className="ui-notice ui-notice-danger chat-sidebar-error" role="alert">
+            <span className="ui-notice-text">{error}</span>
             <button type="button" className="btn btn-sm" onClick={() => void reload()}>
-              <RetryIcon size={13} />
-              Try again
+              <RetryIcon size={15} />
+              Retry
             </button>
           </div>
         ) : conversations === null ? (
           <div className="chat-conv-skeletons" aria-busy="true">
             <span className="sr-only" role="status">
-              Loading conversations
+              Loading…
             </span>
-            {[72, 56, 84, 64, 48].map((width) => (
-              <span key={width} className="chat-skeleton chat-conv-skeleton" style={{ width: `${width}%` }} />
+            <span className="ui-skeleton chat-conv-skeleton-label" style={{ width: "40%" }} aria-hidden="true" />
+            {[78, 70, 86].map((width) => (
+              <span key={width} className="ui-skeleton" style={{ width: `${width}%` }} aria-hidden="true" />
             ))}
           </div>
         ) : conversations.length === 0 ? (
@@ -150,18 +137,6 @@ function ConversationSidebar({
           ))
         )}
       </nav>
-
-      {user ? (
-        <div className="chat-sidebar-footer">
-          <UsageMeter user={user} imagesOffered={imagesOffered} />
-          <UserMenu
-            user={user}
-            onChangePassword={onChangePassword}
-            onOpenConnections={onOpenConnections}
-            onLogout={onLogout}
-          />
-        </div>
-      ) : null}
     </aside>
   );
 }

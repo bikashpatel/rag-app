@@ -1,13 +1,12 @@
 import { useEffect, useId, useState, type JSX, type KeyboardEvent } from "react";
 import type { DocumentConfig, DocumentScope, DocumentSelection } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
-import { MailIcon } from "../chat/icons";
 import GmailImportModal from "../connections/GmailImportModal";
 import { gmailReady, requestConnections, usePlugins } from "../connections/pluginStore";
+import { AlertCircleIcon, AlertIcon, CloseIcon, MailIcon } from "../ui/icons";
 import DocumentList from "./DocumentList";
 import "./documents.css";
 import { BYTES_PER_MB, supportedTypeLabels, uploadRules } from "./fileTypes";
-import { AlertIcon, CloseIcon } from "./icons";
 import QuotaFooter from "./QuotaFooter";
 import ScopeToggle from "./ScopeToggle";
 import { pruneSelection } from "./selection";
@@ -94,7 +93,7 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
       uploadManager.onSettled((created) => {
         if (created) {
           upsertDocument(created);
-          setAnnouncement(`${created.filename} uploaded. It can be searched once processing finishes.`);
+          setAnnouncement(`${created.filename} uploaded. It can be searched once indexing finishes.`);
         }
         void reloadConfig();
       }),
@@ -131,25 +130,25 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
           Documents
         </h2>
         {gmail ? (
-          <button type="button" className="btn btn-sm docs-import-btn" onClick={() => setImporting(true)}>
-            <MailIcon size={14} />
+          <button type="button" className="btn btn-ghost btn-sm docs-import-btn" onClick={() => setImporting(true)}>
+            <MailIcon size={15} />
             Import from Gmail
           </button>
         ) : gmailReconnect ? (
           <button
             type="button"
-            className="btn btn-sm docs-import-btn"
+            className="btn btn-ghost btn-sm docs-import-btn docs-import-attention"
             onClick={() => requestConnections()}
             title="Gmail needs to be reconnected before you can import from it"
           >
-            <AlertIcon size={14} />
+            <AlertIcon size={15} />
             Reconnect Gmail
           </button>
         ) : null}
         {onClose ? (
           <button
             type="button"
-            className="btn btn-ghost btn-icon"
+            className="btn btn-ghost btn-icon docs-close"
             onClick={onClose}
             aria-label="Close documents panel"
             title="Close"
@@ -228,8 +227,9 @@ function RetryButton({ onRetry }: { onRetry: () => Promise<void> }) {
 
 function ErrorNotice({ message, onRetry }: { message: string; onRetry: () => Promise<void> }) {
   return (
-    <div className="docs-notice" role="alert">
-      <span className="docs-notice-text">{message}</span>
+    <div className="ui-notice ui-notice-danger docs-notice" role="alert">
+      <AlertCircleIcon size={15} />
+      <span className="ui-notice-text">{message}</span>
       <RetryButton onRetry={onRetry} />
     </div>
   );
@@ -238,8 +238,8 @@ function ErrorNotice({ message, onRetry }: { message: string; onRetry: () => Pro
 function LoadError({ message, onRetry }: { message: string; onRetry: () => Promise<void> }) {
   return (
     <div className="docs-state" role="alert">
-      <span className="docs-state-icon docs-state-icon-danger">
-        <AlertIcon size={22} />
+      <span className="docs-state-icon docs-state-icon-danger" aria-hidden="true">
+        <AlertCircleIcon size={24} />
       </span>
       <p className="docs-state-title">Documents unavailable</p>
       <p className="docs-state-text">{message}</p>
@@ -248,16 +248,18 @@ function LoadError({ message, onRetry }: { message: string; onRetry: () => Promi
   );
 }
 
+/** Rows shaped like the real ones (box, tag, two lines) while the list loads. */
 function ListSkeleton() {
   return (
-    <div className="docs-skeleton" role="status">
+    <div className="docs-skeleton" role="status" aria-busy="true">
       <span className="sr-only">Loading documents…</span>
-      {[0, 1, 2].map((row) => (
+      {[72, 58, 66].map((width, row) => (
         <div key={row} className="docs-skeleton-row" aria-hidden="true">
-          <span className="docs-skeleton-block docs-skeleton-tag" />
+          <span className="ui-skeleton docs-skeleton-check" />
+          <span className="ui-skeleton docs-skeleton-tag" />
           <span className="docs-skeleton-lines">
-            <span className="docs-skeleton-block" />
-            <span className="docs-skeleton-block docs-skeleton-short" />
+            <span className="ui-skeleton" style={{ width: `${width}%` }} />
+            <span className="ui-skeleton ui-skeleton-sub" style={{ width: `${width - 26}%` }} />
           </span>
         </div>
       ))}

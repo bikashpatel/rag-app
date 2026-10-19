@@ -1,0 +1,21 @@
+RAG Serif and RAG Sans: Latin subsets of Source Serif 4 and Source Sans 3 (SIL Open Font License 1.1).
+Subsetting is a modification, and "Source" is a Reserved Font Name of the originals, so the subset families are
+renamed in their name tables; copyright, trademark and licence records are unchanged. The licences are next to the
+fonts, unchanged. How the files were made: docs/briefs/ui-visual-design.md section 4.1 and appendix A.
+
+Upstream (downloaded from the official repositories at pinned commits; sha256 checked):
+  github.com/adobe-fonts/source-serif, tag 4.005R, commit 2823e993c53fca27c5c8749f529b56a5a7c77b6b
+    WOFF2/VAR/SourceSerif4Variable-Roman.ttf.woff2   940a76eda1388de39d38c8e7a79bf6ea058a387faee0a9f33c8d25c6ba05e1be
+    WOFF2/VAR/SourceSerif4Variable-Italic.ttf.woff2  9d28b5749a1ad096a295cb607c521bd1af4cd9979b6f37332daf70143149fb44
+    LICENSE.md -> LICENSE-SourceSerif4.md            75784a295293a8992f5a8d99210566e0064a012e6dab6731305e3787f15896c7
+  github.com/adobe-fonts/source-sans, branch release, commit 87b37a2daaed80fcb8e8ccb0085c4d72ddade12e
+    WOFF2/VF/SourceSans3VF-Upright.ttf.woff2         5f16566f7a40d39b339ad26be151fa5a1ab1f0c2574c7a2e619765584a1acbd8
+    LICENSE.md -> LICENSE-SourceSans3.md             56af9b9c6715597e458284a474dc118a50a4150e9d547c70f7b4a33c3e6a9328
+
+Bundled (subset_fonts.py of appendix A, fonttools 4.66.1 and brotli 1.1.0, Python 3.13; deterministic):
+  RAGSerif-Roman.woff2   wght 400-700, opsz 16-60  150624 bytes  826af310b09211dafbbbff66b70eae2b1fbb2d81990e03849f441828f204e9fd
+  RAGSerif-Italic.woff2  wght 400-700, opsz 16-60  121688 bytes  135f790e2e431a371cb701d3be16e8c65a6e12398dfe34e3d70809c1e7895419
+  RAGSans-Upright.woff2  wght 200-900               58008 bytes  c3bc9c38f264451683d03cb9d0ac187f81b1db22617727db9fd140d8b44064b3
+
+The metric overrides of the fallback faces in src/styles/fonts.css come from appendix C (fallback_metrics.py) run on
+these three files and macOS's Georgia and Arial; re-run it whenever the files change.

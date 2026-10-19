@@ -1,6 +1,6 @@
 import { useId, useState } from "react";
 import Spinner from "../ui/Spinner";
-import { ChevronLeftIcon, ChevronRightIcon } from "./icons";
+import { ChevronLeftIcon, ChevronRightIcon } from "../ui/icons";
 
 const MONTH_PATTERN = /^\d{4}-(0[1-9]|1[0-2])$/;
 

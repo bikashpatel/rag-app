@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { DocumentItem, DocumentStatus } from "../../api/types";
 import { formatBytes, formatDateTime, formatNumber, formatRelativeTime } from "../../lib/format";
 import { deleteResource, queuedMessage, reindexDocuments } from "./adminApi";
+import FileTag from "../documents/FileTag";
 import ConfirmAction from "./ConfirmAction";
 import FlashMessage from "./FlashMessage";
 import { useFlash, usePolling, useResource } from "./hooks";
@@ -14,15 +15,15 @@ type StatusFilter = "all" | DocumentStatus | "stale";
 const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "all", label: "All statuses" },
   { value: "ready", label: "Ready" },
-  { value: "pending", label: "Pending" },
-  { value: "processing", label: "Processing" },
+  { value: "pending", label: "Queued" },
+  { value: "processing", label: "Indexing" },
   { value: "failed", label: "Failed" },
   { value: "stale", label: "Needs re-index" },
 ];
 
 const STATUS_BADGES: Record<DocumentStatus, { label: string; className: string }> = {
-  pending: { label: "Pending", className: "badge badge-neutral" },
-  processing: { label: "Processing", className: "badge badge-info" },
+  pending: { label: "Queued", className: "badge badge-neutral" },
+  processing: { label: "Indexing…", className: "badge badge-info" },
   ready: { label: "Ready", className: "badge badge-success" },
   failed: { label: "Failed", className: "badge badge-danger" },
 };
@@ -74,7 +75,7 @@ export default function DocumentsTab({ onChanged }: { onChanged: () => void }) {
   return (
     <section className="card admin-card" aria-labelledby="admin-docs-title">
       <div className="admin-card-header">
-        <div>
+        <div className="admin-card-heading">
           <h2 id="admin-docs-title" className="admin-card-title">
             Documents
           </h2>
@@ -84,7 +85,7 @@ export default function DocumentsTab({ onChanged }: { onChanged: () => void }) {
         <ConfirmAction
           label="Re-index all documents"
           tone="primary"
-          triggerClassName="btn"
+          triggerClassName="btn btn-sm"
           disabled={!docs.data?.length}
           message="Re-embed every document with the active embedding model? This uses embedding tokens, and vision tokens for PDF pages not yet read with the active vision model. It can take a while."
           confirmLabel="Re-index all"
@@ -183,8 +184,11 @@ function DocumentRow({ doc, onDelete }: { doc: DocumentItem; onDelete: () => Pro
   return (
     <tr>
       <td>
-        <span className="admin-filename" title={doc.filename}>
-          {doc.filename}
+        <span className="admin-file-cell">
+          <FileTag filename={doc.filename} size="sm" />
+          <span className="admin-filename" title={doc.filename}>
+            {doc.filename}
+          </span>
         </span>
       </td>
       <td className="admin-nowrap">{doc.owner_username}</td>
@@ -196,6 +200,7 @@ function DocumentRow({ doc, onDelete }: { doc: DocumentItem; onDelete: () => Pro
       <td>
         <span className="admin-badges">
           <span className={badge.className} title={doc.error ?? undefined}>
+            {doc.status === "processing" ? <span className="spinner" aria-hidden="true" /> : null}
             {badge.label}
           </span>
           {doc.error ? <span className="sr-only">: {doc.error}</span> : null}

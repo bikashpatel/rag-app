@@ -2,8 +2,9 @@ import { useEffect, useId, useRef, useState, type KeyboardEvent } from "react";
 import { Link } from "react-router-dom";
 import { ApiError } from "../../api/client";
 import type { ConversationSummary } from "../../api/types";
+import Menu, { MenuItem } from "../ui/Menu";
 import Spinner from "../ui/Spinner";
-import { PencilIcon, TrashIcon } from "./icons";
+import { MoreIcon, PencilIcon, TrashIcon } from "./icons";
 
 const MAX_TITLE_CHARS = 200;
 
@@ -21,21 +22,21 @@ function errorMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? err.message : fallback;
 }
 
-/** One sidebar row: link to the conversation, inline rename and delete with inline confirmation. */
+/** One sidebar row: link to the conversation, a "⋯" menu with Rename (inline) and Delete (inline confirmation). */
 export default function ConversationItem({ conversation, active, onOpen, onRename, onDelete }: ConversationItemProps) {
   const [mode, setMode] = useState<Mode>("view");
   const [draft, setDraft] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const errorId = useId();
+  const confirmId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const cancelDeleteRef = useRef<HTMLButtonElement>(null);
-  const renameButtonRef = useRef<HTMLButtonElement>(null);
-  const deleteButtonRef = useRef<HTMLButtonElement>(null);
+  const moreButtonRef = useRef<HTMLButtonElement>(null);
   const saving = useRef(false);
   // Guards against a blur fired while the input is being removed after Enter or Escape.
   const editing = useRef(false);
-  // Which action button gets focus back when the row returns to "view" from the keyboard.
+  // The "⋯" button gets focus back when the row returns to "view" from the keyboard.
   const returnFocusTo = useRef<"rename" | "delete" | null>(null);
 
   useEffect(() => {
@@ -45,7 +46,7 @@ export default function ConversationItem({ conversation, active, onOpen, onRenam
     } else if (mode === "delete") {
       cancelDeleteRef.current?.focus();
     } else if (returnFocusTo.current) {
-      (returnFocusTo.current === "rename" ? renameButtonRef : deleteButtonRef).current?.focus();
+      moreButtonRef.current?.focus();
       returnFocusTo.current = null;
     }
   }, [mode]);
@@ -142,23 +143,26 @@ export default function ConversationItem({ conversation, active, onOpen, onRenam
   if (mode === "delete") {
     return (
       <li className="chat-conv chat-conv-confirm">
-        <div className="chat-conv-confirm-box" role="group" aria-label="Confirm delete" onKeyDown={onConfirmKeyDown}>
+        <div className="chat-conv-confirm-box" role="group" aria-labelledby={confirmId} onKeyDown={onConfirmKeyDown}>
+          <span id={confirmId} className="chat-conv-confirm-title">
+            Delete this chat?
+          </span>
           <span className="chat-conv-confirm-text">
-            Delete “<span className="chat-conv-confirm-title">{conversation.title}</span>”?
+            “{conversation.title}” and its messages go. Your documents stay.
           </span>
           <div className="chat-conv-confirm-actions">
-            <button type="button" className="btn btn-danger btn-sm" onClick={confirmDelete} disabled={busy}>
-              {busy ? <Spinner size={12} label="Deleting" /> : null}
-              Delete
-            </button>
             <button
               ref={cancelDeleteRef}
               type="button"
-              className="btn btn-ghost btn-sm"
+              className="btn btn-ghost btn-xs"
               onClick={() => leave("delete")}
               disabled={busy}
             >
               Cancel
+            </button>
+            <button type="button" className="btn btn-danger btn-xs" onClick={confirmDelete} disabled={busy}>
+              {busy ? <Spinner size={12} label="Deleting" /> : null}
+              Delete chat
             </button>
           </div>
         </div>
@@ -179,26 +183,31 @@ export default function ConversationItem({ conversation, active, onOpen, onRenam
         {conversation.title}
       </Link>
       <div className="chat-conv-actions">
-        <button
-          ref={renameButtonRef}
-          type="button"
-          className="chat-conv-action"
-          onClick={() => enter("rename")}
-          aria-label={`Rename “${conversation.title}”`}
-          title="Rename"
+        <Menu
+          label={`Chat: ${conversation.title}`}
+          placement="bottom-end"
+          offset={6}
+          className="chat-conv-menu"
+          triggerRef={moreButtonRef}
+          trigger={(props) => (
+            <button
+              {...props}
+              type="button"
+              className="chat-conv-action"
+              aria-label={`More actions for “${conversation.title}”`}
+              title="Rename or delete"
+            >
+              <MoreIcon size={18} />
+            </button>
+          )}
         >
-          <PencilIcon size={14} />
-        </button>
-        <button
-          ref={deleteButtonRef}
-          type="button"
-          className="chat-conv-action chat-conv-action-danger"
-          onClick={() => enter("delete")}
-          aria-label={`Delete “${conversation.title}”`}
-          title="Delete"
-        >
-          <TrashIcon size={14} />
-        </button>
+          <MenuItem icon={<PencilIcon size={17} />} onSelect={() => enter("rename")}>
+            Rename
+          </MenuItem>
+          <MenuItem icon={<TrashIcon size={17} />} className="chat-conv-menu-danger" onSelect={() => enter("delete")}>
+            Delete
+          </MenuItem>
+        </Menu>
       </div>
     </li>
   );

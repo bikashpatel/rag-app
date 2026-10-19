@@ -122,9 +122,8 @@ export default function MessageList({ messages, streaming, onRetry }: MessageLis
         </div>
       </div>
       {showJump ? (
-        <button type="button" className="chat-jump" onClick={jumpToLatest}>
-          <ArrowDownIcon size={14} />
-          Jump to latest
+        <button type="button" className="chat-jump" onClick={jumpToLatest} aria-label="Jump to latest" title="Jump to latest">
+          <ArrowDownIcon size={18} />
         </button>
       ) : null}
       <div className="sr-only" aria-live="polite">

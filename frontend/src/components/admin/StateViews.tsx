@@ -1,12 +1,12 @@
 import type { ReactNode } from "react";
 import Spinner from "../ui/Spinner";
+import { AlertCircleIcon, RefreshIcon } from "../ui/icons";
 import type { Resource } from "./hooks";
-import { AlertIcon, RefreshIcon } from "./icons";
 
 export function LoadingState({ label }: { label: string }) {
   return (
-    <div className="admin-state">
-      <Spinner size={22} label={label} />
+    <div className="admin-state" aria-busy="true">
+      <Spinner size={20} label={label} />
       <span aria-hidden="true">{label}…</span>
     </div>
   );
@@ -15,10 +15,12 @@ export function LoadingState({ label }: { label: string }) {
 export function ErrorState({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
     <div className="admin-state admin-state-error" role="alert">
-      <AlertIcon size={22} />
+      <span className="admin-state-icon" aria-hidden="true">
+        <AlertCircleIcon size={22} />
+      </span>
       <p>{message}</p>
       <button type="button" className="btn btn-sm" onClick={onRetry}>
-        <RefreshIcon size={14} />
+        <RefreshIcon size={15} />
         Try again
       </button>
     </div>
@@ -37,9 +39,9 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
 /** Inline notice for a failed refresh while the last good data stays on screen. */
 export function RefreshError({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
-    <div className="admin-notice admin-notice-danger" role="alert">
-      <AlertIcon size={16} />
-      <span className="admin-notice-text">{message}</span>
+    <div className="ui-notice ui-notice-danger admin-inline-notice" role="alert">
+      <AlertCircleIcon size={15} />
+      <span className="ui-notice-text">{message}</span>
       <button type="button" className="btn btn-sm" onClick={onRetry}>
         Retry
       </button>

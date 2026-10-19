@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     gmail_max_attachment_mb: int = Field(default=15, ge=1, le=18)
     gmail_import_max_items: int = Field(default=20, ge=1, le=100)  # threads plus attachments per import request
 
+    # --- Account (app/services/export.py; docs/briefs/ui-shell-settings.md) ---
+    export_max_mb: int = Field(default=100, ge=1, le=1000)  # uncompressed content of one data export
+    # From the request to the end of the build (nothing is sent before). At most 90: the Cloudflare quick tunnel drops a
+    # response that sends nothing for about 100 s
+    export_timeout_seconds: int = Field(default=80, ge=10, le=90)
+
     @field_validator("admin_username")
     @classmethod
     def _lower_admin(cls, v: str) -> str:

@@ -1,13 +1,12 @@
 import { useEffect, useState, type CSSProperties, type ReactNode } from "react";
-import { documentDownloadUrl, documentImageUrl } from "../../api/client";
+import { documentImageUrl } from "../../api/client";
 import type { DocumentItem, GeneratedImage } from "../../api/types";
 import { formatBytes } from "../../lib/format";
 import { useDocumentSnapshot } from "../documents/documentEvents";
 import FileTag from "../documents/FileTag";
-import { fileTypeTag } from "../documents/fileTypes";
 import ImageViewer from "../documents/ImageViewer";
-import { StatusText } from "./GeneratedFileCard";
-import { AlertIcon, DownloadIcon, ImageIcon } from "./icons";
+import { AlertCircleIcon, ImageIcon } from "../ui/icons";
+import { DownloadButton, StatusText } from "./GeneratedFileCard";
 import type { FileCard } from "./useChatStream";
 
 /** Longest edge of an image in the answer (px); narrow screens use the message's width instead. */
@@ -18,7 +17,7 @@ type Shown = { id: number; filename: string; image: GeneratedImage };
 type CardView = {
   /** The group's accessible name. */
   label: string;
-  tone: "default" | "muted" | "failed";
+  tone: "default" | "muted" | "failed" | "busy";
   lead: ReactNode;
   headline: string;
   /** Long headlines wrap instead of being cut off (sentences rather than names). */
@@ -47,7 +46,7 @@ function cardView(card: FileCard, doc: DocumentItem | null | undefined): CardVie
       return {
         ...base,
         label: "Image being generated",
-        tone: "default",
+        tone: "busy",
         lead: <span className="spinner chat-file-spinner" aria-hidden="true" />,
         headline: card.title ? `Creating ${card.title}…` : "Creating an image…",
       };
@@ -55,8 +54,8 @@ function cardView(card: FileCard, doc: DocumentItem | null | undefined): CardVie
       return {
         ...base,
         label: "Image being generated",
-        tone: "default",
-        lead: <span className="spinner chat-file-spinner" aria-hidden="true" />,
+        tone: "busy",
+        lead: <FileTag filename="image.png" />,
         headline: `Generating ${card.title}…`,
         progress: <Elapsed since={card.startedAt} />,
         frame: { width: card.width, height: card.height },
@@ -77,13 +76,14 @@ function cardView(card: FileCard, doc: DocumentItem | null | undefined): CardVie
         headline: file.filename,
         meta: (
           <span className="chat-file-meta">
-            <span className="chat-file-meta-parts">
-              <span className="chat-file-meta-part">
-                {fileTypeTag(file.filename).label} · {formatBytes(file.size_bytes)}
+            {image ? (
+              <span>
+                {image.width} × {image.height}
               </span>
-              <span className="chat-file-meta-part">
-                <StatusText status={status} alreadyExisted={false} error={doc?.error ?? null} />
-              </span>
+            ) : null}
+            <span>{formatBytes(file.size_bytes)}</span>
+            <span>
+              <StatusText status={status} alreadyExisted={false} error={doc?.error ?? null} />
             </span>
           </span>
         ),
@@ -97,7 +97,11 @@ function cardView(card: FileCard, doc: DocumentItem | null | undefined): CardVie
         ...base,
         label: card.title ?? "Image",
         tone: "failed",
-        lead: <AlertIcon size={18} />,
+        lead: (
+          <span className="chat-file-icon">
+            <AlertCircleIcon size={20} />
+          </span>
+        ),
         headline: `Couldn't generate ${card.title ?? "the image"}`,
         wrap: true,
         error: card.error,
@@ -107,7 +111,11 @@ function cardView(card: FileCard, doc: DocumentItem | null | undefined): CardVie
         ...base,
         label: card.title ?? "Image",
         tone: "muted",
-        lead: <ImageIcon size={18} />,
+        lead: (
+          <span className="chat-file-icon">
+            <ImageIcon size={20} />
+          </span>
+        ),
         headline: card.wasGenerating
           ? `${card.title ?? "Image"}: stopped. An image that was already being generated is still finished and saved to your documents.`
           : `${card.title ?? "Image"}: stopped.`,
@@ -139,8 +147,18 @@ export default function GeneratedImageCard({ card }: { card: FileCard }) {
         shown ? (
           <Preview shown={shown} style={styles.frame} onOpen={() => setViewing(true)} />
         ) : (
-          <div className="chat-image-frame chat-image-placeholder" style={styles.frame} aria-hidden="true">
-            <ImageIcon size={28} />
+          <div className="chat-image-frame chat-image-placeholder" style={styles.frame}>
+            {card.kind === "generating" ? (
+              <span className="chat-image-wait">
+                <span className="spinner" aria-hidden="true" />
+                <span>
+                  Creating the image… this takes up to a minute
+                  {view.progress ? <span className="chat-image-elapsed"> · {view.progress}</span> : null}
+                </span>
+              </span>
+            ) : (
+              <ImageIcon size={28} />
+            )}
           </div>
         )
       ) : null}
@@ -157,19 +175,9 @@ export default function GeneratedImageCard({ card }: { card: FileCard }) {
             {view.meta}
             {view.error ? <span className="chat-file-error">{view.error}</span> : null}
           </div>
-          {view.progress ? <div className="chat-file-progress">{view.progress}</div> : null}
+          {view.progress && !styles ? <div className="chat-file-progress">{view.progress}</div> : null}
         </div>
-        {view.download ? (
-          <a
-            className="btn btn-sm chat-file-download"
-            href={documentDownloadUrl(view.download.id)}
-            download
-            aria-label={`Download ${view.download.filename}`}
-          >
-            <DownloadIcon size={14} />
-            Download
-          </a>
-        ) : null}
+        {view.download ? <DownloadButton {...view.download} /> : null}
       </div>
       {viewing && shown ? (
         <ImageViewer
@@ -192,7 +200,7 @@ function Preview({ shown, style, onOpen }: { shown: Shown; style: CSSProperties;
   if (failed) {
     return (
       <div className="chat-image-frame chat-image-broken" style={style}>
-        <AlertIcon size={18} />
+        <AlertCircleIcon size={18} />
         <span>Couldn't load the image</span>
         <button
           type="button"
@@ -229,7 +237,7 @@ function Preview({ shown, style, onOpen }: { shown: Shown; style: CSSProperties;
   );
 }
 
-/** "Images take up to a minute · 12 s", counting up every second. */
+/** The seconds since the image model started ("12 s"), counting up every second. */
 function Elapsed({ since }: { since: number }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -237,5 +245,5 @@ function Elapsed({ since }: { since: number }) {
     return () => window.clearInterval(timer);
   }, []);
   const seconds = Math.max(0, Math.floor((now - since) / 1000));
-  return <span>Images take up to a minute · {seconds} s</span>;
+  return <span className="chat-image-seconds">{seconds} s</span>;
 }

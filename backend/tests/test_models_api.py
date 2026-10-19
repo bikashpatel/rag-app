@@ -10,6 +10,7 @@ from sqlalchemy import select, update
 
 from app.db import SessionLocal
 from app.models import LLMModel, User
+from app.services import llm
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
@@ -62,7 +63,7 @@ async def test_unrestricted_user_gets_every_enabled_chat_model_default_first(
     models = await listed(user)
 
     # Every seeded chat model supports function calling; CHAT_IMAGE_TOOLS is off in the tests unless asked for.
-    files = {"can_create_files": True, "can_create_images": False}
+    files = {"can_create_files": True, "can_create_images": False, "supports_tools": True}
     assert models == [
         {"id": model_ids[OPUS], "display_name": OPUS, "provider": "anthropic", "is_default": True, **files},
         {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": False, **files},
@@ -131,6 +132,7 @@ async def test_provider_is_the_prefix_of_the_litellm_model(
         "is_default": False,
         "can_create_files": can_create_files,
         "can_create_images": False,
+        "supports_tools": can_create_files,  # CHAT_FILE_TOOLS is on: files follow tool support
     }
 
 
@@ -141,7 +143,7 @@ async def test_restricted_user_gets_only_allowed_enabled_models(
     user = await create_user(restrict_models=True, allowed_model_ids=allowed)
     await patch_model(admin_client, model_ids[SONNET], enabled=False)
 
-    files = {"can_create_files": True, "can_create_images": False}
+    files = {"can_create_files": True, "can_create_images": False, "supports_tools": True}
     assert await listed(user) == [
         {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": False, **files},
         {"id": model_ids[GPT], "display_name": GPT, "provider": "openai", "is_default": False, **files},
@@ -153,6 +155,27 @@ async def test_restricted_user_gets_only_allowed_enabled_models(
         (GPT, True),
         (HAIKU, False),
     ]
+
+
+async def test_supports_tools_follows_litellm_and_a_rejection_in_chat(
+    admin_client: ApiClient, create_user: CreateUser, model_ids: dict[str, int]
+) -> None:
+    user = await create_user()
+    created = await admin_client.post(
+        "/api/admin/models", json={"display_name": "Custom", "litellm_model": "azure/my-deployment/v2", "kind": "chat"}
+    )
+    assert created.status_code == 201
+    tools = {model["display_name"]: model["supports_tools"] for model in await listed(user)}
+    assert tools == {OPUS: True, HAIKU: True, SONNET: True, GPT_MINI: True, GPT: True, "Custom": False}
+
+    async with SessionLocal() as session:
+        haiku = await session.get(LLMModel, model_ids[HAIKU])
+        assert haiku is not None
+    llm.mark_tools_rejected(haiku, "tools aren't supported")  # what chat does when the provider rejects the tools
+
+    listed_after = await listed(user)
+    after = {model["display_name"]: (model["supports_tools"], model["can_create_files"]) for model in listed_after}
+    assert after[HAIKU] == (False, False) and after[OPUS] == (True, True)
 
 
 async def test_restricted_user_without_allowed_models_gets_none(create_user: CreateUser) -> None:

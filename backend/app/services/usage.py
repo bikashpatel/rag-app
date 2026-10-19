@@ -36,8 +36,12 @@ def month_bounds(month: str | None) -> tuple[datetime, datetime, str]:
             raise ValueError("month must look like YYYY-MM") from exc
     else:
         start = month_start()
-    end = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
-    return start, end, start.strftime("%Y-%m")
+    return start, next_month(start), start.strftime("%Y-%m")
+
+
+def next_month(start: datetime) -> datetime:
+    """The 1st of the month after `start` (the 1st of a month); December rolls over to January."""
+    return start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
 
 
 def user_limits(user: User) -> dict:

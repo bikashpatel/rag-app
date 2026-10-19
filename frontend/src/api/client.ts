@@ -1,14 +1,18 @@
 // Minimal fetch wrapper. Auth is an httpOnly cookie, so requests just need same-origin credentials.
 
 import type {
+  AccountInfo,
   AdminPlugin,
   AdminPluginUpdate,
+  ConversationsDeleted,
   GeneratedImageDetails,
   GmailImportRequest,
   GmailImportResult,
   GmailThreadDetail,
   GmailThreadPage,
   GmailThreadSearch,
+  Me,
+  MyUsage,
   PendingSend,
   PendingSendConfirm,
   PendingSendRevision,
@@ -18,6 +22,8 @@ import type {
   PluginConnectRequest,
   PluginConnectResponse,
   PluginInfo,
+  Preferences,
+  PreferencesUpdate,
   RequestCheckTest,
   RequestCheckTestResult,
 } from "./types";
@@ -32,6 +38,9 @@ export class ApiError extends Error {
 }
 
 let unauthorizedHandler: (() => void) | null = null;
+
+/** Their callers handle a 401 themselves (a wrong password; "signed out" at boot and in the session check). */
+const SESSION_PATHS: ReadonlySet<string> = new Set(["/auth/login", "/auth/me"]);
 
 /** Called by AuthContext: invoked whenever an API call returns 401 (session expired / revoked). */
 export function setUnauthorizedHandler(handler: (() => void) | null): void {
@@ -92,7 +101,7 @@ export async function request<T>(
     if ((err as Error).name === "AbortError") throw err;
     throw new ApiError(0, "Cannot reach the server. Check that the app is running.");
   }
-  if (res.status === 401 && !path.startsWith("/auth/login")) notifyUnauthorized();
+  if (res.status === 401 && !SESSION_PATHS.has(path.split("?")[0])) notifyUnauthorized();
   if (!res.ok) throw await toApiError(res);
   if (res.status === 204) return undefined as T;
   const text = await res.text();
@@ -123,6 +132,135 @@ export function documentImageUrl(id: number, size: ImageRendition = "full"): str
 /** The prompt, revised prompt and image model of a generated image (only its owner gets them). */
 export function getImageDetails(id: number, options?: { signal?: AbortSignal }): Promise<GeneratedImageDetails> {
   return api.get<GeneratedImageDetails>(`/documents/${id}/image/details`, options);
+}
+
+// ---------------- Session and account (SPEC section 6, "Auth" and "Account") ----------------
+
+/** Requests that re-issue the session cookie (change password, log out others) while they are in flight. */
+const sessionChanges = new Set<Promise<unknown>>();
+
+function trackSessionChange<T>(promise: Promise<T>): Promise<T> {
+  sessionChanges.add(promise);
+  const forget = () => {
+    sessionChanges.delete(promise);
+  };
+  promise.then(forget, forget);
+  return promise;
+}
+
+/**
+ * GET /auth/me for the session check (U25): the Me, or null on 401, without notifying the unauthorized handler;
+ * rejects with ApiError on any other failure. It waits for a cookie re-issue in flight first, so the check doesn't
+ * ask with the cookie that request is about to replace.
+ */
+export async function getSessionUser(signal?: AbortSignal): Promise<Me | null> {
+  while (sessionChanges.size > 0) await Promise.allSettled([...sessionChanges]);
+  try {
+    return await api.get<Me>("/auth/me", { signal });
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 401) return null;
+    throw err;
+  }
+}
+
+export function getPreferences(signal?: AbortSignal): Promise<Preferences> {
+  return api.get<Preferences>("/me/preferences", { signal });
+}
+
+export function patchPreferences(update: PreferencesUpdate): Promise<Preferences> {
+  return api.patch<Preferences>("/me/preferences", update);
+}
+
+export function getAccount(signal?: AbortSignal): Promise<AccountInfo> {
+  return api.get<AccountInfo>("/me/account", { signal });
+}
+
+export function getMyUsage(signal?: AbortSignal): Promise<MyUsage> {
+  return api.get<MyUsage>("/me/usage", { signal });
+}
+
+/** Signs out every other session; this browser gets a new cookie. */
+export function changePassword(currentPassword: string, newPassword: string): Promise<void> {
+  return trackSessionChange(
+    api.post<void>("/auth/change-password", { current_password: currentPassword, new_password: newPassword }),
+  );
+}
+
+/** POST /auth/logout-others: every other session ends (other browsers, devices and Bearer tokens); this one stays. */
+export function logoutOtherSessions(): Promise<void> {
+  return trackSessionChange(api.post<void>("/auth/logout-others"));
+}
+
+/** DELETE /conversations: every conversation of the caller (documents stay). */
+export function deleteAllConversations(): Promise<ConversationsDeleted> {
+  return api.del<ConversationsDeleted>("/conversations");
+}
+
+const EXPORT_FALLBACK_NAME = "rag-assistant-export.zip";
+
+/** The file name of a `Content-Disposition: attachment; filename="…"` header, if it is a plain, safe one. */
+function attachmentFilename(header: string | null): string | null {
+  const match = header ? /filename="([^"\\/]+)"/i.exec(header) : null;
+  return match ? match[1] : null;
+}
+
+function headerCount(res: Response, name: string): number {
+  const value = Number.parseInt(res.headers.get(name) ?? "", 10);
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+/**
+ * POST /me/export with fetch (an empty JSON body); ApiError (with the server's detail) on non-2xx. The file name comes
+ * from Content-Disposition (fallback "rag-assistant-export.zip"), the counts from X-Export-Conversations / -Omitted.
+ */
+export async function downloadMyData(
+  signal?: AbortSignal,
+): Promise<{ blob: Blob; filename: string; conversations: number; omitted: number }> {
+  let res: Response;
+  try {
+    res = await fetch("/api/me/export", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") throw err;
+    throw new ApiError(0, "Cannot reach the server. Check that the app is running.");
+  }
+  if (res.status === 401) notifyUnauthorized();
+  if (!res.ok) throw await toApiError(res);
+  let blob: Blob;
+  try {
+    blob = await res.blob();
+  } catch (err) {
+    if ((err as Error).name === "AbortError") throw err;
+    throw new ApiError(0, "The download was interrupted. Please try again.");
+  }
+  return {
+    blob,
+    filename: attachmentFilename(res.headers.get("Content-Disposition")) ?? EXPORT_FALLBACK_NAME,
+    conversations: headerCount(res, "X-Export-Conversations"),
+    omitted: headerCount(res, "X-Export-Omitted"),
+  };
+}
+
+/** How long a saved blob's URL lives: an immediate revoke can abort a large download in Safari and Firefox. */
+const BLOB_URL_LIFETIME_MS = 60_000;
+
+/** Saves a blob as a file: an object URL and a temporary <a download> click; the URL is revoked 60 s later. */
+export function saveBlob(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.rel = "noopener";
+  link.style.display = "none";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_LIFETIME_MS);
 }
 
 // ---------------- Plugins (SPEC section 6, "Plugins"; docs/briefs/plugins-gmail.md section 15) ----------------

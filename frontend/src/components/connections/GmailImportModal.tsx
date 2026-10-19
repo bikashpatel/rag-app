@@ -10,7 +10,7 @@ import type {
   PluginInfo,
 } from "../../api/types";
 import { formatBytes } from "../../lib/format";
-import { DocumentsIcon, ExternalLinkIcon, PaperclipIcon, SearchIcon } from "../chat/icons";
+import { DocsIcon, ExternalLinkIcon, PaperclipIcon, SearchIcon } from "../ui/icons";
 import { formatEmailDate, importStatusView, plural, safeHttpsUrl } from "../chat/plugins/email";
 import { announceDocument, requestDocumentsReload } from "../documents/documentEvents";
 import Modal from "../ui/Modal";
@@ -241,12 +241,12 @@ export default function GmailImportModal({ plugin, onClose }: GmailImportModalPr
   }
 
   return (
-    <Modal open title="Import from Gmail" onClose={onClose} width={760} footer={footer}>
+    <Modal open title="Import from Gmail" onClose={onClose} width={1000} className="conn-browser-dialog" footer={footer}>
       {phase.kind === "done" ? (
         <ImportResults items={phase.items} summaryRef={summaryRef} />
       ) : phase.kind === "importing" ? (
         <div ref={progressRef} className="conn-progress conn-focus-target" role="status" tabIndex={-1}>
-          <Spinner size={18} label="Importing" />
+          <Spinner size={20} label="Importing" />
           <span>
             Importing {plural(phase.count, "item")}… This can take up to a minute and a half. Imported items appear in
             your documents as “Imported from Gmail”.
@@ -271,7 +271,7 @@ export default function GmailImportModal({ plugin, onClose }: GmailImportModalPr
               spellCheck={false}
             />
             <button type="submit" className="btn" disabled={searching === "search"}>
-              <SearchIcon size={15} />
+              <SearchIcon size={16} />
               Search
             </button>
           </form>
@@ -298,6 +298,7 @@ export default function GmailImportModal({ plugin, onClose }: GmailImportModalPr
               {searchError}
             </p>
           ) : null}
+          {searching === "search" && threads === null ? <ThreadSkeleton /> : null}
           {threads && threads.length > 0 ? (
             <ul className="conn-threads" aria-busy={searching === "search" || undefined}>
               {threads.map((thread) => (
@@ -353,6 +354,7 @@ function ThreadItem({ thread, open, load, pick, onToggleOpen, onRetry, onPickThr
         <span className="conn-thread-check">
           <input
             type="checkbox"
+            className="ui-check"
             checked={pick?.includeThread ?? false}
             onChange={(event) => onPickThread(event.target.checked)}
             aria-label={`Import the conversation “${subject}”`}
@@ -365,27 +367,38 @@ function ThreadItem({ thread, open, load, pick, onToggleOpen, onRetry, onPickThr
           aria-controls={open ? detailId : undefined}
           onClick={onToggleOpen}
         >
-          <span className="conn-thread-line">
-            <span className="conn-thread-sender">
-              {thread.unread ? (
-                <>
-                  <span className="conn-unread-dot" aria-hidden="true" />
-                  <span className="sr-only">Unread, </span>
-                </>
-              ) : null}
-              {thread.sender}
-            </span>
+          <span className="conn-thread-sender">
+            {thread.unread ? (
+              <>
+                <span className="conn-unread-dot" aria-hidden="true" />
+                <span className="sr-only">Unread, </span>
+              </>
+            ) : null}
+            <span className="conn-thread-sender-name">{thread.sender}</span>
             {thread.message_count > 1 ? (
               <span className="conn-thread-count" title={plural(thread.message_count, "message")}>
                 <span className="sr-only">, </span>
                 {thread.message_count}
-                <span className="sr-only"> messages</span>
+                <span className="sr-only"> messages,</span>
               </span>
             ) : null}
-            {date ? <span className="conn-thread-date">{date}</span> : null}
           </span>
-          <span className="conn-thread-subject">{subject}</span>
-          {thread.snippet ? <span className="conn-thread-snippet">{thread.snippet}</span> : null}
+          <span className="conn-thread-text">
+            <span className="conn-thread-subject">{subject}</span>
+            {thread.snippet ? (
+              <span className="conn-thread-snippet">
+                <span aria-hidden="true"> – </span>
+                <span className="sr-only">, </span>
+                {thread.snippet}
+              </span>
+            ) : null}
+          </span>
+          {date ? (
+            <span className="conn-thread-date">
+              <span className="sr-only">, </span>
+              {date}
+            </span>
+          ) : null}
         </button>
       </div>
       {open ? (
@@ -426,7 +439,7 @@ function ThreadDetailView({ detail, pick, onPickAttachment }: ThreadDetailViewPr
       ))}
       {link ? (
         <a className="conn-link-btn" href={link} target="_blank" rel="noopener noreferrer">
-          Open in Gmail <ExternalLinkIcon size={12} />
+          Open in Gmail <ExternalLinkIcon size={13} />
         </a>
       ) : null}
     </>
@@ -500,7 +513,7 @@ type AttachmentRowProps = { attachment: GmailAttachmentInfo; checked: boolean; o
 function AttachmentRow({ attachment, checked, onChange }: AttachmentRowProps) {
   const name = (
     <>
-      <PaperclipIcon size={13} />
+      <PaperclipIcon size={14} />
       <span className="conn-attachment-name">{attachment.filename || "(unnamed)"}</span>
     </>
   );
@@ -508,7 +521,12 @@ function AttachmentRow({ attachment, checked, onChange }: AttachmentRowProps) {
     <li className={attachment.importable ? "conn-attachment" : "conn-attachment conn-attachment-off"}>
       {attachment.importable ? (
         <label>
-          <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+          <input
+            type="checkbox"
+            className="ui-check"
+            checked={checked}
+            onChange={(event) => onChange(event.target.checked)}
+          />
           {name}
         </label>
       ) : (
@@ -538,7 +556,7 @@ function ImportResults({ items, summaryRef }: ImportResultsProps) {
           const view = importStatusView(item.status);
           return (
             <li key={`${item.kind}-${item.thread_id}-${item.message_id ?? ""}-${item.part_id ?? ""}-${i}`} className="conn-result">
-              {item.kind === "thread" ? <DocumentsIcon size={14} /> : <PaperclipIcon size={14} />}
+              {item.kind === "thread" ? <DocsIcon size={16} /> : <PaperclipIcon size={16} />}
               <span className="conn-result-label">{item.label || "(no subject)"}</span>
               <span className={`badge badge-${view.tone}`}>{view.label}</span>
               {item.reason ? <span className="conn-result-reason">{item.reason}</span> : null}
@@ -547,5 +565,20 @@ function ImportResults({ items, summaryRef }: ImportResultsProps) {
         })}
       </ul>
     </div>
+  );
+}
+
+/** Rows shaped like conversations while the first page loads. */
+function ThreadSkeleton() {
+  return (
+    <ul className="conn-threads" aria-hidden="true">
+      {[64, 48, 72, 56].map((width) => (
+        <li key={width} className="conn-thread conn-thread-skeleton">
+          <span className="ui-skeleton conn-skeleton-check" />
+          <span className="ui-skeleton" style={{ width: "22%" }} />
+          <span className="ui-skeleton" style={{ width: `${width}%` }} />
+        </li>
+      ))}
+    </ul>
   );
 }

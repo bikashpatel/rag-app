@@ -1,5 +1,5 @@
 import { useId, useRef } from "react";
-import { UploadIcon } from "./icons";
+import { UploadIcon } from "../ui/icons";
 
 type UploadDropzoneProps = {
   /** The file input's accept attribute, e.g. ".pdf,.docx". */
@@ -25,8 +25,8 @@ export default function UploadDropzone({ accept, hint, warning, disabled, dragAc
         disabled={disabled}
         aria-describedby={hintId}
       >
-        <span className="docs-dropzone-icon">
-          <UploadIcon size={18} />
+        <span className="docs-dropzone-icon" aria-hidden="true">
+          <UploadIcon size={20} />
         </span>
         <span className="docs-dropzone-text">
           <span className="docs-dropzone-title">

@@ -1,15 +1,35 @@
 """/api/conversations: listing, reading, renaming and deleting the caller's own conversations."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import httpx
 import pytest
-from conftest import ApiClient, FakeLLM, chat, ingest, txt_bytes
+from conftest import ApiClient, FakeLLM, chat, ingest, sse_events, txt_bytes
+from fake_plugin import FakePlugin
+from gmail_support import gmail, pending_sends  # noqa: F401
 from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal
-from app.models import Conversation, Message, UsageEvent
+from app.models import (
+    Conversation,
+    Document,
+    GeneratedDocument,
+    GeneratedImage,
+    Message,
+    MessageFile,
+    MessagePluginItem,
+    PluginAuditEvent,
+    UsageEvent,
+    User,
+)
+from app.plugins import registry
+from app.plugins.gmail import compose, sends
+from app.plugins.gmail.mime import OutgoingEmail
+from app.routers import chat as chat_router
+from app.routers.chat import _stream_answer, _Turn
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
@@ -266,6 +286,7 @@ async def test_invalid_conversation_ids_are_rejected(create_user: CreateUser, co
         ("GET", "/api/conversations/{id}"),
         ("PATCH", "/api/conversations/{id}"),
         ("DELETE", "/api/conversations/{id}"),
+        ("DELETE", "/api/conversations"),
     ],
 )
 async def test_conversations_require_login(create_user: CreateUser, client: ApiClient, method: str, path: str) -> None:
@@ -279,3 +300,170 @@ async def test_conversations_require_login(create_user: CreateUser, client: ApiC
     assert (response.status_code, response.json()) == (401, {"detail": "Not authenticated"})
     detail = (await alice.get(f"/api/conversations/{conversation_id}")).json()
     assert (detail["title"], len(detail["messages"])) == ("Alice's question?", 2)
+
+
+# ---------------- Delete all ----------------
+
+
+async def _add_conversations(user_id: int | None, count: int) -> list[int]:
+    """`count` conversations with a question and an answer each, inserted directly; their ids in order."""
+    async with SessionLocal() as session:
+        conversations = [Conversation(user_id=user_id, title=f"Chat {n}") for n in range(count)]
+        session.add_all(conversations)
+        await session.flush()
+        for conversation in conversations:
+            session.add_all(
+                [
+                    Message(conversation_id=conversation.id, role="user", content="Q"),
+                    Message(conversation_id=conversation.id, role="assistant", content="A"),
+                ]
+            )
+        await session.commit()
+        return [conversation.id for conversation in conversations]
+
+
+async def _count(model: Any, *where: Any) -> int:
+    async with SessionLocal() as session:
+        return int(await session.scalar(select(func.count()).select_from(model).where(*where)) or 0)
+
+
+async def test_delete_all_removes_every_conversation_of_the_caller(create_user: CreateUser) -> None:
+    alice, bob = await create_user("alice"), await create_user("bob")
+    mine = [await _start_conversation(alice, f"Question {n}?") for n in range(3)]
+    theirs = await _start_conversation(bob, "Bob's question?")
+    usage_before = await _count(UsageEvent)
+
+    response = await alice.delete("/api/conversations")
+
+    assert (response.status_code, response.json()) == (200, {"deleted": 3})
+    assert await _listed_ids(alice) == []
+    assert all([await _message_count(conversation_id) == 0 for conversation_id in mine])
+    assert await _listed_ids(bob) == [theirs] and await _message_count(theirs) == 2
+    assert await _count(UsageEvent) == usage_before
+    again = await alice.delete("/api/conversations")
+    assert (again.status_code, again.json()) == (200, {"deleted": 0})
+
+
+async def test_delete_all_keeps_documents_generated_files_and_images(create_user: CreateUser) -> None:
+    alice = await create_user("alice")
+    [conversation_id] = await _add_conversations(alice.user_id, 1)
+    async with SessionLocal() as session:
+        answer = await session.scalar(select(Message.id).where(Message.role == "assistant"))
+        assert answer is not None
+        file, image = (
+            Document(owner_id=alice.user_id, scope="private", filename=name, stored_name=name, sha256="0" * 64)
+            for name in ("report.pdf", "cat.png")
+        )
+        session.add_all([file, image])
+        await session.flush()
+        session.add_all(
+            [
+                GeneratedDocument(document_id=file.id),
+                GeneratedImage(
+                    document_id=image.id, conversation_id=conversation_id, model_name="openai/gpt-image-2",
+                    prompt="A cat", alt_text="A cat", format="png", quality="low", width=8, height=8,
+                ),
+                MessageFile(message_id=answer, document_id=file.id, filename="report.pdf", format="pdf"),
+                MessagePluginItem(message_id=answer, plugin_id="gmail", card_type="gmail_activity", data={}),
+            ]
+        )
+        await session.commit()
+        file_id, image_id = file.id, image.id
+
+    response = await alice.delete("/api/conversations")
+
+    assert response.json() == {"deleted": 1}
+    assert await _count(Document) == 2 and await _count(GeneratedDocument) == 1
+    async with SessionLocal() as session:
+        kept = await session.get(GeneratedImage, image_id)
+        assert kept is not None and kept.conversation_id is None
+        assert await session.get(Document, file_id) is not None
+    assert await _count(MessageFile) == 0 and await _count(MessagePluginItem) == 0
+
+
+class _CleaningPlugin(FakePlugin):
+    """Records its clean-up in the database (an audit row per conversation) and fails on one conversation after it."""
+
+    def __init__(self, failing: int) -> None:
+        super().__init__()
+        self.failing = failing
+
+    async def on_conversation_deleted(self, db: AsyncSession, user: User, conversation_id: int) -> None:
+        db.add(
+            PluginAuditEvent(
+                user_id=user.id, plugin_id=self.id, action="send_cancelled", outcome="ok", origin="system",
+                items=conversation_id,
+            )
+        )
+        await db.flush()
+        if conversation_id == self.failing:
+            raise RuntimeError("broken hook")
+
+
+async def test_a_failing_hook_never_undoes_another_conversations_deletion(create_user: CreateUser) -> None:
+    alice = await create_user("alice")
+    ids = await _add_conversations(alice.user_id, 60)
+    plugin = _CleaningPlugin(failing=ids[23])
+
+    with registry.use_plugins([plugin]):
+        response = await alice.delete("/api/conversations")
+
+    assert (response.status_code, response.json()) == (200, {"deleted": 60})
+    assert await _count(Conversation, Conversation.user_id == alice.user_id) == 0
+    assert await _count(Message) == 0
+    async with SessionLocal() as session:
+        cleaned = set(await session.scalars(select(PluginAuditEvent.items)))
+    assert cleaned == set(ids) - {ids[23]}  # the failing hook's own change went; the other 59 stayed
+
+
+async def test_delete_all_cancels_and_scrubs_pending_emails(gmail: Any, create_user: CreateUser) -> None:  # noqa: F811
+    alice = await create_user("alice")
+    connection = await gmail.connect(alice)
+    conversation_id = await _start_conversation(alice, "Email Bob?")
+    to = [{"name": "Bob", "address": "bob@company.com", "unmentioned": False}]
+    email = OutgoingEmail(
+        account_email=connection.account_email, to=compose.stored_addresses(to), cc=[], bcc=[], subject="Q3",
+        body="Hello Bob", attachments=[], in_reply_to=None, references=None,
+    )
+    async with SessionLocal() as session:
+        user = await session.get(User, alice.user_id)
+        assert user is not None
+        await sends.propose(
+            session, user, connection, email, conversation_id=conversation_id, to=to, cc=[], bcc=[],
+            attachments_meta=[], thread_id=None, reply_to=None, origin="chat",
+        )
+
+    assert (await alice.delete("/api/conversations")).json() == {"deleted": 1}
+
+    [row] = await pending_sends(alice.user_id)
+    assert (row.status, row.subject, row.body, row.to_addrs, row.conversation_id) == ("cancelled", "", "", [], None)
+
+
+async def _no_events() -> AsyncIterator[str]:
+    for event in ():
+        yield event
+
+
+async def test_an_answer_streaming_into_a_conversation_deleted_by_delete_all_saves_nothing(
+    create_user: CreateUser, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    alice = await create_user("alice")
+    turns: list[_Turn] = []
+
+    def capture(turn: _Turn) -> AsyncIterator[str]:
+        turns.append(turn)
+        return _no_events()
+
+    monkeypatch.setattr(chat_router, "_stream_answer", capture)
+    response, _ = await chat(alice, "Tell me a story?", document_ids=[])
+    assert response.status_code == 200
+    stream = _stream_answer(turns[0])
+    received = [await anext(stream) for _ in range(3)]
+
+    assert (await alice.delete("/api/conversations")).json() == {"deleted": 1}
+    received += [event async for event in stream]
+
+    events = sse_events(httpx.Response(200, text="".join(received)))
+    assert events[-1] == ("error", {"message": "The answer could not be saved.", "assistant_message_id": None})
+    assert await _message_count(turns[0].conversation_id) == 0
+    assert await _listed_ids(alice) == []

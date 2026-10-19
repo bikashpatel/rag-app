@@ -19,12 +19,30 @@ export type UsageSummary = {
   monthly_token_limit: number; // 0 = unlimited; counts chat_tokens only
 };
 
+// The user's own settings (docs/briefs/ui-shell-settings.md, section 7). Adding a value is a contract change: SPEC.md,
+// the backend schemas, public/theme-boot.js and src/theme/appearance.ts together.
+export type ThemePreference = "system" | "light" | "dark"; // "system" follows prefers-color-scheme, live
+export type AccentColor = "clay" | "ocean" | "sage" | "plum" | "slate"; // "clay" is the default
+export type ChatFontSize = "small" | "default" | "large";
+
+export type Preferences = {
+  theme: ThemePreference;
+  accent: AccentColor;
+  chat_font_size: ChatFontSize;
+  enter_to_send: boolean; // false: Ctrl/Cmd+Enter sends and Enter adds a new line
+  default_model_id: number | null; // the chat model new chats start with; null = the server's default (also when no longer usable)
+};
+
+/** PATCH /me/preferences: omitted = unchanged; default_model_id null = the server's default. Null elsewhere is a 422. */
+export type PreferencesUpdate = Partial<Preferences>;
+
 export type Me = {
   id: number;
   username: string;
   is_admin: boolean;
   limits: UserLimits;
   usage: UsageSummary;
+  preferences: Preferences;
 };
 
 export type ChatModel = {
@@ -36,7 +54,73 @@ export type ChatModel = {
   can_create_files: boolean;
   /** The assistant can generate images with this model (CHAT_IMAGE_TOOLS on, a usable image model active, function calling). */
   can_create_images: boolean;
+  /** The model gets tools (function calling, not rejected since the backend started): plugin tools such as Gmail work. */
+  supports_tools: boolean;
 };
+
+// ---------------- Account (GET /me/account, GET /me/usage) ----------------
+
+export type DeviceType = "desktop" | "mobile" | "tablet" | "unknown";
+
+/** One successful sign-in of the caller (the last 20 are kept). */
+export type LoginEvent = {
+  id: number;
+  created_at: string;
+  ip: string | null; // approximate, as nginx saw it: "203.0.113.x" or an IPv6 "/48" network; null when unknown
+  // Not a public internet address (private, loopback, link-local, shared): through this machine, Docker, a local
+  // network or a proxy. Show "Via a local network or proxy" rather than the bare address. False when ip is null.
+  ip_private: boolean;
+  browser: string | null; // parsed from the User-Agent (not stored): "Chrome 141", "Safari 26", "curl", …
+  os: string | null; // "macOS", "Windows", "iOS", "Android", "Linux", "ChromeOS", …
+  device: DeviceType;
+  current: boolean; // the sign-in that started this session ("This device")
+};
+
+export type AccountInfo = {
+  id: number;
+  username: string;
+  is_admin: boolean;
+  password_managed_by_env: boolean; // the env admin: don't offer Change password (the server answers 400)
+  created_at: string;
+  last_login_at: string | null; // also set for sign-ins from before the history existed
+  conversation_count: number;
+  recent_logins: LoginEvent[]; // newest first, at most 20
+};
+
+export type UsageAmount = { used: number; limit: number }; // limit 0 = unlimited (always 0 for the admin)
+
+export type MyUsage = {
+  month: string; // "YYYY-MM" (UTC calendar month)
+  period_start: string; // the 1st, 00:00 UTC
+  resets_at: string; // the 1st of next month, 00:00 UTC
+  chat_tokens: UsageAmount; // the monthly token budget (the only budget)
+  images: UsageAmount; // the monthly image limit
+  vision_tokens: UsageAmount; // VISION_MONTHLY_TOKEN_LIMIT
+  embedding_tokens: number; // recorded, never limited
+  requests: number; // chat answers this month
+  rate_limit_per_min: number; // 0 = unlimited
+  cost_usd: { total: number; chat: number; embedding: number; vision: number; image: number }; // estimated
+  documents: { count: number; max_documents: number; storage_bytes: number; max_storage_mb: number; max_upload_mb: number };
+  daily: {
+    date: string; // "YYYY-MM-DD" (UTC); every day from the 1st through today, zeros included
+    chat_tokens: number;
+    requests: number;
+    images: number;
+    vision_tokens: number;
+    embedding_tokens: number;
+    cost_usd: number;
+  }[];
+  by_model: {
+    model_name: string; // display name while the model exists, else its litellm id
+    kind: "chat" | "embedding" | "vision" | "image";
+    tokens: number;
+    requests: number; // chat: answers; image: images; embedding and vision: ingestion runs
+    cost_usd: number;
+  }[]; // cost descending
+};
+
+/** DELETE /conversations: every conversation of the caller is gone (documents are kept). */
+export type ConversationsDeleted = { deleted: number };
 
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 export type DocumentScope = "private" | "shared";
@@ -406,13 +490,20 @@ export type PluginConnectionStatus = {
   refresh_expires_at: string | null; // Google testing mode: when Google ends the connection (estimate)
 };
 
-/** GET /plugins: plugins the admin turned on (plus, with enabled false, any the caller is still connected to). */
+/**
+ * GET /plugins: every registered plugin (the catalog), whatever its state. Status, in this order of precedence:
+ * !configured → "Not set up"; !enabled → "Turned off by the admin"; connection reconnect_needed → "Reconnect needed";
+ * connection → "Connected"; else "Not connected" (offer Connect). In the first two states a caller who still has a
+ * connection can Disconnect it (DELETE …/connection works then too). Tools reach chat only when enabled and connected
+ * with "Use in chat" on.
+ */
 export type PluginInfo = {
   id: string; // also the URL segment: /api/plugins/<id>/...
   name: string;
   description: string;
   auth_type: "oauth2";
-  enabled: boolean;
+  configured: boolean; // the settings it needs are in the server's .env (the admin API lists the missing ones)
+  enabled: boolean; // turned on by the admin and configured: it can be connected and used
   // The provider app is in testing mode: only accounts the admin added as test users can connect (others see Google's
   // "Access blocked" page and never come back): say so before redirecting. Connections end after 7 days.
   testing_mode: boolean;

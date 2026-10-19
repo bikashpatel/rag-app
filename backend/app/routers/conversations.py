@@ -16,6 +16,7 @@ from app.deps import get_current_user
 from app.models import Conversation, Document, GeneratedImage, Message, MessageFile, MessagePluginItem, User
 from app.plugins import registry
 from app.schemas import MAX_INT, AnswerSource, GeneratedFile
+from app.schemas_account import ConversationsDeleted
 from app.schemas_plugins import PluginCard
 from app.services.storage import image_item
 
@@ -120,22 +121,7 @@ async def plugin_cards(db: AsyncSession, user: User, message_ids: Collection[int
             .order_by(MessagePluginItem.id)
         )
     )
-    by_plugin: defaultdict[str, list[MessagePluginItem]] = defaultdict(list)
-    for item in items:
-        by_plugin[item.plugin_id].append(item)
-    hydrated: dict[int, PluginCard] = {}
-    for plugin_id, own in by_plugin.items():
-        plugin = registry.get_plugin(plugin_id)
-        if plugin is None:
-            continue
-        try:
-            cards = await plugin.hydrate_cards(db, user, own)
-        except Exception:
-            logger.exception("The %s plugin failed to load the cards of a conversation", plugin_id)
-            continue
-        for card in cards:  # matched by card_id "p<item id>": a plugin may leave out a card it can't load
-            if card.card_id.startswith("p") and card.card_id[1:].isdigit():
-                hydrated[int(card.card_id[1:])] = card
+    hydrated = await registry.hydrate_cards(db, user, items)
     found: defaultdict[int, list[PluginCard]] = defaultdict(list)
     for item in items:
         if item.id in hydrated:
@@ -157,6 +143,27 @@ def _chat_message(message: Message, files: list[GeneratedFile], cards: list[Plug
         plugin_cards=cards,
         created_at=message.created_at,
     )
+
+
+async def delete_conversation_completely(db: AsyncSession, user: User, conversation: Conversation) -> None:
+    """Delete one of the user's conversations and commit: the plugins clean up first (e.g. Gmail cancels and scrubs its
+    proposed emails; a hook that fails has the uncommitted changes rolled back and the deletion still happens), then
+    its cards, messages and the row. Documents (generated files and images included) and usage stay."""
+    conversation_id = conversation.id
+    for plugin in registry.all_plugins():
+        try:
+            await plugin.on_conversation_deleted(db, user, conversation_id)
+        except Exception:
+            logger.exception("The %s plugin failed to clean up conversation %s", plugin.id, conversation_id)
+            await db.rollback()  # its partial changes go; the deletion below still happens
+            await db.refresh(user)
+            await db.refresh(conversation)
+    # Explicit, so these go even where the database doesn't enforce ON DELETE CASCADE (SQLite).
+    message_ids = select(Message.id).where(Message.conversation_id == conversation_id)
+    await db.execute(delete(MessagePluginItem).where(MessagePluginItem.message_id.in_(message_ids)))
+    await db.execute(delete(Message).where(Message.conversation_id == conversation_id))
+    await db.delete(conversation)
+    await db.commit()
 
 
 @router.get("")
@@ -210,18 +217,24 @@ async def rename_conversation(
 async def delete_conversation(
     conversation_id: ConversationId, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> None:
-    conversation = await get_owned_conversation(db, user, conversation_id)
-    for plugin in registry.all_plugins():  # e.g. Gmail cancels and scrubs the conversation's proposed emails
-        try:
-            await plugin.on_conversation_deleted(db, user, conversation_id)
-        except Exception:
-            logger.exception("The %s plugin failed to clean up conversation %s", plugin.id, conversation_id)
-            await db.rollback()  # its partial changes go; the deletion below still happens
-            await db.refresh(user)
-            await db.refresh(conversation)
-    # Explicit, so these go even where the database doesn't enforce ON DELETE CASCADE (SQLite).
-    message_ids = select(Message.id).where(Message.conversation_id == conversation.id)
-    await db.execute(delete(MessagePluginItem).where(MessagePluginItem.message_id.in_(message_ids)))
-    await db.execute(delete(Message).where(Message.conversation_id == conversation.id))
-    await db.delete(conversation)
-    await db.commit()
+    await delete_conversation_completely(db, user, await get_owned_conversation(db, user, conversation_id))
+
+
+@router.delete("")
+async def delete_all_conversations(
+    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> ConversationsDeleted:
+    """Every conversation of the caller, each exactly as DELETE /conversations/{id} and committed on its own, so a
+    plugin's failing clean-up never undoes another conversation's deletion. A failing commit stops with the error; the
+    ones before it stay deleted and a retry deletes the rest."""
+    ids = list(
+        await db.scalars(select(Conversation.id).where(Conversation.user_id == user.id).order_by(Conversation.id))
+    )
+    deleted = 0
+    for conversation_id in ids:
+        conversation = await db.get(Conversation, conversation_id)
+        if conversation is None or conversation.user_id != user.id:  # deleted meanwhile
+            continue
+        await delete_conversation_completely(db, user, conversation)
+        deleted += 1
+    return ConversationsDeleted(deleted=deleted)

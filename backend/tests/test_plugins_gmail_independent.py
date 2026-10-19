@@ -510,11 +510,13 @@ async def test_disconnect_after_the_key_was_removed(
     their connection to remove it, and the row goes (the grant can't be revoked without the key)."""
     monkeypatch.setattr(settings, "token_encryption_key", "")
     [info] = (await alice.get("/api/plugins")).json()
-    assert info["enabled"] is False and info["connection"]["account_email"] == ACCOUNT
+    assert info["configured"] is False and info["enabled"] is False
+    assert info["connection"]["account_email"] == ACCOUNT
     assert (await alice.post("/api/plugins/gmail/threads/search", json={})).status_code == 403
     assert (await alice.delete("/api/plugins/gmail/connection")).status_code == 204
     assert await connection_of(alice.user_id) is None and gmail.google.revocations == 0
-    assert (await alice.get("/api/plugins")).json() == []
+    [after] = (await alice.get("/api/plugins")).json()  # still in the catalog, without the connection
+    assert (after["configured"], after["enabled"], after["connection"]) == (False, False, None)
 
 
 # ---------------- The admin's switches ----------------

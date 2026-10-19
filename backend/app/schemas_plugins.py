@@ -59,11 +59,16 @@ class PluginConnectionStatus(BaseModel):
 
 
 class PluginInfo(BaseModel):
+    """GET /plugins lists every registered plugin (the catalog), whatever its state; see SPEC.md for the status a client
+    derives from `configured`, `enabled` and `connection`."""
+
     id: str
     name: str
     description: str
     auth_type: Literal["oauth2"]
-    enabled: bool  # False: turned off by the admin (listed only while the caller still has a connection)
+    # The settings it needs are in .env (registry.configured() is empty); only the admin API says which are missing
+    configured: bool = True
+    enabled: bool  # turned on by the admin and configured: it can be connected and used
     # The provider app is in testing mode (Google: GOOGLE_OAUTH_TESTING_MODE): only accounts the admin added as test
     # users can connect (others see Google's "Access blocked" page and never come back); connections end after 7 days
     testing_mode: bool

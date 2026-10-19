@@ -7,7 +7,7 @@ import { deleteResource, errorMessage } from "./adminApi";
 import ConfirmAction from "./ConfirmAction";
 import FlashMessage from "./FlashMessage";
 import { useFlash, useResource, type Flash } from "./hooks";
-import { AlertIcon, CheckIcon, CloseIcon, PlusIcon } from "./icons";
+import { AlertCircleIcon, CheckCircleIcon, CloseIcon, PlusIcon } from "../ui/icons";
 import ModelFormModal from "./ModelFormModal";
 import { EmptyState, ResourceGate } from "./StateViews";
 
@@ -230,8 +230,8 @@ function ModelSection({ kind, title, description, emptyHint, models, flash, togg
           <p className="admin-card-subtitle">{description}</p>
         </div>
         <span className="spacer" />
-        <button type="button" className="btn" onClick={onAdd}>
-          <PlusIcon size={16} />
+        <button type="button" className="btn btn-sm" onClick={onAdd}>
+          <PlusIcon size={15} />
           Add {kind} model
         </button>
       </div>
@@ -438,7 +438,7 @@ function DefaultControl({ model, actions, flash }: { model: AdminModel; actions:
 
   if (model.is_default) {
     return model.enabled ? (
-      <span className="badge badge-success">{label}</span>
+      <span className={model.kind === "chat" ? "badge badge-accent" : "badge badge-success"}>{label}</span>
     ) : (
       <span className="badge badge-warning" title="Enable this model to use it">
         {label} · disabled
@@ -515,7 +515,7 @@ function TestResult({ name, kind, state, onDismiss }: TestResultProps) {
   ].filter(Boolean);
   return (
     <div className={`admin-test ${ok ? "admin-test-ok" : "admin-test-fail"}`} role={ok ? "status" : "alert"}>
-      {ok ? <CheckIcon size={16} /> : <AlertIcon size={16} />}
+      {ok ? <CheckCircleIcon size={16} /> : <AlertCircleIcon size={16} />}
       <span className="admin-test-text">
         <strong>{ok ? `${name} works` : `${name} failed`}</strong>
         {facts.length ? <span className="admin-test-facts"> · {facts.join(" · ")}</span> : null}
@@ -525,7 +525,7 @@ function TestResult({ name, kind, state, onDismiss }: TestResultProps) {
         ) : null}
       </span>
       <button type="button" className="btn btn-ghost btn-icon admin-test-close" aria-label="Dismiss test result" onClick={onDismiss}>
-        <CloseIcon size={14} />
+        <CloseIcon size={15} />
       </button>
     </div>
   );

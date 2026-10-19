@@ -2,8 +2,8 @@ import { useRef, useState, type ReactNode } from "react";
 import { ApiError, documentDownloadUrl, documentImageUrl } from "../../api/client";
 import type { DocumentItem } from "../../api/types";
 import { formatBytes, formatDateTime, formatNumber, formatRelativeTime } from "../../lib/format";
+import { DownloadIcon, TrashIcon } from "../ui/icons";
 import FileTag from "./FileTag";
-import { DownloadIcon, TrashIcon } from "./icons";
 import ImageViewer from "./ImageViewer";
 
 type RowAction = "delete" | "reprocess";
@@ -16,29 +16,35 @@ type DocumentRowProps = {
   onReprocess: (id: number) => Promise<void>;
 };
 
+/** One part of the meta line; `origin` parts ("Created in chat", "Imported from Gmail") are set in the accent ink. */
+type MetaPart = { text: string; origin?: boolean };
+
 function countLabel(count: number, noun: string): string {
   return `${formatNumber(count)} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-function metaParts(doc: DocumentItem): string[] {
-  const parts = [formatBytes(doc.size_bytes)];
-  if (doc.image) parts.unshift(`${doc.image.width} × ${doc.image.height}`);
-  if (doc.generated) parts.unshift("Created in chat");
-  if (doc.imported_from) parts.unshift(`Imported from ${doc.imported_from}`);
-  if (doc.status === "ready") parts.push(countLabel(doc.num_chunks, "chunk"));
-  if (doc.num_pages) parts.push(countLabel(doc.num_pages, "page"));
-  if (doc.status === "ready" && doc.vision_pages > 0) parts.push(`${countLabel(doc.vision_pages, "page")} read by vision`);
+function metaParts(doc: DocumentItem): MetaPart[] {
+  const parts: MetaPart[] = [{ text: formatBytes(doc.size_bytes) }];
+  if (doc.image) parts.unshift({ text: `${doc.image.width} × ${doc.image.height}` });
+  if (doc.generated) parts.unshift({ text: "Created in chat", origin: true });
+  if (doc.imported_from) parts.unshift({ text: `Imported from ${doc.imported_from}`, origin: true });
+  if (doc.status === "ready") parts.push({ text: countLabel(doc.num_chunks, "chunk") });
+  if (doc.num_pages) parts.push({ text: countLabel(doc.num_pages, "page") });
+  if (doc.status === "ready" && doc.vision_pages > 0) {
+    parts.push({ text: `${countLabel(doc.vision_pages, "page")} read by vision` });
+  }
   const added = formatRelativeTime(doc.created_at);
-  if (added) parts.push(added);
+  if (added) parts.push({ text: added });
   return parts;
 }
 
 function checkboxHint(doc: DocumentItem): string {
   if (doc.status === "ready") return "Use in chat";
-  if (doc.status === "failed") return "Processing failed, so this document can't be searched";
-  return "Available once processing finishes";
+  if (doc.status === "failed") return "Indexing failed, so this document can't be searched";
+  return "Available once indexing finishes";
 }
 
+/** One status vocabulary everywhere (visual spec 6.5): Queued, Indexing…, Failed, Needs re-index; no badge when ready. */
 function statusBadge(doc: DocumentItem): ReactNode {
   switch (doc.status) {
     case "pending":
@@ -46,8 +52,8 @@ function statusBadge(doc: DocumentItem): ReactNode {
     case "processing":
       return (
         <span className="badge badge-info">
-          <span className="spinner docs-spinner" aria-hidden="true" />
-          Processing
+          <span className="spinner" aria-hidden="true" />
+          Indexing…
         </span>
       );
     case "failed":
@@ -95,11 +101,16 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
     }
   }
 
+  const rowClass = ["docs-row", confirming ? "docs-row-confirming" : null, doc.can_delete ? null : "docs-row-one-action"]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <li className="docs-row">
+    <li className={rowClass}>
       <label className="docs-check" title={checkboxHint(doc)}>
         <input
           type="checkbox"
+          className="ui-check"
           checked={checked}
           disabled={!ready}
           onChange={onToggle}
@@ -120,7 +131,7 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
             <img
               src={documentImageUrl(doc.id, "thumb")}
               alt=""
-              width={40}
+              width={34}
               height={40}
               loading="lazy"
               decoding="async"
@@ -139,12 +150,12 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
           {/* Parts wrap whole, so the time is never cut off; the "·" separators are CSS (see documents.css). */}
           <span className="docs-row-meta-parts" aria-hidden="true">
             {meta.map((part, i) => (
-              <span key={i} className="docs-row-meta-part">
-                {part}
+              <span key={i} className={part.origin ? "docs-row-meta-part docs-row-meta-origin" : "docs-row-meta-part"}>
+                {part.text}
               </span>
             ))}
           </span>
-          <span className="sr-only">{meta.join(", ")}</span>
+          <span className="sr-only">{meta.map((part) => part.text).join(", ")}</span>
         </div>
         {badge || canReprocess ? (
           <div className="docs-status">
@@ -163,7 +174,7 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
         ) : null}
         {doc.status === "failed" ? (
           <p className="docs-row-error" title={doc.error ?? undefined}>
-            {doc.error || "Processing failed."}
+            {doc.error || "Indexing failed."}
           </p>
         ) : null}
         {error ? (
@@ -180,7 +191,7 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
           aria-label={`Download ${doc.filename}`}
           title="Download"
         >
-          <DownloadIcon size={15} />
+          <DownloadIcon size={16} />
         </a>
         {doc.can_delete ? (
           <button
@@ -192,7 +203,7 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
             aria-expanded={confirming}
             title="Delete"
           >
-            <TrashIcon size={15} />
+            <TrashIcon size={16} />
           </button>
         ) : null}
       </div>
@@ -207,18 +218,19 @@ export default function DocumentRow({ doc, checked, onToggle, onDelete, onReproc
             closeConfirm();
           }}
         >
-          <span className="docs-confirm-text">Delete this document? This can't be undone.</span>
+          <p className="docs-confirm-title">Delete this document?</p>
+          <p className="docs-confirm-text">It's removed from your documents and from search. This can't be undone.</p>
           <div className="docs-confirm-actions">
-            <button type="button" className="btn btn-sm" onClick={closeConfirm} disabled={running === "delete"} autoFocus>
+            <button type="button" className="btn btn-xs" onClick={closeConfirm} disabled={running === "delete"} autoFocus>
               Cancel
             </button>
             <button
               type="button"
-              className="btn btn-sm btn-danger"
+              className="btn btn-xs btn-danger"
               onClick={() => void run("delete")}
               disabled={running === "delete"}
             >
-              {running === "delete" ? "Deleting…" : "Delete"}
+              {running === "delete" ? "Deleting…" : "Delete document"}
             </button>
           </div>
         </div>

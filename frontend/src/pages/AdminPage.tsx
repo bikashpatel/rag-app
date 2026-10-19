@@ -1,4 +1,4 @@
-import { useCallback, useEffect, type KeyboardEvent } from "react";
+import { useCallback, useEffect, type ComponentType, type KeyboardEvent } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type { AdminStats } from "../api/types";
 import AdminHeader from "../components/admin/AdminHeader";
@@ -9,15 +9,16 @@ import PluginsTab from "../components/admin/PluginsTab";
 import StatsBar from "../components/admin/StatsBar";
 import UsageTab from "../components/admin/UsageTab";
 import UsersTab from "../components/admin/UsersTab";
+import { ChartIcon, CpuIcon, DocsIcon, PlugIcon, UsersIcon, type IconProps } from "../components/ui/icons";
 import "../components/admin/admin.css";
 
 const TABS = [
-  { id: "users", label: "Users" },
-  { id: "models", label: "Models" },
-  { id: "usage", label: "Usage" },
-  { id: "documents", label: "Documents" },
-  { id: "plugins", label: "Plugins" },
-] as const;
+  { id: "users", label: "Users", icon: UsersIcon },
+  { id: "models", label: "Models", icon: CpuIcon },
+  { id: "usage", label: "Usage", icon: ChartIcon },
+  { id: "documents", label: "Documents", icon: DocsIcon },
+  { id: "plugins", label: "Plugins", icon: PlugIcon },
+] as const satisfies readonly { id: string; label: string; icon: ComponentType<IconProps> }[];
 
 type TabId = (typeof TABS)[number]["id"];
 
@@ -70,7 +71,7 @@ export default function AdminPage() {
       <main className="admin-main">
         <div className="admin-heading">
           <h1 className="admin-title">Administration</h1>
-          <p className="admin-card-subtitle">Accounts, models, usage, the document index and plugins.</p>
+          <p className="admin-lede">Accounts, models, usage, the document index and plugins.</p>
         </div>
         <StatsBar stats={stats} onOpenModels={() => selectTab("models")} />
         <div className="admin-tabs" role="tablist" aria-label="Admin sections" onKeyDown={onTabKeyDown}>
@@ -86,6 +87,7 @@ export default function AdminPage() {
               tabIndex={tab.id === active ? 0 : -1}
               onClick={() => selectTab(tab.id)}
             >
+              <tab.icon size={16} />
               {tab.label}
             </button>
           ))}

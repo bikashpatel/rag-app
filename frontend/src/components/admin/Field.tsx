@@ -1,4 +1,6 @@
 import { useId, type ReactNode } from "react";
+import { AlertCircleIcon } from "../ui/icons";
+import Switch from "../ui/Switch";
 
 export type ControlProps = {
   id: string;
@@ -28,6 +30,7 @@ export function Field({ label, hint, error, className, children }: FieldProps) {
       {children({ id, "aria-invalid": error ? true : undefined, "aria-describedby": describedBy })}
       {error ? (
         <span id={errorId} className="error-text">
+          <AlertCircleIcon size={13} />
           {error}
         </span>
       ) : null}
@@ -48,33 +51,16 @@ type SwitchFieldProps = {
   onChange: (checked: boolean) => void;
 };
 
+/** A labelled switch: the label and hint, then the switch on the right (the shared Switch). */
 export function SwitchField({ label, hint, checked, disabled, onChange }: SwitchFieldProps) {
-  const id = useId();
-  const hintId = hint ? `${id}-hint` : undefined;
   return (
-    <div className="admin-switch-field">
-      <label className="switch">
-        <input
-          id={id}
-          type="checkbox"
-          role="switch"
-          checked={checked}
-          disabled={disabled}
-          aria-describedby={hintId}
-          onChange={(e) => onChange(e.target.checked)}
-        />
-        <span aria-hidden="true" />
-      </label>
-      <div className="admin-switch-text">
-        <label htmlFor={id} className="admin-switch-label">
-          {label}
-        </label>
-        {hint ? (
-          <span id={hintId} className="field-hint">
-            {hint}
-          </span>
-        ) : null}
-      </div>
-    </div>
+    <Switch
+      className="admin-switch-field"
+      label={label}
+      description={hint}
+      checked={checked}
+      disabled={disabled}
+      onChange={onChange}
+    />
   );
 }

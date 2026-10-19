@@ -14,14 +14,15 @@ const SENDING_POLL_MS = 4000;
 
 type Action = "send" | "cancel" | "newer";
 
+/** The head's title and status line (visual spec 6.7, 6.19): a word with a dot, never colour alone. */
 const STATUS_VIEW: Record<PendingSendStatus, { title: string; badge: string; tone: string }> = {
-  pending: { title: "Email ready to send", badge: "Not sent", tone: "badge-info" },
-  sending: { title: "Sending…", badge: "Sending", tone: "badge-info" },
-  sent: { title: "Email sent", badge: "Sent", tone: "badge-success" },
-  failed: { title: "Email not sent", badge: "Failed", tone: "badge-danger" },
-  cancelled: { title: "Cancelled. Nothing was sent.", badge: "Cancelled", tone: "badge-neutral" },
-  expired: { title: "Expired. Nothing was sent.", badge: "Expired", tone: "badge-neutral" },
-  replaced: { title: "Replaced by a newer version", badge: "Replaced", tone: "badge-neutral" },
+  pending: { title: "Email ready to send", badge: "Not sent", tone: "ui-status-attention" },
+  sending: { title: "Sending…", badge: "Sending", tone: "ui-status-neutral" },
+  sent: { title: "Email sent", badge: "Sent", tone: "ui-status-connected" },
+  failed: { title: "Email not sent", badge: "Failed", tone: "chat-mail-status-failed" },
+  cancelled: { title: "Cancelled. Nothing was sent.", badge: "Cancelled", tone: "ui-status-neutral" },
+  expired: { title: "Expired. Nothing was sent.", badge: "Expired", tone: "ui-status-neutral" },
+  replaced: { title: "Replaced by a newer version", badge: "Replaced", tone: "ui-status-neutral" },
 };
 
 /** The current time, ticking every second until `until` (the countdown of a sendable email); null: no ticking. */
@@ -149,16 +150,16 @@ function PendingSendView({ pending, onChange }: { pending: PendingSend; onChange
         <span className="chat-mail-title" aria-live="polite">
           {action === "send" ? "Sending…" : view.title}
         </span>
-        <span className={`badge ${view.tone}`}>{view.badge}</span>
-      </div>
-      {status === "pending" ? (
-        <p className="chat-mail-note">
-          Review the whole email. Nothing is sent until you click Send.
+        {status === "pending" ? (
           <span className="chat-mail-countdown">
-            <ClockIcon size={12} />
+            <ClockIcon size={14} />
             {formatCountdown(msLeft)} left to send
           </span>
-        </p>
+        ) : null}
+        <span className={`ui-status chat-mail-status ${view.tone}`}>{view.badge}</span>
+      </div>
+      {status === "pending" ? (
+        <p className="chat-mail-note">Review the whole email. Nothing is sent until you click Send.</p>
       ) : null}
       {status === "sent" && pending.sent_at ? (
         <p className="chat-mail-note">Sent {formatDateTime(pending.sent_at)}</p>

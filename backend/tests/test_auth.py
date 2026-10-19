@@ -112,6 +112,15 @@ def this_month() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
+DEFAULT_PREFERENCES = {
+    "theme": "system",
+    "accent": "clay",
+    "chat_font_size": "default",
+    "enter_to_send": True,
+    "default_model_id": None,
+}
+
+
 def zero_usage(monthly_token_limit: int) -> dict[str, Any]:
     return {
         "month": this_month(),
@@ -151,6 +160,7 @@ async def test_login_returns_me_sets_the_session_cookie_and_records_the_login(
         "is_admin": False,
         "limits": limits,
         "usage": zero_usage(5000),
+        "preferences": DEFAULT_PREFERENCES,
     }
     cookie = session_cookie(response)
     assert cookie["httponly"] is True
@@ -502,6 +512,7 @@ async def test_me_reports_the_users_limits_and_this_months_usage(create_user: Cr
             "embedding_tokens": 40,
             "vision_tokens": 3000,
         },
+        "preferences": DEFAULT_PREFERENCES,
     }
     assert body["usage"]["cost_usd"] == pytest.approx(0.78)  # every kind
     assert body["usage"]["monthly_token_limit"] == 5000
@@ -524,6 +535,7 @@ async def test_me_reports_the_admin_as_unlimited(admin_client: ApiClient) -> Non
             "monthly_image_limit": 0,
         },
         "usage": zero_usage(0),
+        "preferences": DEFAULT_PREFERENCES,
     }
 
 

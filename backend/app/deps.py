@@ -36,7 +36,14 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
     user = await db.get(User, user_id)
     if user is None or not user.is_active or payload.get("tv") != user.token_version:
         raise _unauthorized()
+    sid = payload.get("sid")
+    request.state.session_id = sid if isinstance(sid, int) and not isinstance(sid, bool) else None
     return user
+
+
+def current_session_id(request: Request) -> int | None:
+    """The `sid` of the session that authenticated this request (get_current_user ran); None for older tokens."""
+    return getattr(request.state, "session_id", None)
 
 
 async def get_current_admin(user: User = Depends(get_current_user)) -> User:
@@ -45,8 +52,8 @@ async def get_current_admin(user: User = Depends(get_current_user)) -> User:
     return user
 
 
-def set_session_cookie(response: Response, user: User) -> None:
-    token = create_access_token(user.id, user.token_version)
+def set_session_cookie(response: Response, user: User, session_id: int | None = None) -> None:
+    token = create_access_token(user.id, user.token_version, session_id)
     response.set_cookie(
         key=settings.cookie_name,
         value=token,

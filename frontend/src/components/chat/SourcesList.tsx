@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { AnswerSource, EmailSource, Source } from "../../api/types";
-import { DocumentsIcon, ExternalLinkIcon, MailIcon } from "./icons";
+import { ExternalLinkIcon, MailIcon } from "../ui/icons";
 import { formatEmailDate, safeHttpsUrl } from "./plugins/email";
 import { prefersReducedMotion } from "./useMediaQuery";
 
@@ -63,22 +63,20 @@ export default function SourcesList({ id, sources, highlight }: SourcesListProps
 function DocumentSourceItem({ source }: { source: Source }) {
   return (
     <>
-      <div className="chat-source-head">
-        <span className="chat-source-index">
-          <span className="sr-only">Source </span>
-          {source.index}
-        </span>
-        <DocumentsIcon size={14} />
-        <span className="chat-source-name" title={source.filename}>
-          {source.filename}
-        </span>
-        {source.page !== null ? <span className="chat-source-page">p. {source.page}</span> : null}
-        <span className="chat-source-score" title="Relevance">
-          <span className="sr-only">Relevance </span>
-          {relevance(source.score)}%
-        </span>
+      <span className="chat-source-index">
+        <span className="sr-only">Source </span>
+        {source.index}
+      </span>
+      <div className="chat-source-main">
+        <div className="chat-source-head">
+          <span className="chat-source-name">{source.filename}</span>
+          {source.page !== null ? <span className="chat-source-page">page {source.page}</span> : null}
+          <span className="chat-source-score" title="How closely this passage matched the question">
+            {relevance(source.score)}% match
+          </span>
+        </div>
+        <p className="chat-source-snippet">{displaySnippet(source.snippet)}</p>
       </div>
-      <p className="chat-source-snippet">{displaySnippet(source.snippet)}</p>
     </>
   );
 }
@@ -90,27 +88,27 @@ function EmailSourceItem({ source }: { source: EmailSource }) {
   const subject = source.subject || "(no subject)";
   return (
     <>
-      <div className="chat-source-head">
-        <span className="chat-source-index">
-          <span className="sr-only">Email </span>
-          {source.index}
-        </span>
-        <MailIcon size={14} />
-        <span className="chat-source-name" title={subject}>
-          {subject}
-        </span>
+      <span className="chat-source-index">
+        <span className="sr-only">Email </span>
+        {source.index}
+      </span>
+      <div className="chat-source-main">
+        <div className="chat-source-head">
+          <MailIcon size={15} className="chat-source-mail" />
+          <span className="chat-source-name">{subject}</span>
+          <span className="chat-source-page">
+            <span className="chat-source-sender">{source.sender}</span>
+            {date ? ` · ${date}` : null}
+          </span>
+        </div>
+        {source.snippet ? <p className="chat-source-snippet">{source.snippet}</p> : null}
+        {link ? (
+          <a className="chat-source-link" href={link} target="_blank" rel="noopener noreferrer">
+            {source.plugin_id === "gmail" ? "Open in Gmail" : "Open"}
+            <ExternalLinkIcon size={13} />
+          </a>
+        ) : null}
       </div>
-      <div className="chat-source-email-meta">
-        <span className="chat-source-sender">{source.sender}</span>
-        {date ? <span className="chat-source-date"> · {date}</span> : null}
-      </div>
-      {source.snippet ? <p className="chat-source-snippet">{source.snippet}</p> : null}
-      {link ? (
-        <a className="chat-source-link" href={link} target="_blank" rel="noopener noreferrer">
-          {source.plugin_id === "gmail" ? "Open in Gmail" : "Open"}
-          <ExternalLinkIcon size={12} />
-        </a>
-      ) : null}
     </>
   );
 }

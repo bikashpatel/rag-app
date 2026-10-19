@@ -1,7 +1,7 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import type { DocumentItem, DocumentSelection } from "../../api/types";
+import { FileIcon } from "../ui/icons";
 import DocumentRow from "./DocumentRow";
-import { DocumentIcon } from "./icons";
 import { isDocumentSelected, readyDocumentIds, toggleDocument } from "./selection";
 
 type DocumentListProps = {
@@ -94,7 +94,11 @@ function DocumentSection({ title, count, children }: { title: string; count: num
     <section className="docs-section" aria-labelledby={headingId}>
       <h3 id={headingId} className="docs-section-title">
         {title}{" "}
-        <span className="docs-section-count">{count}</span>
+        <span className="docs-section-count">
+          <span className="sr-only">(</span>
+          {count}
+          <span className="sr-only">)</span>
+        </span>
       </h3>
       {children}
     </section>
@@ -103,21 +107,22 @@ function DocumentSection({ title, count, children }: { title: string; count: num
 
 function EmptyState({ canShare, supportedTypes }: { canShare: boolean; supportedTypes: string[] }) {
   const types =
-    supportedTypes.length > 0 ? new Intl.ListFormat("en", { type: "conjunction" }).format(supportedTypes) : null;
+    supportedTypes.length > 0 ? new Intl.ListFormat("en-GB", { type: "disjunction" }).format(supportedTypes) : null;
   return (
     <div className="docs-state">
-      <span className="docs-state-icon">
-        <DocumentIcon size={22} />
+      <span className="docs-state-icon" aria-hidden="true">
+        <FileIcon size={24} />
       </span>
       <p className="docs-state-title">No documents yet</p>
       <p className="docs-state-text">
-        {types ? `Upload ${types} files` : "Upload files"} and ask questions about them in chat.
+        {types ? `Upload ${types} files` : "Upload files"} and ask about them in chat. Files you upload are private to
+        you.
       </p>
-      <p className="docs-state-text">
-        {canShare
-          ? "Files you upload are private to you. As an admin you can also add them to the shared knowledge base, which every user can search."
-          : "Files you upload are private to you."}
-      </p>
+      {canShare ? (
+        <p className="docs-state-text">
+          As an admin you can also add them to the shared knowledge base, which every user can search.
+        </p>
+      ) : null}
     </div>
   );
 }

@@ -28,6 +28,7 @@ from app.models import (
 )
 from app.plugins import connections, crypto, oauth
 from app.plugins.base import ChatToolSet, NotConnected, Plugin, PluginAccess, reconnect_message
+from app.schemas_plugins import PluginCard
 from app.services import llm, rag
 
 logger = logging.getLogger(__name__)
@@ -233,7 +234,7 @@ def require(
             label = wanted.name if wanted is not None else capability
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"{plugin.name}: {label} access wasn't granted. Grant it from the account menu (Connections).",
+                detail=f"{plugin.name}: {label} access wasn't granted. Grant it in Settings → Plugins & data.",
             )
         return user, access
 
@@ -293,6 +294,28 @@ async def plan_chat(db: AsyncSession, user: User, chat_model: LLMModel) -> Plugi
         elif plan.note:
             notes.append(plan.note)
     return PluginChatPlan(toolsets, notes)
+
+
+async def hydrate_cards(db: AsyncSession, user: User, items: Sequence[MessagePluginItem]) -> dict[int, PluginCard]:
+    """item id -> its card with live state (one hydration per plugin). Items of an unregistered plugin or of a plugin
+    whose hydration raises (logged), and cards a plugin left out, have no entry."""
+    by_plugin: defaultdict[str, list[MessagePluginItem]] = defaultdict(list)
+    for item in items:
+        by_plugin[item.plugin_id].append(item)
+    hydrated: dict[int, PluginCard] = {}
+    for plugin_id, own in by_plugin.items():
+        plugin = get_plugin(plugin_id)
+        if plugin is None:
+            continue
+        try:
+            cards = await plugin.hydrate_cards(db, user, own)
+        except Exception:
+            logger.exception("The %s plugin failed to load the cards of a conversation", plugin_id)
+            continue
+        for card in cards:  # matched by card_id "p<item id>": a plugin may leave out a card it can't load
+            if card.card_id.startswith("p") and card.card_id[1:].isdigit():
+                hydrated[int(card.card_id[1:])] = card
+    return hydrated
 
 
 async def history_items(db: AsyncSession, history: Sequence[Message]) -> dict[int, list[MessagePluginItem]]:

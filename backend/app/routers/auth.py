@@ -1,4 +1,4 @@
-"""Login, logout, the current user and password changes."""
+"""Login (with the sign-in history), logout, the current user, password changes and logging out other sessions."""
 
 import math
 from typing import Annotated
@@ -11,11 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
-from app.deps import clear_session_cookie, get_current_user, set_session_cookie
+from app.deps import clear_session_cookie, current_session_id, get_current_user, set_session_cookie
 from app.models import User, utcnow
 from app.redis_client import get_redis
 from app.schemas import Me, UsageSummary, UserLimits
 from app.security import hash_password_async, needs_rehash, verify_password_async
+from app.services import account
 from app.services.usage import monthly_image_limit, usage_summary, user_limits
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -88,6 +89,7 @@ async def build_me(db: AsyncSession, user: User) -> Me:
         is_admin=user.is_admin,
         limits=UserLimits(**user_limits(user), monthly_image_limit=await monthly_image_limit(db, user)),
         usage=UsageSummary(**await usage_summary(db, user)),
+        preferences=await account.read_preferences(db, user),
     )
 
 
@@ -108,8 +110,11 @@ async def login(body: LoginRequest, request: Request, response: Response, db: As
     if needs_rehash(user.password_hash):
         user.password_hash = await hash_password_async(body.password)
     user.last_login_at = utcnow()
+    event = await account.record_login(
+        db, user, request.client.host if request.client else None, request.headers.get("user-agent")
+    )
     await db.commit()
-    set_session_cookie(response, user)
+    set_session_cookie(response, user, event.id)
     return await build_me(db, user)
 
 
@@ -123,9 +128,21 @@ async def me(user: User = Depends(get_current_user), db: AsyncSession = Depends(
     return await build_me(db, user)
 
 
+async def _lock_session_user(db: AsyncSession, user: User) -> None:
+    """Lock and re-read the user's row: token_version (and password_hash) are read-modify-write, and an admin password
+    reset or deactivation writes them too. 401 when the session ended meanwhile."""
+    seen_version = user.token_version
+    await db.execute(
+        select(User).where(User.id == user.id).with_for_update(key_share=True).execution_options(populate_existing=True)
+    )
+    if not user.is_active or user.token_version != seen_version:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+
+
 @router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
 async def change_password(
     body: PasswordChange,
+    request: Request,
     response: Response,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -136,14 +153,7 @@ async def change_password(
     redis = get_redis()
     user_key = _user_key(user.username)
     await _count_attempt(redis, {user_key: settings.login_max_attempts})
-    # Lock and re-read the row: token_version and password_hash are read-modify-write, and an admin password
-    # reset writes them too. A session that was ended meanwhile can't set a password.
-    seen_version = user.token_version
-    await db.execute(
-        select(User).where(User.id == user.id).with_for_update(key_share=True).execution_options(populate_existing=True)
-    )
-    if not user.is_active or user.token_version != seen_version:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    await _lock_session_user(db, user)  # a session that was ended meanwhile can't set a password
     if not await verify_password_async(body.current_password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is incorrect")
 
@@ -151,4 +161,16 @@ async def change_password(
     user.token_version += 1
     await db.commit()
     await redis.delete(user_key)
-    set_session_cookie(response, user)
+    set_session_cookie(response, user, current_session_id(request))
+
+
+@router.post("/logout-others", status_code=status.HTTP_204_NO_CONTENT)
+async def logout_others(
+    request: Request, response: Response, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> None:
+    """End every other session (other browsers and devices, every Bearer token) and re-issue the caller's cookie with
+    the same session id. Also for the env admin; not throttled; plugin connections are untouched."""
+    await _lock_session_user(db, user)
+    user.token_version += 1
+    await db.commit()
+    set_session_cookie(response, user, current_session_id(request))

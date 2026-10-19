@@ -46,13 +46,13 @@ async def _connection(db: AsyncSession, user: User, plugin: Plugin) -> PluginCon
 
 @router.get("")
 async def list_plugins(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[PluginInfo]:
-    """Enabled and configured plugins, plus any the caller still has a connection to (so they can disconnect)."""
+    """Every registered plugin (the catalog), whatever its state, with the caller's own connection when there is one:
+    the client derives "Not set up", "Turned off by the admin", "Reconnect needed", "Connected" or "Not connected"
+    from `configured`, `enabled` and `connection`. Listing changes nothing in chat."""
     found: list[PluginInfo] = []
     for plugin in registry.all_plugins():
         access = await registry.access_for(db, user, plugin)
         row = await _connection(db, user, plugin) if access.connection is not None else None
-        if not access.enabled and row is None:
-            continue
         granted = registry.granted_capabilities(plugin, row.scopes or ()) if row is not None else frozenset()
         found.append(
             PluginInfo(
@@ -60,6 +60,7 @@ async def list_plugins(user: User = Depends(get_current_user), db: AsyncSession 
                 name=plugin.name,
                 description=plugin.description,
                 auth_type=plugin.auth_type,
+                configured=not registry.configured(plugin),
                 enabled=access.enabled,
                 testing_mode=plugin.testing_mode(),
                 supports_import=plugin.supports_import,

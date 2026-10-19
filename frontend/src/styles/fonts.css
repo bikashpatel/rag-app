@@ -1,0 +1,99 @@
+/* RAG Serif / RAG Sans: Latin subsets of Source Serif 4 (adobe-fonts/source-serif tag 4.005R, commit
+   2823e993c53fca27c5c8749f529b56a5a7c77b6b) and Source Sans 3 (adobe-fonts/source-sans branch release, commit
+   87b37a2daaed80fcb8e8ccb0085c4d72ddade12e), SIL OFL 1.1, renamed per the Reserved Font Name clause. Licences and the
+   full record are in src/assets/fonts (SOURCES.txt); how they were made: docs/briefs/ui-visual-design.md 4.1.
+   Upstream sha256: SourceSerif4Variable-Roman.ttf.woff2 940a76eda1388de39d38c8e7a79bf6ea058a387faee0a9f33c8d25c6ba05e1be,
+   SourceSerif4Variable-Italic.ttf.woff2 9d28b5749a1ad096a295cb607c521bd1af4cd9979b6f37332daf70143149fb44,
+   SourceSans3VF-Upright.ttf.woff2 5f16566f7a40d39b339ad26be151fa5a1ab1f0c2574c7a2e619765584a1acbd8.
+   Bundled sha256: RAGSerif-Roman.woff2 826af310b09211dafbbbff66b70eae2b1fbb2d81990e03849f441828f204e9fd,
+   RAGSerif-Italic.woff2 135f790e2e431a371cb701d3be16e8c65a6e12398dfe34e3d70809c1e7895419,
+   RAGSans-Upright.woff2 c3bc9c38f264451683d03cb9d0ac187f81b1db22617727db9fd140d8b44064b3.
+   Licences: LICENSE-SourceSerif4.md 75784a295293a8992f5a8d99210566e0064a012e6dab6731305e3787f15896c7,
+   LICENSE-SourceSans3.md 56af9b9c6715597e458284a474dc118a50a4150e9d547c70f7b4a33c3e6a9328.
+   Serif weights outside 400-700 clamp: use only 400-700 for serif text. There is no sans italic file. */
+@font-face {
+  font-family: "RAG Serif";
+  src: url("../assets/fonts/RAGSerif-Roman.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-017F, U+0192, U+0218-021B, U+0237, U+02BB-02BC, U+02C6-02C7, U+02D8-02DD, U+0300-030C,
+    U+0326-0328, U+1E9E, U+2000-206F, U+20AC, U+20B9, U+2113, U+2116, U+2122, U+2190-2195, U+2212, U+2215, U+2713,
+    U+FB01-FB02, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "RAG Serif";
+  src: url("../assets/fonts/RAGSerif-Italic.woff2") format("woff2");
+  font-weight: 400 700;
+  font-style: italic;
+  font-display: swap;
+  unicode-range: U+0000-017F, U+0192, U+0218-021B, U+0237, U+02BB-02BC, U+02C6-02C7, U+02D8-02DD, U+0300-030C,
+    U+0326-0328, U+1E9E, U+2000-206F, U+20AC, U+20B9, U+2113, U+2116, U+2122, U+2190-2195, U+2212, U+2215, U+2713,
+    U+FB01-FB02, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: "RAG Sans";
+  src: url("../assets/fonts/RAGSans-Upright.woff2") format("woff2");
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-017F, U+0192, U+0218-021B, U+0237, U+02BB-02BC, U+02C6-02C7, U+02D8-02DD, U+0300-030C,
+    U+0326-0328, U+1E9E, U+2000-206F, U+20AC, U+20B9, U+2113, U+2116, U+2122, U+2190-2195, U+2212, U+2215, U+2318,
+    U+2713, U+FB01-FB02, U+FEFF, U+FFFD;
+}
+
+/* Metric-matched fallbacks: local system faces scaled to the bundled fonts' widths and vertical metrics, so text
+   doesn't re-wrap or jump when the web fonts arrive. Second in --font-serif / --font-sans. Values from appendix C of
+   docs/briefs/ui-visual-design.md (fallback_metrics.py on the files above and macOS's Georgia and Arial); re-run it
+   when the font files change. Where the local face is missing (Linux, Android) the rule matches nothing and the stack
+   goes on. */
+@font-face {
+  font-family: "RAG Serif Fallback";
+  src: local("Georgia");
+  font-weight: 400;
+  font-style: normal;
+  size-adjust: 105.33%;
+  ascent-override: 98.36%;
+  descent-override: 31.8%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "RAG Serif Fallback";
+  src: local("Georgia Bold"), local("Georgia-Bold");
+  font-weight: 700; /* also used for 600 and 650 */
+  font-style: normal;
+  size-adjust: 88.08%;
+  ascent-override: 117.62%;
+  descent-override: 38.03%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "RAG Serif Fallback";
+  src: local("Georgia Italic"), local("Georgia-Italic");
+  font-weight: 400;
+  font-style: italic;
+  size-adjust: 93.94%;
+  ascent-override: 110.28%;
+  descent-override: 35.66%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "RAG Sans Fallback";
+  src: local("Arial"), local("ArialMT");
+  font-weight: 400;
+  font-style: normal;
+  size-adjust: 93.68%;
+  ascent-override: 106.74%;
+  descent-override: 34.8%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "RAG Sans Fallback";
+  src: local("Arial Bold"), local("Arial-BoldMT");
+  font-weight: 700; /* also used for 600 and 650 */
+  font-style: normal;
+  size-adjust: 89.51%;
+  ascent-override: 111.73%;
+  descent-override: 36.42%;
+  line-gap-override: 0%;
+}

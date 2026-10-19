@@ -39,7 +39,7 @@ REFRESH_MARGIN = timedelta(seconds=60)  # an access token closer to its expiry i
 TESTING_LIFETIME = timedelta(days=7)  # Google ends refresh tokens of apps in "Testing" after 7 days
 _TESTING_EXPIRY_AGE = timedelta(days=6)  # invalid_grant from a connection this old in testing mode: expired_testing
 _TOUCH_INTERVAL = timedelta(seconds=60)
-_GONE = "This connection was removed. Connect again from the account menu (Connections)."
+_GONE = "This connection was removed. Connect again in Settings → Plugins & data."
 
 _locks: WeakValueDictionary[tuple[int, str], asyncio.Lock] = WeakValueDictionary()
 _sleep = asyncio.sleep  # patched in tests

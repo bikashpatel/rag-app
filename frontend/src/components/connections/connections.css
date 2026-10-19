@@ -1,65 +1,27 @@
-/* Connections (account menu) and the Gmail browser: conn- prefix, tokens from global.css (light and dark). */
+/* Plugin connection cards (Settings → Plugins & data) and the Gmail browser: conn- prefix, colours only from the
+   global.css tokens (visual spec 6.24). Cards sit on the page colour inside the Settings panel; their inner rows indent
+   to the heading (16 px padding + the 40 px icon + 12 px gap = 68 px). */
 
-.conn-modal {
+.conn-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
-.conn-intro,
 .conn-empty {
   margin: 0;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: 14px;
+  line-height: 1.5;
 }
 
 .conn-banner {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-2);
-  padding: 8px 6px 8px 12px;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-  animation: fade-in 0.15s ease-out;
+  animation: fade-in var(--dur-2) ease-out;
 }
-.conn-banner > svg {
-  flex: none;
-  margin-top: 2px;
-}
-.conn-banner-text {
-  flex: 1;
-  min-width: 0;
-  color: var(--text);
+.conn-banner .ui-notice-text {
   overflow-wrap: anywhere;
 }
-.conn-banner-success {
-  background: var(--success-soft);
-  color: var(--success);
-}
-.conn-banner-info {
-  background: var(--info-soft);
-  color: var(--info);
-}
-.conn-banner-error {
-  background: var(--danger-soft);
-  color: var(--danger);
-}
-.btn.conn-banner-close {
-  flex: none;
-  width: 24px;
-  height: 24px;
-}
-
 .conn-state {
-  display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-5) 0;
-  color: var(--text-2);
-}
-.conn-state p {
-  margin: 0;
 }
 
 .conn-list {
@@ -70,175 +32,234 @@
   padding: 0;
   list-style: none;
 }
+
+/* ---------- Card ---------- */
 .conn-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  padding: var(--space-4);
+  position: relative; /* containing block for .sr-only text */
+  overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
 }
 .conn-card-head {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: var(--space-3);
+  gap: 12px;
+  padding: 16px;
 }
 .conn-card-icon {
   display: grid;
   flex: none;
   place-items: center;
-  width: 34px;
-  height: 34px;
-  border-radius: var(--radius-sm);
-  background: var(--accent-soft);
-  color: var(--accent);
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--tag-red);
+  box-shadow: var(--shadow-xs);
 }
 .conn-card-heading {
-  flex: 1 1 12rem;
+  display: flex;
+  flex: 1 1 220px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
   min-width: 0;
 }
 .conn-card-title {
-  font-size: 15px;
-  font-weight: 650;
-}
-.conn-card-description {
-  margin: 2px 0 0;
-  color: var(--text-3);
-  font-size: 13px;
-}
-
-.conn-facts {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2) var(--space-5);
-  margin: 0;
-  font-size: 13px;
-}
-.conn-facts > div {
-  min-width: 0;
-}
-.conn-facts dt {
-  color: var(--text-3);
-  font-size: 12px;
-  font-weight: 600;
-}
-.conn-facts dd {
-  margin: 0;
   color: var(--text);
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.3;
+}
+.conn-card-title:focus-visible {
+  border-radius: 4px;
+}
+/* A long account wraps: the mark stays on the first line. */
+.conn-status {
+  align-items: flex-start;
+  max-width: 100%;
+}
+.conn-status::before {
+  margin-top: 6px;
+}
+.conn-status > svg {
+  margin-top: 3px;
+}
+.conn-status > .ui-dashed {
+  margin-top: 5px;
+}
+.conn-status-text {
+  min-width: 0;
   overflow-wrap: anywhere;
 }
+/* Parts wrap whole. Every part starts with its "·" and the row is shifted one separator to the left, so the separator
+   that begins each line is clipped: none dangles at a line start (the documents panel's meta line does the same). */
 .conn-account {
+  max-width: 100%;
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+.conn-account-parts {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  margin-inline-start: -1.1em;
+}
+.conn-account-parts > span {
+  min-width: 0;
+}
+.conn-account-parts > span::before {
+  content: "·";
+  display: inline-block;
+  width: 1.1em;
+  text-align: center;
+}
+.conn-link-btn.conn-account-action {
+  min-height: 0;
+  font-size: 13.5px;
+}
+.conn-account-email {
+  color: var(--text-2);
   font-weight: 600;
 }
-
-.conn-note {
-  margin: 0;
-  color: var(--text-3);
-  font-size: 12.5px;
+.conn-card-text {
+  max-width: 62ch;
+  margin: 4px 0 0;
+  color: var(--text-2);
+  font-size: 14px;
+  line-height: 1.45;
 }
-.conn-warning,
-.conn-hint,
-.conn-confirm {
+.conn-setup-link {
+  white-space: nowrap;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.conn-actions {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2) var(--space-3);
-  padding: 10px var(--space-3);
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  font-size: 13px;
-}
-.conn-warning p,
-.conn-hint p,
-.conn-confirm p {
-  flex: 1 1 16rem;
-  min-width: 0;
-  margin: 0;
-  color: var(--text);
-}
-.conn-warning {
-  background: var(--warning-soft);
-  border-color: color-mix(in srgb, var(--warning) 30%, transparent);
-}
-.conn-warning > svg {
-  flex: none;
-  color: var(--warning);
-}
-.conn-hint {
-  background: var(--info-soft);
-  border-color: color-mix(in srgb, var(--info) 30%, transparent);
-}
-.conn-confirm {
-  background: var(--danger-soft);
-  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
-}
-.conn-hint-actions {
-  display: flex;
-  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: var(--space-2);
+  margin-left: auto;
+}
+.btn.conn-disconnect:hover:not(:disabled) {
+  background: var(--danger-soft);
+  color: var(--danger);
 }
 
+/* Loading: a card-shaped skeleton. */
+.conn-card-loading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+}
+.ui-skeleton.conn-skeleton-icon {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+}
+.conn-skeleton-lines {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* ---------- Capabilities: pills under the heading ---------- */
 .conn-caps {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
   gap: 6px;
   margin: 0;
-  padding: 0;
+  padding: 0 16px 14px 68px;
   list-style: none;
 }
-.conn-cap {
-  display: flex;
+.conn-cap-item {
+  display: inline-flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 4px var(--space-2);
-  font-size: 13px;
+  gap: 4px 8px;
+  min-width: 0;
 }
-.conn-cap-mark {
-  display: grid;
+.conn-cap {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 1.3;
+}
+.conn-cap > svg {
   flex: none;
-  place-items: center;
-  width: 18px;
-  height: 18px;
+}
+.conn-cap-allowed > svg {
   color: var(--success);
 }
 .conn-cap-dot {
+  flex: none;
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: var(--border-strong);
 }
-.conn-cap-text {
-  display: flex;
-  flex: 1 1 14rem;
-  flex-direction: column;
-  min-width: 0;
+/* Not available to this connection: dashed and quieter (the words carry it too). */
+.conn-cap-off {
+  border-style: dashed;
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text-3);
 }
-.conn-cap-name {
-  color: var(--text);
+.conn-cap-state {
+  color: var(--text-3);
+}
+.conn-link-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  font-size: 13.5px;
   font-weight: 600;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
-.conn-cap-description {
-  color: var(--text-3);
-  font-size: 12.5px;
+.conn-link-btn:hover:not(:disabled) {
+  text-decoration-thickness: 2px;
 }
-.conn-cap-off .conn-cap-name {
+.conn-link-btn:disabled {
   color: var(--text-3);
-  font-weight: 500;
-}
-.conn-cap-status {
-  color: var(--text-3);
-  font-size: 12px;
+  cursor: default;
 }
 
+/* ---------- "Use in chat" ---------- */
 .conn-switch-field {
   display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-}
-.conn-switch-field .switch {
-  margin-top: 1px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 14px 16px 14px 68px;
+  border-top: 1px solid var(--border);
 }
 .conn-switch-text {
   display: flex;
@@ -247,27 +268,80 @@
   min-width: 0;
 }
 .conn-switch-label {
-  font-size: 13.5px;
+  color: var(--text);
+  font-size: 15px;
   font-weight: 600;
   cursor: pointer;
 }
+.conn-switch-hint {
+  color: var(--text-3);
+  font-size: 14px;
+  line-height: 1.45;
+}
 
-.conn-actions {
+/* ---------- Notes and inline prompts: full-width bands at the foot of the card ---------- */
+.conn-note,
+.conn-prompt {
   display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 16px 10px 68px;
+  border-top: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.conn-note > svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--text-3);
+}
+.conn-note p,
+.conn-prompt p {
+  flex: 1 1 16rem;
+  min-width: 0;
+  margin: 0;
+}
+.conn-note-warning {
+  background: var(--warning-soft);
+  color: var(--text);
+}
+.conn-note-warning > svg {
+  color: var(--warning);
+}
+.conn-prompt {
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-2);
+  gap: 10px 14px;
+  padding-top: 14px;
+  padding-bottom: 14px;
+  color: var(--text);
+  animation: conn-reveal var(--dur-2) var(--ease-out);
 }
-.btn.conn-disconnect {
-  margin-left: auto;
-  color: var(--danger);
+.conn-prompt-info {
+  background: var(--info-soft);
 }
-.btn.conn-disconnect:hover:not(:disabled) {
+.conn-prompt-danger {
   background: var(--danger-soft);
-  color: var(--danger);
+}
+.conn-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.error-text.conn-error {
+  padding: 0 16px 14px 68px;
+}
+@keyframes conn-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(-3px);
+  }
 }
 
-/* ---------- Gmail browser and import ---------- */
+/* ---------- Gmail browser and import (a large Modal) ---------- */
 .conn-browser {
   display: flex;
   flex-direction: column;
@@ -285,27 +359,36 @@
 .conn-search-meta {
   margin: 0;
   color: var(--text-3);
-  font-size: 12.5px;
+  font-size: 13.5px;
+  line-height: 1.45;
 }
+
 .conn-threads {
+  position: relative;
   display: flex;
   flex-direction: column;
   margin: 0;
   padding: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  list-style: none;
   overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  list-style: none;
 }
 .conn-thread + .conn-thread {
   border-top: 1px solid var(--border);
 }
 .conn-thread-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: start;
-  gap: var(--space-2);
-  padding: 10px var(--space-3);
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 52px;
+  padding: 6px 14px 6px 12px;
+  transition: background var(--dur-1);
+}
+.conn-thread-row:hover {
+  background: color-mix(in srgb, var(--surface-2) 70%, transparent);
 }
 .conn-thread-open .conn-thread-row {
   background: var(--surface-2);
@@ -313,101 +396,131 @@
 .conn-thread-check {
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
 }
-.conn-thread-check input,
-.conn-attachment input {
-  width: 15px;
-  height: 15px;
-  margin: 0;
-  accent-color: var(--accent);
-}
+/* Phones: sender and date on the first line, subject and snippet under them. */
 .conn-thread-toggle {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  display: grid;
+  grid-template-areas:
+    "sender date"
+    "text text";
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 1px 10px;
   min-width: 0;
-  padding: 0;
+  padding: 6px 4px;
   border: 0;
+  border-radius: 6px;
   background: transparent;
   color: inherit;
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
-.conn-thread-toggle:focus-visible {
-  border-radius: 4px;
-}
-.conn-thread-line {
-  display: flex;
-  align-items: baseline;
-  gap: var(--space-2);
-  min-width: 0;
-}
 .conn-thread-sender {
-  flex: 1;
+  display: flex;
+  grid-area: sender;
+  align-items: center;
+  gap: 6px;
   min-width: 0;
-  overflow: hidden;
   color: var(--text-2);
-  font-size: 12.5px;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  font-size: 14px;
+  font-weight: 600;
 }
-.conn-thread-date {
-  flex: none;
-  color: var(--text-3);
-  font-size: 12px;
-  font-variant-numeric: tabular-nums;
-}
-.conn-thread-subject {
+.conn-thread-sender-name {
   min-width: 0;
   overflow: hidden;
-  color: var(--text);
-  font-size: 13.5px;
-  font-weight: 550;
-  white-space: nowrap;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.conn-thread-unread .conn-thread-subject {
-  font-weight: 700;
+.conn-thread-unread .conn-thread-sender {
+  color: var(--text);
+  font-weight: 650;
 }
 .conn-unread-dot {
-  display: inline-block;
   flex: none;
-  width: 7px;
-  height: 7px;
-  margin-right: 6px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--accent);
-  vertical-align: middle;
 }
 .conn-thread-count {
   flex: none;
   padding: 0 6px;
-  border-radius: 999px;
+  border-radius: var(--radius-pill);
   background: var(--surface-3);
   color: var(--text-2);
-  font-size: 11px;
+  font-size: 11.5px;
+  font-weight: 600;
+  line-height: 18px;
+}
+.conn-thread-date {
+  grid-area: date;
+  color: var(--text-3);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.conn-thread-unread .conn-thread-date {
+  color: var(--text-2);
   font-weight: 600;
 }
-.conn-thread-snippet {
+.conn-thread-text {
   display: -webkit-box;
+  grid-area: text;
   overflow: hidden;
-  color: var(--text-3);
-  font-size: 12.5px;
+  font-size: 14px;
+  line-height: 1.45;
   overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
   -webkit-line-clamp: 2;
   line-clamp: 2;
-  -webkit-box-orient: vertical;
+}
+.conn-thread-subject {
+  color: var(--text);
+  font-weight: 500;
+}
+.conn-thread-unread .conn-thread-subject {
+  font-weight: 650;
+}
+.conn-thread-snippet {
+  color: var(--text-3);
+}
+/* Wider dialogs: one Gmail-like line per conversation. */
+@media (min-width: 800px) {
+  .conn-thread-toggle {
+    grid-template-areas: "sender text date";
+    grid-template-columns: minmax(0, 13rem) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 14px;
+  }
+  .conn-thread-text {
+    display: block;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+.conn-thread-skeleton {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 13rem) minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-height: 52px;
+  padding: 0 14px 0 15px;
+}
+.ui-skeleton.conn-skeleton-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
 }
 
 .conn-thread-detail {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
-  padding: var(--space-3) var(--space-3) var(--space-3) calc(var(--space-3) + 28px);
-  border-top: 1px dashed var(--border);
+  padding: 12px 16px 16px 46px;
+  border-top: 1px solid var(--border);
   background: var(--surface);
 }
 .conn-message {
@@ -425,55 +538,48 @@
   flex-wrap: wrap;
   align-items: baseline;
   gap: 2px var(--space-2);
-  font-size: 12.5px;
+  font-size: 14px;
 }
 .conn-message-sender {
   flex: 1 1 12rem;
   min-width: 0;
   color: var(--text);
-  font-weight: 600;
+  font-weight: 650;
   overflow-wrap: anywhere;
 }
 .conn-message-recipients {
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 /* Email text as text only (React escapes it), collapsed after 12 lines until "Show more". */
 .conn-message-body {
   margin: 0;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  background: var(--surface-2);
   color: var(--text-2);
   font-family: inherit;
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 14px;
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 .conn-message-body-collapsed {
   display: -webkit-box;
   overflow: hidden;
+  -webkit-box-orient: vertical;
   -webkit-line-clamp: 12;
   line-clamp: 12;
-  -webkit-box-orient: vertical;
 }
-.conn-link-btn {
+.conn-message .conn-link-btn,
+.conn-thread-detail > .conn-link-btn {
   align-self: flex-start;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  font-size: 12.5px;
-  font-weight: 600;
-  cursor: pointer;
-}
-.conn-link-btn:hover {
-  text-decoration: underline;
 }
 .conn-attachments {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -483,18 +589,25 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 2px var(--space-2);
-  font-size: 12.5px;
+  min-height: 32px;
+  font-size: 13.5px;
 }
 .conn-attachment label {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+  min-height: 28px;
   cursor: pointer;
+}
+.conn-attachment svg {
+  flex: none;
+  color: var(--text-3);
 }
 .conn-attachment-name {
   min-width: 0;
   color: var(--text);
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 .conn-attachment-size {
@@ -503,7 +616,11 @@
 }
 .conn-attachment-reason {
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 13px;
+}
+/* Not importable: no checkbox; the name sits where the box would be. */
+.conn-attachment-off {
+  padding-left: 26px;
 }
 .conn-attachment-off .conn-attachment-name {
   color: var(--text-3);
@@ -511,7 +628,7 @@
 .conn-detail-note {
   margin: 0;
   color: var(--text-3);
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .conn-footer {
@@ -525,18 +642,25 @@
 .conn-footer-count {
   margin-right: auto;
   color: var(--text-2);
-  font-size: 13px;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 .conn-footer-count-over {
   color: var(--danger);
+}
+.btn.conn-load-more {
+  align-self: center;
 }
 
 .conn-progress {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-5) 0;
+  padding: var(--space-6) var(--space-2);
   color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.5;
 }
 /* Text that takes focus only so it is read out and focus isn't lost (GmailImportModal): no focus ring. */
 .conn-focus-target:focus,
@@ -547,20 +671,24 @@
 .conn-results {
   display: flex;
   flex-direction: column;
-  gap: 6px;
   margin: 0;
   padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
   list-style: none;
 }
 .conn-result {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 2px var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: 13px;
+  gap: 2px 10px;
+  padding: 11px 14px;
+  font-size: 14px;
+}
+.conn-result + .conn-result {
+  border-top: 1px solid var(--border);
 }
 .conn-result > svg {
   flex: none;
@@ -570,26 +698,36 @@
   flex: 1 1 12rem;
   min-width: 0;
   color: var(--text);
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 .conn-result-reason {
   flex-basis: 100%;
+  padding-left: 26px;
   color: var(--text-3);
-  font-size: 12.5px;
+  font-size: 13px;
   overflow-wrap: anywhere;
 }
 
-@media (max-width: 479.98px) {
-  .conn-card {
-    padding: var(--space-3);
+/* ---------- Phones ---------- */
+@media (max-width: 799.98px) {
+  .conn-caps,
+  .conn-switch-field,
+  .conn-note,
+  .conn-prompt,
+  .error-text.conn-error {
+    padding-left: 16px;
   }
-  .conn-thread-detail {
-    padding-left: var(--space-3);
-  }
-  .btn.conn-disconnect {
+  .conn-actions {
+    justify-content: flex-start;
+    width: 100%;
     margin-left: 0;
   }
-}
-.btn.conn-load-more {
-  align-self: center;
+  .conn-thread-row {
+    padding-right: 10px;
+    padding-left: 8px;
+  }
+  .conn-thread-detail {
+    padding-left: 14px;
+  }
 }

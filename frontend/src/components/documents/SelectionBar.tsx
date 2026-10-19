@@ -28,6 +28,7 @@ export default function SelectionBar({ documents, selection, onSelectionChange }
         <input
           ref={checkboxRef}
           type="checkbox"
+          className="ui-check"
           checked={state === "all"}
           disabled={readyIds.length === 0 && selection === null}
           onChange={() => onSelectionChange(state === "all" ? [] : null)}

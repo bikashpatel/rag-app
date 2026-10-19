@@ -344,7 +344,8 @@ async def test_plugin_list_rules(
     assert listed[0]["enabled"] is True and listed[0]["auth_type"] == "oauth2"
 
     await admin_client.patch("/api/admin/plugins/fake", json={"enabled": False})
-    assert (await bob.get("/api/plugins")).json() == []  # off: hidden
+    [off] = (await bob.get("/api/plugins")).json()  # off: still listed (the catalog)
+    assert (off["configured"], off["enabled"], off["connection"]) == (True, False, None)
     mine = (await alice.get("/api/plugins")).json()
     assert len(mine) == 1 and mine[0]["enabled"] is False  # still listed, so they can disconnect
     assert mine[0]["connection"]["account_email"] == ALICE
@@ -354,8 +355,9 @@ async def test_plugin_list_rules(
     status = (await alice.get("/api/plugins")).json()[0]
     assert status["testing_mode"] is False and status["connection"]["refresh_expires_at"] is None
 
-    monkeypatch.setattr(settings, "google_oauth_client_id", "")  # not configured: like off
-    assert (await bob.get("/api/plugins")).json() == []
+    monkeypatch.setattr(settings, "google_oauth_client_id", "")  # not configured: listed as such
+    [unconfigured] = (await bob.get("/api/plugins")).json()
+    assert (unconfigured["configured"], unconfigured["enabled"], unconfigured["connection"]) == (False, False, None)
 
 
 async def test_touch_writes_at_most_once_a_minute(

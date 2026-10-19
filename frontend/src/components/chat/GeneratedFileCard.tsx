@@ -5,13 +5,13 @@ import { formatBytes, formatNumber } from "../../lib/format";
 import { useDocumentSnapshot } from "../documents/documentEvents";
 import FileTag from "../documents/FileTag";
 import { fileTypeTag } from "../documents/fileTypes";
-import { AlertIcon, CheckIcon, DownloadIcon } from "./icons";
+import { AlertCircleIcon, CheckIcon, DownloadIcon } from "../ui/icons";
 import type { FileCard } from "./useChatStream";
 
 type CardView = {
   /** The group's accessible name. */
   label: string;
-  tone: "default" | "muted" | "failed";
+  tone: "default" | "muted" | "failed" | "busy";
   lead: ReactNode;
   headline: string;
   /** Long headlines wrap instead of being cut off (sentences rather than names). */
@@ -24,34 +24,52 @@ type CardView = {
   download: { id: number; filename: string } | null;
 };
 
+const KIND_NAMES: Record<string, string> = {
+  docx: "Word",
+  xlsx: "Excel",
+  pptx: "PowerPoint",
+  md: "Markdown",
+  markdown: "Markdown",
+  txt: "Text",
+};
+
+/** "Word", "Excel", "PDF", "PNG" … for a card's meta line. */
+export function kindName(filename: string): string {
+  const extension = filename.slice(filename.lastIndexOf(".") + 1).toLowerCase();
+  return KIND_NAMES[extension] ?? fileTypeTag(filename).label;
+}
+
 type StatusTextProps = { status: DocumentStatus | null; alreadyExisted: boolean; error: string | null };
 
-/** Where a created file or image is now (`status` null: the document was deleted). Also used by image cards. */
+/**
+ * Where a created file or image is now (`status` null: the document was deleted), in the one status vocabulary of
+ * the app: Queued, Indexing…, Ready, Failed (visual spec 6.5). Also used by image and Gmail import cards.
+ */
 export function StatusText({ status, alreadyExisted, error }: StatusTextProps) {
   switch (status) {
     case null:
-      return <span className="chat-file-status">Deleted from your documents</span>;
+      return <span className="chat-file-status chat-file-status-muted">Deleted from your documents</span>;
     case "pending":
-      return <span className="chat-file-status">Queued for indexing</span>;
+      return <span className="chat-file-status chat-file-status-muted">Queued</span>;
     case "processing":
       return (
-        <span className="chat-file-status">
-          <span className="spinner chat-file-status-spinner" aria-hidden="true" />
+        <span className="chat-file-status chat-file-status-info">
+          <span className="spinner" aria-hidden="true" />
           Indexing…
         </span>
       );
     case "ready":
       return (
         <span className="chat-file-status chat-file-status-ready">
-          <CheckIcon size={13} />
-          {alreadyExisted ? "Already in your documents" : "In your documents"}
+          <CheckIcon size={14} />
+          {alreadyExisted ? "Already in your documents" : "Ready"}
         </span>
       );
     case "failed":
       return (
-        <span className="chat-file-status chat-file-status-warning" title={error ?? undefined}>
-          <AlertIcon size={13} />
-          Saved, but couldn't be indexed
+        <span className="chat-file-status chat-file-status-failed" title={error ?? undefined}>
+          <AlertCircleIcon size={14} />
+          Saved, but indexing failed
         </span>
       );
   }
@@ -65,19 +83,29 @@ function cardView(card: FileOnlyCard, doc: DocumentItem | null | undefined): Car
     case "writing":
       return {
         label: "File being created",
-        tone: "default",
-        lead: <span className="spinner chat-file-spinner" aria-hidden="true" />,
+        tone: "busy",
+        lead: card.format ? <FileTag filename={`file.${card.format}`} /> : <span className="spinner chat-file-spinner" aria-hidden="true" />,
         headline: card.title ? `Creating ${card.title}…` : "Creating a file…",
         wrap: false,
-        meta: null,
+        meta: (
+          <span className="chat-file-meta">
+            <span>
+              <span className="chat-file-status chat-file-status-info">
+                <span className="spinner" aria-hidden="true" />
+                Writing the file…
+              </span>
+            </span>
+          </span>
+        ),
         error: null,
-        progress:
-          card.format || card.chars > 0 ? (
-            <>
-              {card.format ? <FileTag filename={`file.${card.format}`} /> : null}
-              {card.chars > 0 ? <span>{formatNumber(card.chars)} characters</span> : null}
-            </>
-          ) : null,
+        progress: (
+          <>
+            {card.chars > 0 ? <span className="chat-file-chars">{formatNumber(card.chars)} characters</span> : null}
+            <span className="chat-file-bar" aria-hidden="true">
+              <span />
+            </span>
+          </>
+        ),
         download: null,
       };
     case "created": {
@@ -95,13 +123,10 @@ function cardView(card: FileOnlyCard, doc: DocumentItem | null | undefined): Car
         wrap: false,
         meta: (
           <span className="chat-file-meta">
-            <span className="chat-file-meta-parts">
-              <span className="chat-file-meta-part">
-                {fileTypeTag(file.filename).label} · {formatBytes(file.size_bytes)}
-              </span>
-              <span className="chat-file-meta-part">
-                <StatusText status={status} alreadyExisted={card.alreadyExisted} error={doc?.error ?? null} />
-              </span>
+            <span>{kindName(file.filename)}</span>
+            <span>{formatBytes(file.size_bytes)}</span>
+            <span>
+              <StatusText status={status} alreadyExisted={card.alreadyExisted} error={doc?.error ?? null} />
             </span>
           </span>
         ),
@@ -114,7 +139,11 @@ function cardView(card: FileOnlyCard, doc: DocumentItem | null | undefined): Car
       return {
         label: card.title ?? "File",
         tone: "failed",
-        lead: <AlertIcon size={18} />,
+        lead: (
+          <span className="chat-file-icon">
+            <AlertCircleIcon size={20} />
+          </span>
+        ),
         headline: `Couldn't create ${card.title ?? "the file"}`,
         wrap: true,
         meta: null,
@@ -135,6 +164,16 @@ function cardView(card: FileOnlyCard, doc: DocumentItem | null | undefined): Car
         download: null,
       };
   }
+}
+
+/** Download as an sm button; icon only on phones (chat.css). */
+export function DownloadButton({ id, filename }: { id: number; filename: string }) {
+  return (
+    <a className="btn btn-sm chat-file-download" href={documentDownloadUrl(id)} download aria-label={`Download ${filename}`}>
+      <DownloadIcon size={16} />
+      <span className="chat-dl-label">Download</span>
+    </a>
+  );
 }
 
 /**
@@ -160,17 +199,7 @@ export default function GeneratedFileCard({ card }: { card: FileOnlyCard }) {
         </div>
         {view.progress ? <div className="chat-file-progress">{view.progress}</div> : null}
       </div>
-      {view.download ? (
-        <a
-          className="btn btn-sm chat-file-download"
-          href={documentDownloadUrl(view.download.id)}
-          download
-          aria-label={`Download ${view.download.filename}`}
-        >
-          <DownloadIcon size={14} />
-          Download
-        </a>
-      ) : null}
+      {view.download ? <DownloadButton {...view.download} /> : null}
     </div>
   );
 }

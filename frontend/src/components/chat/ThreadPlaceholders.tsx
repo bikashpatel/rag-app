@@ -1,4 +1,4 @@
-import { AlertIcon, RetryIcon } from "./icons";
+import { AlertCircleIcon, RetryIcon } from "./icons";
 
 export function ThreadLoading() {
   return (
@@ -7,16 +7,16 @@ export function ThreadLoading() {
         Loading conversation
       </span>
       <div className="chat-messages" aria-hidden="true">
-        <div className="chat-skeleton chat-skeleton-user" />
+        <div className="ui-skeleton chat-skeleton-user" />
         <div className="chat-skeleton-group">
-          <div className="chat-skeleton" />
-          <div className="chat-skeleton" />
-          <div className="chat-skeleton chat-skeleton-short" />
+          <div className="ui-skeleton" />
+          <div className="ui-skeleton" style={{ width: "92%" }} />
+          <div className="ui-skeleton chat-skeleton-short" />
         </div>
-        <div className="chat-skeleton chat-skeleton-user" />
+        <div className="ui-skeleton chat-skeleton-user chat-skeleton-user-short" />
         <div className="chat-skeleton-group">
-          <div className="chat-skeleton" />
-          <div className="chat-skeleton chat-skeleton-short" />
+          <div className="ui-skeleton" style={{ width: "86%" }} />
+          <div className="ui-skeleton chat-skeleton-short" />
         </div>
       </div>
     </div>
@@ -27,11 +27,13 @@ export function ThreadError({ message, onRetry }: { message: string | null; onRe
   return (
     <div className="chat-thread chat-thread-placeholder">
       <div className="chat-thread-error" role="alert">
-        <AlertIcon size={22} />
+        <span className="chat-thread-error-icon" aria-hidden="true">
+          <AlertCircleIcon size={22} />
+        </span>
         <h2>Couldn't load this conversation</h2>
         {message ? <p>{message}</p> : null}
-        <button type="button" className="btn" onClick={onRetry}>
-          <RetryIcon size={14} />
+        <button type="button" className="btn btn-primary" onClick={onRetry}>
+          <RetryIcon size={16} />
           Try again
         </button>
       </div>

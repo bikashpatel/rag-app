@@ -1,9 +1,11 @@
 import { lazy, Suspense, type ReactNode } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { loginRedirectState, postLoginPath } from "./auth/loginRedirect";
+import SettingsHost from "./components/settings/SettingsHost";
 import ErrorBoundary from "./components/ui/ErrorBoundary";
-import Spinner from "./components/ui/Spinner";
+import { FullPageMessage, FullPageSpinner } from "./components/ui/FullPageState";
+import { parseSettingsTab, withSettingsTab } from "./lib/settingsLink";
 import ChatPage from "./pages/ChatPage";
 import LoginPage from "./pages/LoginPage";
 
@@ -37,29 +39,26 @@ const AdminPage = lazy(() =>
   ),
 );
 
-function FullPageSpinner() {
-  return (
-    <div className="page-center">
-      <Spinner size={28} />
-    </div>
-  );
-}
-
 /** The session couldn't be checked (server down or restarting): the cookie may still be valid, so offer a retry. */
 function ServerUnavailable({ message, onRetry }: { message: string; onRetry: () => void }) {
   return (
-    <div className="page-center">
-      <div className="card stack status-card" role="alert">
-        <h1>Can't reach the server</h1>
-        <p>{message}</p>
-        <div className="status-card-actions">
-          <button type="button" className="btn btn-primary" onClick={onRetry}>
-            Retry
-          </button>
-        </div>
-      </div>
-    </div>
+    <FullPageMessage
+      title="Can't reach the server"
+      action={
+        <button type="button" className="btn btn-primary" onClick={onRetry}>
+          Try again
+        </button>
+      }
+    >
+      <p>{message}</p>
+    </FullPageMessage>
   );
+}
+
+/** /settings/:tab is a deep link to the Settings dialog over the chat: /?settings=<tab> (unknown tabs: General). */
+function SettingsRedirect() {
+  const { tab } = useParams();
+  return <Navigate to={`/${withSettingsTab("", parseSettingsTab(tab ?? "general"))}`} replace />;
 }
 
 function RequireAuth({ children, admin = false }: { children: ReactNode; admin?: boolean }) {
@@ -122,8 +121,11 @@ export default function App() {
                 </RequireAuth>
               }
             />
+            <Route path="/settings" element={<SettingsRedirect />} />
+            <Route path="/settings/:tab" element={<SettingsRedirect />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
+          <SettingsHost />
         </AuthProvider>
       </BrowserRouter>
     </ErrorBoundary>

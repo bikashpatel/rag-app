@@ -79,12 +79,12 @@ NOTICE = (
     "its cite_as number, e.g. [7]."
 )
 NOTE_CONNECT = (
-    "The user hasn't connected Gmail. If they ask about their email, tell them they can connect it from the account "
-    "menu (Connections)."
+    "The user hasn't connected Gmail. If they ask about their email, tell them they can connect it from the Plugins "
+    "menu at the top of the chat, or in Settings → Plugins & data."
 )
 _NOTE_RECONNECT = (
     "The user's Gmail connection needs to be renewed ({reason}). If they ask about their email, tell them to reconnect "
-    "Gmail from the account menu (Connections); never claim to have read or sent email."
+    "Gmail in Settings → Plugins & data; never claim to have read or sent email."
 )
 NOTE_NO_TOOLS = (
     "This chat model can't use Gmail in this app. If the user asks about their email, say so and that another chat "

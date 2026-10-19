@@ -5,7 +5,7 @@ import Spinner from "../ui/Spinner";
 import { errorMessage, queuedMessage, reindexDocuments } from "./adminApi";
 import FlashMessage from "./FlashMessage";
 import { useFlash, usePolling, type Resource } from "./hooks";
-import { AlertIcon } from "./icons";
+import { AlertCircleIcon, AlertIcon } from "../ui/icons";
 import StatTile from "./StatTile";
 import { ErrorState, RefreshError } from "./StateViews";
 
@@ -46,8 +46,8 @@ export default function StatsBar({ stats, onOpenModels }: StatsBarProps) {
         <span className="sr-only">Loading overview</span>
         {Array.from({ length: TILE_COUNT }, (_, i) => (
           <div key={i} className="admin-tile" aria-hidden="true">
-            <span className="admin-skeleton" />
-            <span className="admin-skeleton admin-skeleton-value" />
+            <span className="ui-skeleton admin-skeleton-label" />
+            <span className="ui-skeleton admin-skeleton-value" />
           </div>
         ))}
       </div>
@@ -77,8 +77,8 @@ export default function StatsBar({ stats, onOpenModels }: StatsBarProps) {
           detail={
             data.queue_length > 0 ? (
               <span className="admin-tile-busy">
-                <Spinner size={11} label="Processing" />
-                Processing
+                <span className="spinner" aria-hidden="true" />
+                Indexing
               </span>
             ) : (
               "Idle"
@@ -112,10 +112,10 @@ export default function StatsBar({ stats, onOpenModels }: StatsBarProps) {
       </dl>
 
       {activeModel === null ? (
-        <div className="admin-notice admin-notice-danger">
-          <AlertIcon size={18} />
-          <span className="admin-notice-text">
-            <strong>No active embedding model.</strong> New uploads can't be indexed and document search is off until you
+        <div className="ui-notice ui-notice-danger">
+          <AlertCircleIcon size={16} />
+          <span className="ui-notice-text">
+            <b>No active embedding model.</b> New uploads can't be indexed and document search is off until you
             enable an embedding model and make it active.
           </span>
           <button type="button" className="btn btn-sm" onClick={onOpenModels}>
@@ -123,13 +123,13 @@ export default function StatsBar({ stats, onOpenModels }: StatsBarProps) {
           </button>
         </div>
       ) : stale > 0 || failed > 0 ? (
-        <div className={stale > 0 ? "admin-notice admin-notice-warning" : "admin-notice admin-notice-danger"}>
-          <AlertIcon size={18} />
+        <div className={stale > 0 ? "ui-notice ui-notice-warning" : "ui-notice ui-notice-danger"}>
+          {stale > 0 ? <AlertIcon size={16} /> : <AlertCircleIcon size={16} />}
           {stale > 0 ? (
-            <span className="admin-notice-text">
-              <strong>
+            <span className="ui-notice-text">
+              <b>
                 {formatNumber(stale)} document{stale === 1 ? " was" : "s were"} indexed with a different embedding model
-              </strong>{" "}
+              </b>{" "}
               than the active one ({activeModel.display_name}). Search skips {stale === 1 ? "it" : "them"} until{" "}
               {stale === 1 ? "it is" : "they are"} re-indexed.
               {failed > 0 ? (
@@ -140,10 +140,10 @@ export default function StatsBar({ stats, onOpenModels }: StatsBarProps) {
               ) : null}
             </span>
           ) : (
-            <span className="admin-notice-text">
-              <strong>
-                {formatNumber(failed)} document{failed === 1 ? "" : "s"} failed to process.
-              </strong>{" "}
+            <span className="ui-notice-text">
+              <b>
+                {formatNumber(failed)} document{failed === 1 ? "" : "s"} failed to index.
+              </b>{" "}
               Retry once the cause is fixed (for example the embedding model or its API key). Files that can't be read
               will fail again; delete them from the Documents tab.
             </span>

@@ -261,7 +261,7 @@ async def confirm(user: User, send_id: int, digest: str) -> PendingSend:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Sending email with Gmail is turned off.")
         connection = access.connection
         if connection is None or connection.status != "connected" or "send" not in access.usable:
-            raise _conflict("Gmail isn't connected with permission to send. Reconnect it from Connections.")
+            raise _conflict("Gmail isn't connected with permission to send. Reconnect it in Settings → Plugins & data.")
         if connection.account_subject != row.account_subject:
             raise _conflict(_ACCOUNT_CHANGED)
         attachments = await _attachment_bytes(db, user.id, row.attachments or [])
@@ -426,7 +426,7 @@ async def revise(user: User, send_id: int, revision: PendingSendRevision) -> Pen
         access = await registry.access_for(db, user, plugin)
         connection = access.connection
         if connection is None or connection.status != "connected" or "send" not in access.usable:
-            raise _conflict("Gmail isn't connected with permission to send. Reconnect it from Connections.")
+            raise _conflict("Gmail isn't connected with permission to send. Reconnect it in Settings → Plugins & data.")
         await db.commit()
     try:
         to, cc, bcc = normalize_recipients(

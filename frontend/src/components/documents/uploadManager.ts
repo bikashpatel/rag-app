@@ -32,8 +32,12 @@ export type EnqueueRequest = {
 
 type PendingUpload = { id: number; file: File; scope: DocumentScope };
 
-/** Called once per finished upload with the created document, or null when it failed or was cancelled. */
-type SettledListener = (created: DocumentItem | null) => void;
+/**
+ * Called once per upload that was started, when it ends: the created document, or null when it failed or was
+ * cancelled; `itemId` is the queue item's id (from `enqueue`). Items refused before starting (a folder, a file over
+ * the size limit) never start: they stay in the queue as failed.
+ */
+type SettledListener = (created: DocumentItem | null, itemId: number) => void;
 
 /**
  * Upload queue shared by every DocumentPanel. It lives outside React so uploads keep running when the panel
@@ -63,7 +67,8 @@ class UploadManager {
     };
   }
 
-  enqueue({ ownerId, scope, rules, files, folders }: EnqueueRequest): void {
+  /** Adds the files (and refused folders) to the queue; returns the new items' ids, folders first, then files, in order. */
+  enqueue({ ownerId, scope, rules, files, folders }: EnqueueRequest): number[] {
     const createItem = (name: string, size: number, error: string | null): UploadItem => ({
       id: this.nextId++,
       ownerId,
@@ -80,9 +85,10 @@ class UploadManager {
       if (item.status === "queued") this.pending.push({ id: item.id, file, scope });
       added.push(item);
     }
-    if (added.length === 0) return;
+    if (added.length === 0) return [];
     this.setItems([...this.items, ...added]);
     this.pump();
+    return added.map((item) => item.id);
   }
 
   /** Cancel a queued or running upload, or dismiss a failed one. */
@@ -123,12 +129,12 @@ class UploadManager {
     }).then(
       (created) => {
         this.finish(id, null);
-        this.emitSettled(created);
+        this.emitSettled(created, id);
       },
       (err: unknown) => {
         if (err instanceof ApiError && err.status === 401) this.reset();
         else this.finish(id, controller.signal.aborted ? null : uploadErrorMessage(err));
-        this.emitSettled(null);
+        this.emitSettled(null, id);
       },
     );
   }
@@ -159,8 +165,8 @@ class UploadManager {
     for (const listener of this.listeners) listener();
   }
 
-  private emitSettled(created: DocumentItem | null): void {
-    for (const listener of this.settledListeners) listener(created);
+  private emitSettled(created: DocumentItem | null, itemId: number): void {
+    for (const listener of this.settledListeners) listener(created, itemId);
   }
 }
 

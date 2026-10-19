@@ -11,6 +11,12 @@ export type ConversationsState = {
   remove: (id: number) => Promise<void>;
   /** Move a conversation to the top (inserting it if new) after it received a message. null keeps the title. */
   touch: (id: number, title: string | null) => void;
+  /**
+   * Every conversation was deleted (Settings → Delete all chats): empty the list and remember the ids as deleted, so a
+   * late `touch` can't bring one back. Until the next load, a conversation the list doesn't know is checked with the
+   * server instead of being added (a stream that was running may have created one that was deleted too).
+   */
+  clearAll: () => void;
 };
 
 /** The sidebar list from GET /conversations, kept up to date locally after chats, renames and deletes. */
@@ -21,6 +27,10 @@ export function useConversations(): ConversationsState {
   const loaded = useRef(false);
   // A stream that ends after its conversation was deleted must not bring it back.
   const deletedIds = useRef(new Set<number>());
+  /** Set by clearAll: the next unknown id reloads the list instead of being inserted. */
+  const verifyUnknown = useRef(false);
+  const listRef = useRef<ConversationSummary[] | null>(null);
+  listRef.current = conversations;
 
   const load = useCallback(async (signal?: AbortSignal) => {
     const request = ++latestRequest.current;
@@ -28,6 +38,7 @@ export function useConversations(): ConversationsState {
       const list = await api.get<ConversationSummary[]>("/conversations", { signal });
       if (request !== latestRequest.current) return;
       loaded.current = true;
+      verifyUnknown.current = false;
       setConversations(list);
       setError(null);
     } catch (err) {
@@ -63,7 +74,7 @@ export function useConversations(): ConversationsState {
   const touch = useCallback(
     (id: number, title: string | null) => {
       if (deletedIds.current.has(id)) return;
-      if (!loaded.current) {
+      if (!loaded.current || (verifyUnknown.current && !listRef.current?.some((item) => item.id === id))) {
         void load();
         return;
       }
@@ -80,8 +91,15 @@ export function useConversations(): ConversationsState {
     [load],
   );
 
+  const clearAll = useCallback(() => {
+    latestRequest.current += 1; // a list already on its way predates the deletion
+    listRef.current?.forEach((item) => deletedIds.current.add(item.id));
+    verifyUnknown.current = true;
+    setConversations((list) => (list === null ? list : []));
+  }, []);
+
   return useMemo(
-    () => ({ conversations, error, reload, rename, remove, touch }),
-    [conversations, error, reload, rename, remove, touch],
+    () => ({ conversations, error, reload, rename, remove, touch, clearAll }),
+    [conversations, error, reload, rename, remove, touch, clearAll],
   );
 }

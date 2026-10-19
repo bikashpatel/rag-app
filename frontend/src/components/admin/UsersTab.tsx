@@ -12,7 +12,9 @@ import { deleteResource } from "./adminApi";
 import ConfirmAction from "./ConfirmAction";
 import FlashMessage from "./FlashMessage";
 import { useFlash, useResource } from "./hooks";
-import { PlusIcon } from "./icons";
+import Avatar from "../ui/Avatar";
+import { AlertCircleIcon, AlertIcon, PlusIcon } from "../ui/icons";
+import { meterState } from "../ui/Meter";
 import { RefreshError, ResourceGate } from "./StateViews";
 import UserFormModal from "./UserFormModal";
 
@@ -66,7 +68,7 @@ export default function UsersTab({ onChanged }: { onChanged: () => void }) {
   return (
     <section className="card admin-card" aria-labelledby="admin-users-title">
       <div className="admin-card-header">
-        <div>
+        <div className="admin-card-heading">
           <h2 id="admin-users-title" className="admin-card-title">
             Users
           </h2>
@@ -153,11 +155,9 @@ function UserRow({ user, limits, modelNames, canEdit, onEdit, onDelete }: UserRo
     <tr>
       <td>
         <div className="admin-user-cell">
-          <span className="admin-avatar" aria-hidden="true">
-            {user.username.charAt(0).toUpperCase()}
-          </span>
+          <Avatar name={user.username} />
           <span className="admin-user-name">{user.username}</span>
-          {user.is_admin ? <span className="badge badge-info">admin</span> : null}
+          {user.is_admin ? <span className="badge badge-accent">admin</span> : null}
           {user.is_active ? null : <span className="badge badge-neutral">inactive</span>}
         </div>
       </td>
@@ -171,7 +171,7 @@ function UserRow({ user, limits, modelNames, canEdit, onEdit, onDelete }: UserRo
         {formatCost(user.usage.cost_usd)}
       </td>
       <td className="admin-nowrap">
-        {limits.rate_limit_per_min ? `${formatNumber(limits.rate_limit_per_min)}/min` : "Unlimited"}
+        {limits.rate_limit_per_min ? `${formatNumber(limits.rate_limit_per_min)} / min` : "Unlimited"}
       </td>
       <td>
         <UploadsSummary user={user} limits={limits} />
@@ -237,7 +237,10 @@ function tokenBreakdown(usage: AdminUser["usage"]): string {
 
 type LimitMeterProps = { used: number; limit: number; noun: string; format: (n: number) => string };
 
-/** This month's use against a monthly limit (0 = unlimited). */
+/**
+ * This month's use against a monthly limit (0 = unlimited): the numbers over a 5 px bar. From 90% the value starts with
+ * a warning icon, at 100% an alert icon (with the words for screen readers and in the tooltip), never colour alone.
+ */
 function LimitMeter({ used, limit, noun, format }: LimitMeterProps) {
   if (limit === 0) {
     return (
@@ -247,17 +250,21 @@ function LimitMeter({ used, limit, noun, format }: LimitMeterProps) {
     );
   }
   const ratio = used / limit;
-  const tone = ratio >= 1 ? "danger" : ratio >= 0.8 ? "warning" : "accent";
+  const state = meterState(used, limit);
+  const summary = `${formatNumber(used)} of ${formatNumber(limit)} ${noun}${state ? `. ${state.words}` : ""}`;
   return (
-    <div className="admin-meter-cell" title={`${formatNumber(used)} of ${formatNumber(limit)} ${noun}`}>
-      <span className="admin-meter-text">
-        {format(used)} <span className="muted">/ {format(limit)}</span>
+    <div className="admin-meter-cell" title={summary}>
+      <span className={state ? `admin-meter-text admin-meter-text-${state.tone}` : "admin-meter-text"}>
+        {state ? state.tone === "danger" ? <AlertCircleIcon size={14} /> : <AlertIcon size={14} /> : null}
+        <span>
+          {format(used)} <span className="muted">/ {format(limit)}</span>
+        </span>
         <span className="sr-only">
           {" "}
-          {noun}, {Math.round(ratio * 100)}% used
+          {noun}, {Math.round(ratio * 100)}% used{state ? `. ${state.words}` : ""}
         </span>
       </span>
-      <span className={`admin-meter admin-meter-${tone}`} aria-hidden="true">
+      <span className={state ? `ui-meter admin-meter ui-meter-${state.tone}` : "ui-meter admin-meter"} aria-hidden="true">
         <span style={{ width: `${Math.min(100, ratio * 100)}%` }} />
       </span>
     </div>

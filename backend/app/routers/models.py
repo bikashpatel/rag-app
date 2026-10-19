@@ -22,6 +22,9 @@ class ChatModel(BaseModel):
     can_create_files: bool  # CHAT_FILE_TOOLS is on and LiteLLM says the model supports function calling
     # CHAT_IMAGE_TOOLS is on, a usable image model is active and the model gets tools (docs/briefs/image-generation.md)
     can_create_images: bool = False
+    # LiteLLM says the model supports function calling and it hasn't rejected tools since the backend started
+    # (llm.supports_tools): plugin tools such as Gmail can be offered to it
+    supports_tools: bool = False
 
 
 @router.get("")
@@ -39,6 +42,7 @@ async def list_models(user: User = Depends(get_current_user), db: AsyncSession =
                 is_default=model.is_default,
                 can_create_files=settings.chat_file_tools and tools,
                 can_create_images=images and tools,
+                supports_tools=tools,
             )
         )
     return models

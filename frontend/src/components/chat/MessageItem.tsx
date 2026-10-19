@@ -1,8 +1,20 @@
 import { memo, useCallback, useEffect, useId, useState } from "react";
+import type { AnswerSource } from "../../api/types";
 import { formatNumber } from "../../lib/format";
+import { fileTypeTag, type TagTone } from "../documents/fileTypes";
+import {
+  AlertCircleIcon,
+  AlertIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  CopyIcon,
+  FileIcon,
+  MailIcon,
+  RefreshIcon,
+  SparkleIcon,
+} from "../ui/icons";
 import GeneratedFileCard from "./GeneratedFileCard";
 import GeneratedImageCard from "./GeneratedImageCard";
-import { AlertIcon, CheckIcon, ChevronDownIcon, CopyIcon, RetryIcon, SparkleIcon } from "./icons";
 import Markdown from "./Markdown";
 import PluginCard, { isKnownPluginCard } from "./plugins/PluginCard";
 import SourcesList, { type SourceHighlight } from "./SourcesList";
@@ -32,6 +44,39 @@ function MessageItem(props: MessageItemProps) {
 
 export default memo(MessageItem);
 
+/** File-type tones as the fixed tag colours (visual spec 3.6): they never follow the accent. */
+const DOT_TONES: Record<TagTone, string> = {
+  danger: "red",
+  info: "blue",
+  success: "green",
+  warning: "ochre",
+  accent: "plum",
+  neutral: "ink",
+};
+
+/** Up to three overlapping dots for the answer's distinct sources (decorative; the toggle's text says how many). */
+function SourceDots({ sources }: { sources: AnswerSource[] }) {
+  const seen = new Set<string>();
+  const dots: { key: string; tone: string; email: boolean }[] = [];
+  for (const source of sources) {
+    const key = source.kind === "email" ? "email" : `d${source.document_id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const tone = source.kind === "email" ? "red" : DOT_TONES[fileTypeTag(source.filename).tone];
+    dots.push({ key, tone, email: source.kind === "email" });
+    if (dots.length === 3) break;
+  }
+  return (
+    <span className="chat-src-stack" aria-hidden="true">
+      {dots.map((dot) => (
+        <span key={dot.key} className={`chat-src-dot chat-src-dot-${dot.tone}`}>
+          {dot.email ? <MailIcon size={13} /> : <FileIcon size={13} />}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function cardsLabel(cards: FileCard[]): string {
   const images = cards.filter(isImageCard).length;
   return images === 0 ? "Files" : images === cards.length ? "Images" : "Files and images";
@@ -59,7 +104,7 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
   const retry =
     prompt !== null ? (
       <button type="button" className="btn btn-sm chat-retry" onClick={() => onRetry(prompt)} disabled={retryDisabled}>
-        <RetryIcon size={13} />
+        <RefreshIcon size={15} />
         Retry
       </button>
     ) : null;
@@ -67,7 +112,7 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
   return (
     <article className="chat-message-assistant" aria-label="Assistant" aria-busy={streaming}>
       <div className="chat-avatar" aria-hidden="true">
-        <SparkleIcon size={15} />
+        <SparkleIcon size={16} />
       </div>
       <div className="chat-message-body">
         {content ? (
@@ -112,13 +157,13 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
 
         {message.warnings.map((warning, i) => (
           <div key={i} className="chat-note chat-note-warning">
-            <AlertIcon size={14} />
+            <AlertIcon size={15} />
             <span>{warning}</span>
           </div>
         ))}
         {message.error ? (
           <div className="chat-note chat-note-error">
-            <AlertIcon size={14} />
+            <AlertCircleIcon size={15} />
             <span>{message.error}</span>
             {retry}
           </div>
@@ -140,8 +185,9 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
                 aria-controls={sourcesId}
                 onClick={() => setSourcesOpen((open) => !open)}
               >
+                <SourceDots sources={sources} />
                 {sources.length === 1 ? "1 source" : `${sources.length} sources`}
-                <ChevronDownIcon size={14} />
+                <ChevronDownIcon size={15} className="chat-sources-chev" />
               </button>
             ) : null}
             {!streaming ? (
@@ -189,8 +235,8 @@ function CopyButton({ text }: { text: string }) {
   const label = result === "copied" ? "Copied" : result === "failed" ? "Couldn't copy" : "Copy answer";
   return (
     <>
-      <button type="button" className="btn btn-ghost btn-icon chat-icon-btn" onClick={copy} aria-label={label} title={label}>
-        {result === "copied" ? <CheckIcon size={15} /> : <CopyIcon size={15} />}
+      <button type="button" className="btn btn-ghost btn-icon btn-sm chat-icon-btn" onClick={copy} aria-label={label} title={label}>
+        {result === "copied" ? <CheckIcon size={17} /> : <CopyIcon size={17} />}
       </button>
       <span className="sr-only" aria-live="polite">
         {result === "copied" ? "Answer copied to the clipboard" : result === "failed" ? "Couldn't copy the answer" : ""}

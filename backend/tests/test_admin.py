@@ -1234,6 +1234,7 @@ async def test_making_a_model_the_default_clears_the_previous_default(
         "is_default": True,
         "can_create_files": False,  # LiteLLM doesn't know the model
         "can_create_images": False,
+        "supports_tools": False,
     }
 
 

@@ -95,6 +95,16 @@ written before plugins keep their prompts, tools and queries. Plugin tests opt i
 `FakeLLM` answers the request check's non-streaming calls with `intent_reply` (default: every action asked for; build
 one with `intent_answer("draft", ...)`) and keeps them in `intent_calls`, not `chat_calls`.
 
+Account and settings (docs/briefs/ui-shell-settings.md): `test_preferences.py`, `test_login_history.py` (sign-ins,
+`GET /me/account`; clients from other IPs through `httpx.ASGITransport(client=(ip, port))`), `test_logout_others.py`,
+`test_my_usage.py` (the report's clock is pinned with `account.current_time`), `test_export.py` (the deadline's clock is
+`export.clock`; the locks and build slots are reset per test) and `test_plugin_catalog.py`; "delete all chats" is in
+`test_conversations.py`. `test_ui_settings_independent.py` is an independent pass over all of them, written from SPEC.md
+and the brief.
+
+The tests never read the repository's `.env`: `conftest.py` sets `LITELLM_MODE=PRODUCTION`, because in its default DEV
+mode importing LiteLLM loads the nearest `.env`, which would give the tests the owner's real settings (a test checks it).
+
 ## Writing tests
 
 Read `conftest.py` before adding tests. It provides:

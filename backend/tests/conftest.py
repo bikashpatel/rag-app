@@ -49,6 +49,9 @@ os.environ.update(
         "ANTHROPIC_API_KEY": "test-anthropic-key",
         # Use LiteLLM's bundled cost map instead of downloading it at import.
         "LITELLM_LOCAL_MODEL_COST_MAP": "True",
+        # In its default DEV mode, importing LiteLLM loads the nearest .env (the repo's own, found from the venv),
+        # which would hand the owner's real settings (OAuth client, token key, limits) to the tests.
+        "LITELLM_MODE": "PRODUCTION",
     }
 )
 

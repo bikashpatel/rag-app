@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react";
+import { FullPageMessage } from "./FullPageState";
 
 type ErrorBoundaryProps = { children: ReactNode };
 type ErrorBoundaryState = { failed: boolean };
@@ -18,20 +19,21 @@ export default class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBo
   render() {
     if (!this.state.failed) return this.props.children;
     return (
-      <div className="page-center">
-        <div className="card stack status-card" role="alert">
-          <h1>Something went wrong</h1>
-          <p>The page hit an unexpected error. This can happen right after the app was updated; reloading usually fixes it.</p>
-          <div className="status-card-actions">
+      <FullPageMessage
+        title="Something went wrong"
+        action={
+          <>
             <button type="button" className="btn btn-primary" onClick={() => window.location.reload()}>
               Reload
             </button>
             <button type="button" className="btn" onClick={() => window.location.assign("/")}>
               Back to chat
             </button>
-          </div>
-        </div>
-      </div>
+          </>
+        }
+      >
+        <p>The page hit an unexpected error. This can happen right after the app was updated; reloading usually fixes it.</p>
+      </FullPageMessage>
     );
   }
 }
