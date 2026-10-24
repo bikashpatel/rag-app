@@ -67,6 +67,10 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
   saved in their account (`/api/me/preferences`). A small script, `theme-boot.js`, applies the cached theme before the
   first paint, within the strict CSP. The app also keeps a short sign-in history per user and offers this month's
   usage, a ZIP export of the user's own data and "delete all my chats" (`/api/me/*`, `DELETE /api/conversations`).
+- **Interface:** a top bar over the chat (model, Plugins, Documents and avatar menus), a "+" menu in the composer, a
+  Settings dialog and the admin page, in a warm editorial design ("Paper & Clay": serif answers, light and dark, five
+  accent colours). The fonts are Latin subsets of Source Serif 4 and Source Sans 3, bundled with their licences in
+  `frontend/src/assets/fonts/`; nothing is loaded from a CDN.
 
 Code layout:
 
@@ -215,13 +219,46 @@ becomes a slide-over). Upload PDF, Word (`.docx`), PowerPoint (`.pptx`), Excel (
 Markdown, text, CSV or JSON files by dropping them on the panel or clicking **browse**. Each
 file is parsed, chunked and embedded in the background. Answers cite the passages they used as
 `[1]`, `[2]`, …, and you can expand the sources under every answer. Use the checkboxes in the
-document panel to limit which documents a question searches. **Stop** keeps the partial answer.
-Users change their own password from the account menu (the admin's password lives in `.env`).
+document panel to limit which documents a question searches; the chip in the composer shows the current choice ("All
+documents", "3 documents") and opens the panel. **Stop** keeps the partial answer.
+
+- **Top bar** (over the chat): the **model menu** (new chats start with your default model from Settings; a pick applies
+  to the current chat until **New chat**, and the menu marks the models that can create files or images), the
+  conversation title, **Plugins** (every plugin with its status: Connected, Not connected, Reconnect needed, Turned off
+  by the admin or Not set up; each row opens the plugin's card in Settings), **Documents** (opens the panel on narrow
+  screens; on wider ones it hides or shows the right-hand column, remembered per browser) and your **avatar menu**:
+  this month's tokens and images against your limits, **View usage**, **Settings**, a System / Light / Dark switch,
+  **Admin** (admins only) and **Log out**.
+- **"+" menu** in the composer: **Attach files…** uploads to your private documents; chips above the input show the
+  upload and indexing, and Send waits until the files are indexed (remove a chip to send without it). **Create an
+  image** and **Create a document** (PDF, Word, Excel, Markdown), and once Gmail is connected **Search my email** and
+  **Draft an email**, put a starter such as "Create a PDF document: " in front of your message; nothing is sent until
+  you send it. **Import from Gmail…** opens the Gmail browser (before you connect, **Connect Gmail…** opens its
+  card). Features you don't have are left out; items you can't use right now are disabled with the reason.
+- **Keys:** Enter sends and Shift+Enter adds a line. With "Enter to send" off in Settings, Ctrl+Enter (⌘+Enter on a
+  Mac) sends and Enter adds a line.
+
+**Settings** (avatar menu → **Settings**; the URL is `/?settings=<tab>`, and `/settings/<tab>` redirects there): a
+dialog, full screen on phones. Every change applies and is saved to your account at once, so it follows you to other
+browsers.
+
+- **General:** theme (System, Light, Dark), accent colour (Clay, Ocean, Sage, Plum, Slate), chat font size (Small,
+  Default, Large), the default chat model, and Enter to send.
+- **Account:** username, role, when the account was created, the last 20 sign-ins (approximate address, browser, OS
+  and device; "This device" marks yours), **Change password…** (not for the admin, whose password lives in `.env`) and
+  **Log out of all other sessions**, which signs out every other browser and API token and keeps this one.
+- **Usage:** this month's chat tokens, images and vision tokens against your limits, the estimated cost, documents and
+  storage, the requests-per-minute limit, when the month resets (the 1st, UTC), a daily chart with a table, and totals
+  per model.
+- **Plugins & data:** the plugin cards (see Gmail below), **Export my data** (a ZIP with your account, the details of
+  your documents and your conversations as Markdown and JSON, newest first within the limits in section 2; document
+  files aren't included, use Download in the panel) and **Delete all chats** (type `DELETE` to confirm; your
+  documents, the files and images created in chat and your usage history stay).
 
 **Files from chat:** ask for a file in your own words, for example "make a PDF report of the Q3 figures from
 my documents", "put these numbers in a spreadsheet", "draft a Word letter" or "export this as markdown". The
 assistant creates PDF, Word (`.docx`), Excel (`.xlsx`) and Markdown (`.md`) files (with chat models that
-support function calling; on desktop, the composer hint says when the selected model can). A card under the answer
+support function calling; the hint under the composer says when the selected model can). A card under the answer
 shows the file being written, then its name, type, size and indexing status, with a **Download** button.
 Every file is saved to your private documents ("Created in chat" in the document panel), counts toward your
 document and storage limits, and is indexed, so later chats can search it; passages from such files are
@@ -242,8 +279,8 @@ Sources section. Every document in the panel, uploads included, has a Download b
 
 **Images from chat:** ask for an image in your own words, for example "generate an image of a fox in the snow",
 "draw a watercolor illustration of a lighthouse at dawn" or "make a logo concept for a bakery". This works with chat
-models that support function calling while the admin has an image model active; on desktop, the composer hint says
-"…or an image" when the selected model can. The assistant writes a full prompt for the image model and picks square,
+models that support function calling while the admin has an image model active; the composer hint mentions images
+when the selected model can. The assistant writes a full prompt for the image model and picks square,
 landscape or portrait.
 
 - **In the answer:** while the image is made (10 to 40 s in the live tests), a placeholder with the image's shape
@@ -257,9 +294,9 @@ landscape or portrait.
 - **In files:** ask for a PDF or Word file "with the logo" and the image is placed in it, scaled to the page width,
   with a caption. This works for images generated earlier in the same conversation. Excel and Markdown files get a
   text reference instead.
-- **Limits (defaults):** up to 3 images per answer, and a monthly image count per user (30) that the sidebar's usage
-  meter shows as "Images this month". The admin sets each user's count; the admin has no limit. Failed attempts that
-  the provider may have charged for count too.
+- **Limits (defaults):** up to 3 images per answer, and a monthly image count per user (30) that the avatar menu shows
+  as "Images this month" (also in Settings → Usage). The admin sets each user's count; the admin has no limit. Failed
+  attempts that the provider may have charged for count too.
 - **When it fails:** a refused prompt (the provider's safety system), a busy provider or a timeout shows a card with
   the reason, and the assistant explains it. After any failure other than a refusal, that answer makes no more
   images; ask again in a new message.
@@ -267,17 +304,17 @@ landscape or portrait.
   text stops: the image is still finished, saved to your documents and counted, and it appears on the answer after
   a reload.
 
-**Gmail** (once the admin has set it up and turned it on; see [`docs/gmail-setup.md`](docs/gmail-setup.md)): open the
-account menu → **Connections** → **Connect Gmail** and sign in at Google. Each user connects their own account; nobody
-else can see or use it. Then:
+**Gmail** (once the admin has set it up and turned it on; see [`docs/gmail-setup.md`](docs/gmail-setup.md)): open
+**Plugins** in the top bar and pick Gmail (or go to Settings → **Plugins & data**), click **Connect Gmail** and sign
+in at Google. Each user connects their own account; nobody else can see or use it. Then:
 
 - **Ask about your email** in chat ("what did Alice say about the invoice?"). The assistant searches and reads your
   mail with Gmail's search syntax and cites emails as `[n]` sources with an **Open in Gmail** link. This works with
-  chat models that support function calling while **Use in chat** is on in Connections.
+  chat models that support function calling while **Use in chat** is on in Gmail's card (Settings → Plugins & data).
 - **Import** threads and their supported attachments into your private documents: **Import from Gmail** in the
-  document panel (search, open a thread, tick the conversation and attachments, Import), or ask in chat. Imports are
-  marked "Imported from Gmail", count toward your limits, and an unchanged thread imported again links the same
-  document.
+  document panel or the "+" menu (search, open a thread, tick the conversation and attachments, Import), or ask in
+  chat. Imports are marked "Imported from Gmail", count toward your limits, and an unchanged thread imported again
+  links the same document.
 - **Drafts:** "draft a reply to Bob saying we'll pay on Friday" creates a draft in your Gmail (threaded when it is a
   reply) and shows a card with **Open in Gmail**. Nothing is sent.
 - **Sending:** the assistant can only *propose* an email. The card shows the exact recipients, subject, body and
@@ -286,13 +323,14 @@ else can see or use it. Then:
 - The assistant drafts, proposes or imports only when your own message asks for it, never because an email says so.
   In a conversation that has touched email, a bare "yes" doesn't count; say what you want ("yes, draft the reply to
   Alice").
-- **Disconnect** in Connections removes the app's access (also at Google, unless another app user connected the same
-  Google account). While the Google app is in testing mode, Google ends connections after 7 days, and Connections asks
-  you to reconnect.
+- **Disconnect** on Gmail's card removes the app's access (also at Google, unless another app user connected the same
+  Google account). While the Google app is in testing mode, Google ends connections after 7 days; the Plugins menu then
+  shows "Reconnect needed" and the card offers **Reconnect**.
 
-**Admin page** (`/admin`, admin only). An overview at the top shows users, documents, failed
-and stale documents, the ingestion queue and the active embedding, vision and image models ("Off" when no
-vision or image model is active), and offers a re-index when documents are stale or failed.
+**Admin page** (`/admin`, admin only; **Admin** in the avatar menu, and its header has Settings and Sign out). An
+overview at the top shows users, documents, failed and stale documents, the ingestion queue and the active embedding,
+vision and image models ("Off" when no vision or image model is active), and offers a re-index when documents are
+stale or failed.
 
 - **Users:** create users (the only way to get an account), reset passwords, deactivate, delete.
   Per-user limits (`0` = unlimited, except for the max file size):
@@ -401,7 +439,7 @@ cd backend
 uv venv --python 3.13 .venv            # once (uv downloads Python 3.13 if needed)
 uv pip sync requirements-dev.txt       # again whenever the locks change
 #   or, with python3.13 on PATH: python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # about 1,900 tests, about 4.5 minutes
+.venv/bin/python -m pytest -q          # about 2,250 tests, 5 to 6.5 minutes (5 skipped without TEST_POSTGRES_URL)
 
 # Lint and type-check (tools not in the requirements; run through uvx)
 uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests
@@ -470,11 +508,20 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
 - The UI is bound to `127.0.0.1` only. Before exposing it on a network, put it behind HTTPS and
   set `COOKIE_SECURE=true` (see `docs/HANDOFF.md`, next steps).
 - Sessions are httpOnly, SameSite=Strict cookies holding a signed JWT (a `Bearer` header also
-  works, for scripts). Changing a password or deactivating a user ends their sessions immediately.
+  works, for scripts). Changing a password or deactivating a user ends their sessions immediately. **Log out of all
+  other sessions** (Settings → Account) ends every other session and API token without asking for the password, so
+  the session that asks keeps its original expiry and is never extended.
+- Each successful sign-in is recorded for that user only: an approximate address (IPv4 with the last part hidden, IPv6
+  as its /48 network) and the browser, OS and device parsed from the User-Agent, which isn't stored. The newest 20
+  are kept; they appear only in the user's Settings and export (not in the admin page) and are deleted with the user.
+- The data export holds only the caller's own data (the admin's too) and never passwords, tokens or keys. It is a POST,
+  so nginx's cross-site check applies, and one export per user runs at a time.
 - nginx refuses state-changing requests that the browser marks as same-site or cross-site
   (`Sec-Fetch-Site`), because SameSite cookies ignore ports and other `localhost` pages count as
   same-site. It also sets a strict CSP and other security headers, caps request bodies at 1 MB,
-  and checks the session before accepting an upload body.
+  and checks the session before accepting an upload body. The CSP allows scripts and fonts only from the app itself,
+  which is why the theme is applied before the first paint by a static file (`frontend/public/theme-boot.js`) rather
+  than an inline script, and why the fonts are bundled.
 - Failed logins are throttled per username (10 per 15 minutes) and per client IP (100). Behind
   Docker's port publishing every client has the same IP, so the per-IP limit acts as one global
   limit.
@@ -576,6 +623,12 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
   - The plugin locks are per process, so run one backend process.
 - Deleting a user deletes their usage history too (chat, embedding, vision and images), so their costs leave the
   usage report.
+- Settings → Usage shows only the current month (the admin's Usage tab has history). The export has no document files
+  (each document has Download). There is no session list with per-session sign-out, only "Log out of all other
+  sessions", and users can't delete their own account. Accents are the five presets. Code blocks have no syntax
+  colours. The bundled fonts cover Latin only; other scripts use the system fonts.
+- Behind Docker's port publishing every sign-in in the history reads "Via a local network or proxy", because nginx
+  doesn't yet trust an outer proxy's client address (`set_real_ip_from`; see `docs/HANDOFF.md`, next step 5).
 - Legacy `.doc`, `.ppt` and `.xls` files must be saved in the modern format first.
 - Database tables are created automatically on start. There are no migrations yet: add Alembic
   before changing the schema of a database with real data. Rolling the code back to a release before images needs

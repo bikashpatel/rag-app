@@ -1326,8 +1326,8 @@ type RequestCheckTestResult = { ok: boolean; message: string; latency_ms: number
   viewer. `client.ts` exports `documentImageUrl(id, size = "full")` and
   `getImageDetails(id)`. The
   composer hint and empty state mention images when the selected model's
-  `can_create_images` is true, and the usage meter shows images this month
-  against `limits.monthly_image_limit`.
+  `can_create_images` is true, and the avatar menu's meters (and Settings →
+  Usage) show images this month against `limits.monthly_image_limit`.
 - **Plugins** (FE-CONN, `src/components/connections/`): the top bar's
   **Plugins** menu lists every plugin of `GET /plugins` with its status (section
   6, Plugins) and opens its card in Settings → Plugins & data ("Set up in Admin →

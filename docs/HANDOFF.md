@@ -5,7 +5,8 @@ run. Updated 2026-10-15 after the vision model for PDFs was built, reviewed, fix
 2026-10-16 after files from chat and then images from chat went through the same steps. Updated again on 2026-10-17 after
 plugins, with Gmail as the first plugin, were built, reviewed and verified in Docker **against a fake Google only**, and
 on 2026-10-20 after the top bar, Settings and the warm editorial redesign were built, reviewed, fixed and verified in
-Docker. `SPEC.md` is the binding contract; `README.md` has setup, commands, the architecture and how to use the app.
+Docker (committed on 2026-10-24 in `d11a9e5`). `SPEC.md` is the binding contract; `README.md` has setup, commands, the
+architecture and how to use the app.
 
 ## Status
 
@@ -54,8 +55,8 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
   - Frontend: an image card on the answer (`chat/GeneratedImageCard.tsx`: writing, a "generating" placeholder with
     the final aspect ratio and a seconds counter, then the preview), a full-size viewer (`documents/ImageViewer.tsx`,
     on `Modal`) with the prompt and Download, thumbnails in the document panel, an "Images this month" row in the
-    usage meter, and in the admin page an "Image models" section, an eighth overview tile, an image column and limit
-    field for users, and image columns in Usage.
+    usage meter (now the avatar menu's meters), and in the admin page an "Image models" section, an eighth overview
+    tile, an image column and limit field for users, and image columns in Usage.
 - **Plugins, with Gmail as the first plugin** (`docs/briefs/plugins-gmail.md`, revision 2): a small plugin framework.
   The admin turns plugins on, each user connects their own Google account (OAuth 2.0, tokens encrypted), and Gmail
   offers search and read in chat (emails cited as sources), import into the user's documents, drafts, and sends that
@@ -125,23 +126,23 @@ The redesign went the same way, with a design round first:
   0.3), and second revisions;
 - stage 1: backend and frontend foundation in parallel; stage 2: shell, settings and restyle builders in parallel on
   the frozen foundation interfaces (functional brief section 17); an independent test pass;
-- a review: 25 confirmed findings, all fixed (see "Top bar, Settings and the redesign");
+- a review: 29 findings, 25 confirmed (each by two skeptics), all fixed (see "Top bar, Settings and the redesign");
 - a Docker rebuild with an API smoke, a files-from-chat smoke, a 60-step browser pass on real data and two polish rounds
   of 193 screenshots each, which found 2 more bugs and 4 visual defects, all fixed.
 
-The Compose project `rag-app` is running with its data, on the final redesign build. The vision feature, files from
-chat, images from chat and plugins are committed (`9fb8be6`, `70f8076`, `7eaf587`, then `c5fb005`). The redesign's
-first version is in `5148b83`, a WIP snapshot pushed to `origin/main` before its review fixes. **The review fixes and
-the Docker-run fixes are uncommitted** on top of it. Check `git status` before relying on history. On 2026-10-18 the
-owner put real Google OAuth credentials and a `TOKEN_ENCRYPTION_KEY` in `.env` and turned Gmail on; at the end of the
-redesign run Admin → Plugins showed it configured and enabled with 1 connection. No agent has made a Google call. The
+The Compose project `rag-app` was left running with its data, on the final redesign build. The vision feature, files
+from chat, images from chat and plugins are committed (`9fb8be6`, `70f8076`, `7eaf587`, then `c5fb005`). The redesign
+is in two commits: `5148b83`, a WIP snapshot pushed to `origin/main` before its review, and `d11a9e5`, with the review
+fixes and the fixes from the Docker run and the polish rounds. On 2026-10-18 the owner put real Google OAuth
+credentials and a `TOKEN_ENCRYPTION_KEY` in `.env` and turned Gmail on; at the end of the redesign run Admin → Plugins
+showed it configured and enabled with 1 connection. No agent has made a Google call. The
 agents' test and smoke scripts lived in scratch directories and are not in the repo.
 
 ## How it was verified
 
 | Check | Result |
 |---|---|
-| Backend suite after the redesign, its review fixes and the Docker-run fixes (2026-10-20) | **2242 passed, 5 skipped**, twice (322 s and 377 s). The skips are the `postgres`-marked tests (the image reservation race and the 4 tests of `test_account_postgres.py`). ruff 0.13.0 is clean on app and tests. mypy 1.18.2 reports **1 error** (`app/deps.py:44`, from the logout-others fix: `exp` is narrowed through a boolean, which mypy doesn't follow; the code is correct at runtime). Fix it before committing (next steps) |
+| Backend suite after the redesign, its review fixes and the Docker-run fixes (2026-10-20) | **2242 passed, 5 skipped**, twice (322 s and 377 s). The skips are the `postgres`-marked tests (the image reservation race and the 4 tests of `test_account_postgres.py`). ruff 0.13.0 is clean on app and tests. mypy 1.18.2 reports **1 error** (`app/deps.py:44`, from the logout-others fix: `exp` is narrowed through a boolean, which mypy doesn't follow; the code is correct at runtime). The line went into `d11a9e5` unchanged, so the error is still there (next steps) |
 | Frontend after the redesign | `npx tsc --noEmit` clean; `npx vite build` into a temp directory clean (390 modules; only the old chunk-size warning). `package.json` and `package-lock.json` unchanged; no CSS file contains `prefers-color-scheme`; the three woff2 files and both licences match the sha256 values in `fonts.css` and `SOURCES.txt` |
 | Contrast (visual spec section 11) | The design's audit script checked 330 pairs (5 accents × 2 themes: text, accents, status colours, control borders, the switch thumb), 0 under the WCAG 2.2 AA minimum. The script ran from a scratch directory and isn't in the repo; section 11 lists every pair and its minimum |
 | Redesign in Docker (`docker compose up -d --build`; the frontend rebuilt twice more after the run's fixes) | All 6 services up, 5 healthy (the worker has no healthcheck); `/api/health` 200; `/theme-boot.js` served with `Cache-Control: public, max-age=300` and `nosniff`. The tables `user_preferences` and `login_events` were created on the existing database |
@@ -564,7 +565,8 @@ What matters when maintaining it:
   is supported and not marked unusable, and the chat model gets tools (`llm.supports_tools`). A non-admin user must
   also have room and images left this month. Otherwise the system prompt says why (no image model, a broken one, this
   chat model can't, the month's images are used up, no room), and the model tells the user.
-  `ChatModel.can_create_images` (composer hint, usage meter row) ignores quotas and the monthly count.
+  `ChatModel.can_create_images` (composer hint, the "+" menu, the avatar menu's image meter) ignores quotas and the
+  monthly count.
 - **The loop** is the files loop (D2, D4, D17 to D19). Both tools go in one list (`create_document` first) that is
   byte-identical for every call. An answer makes at most `GENERATED_FILES_PER_ANSWER` +
   `GENERATED_IMAGES_PER_ANSWER` + 2 model calls, with one tool call per model call, and the last call is sent with
@@ -924,7 +926,8 @@ checked with scratch harnesses (not in the repo).
 - Thread reads and imports included unsent drafts and trashed messages (the conversation filter in
   `get_thread_messages`).
 - The Edit dialog left display names with `[`, `]` or `:` unquoted, so Save failed with 422 or changed the name.
-- The Gmail browser closed silently on 403/409. Connections now opens with the reason.
+- The Gmail browser closed silently on 403/409. The plugin's card (then in Connections, now in Settings → Plugins &
+  data) now opens with the reason.
 - The admin tab labelled read counts "Emails read"; they are now "Reads", because one read can cover a whole thread.
 - The "Add from my documents" select attached a file on arrow-key navigation. It now has a separate Attach button.
 - Focus dropped to `<body>` after a disconnect, a failed connect and a finished import.
@@ -1115,8 +1118,8 @@ plugin store and the upload queue to drop the previous user's state.
   4. Update the accent list in `backend/tests/test_ui_settings_independent.py`. The Settings swatches pick the new
      preset up from `ACCENTS`. No migration: a stored accent the code doesn't know reads as Clay.
 
-**Review fixes** (25 confirmed findings, all fixed; the backend one has regression tests in `test_logout_others.py`, the
-frontend ones were checked in the Docker browser and polish runs):
+**Review fixes** (29 findings, 25 confirmed by two skeptics each, all fixed; the backend one has regression tests in
+`test_logout_others.py`, the frontend ones were checked in the Docker browser and polish runs):
 
 - Security: `POST /auth/logout-others` gave any valid token a fresh 12-hour lifetime, so a stolen session could be
   kept alive forever without the password. The re-issued cookie now keeps the session's expiry.
@@ -1320,7 +1323,9 @@ Choices still to confirm with the user (functional brief 16, visual spec 0.4):
   per-session sign-out, only "Log out of all other sessions"; accents are the five presets, with no free colour
   picker; code blocks have no syntax colours (no highlighter in the stack); the bundled fonts cover Latin only, so
   other scripts use the system fonts; the sign-in history shows Docker's gateway for every sign-in until nginx trusts
-  the outer proxy's client address.
+  the outer proxy's client address. Also out of scope (functional brief 16): keyboard shortcuts, collapsing the
+  conversation sidebar on desktop, avatar images, languages other than English, notifications, deleting one's own
+  account, an admin view of users' sign-ins, and importing data.
 - **Top bar, Settings and the redesign, not yet checked:**
   - WebKit isn't installed for Playwright, so the Safari file-picker rule (the "+" menu's Attach files calls
     `input.click()` inside the gesture) was checked in Chromium and by code review only. The forced-colours rules
@@ -1329,8 +1334,10 @@ Choices still to confirm with the user (functional brief 16, visual spec 0.4):
     skipped the answer-with-citations and Stop steps, which passed in run 1.
   - Not repeated on the real stack: the stale-401 check (an upload or poll in flight during "Log out others"; checked
     on a scratch backend) and the shared-browser check (the admin has no Gmail connection, so nothing could leak).
-  - The files-from-chat smoke covered only PDF and Markdown; the Word and Excel renderers, unchanged since their last
-    full run (40 of 40), weren't re-run.
+  - The files-from-chat smoke in the redesign run covered only PDF and Markdown. Word and Excel were re-run on the
+    final build on 2026-10-24 (Word with the default chat model, Excel with GPT-5.4 mini): 28 of 29 checks passed.
+    The failure was the scratch script's Qdrant check, which always expects the PDF's Hindi heading, so it can't pass
+    in a run that creates no PDF; both files had their vectors.
   - The 4 `postgres`-marked account tests (`test_account_postgres.py`: the sign-in prune, UTC days, the preferences
     insert race across two engines, the export's reads) are skipped without `TEST_POSTGRES_URL`; no run against
     Postgres is recorded.
@@ -1342,11 +1349,11 @@ Choices still to confirm with the user (functional brief 16, visual spec 0.4):
 
 ## Next steps
 
-The top bar, Settings and the redesign are built, reviewed and verified in Docker (2026-10-20). What is left:
+The top bar, Settings and the redesign are built, reviewed, verified in Docker (2026-10-20) and committed (`5148b83`,
+then `d11a9e5`). What is left:
 
-- Fix the mypy error at `backend/app/deps.py:44` (check the `exp` claim's type inline, so mypy narrows it), re-run
-  ruff, mypy and the suite, then review `git status` and commit the review fixes and the Docker-run fixes on top of the
-  WIP snapshot `5148b83`.
+- Fix the mypy error at `backend/app/deps.py:44` (check the `exp` claim's type inline, so mypy narrows it), then re-run
+  ruff, mypy and the suite.
 - Confirm the open points at the end of "Top bar, Settings and the redesign" with the user.
 - Optional, no model spend: run `test_account_postgres.py` against a throwaway Postgres 17; check the forced-colours
   rules with Chromium's forced-colors emulation; install WebKit for Playwright and check the "+" menu's file picker;
@@ -1397,8 +1404,9 @@ Files from chat is built and was verified live in Docker on 2026-10-16. What is 
   - downloads from Admin → Documents.
 - Decide the vision `NO_CONTENT` fix (known limitations), and optionally tidy nginx's duplicate headers on `/api/`.
 
-1. Review `git status` and commit the redesign's fixes (above). Plugins with Gmail are in `c5fb005`, images from chat
-   in `7eaf587`, and files from chat, the vision follow-up fix and `test_vision_independent.py` in `70f8076`.
+1. Done: everything built so far is committed. The redesign is in `5148b83` and `d11a9e5`, plugins with Gmail in
+   `c5fb005`, images from chat in `7eaf587`, and files from chat, the vision follow-up fix and
+   `test_vision_independent.py` in `70f8076`.
 2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
 3. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the
    monthly vision allowance and the automatic activation of the seeded Sonnet vision model).
