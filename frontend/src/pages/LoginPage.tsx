@@ -187,6 +187,8 @@ export default function LoginPage() {
             <ShieldIcon size={16} />
             <span>Accounts are created by your administrator. Ask them if you need access or a new password.</span>
           </div>
+
+          <p className="login-credit">This application is designed, developed &amp; maintained by ELARXSYS.COM</p>
         </div>
       </main>
     </div>

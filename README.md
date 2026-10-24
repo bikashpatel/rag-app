@@ -3,6 +3,8 @@
 A self-hosted, single-tenant Retrieval-Augmented-Generation app: upload documents,
 chat with them, and manage users, models and usage from an admin page.
 
+This application is designed, developed & maintained by ELARXSYS.COM.
+
 - **Backend:** FastAPI (Python 3.13) · Postgres 17 · Redis 7.4 · Qdrant 1.19 · a separate ingestion worker
 - **Frontend:** React 19 + Vite 8 (TypeScript), served by nginx
 - **Models:** every model call goes through [LiteLLM](https://docs.litellm.ai/), so

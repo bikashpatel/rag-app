@@ -361,6 +361,13 @@
   margin-top: 1px;
   color: var(--text-3);
 }
+.login-credit {
+  margin: 20px 0 0;
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+}
 
 /* ---------- Narrower desktops: the aside tightens before it goes ---------- */
 @media (max-width: 1279.98px) {
