@@ -1,9 +1,13 @@
 """POST /auth/logout-others (docs/briefs/ui-shell-settings.md, 4.3): every other session ends, the caller's cookie is
 re-issued with the same session id, under the row lock that change-password uses."""
 
+import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime, timedelta, timezone
+from http.cookies import SimpleCookie
 from typing import Any
 
+import httpx
 import jwt
 import pytest
 from conftest import ADMIN_PASSWORD, ADMIN_USERNAME, USER_PASSWORD, ApiClient
@@ -13,6 +17,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.models import PluginConnection, User
 from app.routers import auth as auth_router
+from app.security import create_access_token
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
@@ -25,6 +30,18 @@ def token_of(client: ApiClient) -> str:
 
 def claims(token: str) -> dict[str, Any]:
     return jwt.decode(token, settings.secret_key, algorithms=["HS256"])
+
+
+def expiring_in(token: str, seconds: int) -> str:
+    """The same session (sub, tv, sid) with only `seconds` left, as a stolen nearly-expired token would be."""
+    return jwt.encode(claims(token) | {"exp": int(time.time()) + seconds}, settings.secret_key, algorithm="HS256")
+
+
+def cookie_max_age(response: httpx.Response) -> int:
+    cookies = SimpleCookie()
+    for header in response.headers.get_list("set-cookie"):
+        cookies.load(header)
+    return int(cookies[settings.cookie_name]["max-age"])
 
 
 async def token_version(user_id: int | None) -> int:
@@ -139,3 +156,55 @@ async def test_a_session_ended_meanwhile_gets_401(
     assert response.status_code == 401
     assert settings.cookie_name not in response.cookies
     assert await token_version(alice.user_id) == 1  # only the admin's change counted
+
+
+@pytest.mark.parametrize("sent_as", ["cookie", "bearer"])
+async def test_the_reissued_session_keeps_its_expiry(
+    sent_as: str, create_user: CreateUser, client: ApiClient
+) -> None:
+    alice = await create_user("alice")
+    short = expiring_in(token_of(alice), 60)
+    sent = {"Cookie": f"{settings.cookie_name}={short}"}
+    if sent_as == "bearer":
+        sent = {"Authorization": f"Bearer {short}"}
+
+    response = await client.post("/api/auth/logout-others", headers=sent)
+
+    assert response.status_code == 204
+    renewed = claims(response.cookies[settings.cookie_name])
+    assert (renewed["exp"], renewed["sid"], renewed["tv"]) == (claims(short)["exp"], claims(short)["sid"], 1)
+    assert 1 <= cookie_max_age(response) <= 60
+    assert (await client.get("/api/auth/me")).status_code == 200
+
+
+async def test_chained_calls_never_extend_the_session(
+    create_user: CreateUser, new_client: Callable[[], ApiClient]
+) -> None:
+    alice = await create_user("alice")
+    token = expiring_in(token_of(alice), 60)
+    expiry = claims(token)["exp"]
+
+    for _ in range(5):
+        response = await new_client().post("/api/auth/logout-others", headers={"Authorization": f"Bearer {token}"})
+        assert response.status_code == 204
+        token = response.cookies[settings.cookie_name]
+        assert claims(token)["exp"] == expiry
+        assert cookie_max_age(response) <= 60
+
+
+async def test_a_fresh_session_keeps_its_full_expiry(create_user: CreateUser) -> None:
+    alice = await create_user("alice")
+    expiry = claims(token_of(alice))["exp"]
+
+    response = await alice.post("/api/auth/logout-others")
+
+    assert claims(token_of(alice))["exp"] == expiry
+    assert cookie_max_age(response) <= settings.access_token_expire_minutes * 60
+
+
+def test_a_reissued_token_never_outlives_a_fresh_one() -> None:
+    far = datetime.now(timezone.utc) + timedelta(days=30)
+
+    exp = claims(create_access_token(1, 0, 7, far))["exp"]
+
+    assert exp <= time.time() + settings.access_token_expire_minutes * 60 + 1

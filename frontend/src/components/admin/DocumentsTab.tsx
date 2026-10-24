@@ -157,7 +157,7 @@ export default function DocumentsTab({ onChanged }: { onChanged: () => void }) {
                           Chunks
                         </th>
                         <th scope="col">Created</th>
-                        <th scope="col">
+                        <th scope="col" className="admin-actions-cell">
                           <span className="sr-only">Actions</span>
                         </th>
                       </tr>
@@ -179,7 +179,8 @@ export default function DocumentsTab({ onChanged }: { onChanged: () => void }) {
 }
 
 function DocumentRow({ doc, onDelete }: { doc: DocumentItem; onDelete: () => Promise<void> }) {
-  const badge = STATUS_BADGES[doc.status];
+  // One status per document (visual spec 6.5): a stale ready document reads "Needs re-index", not "Ready" as well.
+  const badge = doc.is_stale ? { label: "Needs re-index", className: "badge badge-warning" } : STATUS_BADGES[doc.status];
   const visionPages = `${formatNumber(doc.vision_pages)} page${doc.vision_pages === 1 ? "" : "s"} read with the vision model`;
   return (
     <tr>
@@ -193,7 +194,7 @@ function DocumentRow({ doc, onDelete }: { doc: DocumentItem; onDelete: () => Pro
       </td>
       <td className="admin-nowrap">{doc.owner_username}</td>
       <td>
-        <span className={doc.scope === "shared" ? "badge badge-info" : "badge badge-neutral"}>
+        <span className={doc.scope === "shared" ? "badge badge-accent" : "badge badge-neutral"}>
           {doc.scope === "shared" ? "Shared" : "Private"}
         </span>
       </td>
@@ -204,7 +205,6 @@ function DocumentRow({ doc, onDelete }: { doc: DocumentItem; onDelete: () => Pro
             {badge.label}
           </span>
           {doc.error ? <span className="sr-only">: {doc.error}</span> : null}
-          {doc.is_stale ? <span className="badge badge-warning">Needs re-index</span> : null}
           {doc.vision_pages > 0 ? (
             <span className="badge badge-neutral" title={visionPages}>
               <span aria-hidden="true">Vision · {formatNumber(doc.vision_pages)}</span>

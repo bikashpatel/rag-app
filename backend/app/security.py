@@ -45,15 +45,19 @@ def needs_rehash(password_hash: str) -> bool:
         return True
 
 
-def create_access_token(user_id: int, token_version: int, session_id: int | None = None) -> str:
+def create_access_token(
+    user_id: int, token_version: int, session_id: int | None = None, expires_at: datetime | None = None
+) -> str:
     """`session_id`: the login_events id of the sign-in that started the session (the `sid` claim), kept when the
-    cookie is re-issued; tokens without it stay valid."""
+    cookie is re-issued; tokens without it stay valid. `expires_at`: the expiry of the session being re-issued, so a
+    re-issue never extends it (never later than a fresh token's); None = a fresh lifetime."""
     now = datetime.now(timezone.utc)
+    exp = now + timedelta(minutes=settings.access_token_expire_minutes)
     payload: dict[str, Any] = {
         "sub": str(user_id),
         "tv": token_version,
         "iat": now,
-        "exp": now + timedelta(minutes=settings.access_token_expire_minutes),
+        "exp": exp if expires_at is None else min(expires_at, exp),
     }
     if session_id is not None:
         payload["sid"] = session_id

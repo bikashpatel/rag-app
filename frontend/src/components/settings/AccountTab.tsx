@@ -289,12 +289,14 @@ function SessionsSection() {
   const [logoutError, setLogoutError] = useState<string | null>(null);
   const othersRef = useRef<HTMLButtonElement>(null);
   const confirmRef = useRef<HTMLButtonElement>(null);
+  const errorId = useId();
 
   useEffect(() => {
     if (confirming) confirmRef.current?.focus();
   }, [confirming]);
 
   async function logOutOthers() {
+    if (working) return;
     setWorking(true);
     setError(null);
     try {
@@ -352,7 +354,15 @@ function SessionsSection() {
         <div className="settings-confirm" role="group" aria-label="Confirm logging out of other sessions">
           <p>Sign out every other browser, device and API token? You stay signed in here.</p>
           <div className="settings-actions">
-            <button ref={confirmRef} type="button" className="btn btn-primary btn-sm" onClick={logOutOthers} disabled={working}>
+            {/* aria-disabled, not disabled, while working: a failure then leaves focus here, next to its error. */}
+            <button
+              ref={confirmRef}
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={logOutOthers}
+              aria-disabled={working || undefined}
+              aria-describedby={error ? errorId : undefined}
+            >
               {working ? <Spinner size={14} label="Signing out other sessions" /> : null}
               Log out others
             </button>
@@ -361,7 +371,7 @@ function SessionsSection() {
             </button>
           </div>
           {error ? (
-            <p className="error-text settings-error" role="alert">
+            <p id={errorId} className="error-text settings-error" role="alert">
               <AlertIcon size={13} />
               {error}
             </p>

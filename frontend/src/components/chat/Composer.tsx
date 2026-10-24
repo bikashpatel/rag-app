@@ -14,6 +14,7 @@ import { formatNumber } from "../../lib/format";
 import { useFileDrop } from "../documents/useFileDrop";
 import { ArrowUpIcon, DocsIcon, StopIcon } from "../ui/icons";
 import AttachmentChips from "./AttachmentChips";
+import { withStarter } from "./starters";
 import type { AttachmentView } from "./useAttachments";
 
 const MAX_MESSAGE_CHARS = 20_000;
@@ -26,7 +27,7 @@ export type ComposerHandle = {
   /** Put text back after a rejected send, unless the user already typed something new. */
   restore: (text: string) => void;
   focus: () => void;
-  /** Puts a "+" menu starter before the draft (once), focuses the input with the caret at the end; never sends. */
+  /** Puts a "+" menu starter before the draft (once; replacing another starter), caret at the end; never sends. */
   insertStarter: (prefix: string) => void;
 };
 
@@ -115,14 +116,19 @@ export default function Composer({
       restore: (value) => setText((current) => (current.trim() ? current : value)),
       focus: () => textareaRef.current?.focus(),
       insertStarter: (prefix) => {
-        caretToEnd.current = true;
-        setText((current) => {
-          const draft = current.trimStart();
-          if (draft.toLowerCase().startsWith(prefix.trim().toLowerCase())) return current;
-          return prefix + draft;
-        });
-        // When the draft didn't change there is no new render: focus now (the effect below handles the rest).
-        textareaRef.current?.focus();
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+        const next = withStarter(textarea.value, prefix);
+        if (next !== textarea.value) {
+          caretToEnd.current = true; // the effect below places the caret once the new draft has rendered
+          setText(next);
+          return;
+        }
+        // Unchanged: no render follows, so place the caret here (an armed flag would move the next keystroke's caret).
+        const end = next.length;
+        textarea.focus();
+        textarea.setSelectionRange(end, end);
+        textarea.scrollTop = textarea.scrollHeight;
       },
     }),
     [],
@@ -250,7 +256,9 @@ export default function Composer({
             <button
               type="submit"
               className="chat-send"
-              disabled={!canSend}
+              // Not `disabled`: this element is the Stop button while streaming, and a focused button that becomes
+              // disabled drops focus to <body>. submit() ignores a send that isn't possible.
+              aria-disabled={!canSend || undefined}
               aria-label="Send message"
               title={waiting ?? "Send"}
             >

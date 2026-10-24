@@ -94,10 +94,13 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
         if (created) {
           upsertDocument(created);
           setAnnouncement(`${created.filename} uploaded. It can be searched once indexing finishes.`);
+          // A poll sent while the upload's body was still arriving can answer after it, without the new document;
+          // a newer request makes that answer stale, so it can't drop the document from the list.
+          void reloadDocuments();
         }
         void reloadConfig();
       }),
-    [upsertDocument, reloadConfig],
+    [upsertDocument, reloadDocuments, reloadConfig],
   );
 
   // The Gmail browser closes when Gmail stops being usable (often a search or import that got a 403/409), and doesn't

@@ -16,6 +16,7 @@ import {
   SearchIcon,
   UploadIcon,
 } from "../ui/icons";
+import { STARTERS } from "./starters";
 
 // The composer's "+" menu (functional brief 9.1, visual spec 6.15). Items that don't exist for the user are hidden;
 // items that are only unavailable now stay, disabled, with the reason as their visible description (U9).
@@ -24,16 +25,6 @@ import {
 const IMAGE_STORAGE_BYTES = 8 * BYTES_PER_MB;
 const FILE_STORAGE_BYTES = 256 * 1024;
 const CHECKING = "Checking your storage…";
-
-export const STARTERS = {
-  image: "Create an image: ",
-  pdf: "Create a PDF document: ",
-  docx: "Create a Word document: ",
-  xlsx: "Create an Excel spreadsheet: ",
-  md: "Create a Markdown file: ",
-  search: "Search my Gmail: ",
-  draft: "Draft an email: ",
-} as const;
 
 const FORMATS = [
   { id: "pdf", short: "PDF", name: "PDF document", tone: "red" },

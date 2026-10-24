@@ -1,4 +1,5 @@
-import { useId } from "react";
+import { useId, useRef, useState } from "react";
+import { ApiError } from "../../api/client";
 import type { Me, ThemePreference } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
 import { formatCompact, formatNumber } from "../../lib/format";
@@ -6,7 +7,7 @@ import { THEMES } from "../../theme/appearance";
 import Avatar from "../ui/Avatar";
 import Menu, { MenuGroup, MenuHead, MenuItem, MenuLink, MenuRadioItem, MenuSeparator } from "../ui/Menu";
 import Meter, { meterState } from "../ui/Meter";
-import { ChartIcon, LogoutIcon, MonitorIcon, MoonIcon, SettingsIcon, ShieldIcon, SunIcon } from "../ui/icons";
+import { AlertCircleIcon, ChartIcon, LogoutIcon, MonitorIcon, MoonIcon, SettingsIcon, ShieldIcon, SunIcon } from "../ui/icons";
 
 // The account menu behind the avatar at the top right (functional brief 8.5, visual spec 6.12): who is signed in,
 // this month's usage, Settings, a quick theme switch, Admin and Log out. It replaces the sidebar footer (U18).
@@ -18,6 +19,8 @@ type AvatarMenuProps = {
   /** A model the user can pick generates images: the images meter shows even without a limit. */
   imagesOffered: boolean;
   onOpenSettings: (tab: "general" | "usage") => void;
+  /** A theme save failed after the menu closed: the page shows the reason. */
+  onPreferenceError: (message: string) => void;
   onLogout: () => void;
 };
 
@@ -51,19 +54,40 @@ function nearLimit({ used, limit }: { used: number; limit: number }): boolean {
   return limit > 0 && used >= limit * 0.9;
 }
 
-export default function AvatarMenu({ user, imagesOffered, onOpenSettings, onLogout }: AvatarMenuProps) {
+export default function AvatarMenu({ user, imagesOffered, onOpenSettings, onPreferenceError, onLogout }: AvatarMenuProps) {
   const { preferences, updatePreferences } = useAuth();
   const usageId = useId();
+  const themeErrorId = useId();
+  const [themeError, setThemeError] = useState<string | null>(null);
+  const themeAttempt = useRef(0);
+  const menuOpen = useRef(false);
   const role = user.is_admin ? "Administrator" : "Member";
   const usage = usageOf(user, imagesOffered);
   const warn = nearLimit(usage.tokens) || (usage.images !== null && nearLimit(usage.images));
   const buttonLabel = `Account: ${user.username}${warn ? ", usage almost at the limit" : ""}`;
+
+  // A failed save reverts (AuthContext) and never silently (U23): the reason shows under the row, or in the page's
+  // notice when the menu has closed meanwhile. Only the latest choice reports; a newer one decides by its own result.
+  function chooseTheme(theme: ThemePreference) {
+    const attempt = ++themeAttempt.current;
+    setThemeError(null);
+    updatePreferences({ theme }).catch((err: unknown) => {
+      if (attempt !== themeAttempt.current) return;
+      const message = `Couldn't save the theme. ${err instanceof ApiError ? err.message : "Please try again."}`;
+      if (menuOpen.current) setThemeError(message);
+      else onPreferenceError(message);
+    });
+  }
 
   return (
     <Menu
       label={`Account: ${user.username}, ${role}`}
       placement="bottom-end"
       className="chat-avatar-menu"
+      onOpenChange={(open) => {
+        menuOpen.current = open;
+        if (!open) setThemeError(null);
+      }}
       trigger={(props) => (
         <button {...props} type="button" className="chat-avatar-btn" aria-label={buttonLabel} title={user.username}>
           <Avatar name={user.username} />
@@ -115,14 +139,20 @@ export default function AvatarMenu({ user, imagesOffered, onOpenSettings, onLogo
               showCheck={false}
               keepOpen
               icon={<Icon size={18} />}
-              // A failed save reverts by itself; Settings → General shows the error next to its control.
-              onSelect={() => void updatePreferences({ theme: theme.id }).catch(() => undefined)}
+              describedBy={themeError ? themeErrorId : undefined}
+              onSelect={() => chooseTheme(theme.id)}
             >
               {theme.label}
             </MenuRadioItem>
           );
         })}
       </MenuGroup>
+      {themeError ? (
+        <p id={themeErrorId} className="error-text chat-theme-error" role="alert">
+          <AlertCircleIcon size={15} />
+          {themeError}
+        </p>
+      ) : null}
       <MenuSeparator />
       {user.is_admin ? (
         <MenuLink to="/admin" icon={<ShieldIcon size={18} />}>

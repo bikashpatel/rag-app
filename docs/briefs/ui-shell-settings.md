@@ -39,12 +39,12 @@ The user asked for:
 | U5 | **The OAuth return opens Settings → Plugins & data.** The callback still redirects to `/?plugin=<id>&oauth=<result>` (unchanged contract); the client turns that into `?settings=plugins` with the result as a banner. **Connections moves into Settings** (the account menu and its dialog go away) | The redirect URIs registered at Google don't change; one place for plugin state |
 | U6 | **`GET /plugins` lists every registered plugin** with a new `configured` flag. The client derives one status, in order: not configured → **Not set up**; not `enabled` → **Turned off by the admin**; connection `reconnect_needed` → **Reconnect needed**; connection → **Connected**; else **Not connected** (offer Connect). Admins get "Set up in Admin → Plugins" (`/admin#plugins`) on Not set up. In the first two states a user who still has a connection can open the card and **Disconnect** it (the server allows that today). Nothing else changes in chat: tools are offered only when the plugin is enabled and configured and the user is connected with "Use in chat" on | The user's rule: plugins must be visible even when not configured. A derived status needs one new field, not a second source of truth. Removing a connection must never depend on the admin's settings |
 | U7 | **The model in the top bar is per chat; the account default is what new chats start with.** On load and on **New chat** the picker shows `default_model_id` when it is one of the user's models, else the server default. Picking a model applies to the current chat (and the following ones in this tab until New chat); it doesn't change the default. The picker marks the default and links to Settings → General. The old per-device `localStorage["rag.modelId"]` memory is removed | Two clear meanings instead of two competing memories. A user who usually wants Haiku but sometimes Opus can say so |
-| U8 | **"+" menu items insert a starter prefix** into the composer (never send): "Create an image: ", "Create a PDF document: ", "Create a Word document: ", "Create an Excel spreadsheet: ", "Create a Markdown file: ", "Search my Gmail: ", "Draft an email: ". The prefix goes before the current draft (not duplicated), the caret goes to the end. Attach files and Import from Gmail open UI instead | Prefixes read well with or without a draft and match what the tools and the request check expect from the user's own words |
+| U8 | **"+" menu items insert a starter prefix** into the composer (never send): "Create an image: ", "Create a PDF document: ", "Create a Word document: ", "Create an Excel spreadsheet: ", "Create a Markdown file: ", "Search my Gmail: ", "Draft an email: ". The prefix goes before the current draft (not duplicated; it replaces another starter), the caret goes to the end. Attach files and Import from Gmail open UI instead | Prefixes read well with or without a draft and match what the tools and the request check expect from the user's own words |
 | U9 | **Items are hidden when the feature doesn't exist for the user, disabled with the reason when it is temporarily or personally unavailable.** Hidden: images when no model can make them, files when no model can make them, Gmail when it isn't set up or is turned off. Disabled (focusable, `aria-disabled`, reason as visible secondary text): the selected model can't, the monthly image limit is used up, the document quota is full, Gmail is off in chat, the model can't use tools. Actionable: "Connect Gmail…", "Reconnect Gmail…" open the plugin's card in Settings | Users shouldn't be shown dead features, but should learn why something they can normally do isn't available now |
 | U10 | **Attach files uploads to My documents** (private), through the existing upload queue; chips above the input show each file's progress, then its indexing status. **Send waits while an attached file is uploading or indexing** (reason in the hint; removing the chip sends without it, the document stays). When the message is sent, attached documents are added to an explicit selection (`document_ids`); with "all documents" (null) they are already included | Asking "summarize this" before the file is indexed gets an answer that ignores it, which reads as a bug. The chat request's contract doesn't change |
 | U11 | **Sign-in history**: a new table `login_events` (user, time, approximate IP, browser, OS, device type), written on each successful `POST /auth/login`, at most **20 per user** (older rows deleted in the same transaction), deleted with the user, shown only to the user (Settings → Account) and in their export. The raw User-Agent is **not stored**, only what is parsed from it; the IP is stored **approximately** (IPv4 last part hidden: `203.0.113.x`; IPv6 as its /48 network). `LoginEvent.ip_private` (derived on read, no column) says the address isn't a public one, and the UI then shows "Via a local network or proxy" instead of a bare `192.168.65.x` | Enough to answer "was that me?", with the least personal data. Behind Docker and the quick tunnel every sign-in comes from Docker's gateway, and a bare private address reads as "someone on my network". The admin doesn't get a view of other users' sign-ins (not asked for) |
 | U12 | **A session id in the JWT** (`sid` = the `login_events` id of the sign-in). Re-issued cookies (change password, log out other sessions) keep it. The history marks the event of the calling session `current` ("This device"). Tokens from before this feature have no `sid` (nothing marked) | Without it the history can't say which entry is this browser |
-| U13 | **"Log out of all other sessions"** = `POST /auth/logout-others`: bump `token_version` under the same row lock as change-password and re-issue the caller's cookie. Every other cookie and Bearer token stops working; tabs of the same browser share the cookie and stay signed in. Plugin connections are unaffected | `token_version` already ends every session; this exposes it without a password change |
+| U13 | **"Log out of all other sessions"** = `POST /auth/logout-others`: bump `token_version` under the same row lock as change-password and re-issue the caller's cookie with the session's original expiry (no password is asked, so a stolen token can't be renewed through it). Every other cookie and Bearer token stops working; tabs of the same browser share the cookie and stay signed in. Plugin connections are unaffected | `token_version` already ends every session; this exposes it without a password change |
 | U14 | **`GET /me/usage`** returns the current UTC month: chat tokens, images and vision tokens each with their limit, embedding tokens, chat answers, the requests-per-minute limit, estimated cost per kind, documents and storage with their limits, a **daily series** (every UTC day from the 1st through today, zeros included), per-model totals, and `resets_at` (the 1st of next month, 00:00 UTC). The chart is CSS/SVG, no library | The user's list. Filling zero days on the server keeps the chart trivial |
 | U15 | **`POST /me/export` returns a ZIP** with `README.txt`, `account.json`, `documents.json` (metadata of documents the user **owns**, no file bytes), and per conversation a Markdown transcript and a JSON file (plugin cards with their current state), plus `conversations/index.json`. Bounded: `EXPORT_MAX_MB` (100) of uncompressed content and `EXPORT_TIMEOUT_SECONDS` (**80**, at most 90); conversations go newest first and the export says how many were left out when a bound is hit. One export per user at a time (409), two building in the process (503); both are freed in `finally`, and a client that disconnects ends the build. Built in a spooled temp file, then streamed with `Content-Length`. Only the caller's own data, the admin included | A ZIP holds both the readable and the machine form. File bytes would make the export unbounded; every document already has Download. Nothing is sent until the build ends, and the Cloudflare tunnel drops a response that is silent for about 100 s. A POST gets nginx's cross-site check (a same-site page on another localhost port could otherwise start heavy exports) |
 | U16 | **`DELETE /conversations`** deletes every conversation of the caller with exactly the semantics of `DELETE /conversations/{id}` (plugin hooks first: Gmail cancels and scrubs pending sends; messages, cards and file links go; documents, generated files and images stay in My documents; usage history stays), **one commit per conversation**, and returns `{deleted}` (the committed ones). The client asks for a typed confirmation (`DELETE`) inline | The user's rule ("documents are kept, as today's conversation deletion semantics"). The single delete rolls back when a plugin hook fails; inside a batch that rollback would undo the other conversations' deletes |
@@ -260,17 +260,21 @@ of editing them).
   `Linux` → Linux; else null. Device: iPad, or Android without `Mobile` → tablet; iPhone, `Mobile` → mobile; Windows,
   macOS, Linux, ChromeOS → desktop; else unknown. (iPadOS Safari reports itself as a Mac; it shows as macOS desktop.
   Accepted.)
-- **The `sid` claim** (`security.create_access_token(user_id, token_version, session_id: int | None)`):
-  `deps.get_current_user` keeps the decoded `sid` on `request.state.session_id` (absent: None);
-  `deps.set_session_cookie(response, user, session_id)` writes it. `POST /auth/change-password` and
-  `POST /auth/logout-others` re-issue with the caller's `sid`. `decode_access_token` keeps requiring only `sub` and
-  `exp`, so tokens without `sid` stay valid.
+- **The `sid` claim** (`security.create_access_token(user_id, token_version, session_id: int | None, expires_at:
+  datetime | None)`): `deps.get_current_user` keeps the decoded `sid` on `request.state.session_id` (absent: None) and
+  the token's `exp` on `request.state.session_expires_at` (`deps.current_session_expiry`);
+  `deps.set_session_cookie(response, user, session_id, expires_at)` writes them (`expires_at` None = a fresh lifetime;
+  given, the token keeps it, never later than a fresh one, and `Max-Age` is the time left). `POST /auth/change-password`
+  and `POST /auth/logout-others` re-issue with the caller's `sid`; logout-others also keeps the caller's expiry
+  (change-password checks the password, so it issues a fresh lifetime like a login). `decode_access_token` keeps
+  requiring only `sub` and `exp`, so tokens without `sid` stay valid.
 
 ### 4.3 Log out of other sessions
 
 `POST /auth/logout-others` (no body) → 204. Same steps as change-password without the password: lock and re-read the
 user row (`with_for_update(key_share=True)`, `populate_existing`), 401 when the session ended meanwhile (inactive, or
-`token_version` changed), `token_version += 1`, commit, re-issue the cookie with the same `sid`. Allowed for the env
+`token_version` changed), `token_version += 1`, commit, re-issue the cookie with the same `sid` and the same expiry
+(the session is not extended: without a password, renewing would let a stolen token live forever). Allowed for the env
 admin (their password is in `.env`, but their sessions are theirs). It doesn't count toward the login throttle. A
 caller authenticated by a Bearer header gets the new cookie and its own Bearer token stops working too (documented in
 SPEC). Plugin connections are untouched.
@@ -595,12 +599,16 @@ type AuthContextValue = {
 - it resolves `null` (a 401) → signed out, exactly as today's handler; a `Me` → stay signed in, with that `Me` (and
   6.3's merge); an error (network, 5xx) → stay signed in, because the request that got the 401 shows its own error and
   the next request checks again;
-- `request()` no longer notifies for `/auth/me` (its callers, `refresh()` and the boot, already treat a 401 there as
-  signed out) or `/auth/login`.
+- `request()` no longer notifies for `/auth/me` or `/auth/login`. `refresh()` (also used by the boot) checks through
+  `getSessionUser()` itself: it waits for a cookie re-issue in flight, and in a signed-in tab it re-checks a 401 once
+  before signing out, so a late usage refresh can't sign out the tab that asked;
+- an upload that gets a 401 fails with its own message ("Your session changed during the upload. Upload the file
+  again."); the rest of the queue goes on. The queue is cleared only on a confirmed sign-out (U30).
 
 **The user changed (U30).** An effect on `user?.id` (including to and from null) calls `announceUserChanged(id)`
 (`lib/appEvents.ts`). `pluginStore` subscribes at module load: it clears the list (`clearPlugins`, aborting a load in
-flight) and drops a queued plugin-browser request. Other per-user module stores may subscribe the same way.
+flight) and drops a queued plugin-browser request. `uploadManager` subscribes the same way: signed out → it cancels
+and forgets every upload; another user → it drops the previous user's. Other per-user module stores may do the same.
 
 ## 8. The top bar (SHELL)
 
@@ -755,9 +763,12 @@ move through every item in DOM order (the chips one by one); Left and Right move
 
 ### 9.2 Starters
 
-`ComposerHandle.insertStarter(prefix)`: when the trimmed draft already starts with the prefix (case-insensitive), it
-only focuses; otherwise the draft becomes `prefix + draft.trimStart()`. Focus the textarea, caret at the end, resize.
-Nothing is sent. The empty state's example prompts stay as today (restyled).
+`ComposerHandle.insertStarter(prefix)` (`withStarter` in `components/chat/starters.ts`): when the trimmed draft
+already starts with the prefix (case-insensitive), it only focuses, caret at the end; when it starts with another "+"
+menu starter, that starter is replaced (the text after it is kept); otherwise the draft becomes
+`prefix + draft.trimStart()`. Focus the textarea, caret at the end, resize. Nothing is sent. The empty state's example
+prompts stay as today (restyled); the image example is left out once the month's images are used up, as the "+" menu's
+item is then disabled.
 
 ### 9.3 Attach files
 
@@ -1094,8 +1105,9 @@ Also frozen for stage 2 (used across areas today): `components/chat/icons.tsx` e
 - The chart is a labelled `group` with `aria-roledescription="chart"`, a text summary and a table (10.4); its live
   readout speaks only for keyboard moves; meters have `aria-valuetext`, and their 90% and 100% states have words and
   an icon, not colour alone.
-- Focus: opening a menu focuses its first enabled item (or the checked radio); closing returns focus to the trigger;
-  after a destructive action focus goes to the result message.
+- Focus: opening a menu focuses its first enabled item (or the checked radio); items disabled only while the menu
+  loads (the "+" menu's "Checking your storage…") take focus back when they become enabled, until the user moves;
+  closing returns focus to the trigger; after a destructive action focus goes to the result message.
 - Live regions are polite except errors; a theme change isn't announced, and neither is "✓ Saved" (visual only).
 - Settings tabs activate automatically; the selected panel shows its skeleton at once (10.1).
 - Keyboard only: every flow in section 15.4 works without a pointer; screen-reader names checked in the browser pass
@@ -1146,7 +1158,8 @@ Backend tests run offline as before (SQLite, FakeRedis, in-memory Qdrant, FakeLL
   (`password_managed_by_env` true for the admin only, `conversation_count`, `created_at`, `last_login_at`); another
   user's events never appear; `GET /admin/users` is unchanged; deleting the user deletes the events.
 - **`test_logout_others.py`**: sessions A and B plus a Bearer token: `POST /auth/logout-others` from A → 204, A still
-  works with the new cookie (and keeps its `sid`), B and the Bearer token → 401; `token_version` + 1; the env admin
+  works with the new cookie (and keeps its `sid` and `exp`; a token with 60 s left stays at 60 s, also when chained),
+  B and the Bearer token → 401; `token_version` + 1; the env admin
   can; 401 unauthenticated; a session ended meanwhile (admin reset) → 401.
 - **`test_my_usage.py`** (clock pinned): an empty month (zeros, `daily` from the 1st through today); sums and costs per
   kind; images counted; `requests`; the limits (budget, image limit from row/default, vision setting; all 0 for the

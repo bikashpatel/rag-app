@@ -633,12 +633,13 @@ h4 {
 .ui-segment input:hover + span {
   color: var(--text);
 }
+/* Selection shows by fill and a 3:1 ring (--border-control against the fill and the track), never colour alone. */
 .ui-segment input:checked + span {
   background: var(--surface);
   color: var(--text);
   box-shadow:
     var(--shadow-sm),
-    inset 0 0 0 1px var(--border);
+    inset 0 0 0 1px var(--border-control);
 }
 .ui-segment input:focus-visible + span {
   box-shadow: var(--focus-ring);
@@ -769,6 +770,7 @@ h4 {
   align-items: baseline;
   justify-content: flex-end;
   gap: 2px 8px;
+  margin-left: auto;
   color: var(--text);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
@@ -780,7 +782,7 @@ h4 {
 }
 .ui-meter-state {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: 4px;
   font-size: 13px;
   font-weight: 650;
@@ -1490,5 +1492,56 @@ h4 {
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
+  }
+}
+
+/* Windows contrast themes drop box-shadows and background fills: focus and state are redrawn with system colours. */
+@media (forced-colors: active) {
+  :focus-visible,
+  .input:focus,
+  .select:focus,
+  .textarea:focus,
+  .switch input:focus-visible + span,
+  .ui-segment input:focus-visible + span {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+  .switch span {
+    border: 1px solid CanvasText;
+  }
+  .switch span::after {
+    top: 2px;
+    left: 2px;
+    forced-color-adjust: none;
+    background: CanvasText;
+  }
+  .switch input:checked + span {
+    forced-color-adjust: none;
+    border-color: Highlight;
+    background: Highlight;
+  }
+  .switch input:checked + span::after {
+    background: HighlightText;
+  }
+  .switch input:disabled + span {
+    border-color: GrayText;
+  }
+  .switch input:disabled + span::after {
+    background: GrayText;
+  }
+  .ui-segment input:checked + span {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  .ui-segment input:checked + span * {
+    color: inherit;
+  }
+  .ui-meter {
+    border: 1px solid CanvasText;
+  }
+  .ui-meter > span {
+    forced-color-adjust: none;
+    background: CanvasText;
   }
 }

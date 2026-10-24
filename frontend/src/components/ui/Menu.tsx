@@ -39,13 +39,6 @@ type MenuContextValue = {
 
 const MenuContext = createContext<MenuContextValue | null>(null);
 
-/** For custom content inside a menu that needs to close it. */
-export function useMenu(): MenuContextValue {
-  const menu = useContext(MenuContext);
-  if (!menu) throw new Error("useMenu must be used inside a <Menu>");
-  return menu;
-}
-
 function subscribeSheet(onChange: () => void): () => void {
   const list = window.matchMedia(SHEET_QUERY);
   list.addEventListener("change", onChange);
@@ -58,6 +51,15 @@ function isSheetWidth(): boolean {
 
 function itemsOf(panel: HTMLElement | null): HTMLElement[] {
   return panel ? Array.from(panel.querySelectorAll<HTMLElement>(ITEM_SELECTOR)) : [];
+}
+
+/** Where focus goes when the menu opens: the first enabled item (a radio menu: the checked one), or the last. */
+function openingTarget(items: HTMLElement[], intent: "first" | "last"): HTMLElement | undefined {
+  if (intent === "last") return items[items.length - 1];
+  const firstEnabled = items.find((item) => item.getAttribute("aria-disabled") !== "true");
+  return firstEnabled?.getAttribute("role") === "menuitemradio"
+    ? (items.find((item) => item.getAttribute("aria-checked") === "true") ?? firstEnabled)
+    : (firstEnabled ?? items[0]);
 }
 
 function classes(...names: (string | false | null | undefined)[]): string {
@@ -174,6 +176,8 @@ export default function Menu({
     const rect = anchor.getBoundingClientRect();
     const viewportWidth = document.documentElement.clientWidth;
     const viewportHeight = window.innerHeight;
+    // Measuring unconstrained clamps the panel's scroll offset, so keep it across the measurement.
+    const scrollTop = panel.scrollTop;
     panel.style.maxHeight = "";
     const natural = panel.offsetHeight;
     const width = panel.offsetWidth;
@@ -183,6 +187,7 @@ export default function Menu({
     const up = placement === "top-start" ? !(natural > above && below > above) : natural > below && above > below;
     const room = Math.max(up ? above : below, 0);
     if (natural > room) panel.style.maxHeight = `${room}px`;
+    panel.scrollTop = scrollTop;
     const height = Math.min(natural, room);
     const alignEnd = placement === "bottom-end";
     const maxLeft = Math.max(VIEWPORT_MARGIN, viewportWidth - width - VIEWPORT_MARGIN);
@@ -198,19 +203,32 @@ export default function Menu({
     if (!open) return;
     position();
     const panel = panelRef.current;
-    const items = itemsOf(panel);
-    let target: HTMLElement | undefined;
-    if (focusIntent.current === "last") {
-      target = items[items.length - 1];
-    } else {
-      const firstEnabled = items.find((item) => item.getAttribute("aria-disabled") !== "true");
-      target =
-        firstEnabled?.getAttribute("role") === "menuitemradio"
-          ? (items.find((item) => item.getAttribute("aria-checked") === "true") ?? firstEnabled)
-          : (firstEnabled ?? items[0]);
-    }
-    (target ?? panel)?.focus();
+    (openingTarget(itemsOf(panel), focusIntent.current) ?? panel)?.focus();
   }, [open, position]);
+
+  // Items that are disabled only while the menu loads (the "+" menu checks the storage) become enabled a moment after
+  // it opened: until the user moves, focus follows to the first enabled item instead of staying further down.
+  useEffect(() => {
+    const panel = panelRef.current;
+    if (!open || !panel || typeof MutationObserver !== "function") return;
+    let moved = false;
+    const onMove = () => {
+      moved = true;
+    };
+    const observer = new MutationObserver(() => {
+      if (moved || !panel.contains(document.activeElement)) return;
+      const target = openingTarget(itemsOf(panel), focusIntent.current);
+      if (target && target !== document.activeElement) target.focus();
+    });
+    observer.observe(panel, { subtree: true, attributes: true, attributeFilter: ["aria-disabled"] });
+    panel.addEventListener("keydown", onMove, true);
+    panel.addEventListener("pointermove", onMove, true);
+    return () => {
+      observer.disconnect();
+      panel.removeEventListener("keydown", onMove, true);
+      panel.removeEventListener("pointermove", onMove, true);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
@@ -223,15 +241,20 @@ export default function Menu({
       close(false);
     };
     const reposition = () => position();
+    // The panel's own scrolling never moves its anchor; repositioning on it would cost a forced layout per wheel tick.
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && panel?.contains(event.target)) return;
+      position();
+    };
     document.addEventListener("pointerdown", onPointerDown, true);
     window.addEventListener("resize", reposition);
-    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("scroll", onScroll, true);
     const observer = typeof ResizeObserver === "function" ? new ResizeObserver(reposition) : null;
     if (panel) observer?.observe(panel);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown, true);
       window.removeEventListener("resize", reposition);
-      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("scroll", onScroll, true);
       observer?.disconnect();
     };
   }, [open, close, position]);

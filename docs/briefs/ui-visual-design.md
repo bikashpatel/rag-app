@@ -633,12 +633,13 @@ Feature classes use their area prefix. "Mock" names the reference class in `pape
 
 - **Track:** padding 3, gap 2, radius `--radius`, `--surface-2` with a 1px `--border`.
 - **Segments:** 34px tall, padding 0 14px, radius 9, 14.5px/600 `--text-2`; hover `--text`.
-- **Selected:** `--surface` fill, `--text`, with `--shadow-sm` plus an inset 1px `--border`.
+- **Selected:** `--surface` fill, `--text`, with `--shadow-sm` plus an inset 1px `--border-control` ring (≥ 3:1
+  against the fill and the track in both themes, 11).
 - **Variant and layout:** `.ui-segmented-sm` has 28px segments at 13.5px. Segments are `flex: 1 1 0`, so a full-width
   control splits evenly.
 - **Contents:** each segment can carry a 15px icon or the "Aa" serif specimen (the font-size control, `--text-3`,
   turning `--accent-ink` when selected).
-- **Semantics:** a radio group; the selection shows by fill and weight, never by colour alone.
+- **Semantics:** a radio group; the selection shows by fill and a 3:1 ring, never by colour alone.
 
 ### 6.5 Badges, tags and the status vocabulary
 
@@ -654,6 +655,7 @@ Feature classes use their area prefix. "Mock" names the reference class in `pape
   | pending | neutral "Queued" | |
   | processing | info "Indexing…" with a spinner | |
   | ready | no badge in the panel; "✓ Ready" in success colour on chat cards and attachment chips | |
+  | stale | | chat cards read "Needs re-index" (warning, alert icon) instead of "Ready"; admin shows only that badge |
   | failed | danger "Failed" | the error text below, plus a "Retry" link-button |
   | stale | warning "Needs re-index" | a "Re-index" link-button |
 
@@ -759,8 +761,9 @@ Used by the Plugins menu, the connection cards and anywhere a plugin or connecti
   - It is the one item in the bar that shrinks: it (and any wrapper) is `flex: 0 1 auto; min-width: 0`, its label
     ellipsizes. The display name is never shortened (names are the admin's); the accessible name keeps it whole.
   - Accessible name: "Model: Claude Opus 5.5".
-- **Title** (`h1.chat-topbar-title`): a flex item (`flex: 1`, `min-width: 0`) centred in the space between the model
-  button and the actions; serif 15.5/500 `--text-2`, ellipsis.
+- **Title** (`h1.chat-topbar-title`): a flex item (`flex: 1 1 0`, `min-width: 0`) centred in the space between the
+  model button and the actions; serif 15.5/500 `--text-2`, ellipsis. Its basis is 0, so it only takes the space left
+  over: a long title never shortens the model name.
   - It shows "New chat" on a new chat.
   - It is visible when the chat column is 720px or wider, `sr-only` below (container query, see below). It is **not**
     absolutely centred, because it would collide with the actions.
@@ -790,7 +793,8 @@ Used by the Plugins menu, the connection cards and anywhere a plugin or connecti
   you in chat.", then one item per plugin, a separator and "Manage plugins…" (gear icon, trailing chevron).
 - **Plugin item** (`.chat-plugin-item`, a single `menuitem` link):
   - A 40px icon tile with the plugin's 20px icon in its brand-like tone (Gmail: `--tag-red`).
-  - Name 15.5/650; an optional description 13.5 `--text-3`; the status line (6.7); an optional trailing pill.
+  - Name 15.5/650; an optional description 13.5 `--text-3`, clamped to two lines (the full text is in Settings →
+    Plugins & data); the status line (6.7); an optional trailing pill.
 
 | Status | Status line | Trailing | Activation |
 |---|---|---|---|
@@ -817,8 +821,10 @@ Loading: one `--text-3` line "Loading plugins…" with a spinner. Error: the mes
 4. A separator, then "Settings" (gear).
 5. The "THEME" label and a 3-column row of compact radio items: System, Light, Dark.
    - Each item is an icon over a label, 13.5/600, padding 8 4 6.
-   - The checked one is `--surface` with a 1px `--border`, `--shadow-xs`, `--text` and an `--accent-ink` icon.
-   - The menu stays open after a pick.
+   - The checked one is `--surface` with a 1px `--border-control` (≥ 3:1), `--shadow-xs`, `--text` at 700 and an
+     `--accent-ink` icon.
+   - The menu stays open after a pick. A failed save reverts and says why under the row (`role="alert"`), or in the
+     chat page's notice when the menu has closed meanwhile.
 6. A separator, then "Admin" (shield; admins only) and "Log out".
 
 Semantics (revision 2): the menu is labelled "Account: maya.chen, Member"; the head and the usage block are
@@ -934,7 +940,8 @@ labelled `group` (Left and Right move along it).
   - `th`: 12.5px/650 caps, 0.06em, `--text-3`, padding 10 16 9 0, `border-bottom` 1px `--rule`.
   - `td`: padding 11 16 11 0, `border-top` 1px `--border` (none on the first row), `--text-2`. The first column is
     `--text` 600 and `nowrap`.
-  - On phones the table gets `min-width: 520px` inside its scroller.
+  - On phones the table gets `min-width: 520px` inside its scroller. The scroller has a scroll-shadow cue: a soft
+    `--rule` shade at an edge while more of the table lies beyond it (covers in `--bg` hide it at the ends).
 - **Code blocks** (`.chat-code`):
   - Frame: 1px `--border`, radius `--radius`, `--code-bg`.
   - Header: 36px tall, padding 0 6 0 14, bottom hairline. It shows the language from the `language-*` class (sans 13/600
@@ -976,8 +983,8 @@ labelled `group` (Left and Right move along it).
     - It shows a stack of up to three 24px source dots (`.chat-src-dot`: a file-type soft fill with a 13px file
       icon in the tone, a 2px `--surface` ring, overlapping by 7px), then "3 sources" and a chevron that rotates 180°
       when expanded. Email sources use the mail icon in red.
-  - **Meta:** "Claude Opus 5.5 · 6,240 tokens", 13.5 `--text-3` tabular, pushed right (it wraps to its own line on
-    phones).
+  - **Meta:** "Claude Opus 5.5 · 6,240 tokens", 13.5 `--text-3` tabular, pushed right (on phones it wraps to its own
+    line under the sources pill; without a pill it stays on the row, left-aligned, before Copy).
   - **Copy:** a 32px ghost icon button.
 - **Sources list** (`.chat-sources`, expanded, a column with gap 8):
   - Each source (`.chat-source`) is a 22px | 1fr grid with padding 12 14, `--surface`, 1px `--border` and radius
@@ -1359,8 +1366,12 @@ The empty state is centred in the thread (max 620px):
   - Header: padding 18 20, a bottom hairline, the serif 21/600 title, the subtitle at 14 `--text-3`, and the primary
     action at the right ("+ New user").
   - Table (6.27): the user cell (a 32px avatar, the name 650 `--text`, the "admin" accent badge, the "inactive"
-    neutral badge); meter cells (the value line and a 5px meter, min 150px); sub-text at 13 `--text-3`; the actions
-    as ghost sm Edit / Delete (env-managed: disabled, with the reason in `title` and `sr-only`).
+    neutral badge); meter cells (the value line and a 5px meter, min 112px); sub-text at 13 `--text-3`; the actions
+    as ghost sm Edit / Delete (env-managed: disabled, with the reason in `title` and `sr-only`). The actions column
+    is sticky at the right (`--surface`, a left hairline), so Edit and Delete stay in view while a wide table
+    scrolls; while columns lie under it, a 14px shade falls on them from its edge (a scroll-driven `::before`, gone at
+    the scroll end and when the table fits; without scroll-driven animations the hairline is the only cue); usernames
+    wrap at 20ch.
   - Footnote: padding 12 20, a top hairline, `--bg`, 13.5 `--text-3`.
 - **Forms** (user and model dialogs): `.field`s in a 2-column grid at 720px and up, with `.settings-sub`-style
   section labels, and switches (6.3) for flags.
@@ -1442,10 +1453,13 @@ The empty state is centred in the thread (max 620px):
   accent outline. Inputs show the accent border plus halo. Never remove focus without a replacement.
 - **Never colour alone:**
   - Selected theme cards and swatches carry a check.
-  - Selected segments and tabs change fill or weight.
+  - Selected segments carry a 3:1 `--border-control` ring; tabs change fill or weight.
   - Statuses carry words plus a dot, lock or dashed mark.
   - The Documents toggle changes fill and text colour along with `aria-expanded`.
   - Meters carry numbers.
+- **Forced colours (Windows contrast themes):** box-shadows and fills are dropped there, so `@media (forced-colors:
+  active)` blocks redraw the focus ring as a 2px `Highlight` outline, and the switch track and thumb, the selected
+  segment, the meter bar, the selected theme card and the admin tab bar in system colours.
 - **Targets:** at least 24×24 everywhere (WCAG 2.5.8): the smallest stand-alone controls are the 28px chips and xs
   buttons; citation chips (19px) sit inside a line of text, which the criterion's inline exception covers; the 18px
   checkboxes and radios get a 24px hit area through their label (padding, or the whole row as the label). 40px for

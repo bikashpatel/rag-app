@@ -103,7 +103,15 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
   const tokens = message.prompt_tokens + message.completion_tokens;
   const retry =
     prompt !== null ? (
-      <button type="button" className="btn btn-sm chat-retry" onClick={() => onRetry(prompt)} disabled={retryDisabled}>
+      // aria-disabled, not disabled: starting the retry would otherwise disable the focused button, dropping focus.
+      <button
+        type="button"
+        className="btn btn-sm chat-retry"
+        onClick={() => {
+          if (!retryDisabled) onRetry(prompt);
+        }}
+        aria-disabled={retryDisabled || undefined}
+      >
         <RefreshIcon size={15} />
         Retry
       </button>

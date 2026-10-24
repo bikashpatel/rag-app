@@ -18,6 +18,8 @@ type TopBarProps = {
   /** The documents panel: collapses the right column at 800 px and wider, opens the slide-over below. */
   documentsToggle: PanelToggle;
   openSettings: (tab: SettingsTab, focusPluginId?: string) => void;
+  /** A preference saved from the bar (the avatar menu's theme) failed after its menu closed. */
+  onPreferenceError: (message: string) => void;
   onLogout: () => void;
 };
 
@@ -34,6 +36,7 @@ export default function TopBar({
   sidebarToggle,
   documentsToggle,
   openSettings,
+  onPreferenceError,
   onLogout,
 }: TopBarProps) {
   return (
@@ -75,7 +78,13 @@ export default function TopBar({
           <span className="chat-tb-label">Documents</span>
         </button>
         {user ? (
-          <AvatarMenu user={user} imagesOffered={imagesOffered} onOpenSettings={openSettings} onLogout={onLogout} />
+          <AvatarMenu
+            user={user}
+            imagesOffered={imagesOffered}
+            onOpenSettings={openSettings}
+            onPreferenceError={onPreferenceError}
+            onLogout={onLogout}
+          />
         ) : null}
       </div>
     </header>

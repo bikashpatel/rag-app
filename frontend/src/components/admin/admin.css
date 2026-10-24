@@ -473,6 +473,50 @@
   text-align: right;
   white-space: nowrap;
 }
+/* The actions stay in view while a wide table scrolls under them (phones, long usernames). */
+.admin-table .admin-actions-cell {
+  position: sticky;
+  right: 0;
+  z-index: 1;
+  background: var(--surface);
+  box-shadow: inset 1px 0 0 var(--border);
+}
+/* While columns lie under the sticky actions (a wide table at 800 to 1100 px or on a phone), a soft shade falls on
+   them from the actions' edge, gone once the table is scrolled to its end. Scroll-driven (an outer box-shadow isn't
+   painted on a collapsed-border cell); elsewhere the hairline is the only cue. */
+@supports (animation-timeline: scroll()) {
+  .admin-panel .table-wrap {
+    scroll-timeline: --admin-table-x inline;
+  }
+  .admin-table .admin-actions-cell::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: -14px;
+    width: 14px;
+    background: linear-gradient(to left, rgba(51, 38, 25, 0.12), transparent);
+    opacity: 0; /* a table that fits has an inactive timeline, so no shade */
+    pointer-events: none;
+    animation: admin-actions-shade linear both;
+    animation-timeline: --admin-table-x;
+  }
+  :root[data-theme="dark"] .admin-table .admin-actions-cell::before {
+    background: linear-gradient(to left, rgba(0, 0, 0, 0.45), transparent);
+  }
+}
+@keyframes admin-actions-shade {
+  from,
+  98% {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+.admin-table tbody tr:hover td.admin-actions-cell {
+  background: color-mix(in srgb, var(--surface-2) 70%, var(--surface));
+}
 .admin-actions {
   display: inline-flex;
   align-items: center;
@@ -500,16 +544,20 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  white-space: nowrap;
+}
+.admin-user-cell > :not(.admin-user-name) {
+  flex: none;
 }
 .admin-user-name {
+  max-width: 20ch;
   color: var(--text);
   font-weight: 650;
+  overflow-wrap: break-word;
 }
 .admin-meter-cell {
   display: flex;
   flex-direction: column;
-  min-width: 132px;
+  min-width: 112px;
 }
 .admin-meter-text {
   position: relative; /* containing block for the sr-only words */
@@ -917,7 +965,10 @@
   align-items: center;
   gap: var(--space-2);
 }
+/* One box per value, wrapping inside it (an inline box would break into separately ringed fragments). */
 .admin-code.admin-plugin-wrap {
+  display: inline-block;
+  max-width: 100%;
   min-width: 0;
   padding: 4px 8px;
   white-space: normal;
@@ -1059,9 +1110,24 @@
     flex-wrap: wrap;
     align-self: stretch;
   }
+  /* Each segment sized by its label ("Embedding" is the widest), the spare width shared; it wraps below ~360px. */
+  .ui-segmented.admin-segmented-options .ui-segment {
+    flex: 1 1 auto;
+  }
+  .ui-segmented.admin-segmented-options .ui-segment span {
+    padding: 0 8px;
+  }
 }
 @media (max-width: 420px) {
   .admin-whoami {
     display: none;
+  }
+}
+
+/* Windows contrast themes drop background fills: the selected tab's underline is redrawn in a system colour. */
+@media (forced-colors: active) {
+  .admin-tab[aria-selected="true"]::after {
+    forced-color-adjust: none;
+    background: Highlight;
   }
 }

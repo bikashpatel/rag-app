@@ -27,7 +27,7 @@ type EmptyStateProps = {
   disabled: boolean;
   /** The selected model can create files: adds an example that asks for one. */
   canCreateFiles: boolean;
-  /** The selected model can generate images: adds an example that asks for one. */
+  /** The selected model can generate images and the month's images aren't used up: adds an example that asks for one. */
   canCreateImages: boolean;
   /** The documents the next answer searches (for the summary example's note). */
   selection: DocumentSelection;

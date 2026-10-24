@@ -1,4 +1,4 @@
-import { useId, useState, type FormEvent } from "react";
+import { useId, useRef, useState, type FormEvent } from "react";
 import { ApiError, changePassword } from "../../api/client";
 import { AlertIcon } from "../ui/icons";
 import PasswordInput from "../ui/PasswordInput";
@@ -17,10 +17,14 @@ type PasswordFormProps = {
 export default function PasswordForm({ id, onChanged, onCancel }: PasswordFormProps) {
   const hintId = useId();
   const mismatchId = useId();
+  const errorId = useId();
+  const currentRef = useRef<HTMLInputElement>(null);
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** The server refused the current password: that field is marked invalid until it changes. */
+  const [currentWrong, setCurrentWrong] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const tooShort = next.length > 0 && next.length < MIN_PASSWORD_CHARS;
@@ -36,18 +40,32 @@ export default function PasswordForm({ id, onChanged, onCancel }: PasswordFormPr
       await changePassword(current, next);
       onChanged();
     } catch (err) {
+      // The only 400 this form can get is a wrong current password (the env admin never sees it): go back to that
+      // field. Otherwise focus stays on the submit button, which stays focusable while saving.
+      const wrong = err instanceof ApiError && err.status === 400;
+      setCurrentWrong(wrong);
       setError(err instanceof ApiError ? err.message : "Couldn't change the password. Please try again.");
       setSaving(false);
+      if (wrong) {
+        currentRef.current?.focus();
+        currentRef.current?.select();
+      }
     }
   }
 
   return (
     <form id={id} className="settings-inline-form" onSubmit={onSubmit} noValidate aria-label="Change password">
       <PasswordInput
+        ref={currentRef}
         label="Current password"
         autoComplete="current-password"
         value={current}
-        onChange={(event) => setCurrent(event.target.value)}
+        onChange={(event) => {
+          setCurrent(event.target.value);
+          setCurrentWrong(false);
+        }}
+        aria-invalid={currentWrong || undefined}
+        aria-describedby={currentWrong ? errorId : undefined}
         autoFocus
         required
       />
@@ -84,13 +102,13 @@ export default function PasswordForm({ id, onChanged, onCancel }: PasswordFormPr
         ) : null}
       </div>
       {error ? (
-        <p className="error-text" role="alert">
+        <p id={errorId} className="error-text" role="alert">
           <AlertIcon size={13} />
           {error}
         </p>
       ) : null}
       <div className="settings-actions">
-        <button type="submit" className="btn btn-primary btn-sm" disabled={!valid || saving}>
+        <button type="submit" className="btn btn-primary btn-sm" disabled={!valid} aria-disabled={saving || undefined}>
           {saving ? <Spinner size={14} label="Saving" /> : null}
           Change password
         </button>

@@ -371,7 +371,7 @@
   color: var(--text-3);
 }
 .chat-topbar-title {
-  flex: 1 1 auto;
+  flex: 1 1 0;
   min-width: 0;
   padding: 0 16px;
   overflow: hidden;
@@ -564,8 +564,13 @@
   max-width: 100%;
   overflow-wrap: anywhere;
 }
+/* Two lines at most: the full description is in Settings → Plugins & data. */
 .chat-plugin-desc {
-  max-width: 34ch;
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
 }
 .chat-plugin-cta {
   display: inline-flex;
@@ -631,13 +636,17 @@
   align-items: center;
 }
 .chat-theme-row .ui-menu-item[aria-checked="true"] {
-  border-color: var(--border);
+  border-color: var(--border-control);
   background: var(--surface);
   box-shadow: var(--shadow-xs);
   color: var(--text);
+  font-weight: 700;
 }
 .chat-theme-row .ui-menu-item[aria-checked="true"] > svg {
   color: var(--accent-ink);
+}
+.ui-menu .chat-theme-error {
+  padding: 2px 10px 6px;
 }
 
 /* ---------- Thread ---------- */
@@ -873,6 +882,15 @@
   margin: 1.2em 0 1.3em;
   overflow-x: auto;
   scrollbar-width: thin;
+  /* Scroll cue: an edge shade shows while more of the table lies beyond that edge; the covers (local) hide it at
+     the ends, and it never shows when the table fits. */
+  background:
+    linear-gradient(to right, var(--bg) 30%, transparent) left / 28px 100% no-repeat local,
+    linear-gradient(to left, var(--bg) 30%, transparent) right / 28px 100% no-repeat local,
+    radial-gradient(farthest-side at 0 50%, color-mix(in srgb, var(--rule) 60%, transparent), transparent) left / 12px
+      100% no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, var(--rule) 60%, transparent), transparent) right /
+      12px 100% no-repeat scroll;
 }
 .chat-md-table table {
   width: 100%;
@@ -1158,21 +1176,32 @@
   overflow-wrap: anywhere;
 }
 /* Meta parts, joined by a dot drawn between them (never trailing). */
+/* Every part starts with its "·" and the row is shifted one separator to the left and clipped there, so a part that
+   wraps doesn't start its line with a dangling "·" (as .conn-account does). */
 .chat-file-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 2px 0;
   margin-top: 2px;
+  margin-inline-start: -1.3em;
+  clip-path: inset(-4px -4px -4px 1.3em);
   color: var(--text-3);
   font-size: 13.5px;
   font-variant-numeric: tabular-nums;
 }
-.chat-file-meta > span + span::before {
+/* A part is a flex row, so its "·" centres on the status's icon and text instead of sitting on the icon's baseline. */
+.chat-file-meta > span {
+  display: inline-flex;
+  align-items: center;
+}
+.chat-file-meta > span::before {
   content: "·";
-  margin: 0 7px;
+  display: inline-block;
+  width: 1.3em;
   color: var(--text-3);
   font-weight: 400;
+  text-align: center;
 }
 .chat-file-status {
   display: inline-flex;
@@ -1189,6 +1218,9 @@
 }
 .chat-file-status-ready {
   color: var(--success);
+}
+.chat-file-status-warning {
+  color: var(--warning);
 }
 .chat-file-status-failed {
   color: var(--danger);
@@ -1534,8 +1566,9 @@
   min-width: 0;
 }
 .chat-source-mail {
-  flex: none;
-  align-self: center;
+  display: inline-block;
+  margin-right: 6px;
+  vertical-align: -2px;
   color: var(--tag-red);
 }
 .chat-source-name {
@@ -1942,14 +1975,14 @@ button.chat-scope:focus-visible {
 .chat-send > svg {
   stroke-width: 2.25;
 }
-.chat-send:hover:not(:disabled) {
+.chat-send:hover:not([aria-disabled="true"]) {
   background: var(--accent-hover);
 }
-.chat-send:active:not(:disabled),
+.chat-send:active:not([aria-disabled="true"]),
 .chat-stop:active {
   transform: scale(0.94);
 }
-.chat-send:disabled {
+.chat-send[aria-disabled="true"] {
   background: var(--surface-3);
   box-shadow: none;
   color: var(--text-3);
@@ -2311,6 +2344,11 @@ button.chat-scope:focus-visible {
     order: 3;
     text-align: left;
   }
+  /* Without a sources pill the meta keeps its row, before Copy (instead of Copy alone above it). */
+  .chat-message-footer:not(:has(.chat-sources-toggle)) .chat-message-meta {
+    flex-basis: 8rem;
+    order: 0;
+  }
   .chat-empty-title {
     font-size: 32px;
   }
@@ -2398,5 +2436,17 @@ button.chat-scope:focus-visible {
   .chat-md-streaming > .chat-code:last-child pre > code::after,
   .chat-typing span {
     animation: none;
+  }
+}
+
+/* Windows contrast themes (global.css has the shared rules): these indicators were drawn with box-shadows. */
+@media (forced-colors: active) {
+  .chat-composer:has(.chat-composer-input:focus-visible),
+  .ui-menu .chat-plus-formats .chat-plus-format:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+  .chat-theme-row .ui-menu-item[aria-checked="true"] {
+    border-color: Highlight;
   }
 }

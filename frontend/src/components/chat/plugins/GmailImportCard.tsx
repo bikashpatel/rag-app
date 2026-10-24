@@ -65,7 +65,12 @@ function ImportItemRow({ item }: { item: GmailImportItem }) {
         {item.label || "(no subject)"}
       </span>
       {saved ? (
-        <StatusText status={status} alreadyExisted={item.status === "already_existed"} error={doc?.error ?? null} />
+        <StatusText
+          status={status}
+          stale={doc?.is_stale ?? false}
+          alreadyExisted={item.status === "already_existed"}
+          error={doc?.error ?? null}
+        />
       ) : (
         <span className={`badge badge-${view.tone}`}>{view.label}</span>
       )}

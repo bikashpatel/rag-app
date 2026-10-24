@@ -17,6 +17,7 @@ import { useConversations } from "../components/chat/useConversations";
 import { useDrawer } from "../components/chat/useDrawer";
 import { useMediaQuery } from "../components/chat/useMediaQuery";
 import { useModels } from "../components/chat/useModels";
+import { useStreamNote } from "../components/chat/useStreamNote";
 import GmailImportModal from "../components/connections/GmailImportModal";
 import {
   gmailReady,
@@ -205,7 +206,8 @@ export default function ChatPage() {
   useEffect(() => {
     if (!focusComposer.current || threadStatus !== "ready") return;
     focusComposer.current = false;
-    if (finePointer) composerRef.current?.focus();
+    // Never out of a menu opened meanwhile (the "+" menu right after New chat would lose its keyboard focus).
+    if (finePointer && !document.activeElement?.closest('[role="menu"]')) composerRef.current?.focus();
   }, [threadKey, threadStatus, finePointer]);
 
   // The account default changed in Settings while this chat has no messages: the picker follows it (8.2).
@@ -322,6 +324,10 @@ export default function ChatPage() {
     });
   }, [logout]);
 
+  const onPreferenceError = useCallback((text: string) => setNotice({ text, tone: "danger" }), []);
+
+  const streamNote = useStreamNote(thread.threadKey, thread.streaming, thread.messages);
+
   const listed = routeId === null ? undefined : conversations.conversations?.find((item) => item.id === routeId);
   const knownTitle = listed?.title ?? thread.title;
   const title = knownTitle ?? (routeId === null ? "New chat" : "Conversation");
@@ -340,10 +346,9 @@ export default function ChatPage() {
   const canCreateImages = selectedModel?.can_create_images ?? false;
   const imagesOffered = models.models?.some((model) => model.can_create_images) ?? false;
   const imageLimit = user && !user.is_admin ? user.limits.monthly_image_limit : 0;
+  const imagesLeft = user && imageLimit > 0 ? Math.max(imageLimit - user.usage.images, 0) : null;
   const imagesNote =
-    user && imageLimit > 0
-      ? `${formatNumber(Math.max(imageLimit - user.usage.images, 0))} of ${formatNumber(imageLimit)} left this month`
-      : "Saved to My documents";
+    imagesLeft !== null ? `${formatNumber(imagesLeft)} of ${formatNumber(imageLimit)} left this month` : "Saved to My documents";
   const disabledReason =
     thread.status === "loading"
       ? "Loading conversation…"
@@ -365,7 +370,7 @@ export default function ChatPage() {
           username={user?.username ?? null}
           disabled={disabledReason !== null || thread.streaming || attachments.waiting !== null}
           canCreateFiles={canCreateFiles}
-          canCreateImages={canCreateImages}
+          canCreateImages={canCreateImages && imagesLeft !== 0}
           selection={selection}
           imagesNote={imagesNote}
           onPick={handleSend}
@@ -421,6 +426,7 @@ export default function ChatPage() {
             onToggle: toggleDocuments,
           }}
           openSettings={openSettings}
+          onPreferenceError={onPreferenceError}
           onLogout={onLogout}
         />
         {notice ? (
@@ -437,6 +443,9 @@ export default function ChatPage() {
         ) : null}
 
         {body}
+        <div className="sr-only" role="status" aria-live="polite">
+          {streamNote}
+        </div>
 
         <div className="chat-bottom">
           {thread.sendError ? (

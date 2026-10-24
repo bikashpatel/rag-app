@@ -257,7 +257,7 @@ function ModelSection({ kind, title, description, emptyHint, models, flash, togg
                 <th scope="col" className="num">
                   {hasOutputPrice(kind) ? "Price / 1M in · out" : "Price / 1M"}
                 </th>
-                <th scope="col">
+                <th scope="col" className="admin-actions-cell">
                   <span className="sr-only">Actions</span>
                 </th>
               </tr>

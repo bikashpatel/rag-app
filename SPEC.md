@@ -455,7 +455,9 @@ active embedding model (or has no embedding model). For the user's own counts
   gets 400 and counts toward the login throttle for that username (429).
 - `POST /auth/logout-others` (no body) → 204: bumps `token_version` (under the
   same row lock as change-password; 401 if the session ended meanwhile) and
-  re-issues the caller's cookie with the same `sid`. Every other session ends:
+  re-issues the caller's cookie with the same `sid` and the same expiry (the
+  session is not extended; the cookie's `Max-Age` is the time it has left).
+  Every other session ends:
   other browsers and devices, and every Bearer token, the caller's included
   (tabs of the same browser share the cookie and stay signed in). Allowed for the
   env admin; not throttled; plugin connections are untouched.

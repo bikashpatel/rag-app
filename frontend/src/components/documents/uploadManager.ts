@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 import { ApiError } from "../../api/client";
 import type { DocumentItem, DocumentScope } from "../../api/types";
+import { onUserChanged } from "../../lib/appEvents";
 import { validateUpload, type UploadRules } from "./fileTypes";
 import { uploadDocument } from "./uploadDocument";
 
 const MAX_PARALLEL_UPLOADS = 2;
 const FOLDER_ERROR = "Folders can't be uploaded. Open the folder and select the files instead.";
+/** A 401 at the end of the body: the cookie was re-issued meanwhile ("Log out others", a password change) (U25). */
+const SESSION_CHANGED_ERROR = "Your session changed during the upload. Upload the file again.";
 
 export type UploadStatus = "queued" | "uploading" | "failed";
 
@@ -132,15 +135,20 @@ class UploadManager {
         this.emitSettled(created, id);
       },
       (err: unknown) => {
-        if (err instanceof ApiError && err.status === 401) this.reset();
-        else this.finish(id, controller.signal.aborted ? null : uploadErrorMessage(err));
+        // A 401 fails only this upload: the session check decides whether the user is signed out (then clear() runs).
+        const error = controller.signal.aborted
+          ? null
+          : err instanceof ApiError && err.status === 401
+            ? SESSION_CHANGED_ERROR
+            : uploadErrorMessage(err);
+        this.finish(id, error);
         this.emitSettled(null, id);
       },
     );
   }
 
-  /** Cancel and forget everything: the session ended, so every remaining upload would be refused. */
-  private reset(): void {
+  /** Cancel and forget everything: the user signed out, so every remaining upload would be refused. */
+  clear(): void {
     const controllers = [...this.running.values()];
     this.running.clear();
     this.pending = [];
@@ -176,11 +184,14 @@ function uploadErrorMessage(err: unknown): string {
 
 export const uploadManager = new UploadManager();
 
+// A confirmed sign-out forgets the queue; another user signing in in this tab drops the previous user's uploads (U30).
+onUserChanged((userId) => {
+  if (userId === null) uploadManager.clear();
+  else uploadManager.retainOwner(userId);
+});
+
 /** The signed-in user's uploads: queued, running and failed ones. */
 export function useUploads(ownerId: number | null): UploadItem[] {
   const items = useSyncExternalStore(uploadManager.subscribe, uploadManager.getSnapshot);
-  useEffect(() => {
-    if (ownerId !== null) uploadManager.retainOwner(ownerId);
-  }, [ownerId]);
   return useMemo(() => items.filter((item) => item.ownerId === ownerId), [items, ownerId]);
 }

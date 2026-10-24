@@ -140,11 +140,11 @@ export function unusableReason(plugin: PluginInfo | undefined, capabilityId: str
   return null;
 }
 
-// Connections opened from outside the chat page (the documents panel's Gmail browser), without new DocumentPanel props.
+// Settings → Plugins & data, opened from anywhere (the documents panel, the chat page); SettingsHost listens.
 type ConnectionsListener = (closedPluginId: string | null) => void;
 const connectionsListeners = new Set<ConnectionsListener>();
 
-/** Asks the chat page to open Connections; `closedPluginId`: that plugin's browser just closed as it became unusable. */
+/** Opens Settings → Plugins & data (SettingsHost listens); `closedPluginId`: that plugin's browser just closed. */
 export function requestConnections(closedPluginId: string | null = null): void {
   connectionsListeners.forEach((listener) => listener(closedPluginId));
 }

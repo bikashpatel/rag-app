@@ -63,20 +63,26 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
   **Send**. A separate model call (the "request check") confirms that the user asked for each draft, proposal or
   import in their own words. Setup: [`docs/gmail-setup.md`](docs/gmail-setup.md).
 - **Admin:** one admin account, defined in `.env`. Users exist only if the admin creates them.
+- **Account and Settings:** each user's preferences (theme, accent, chat font size, default model, Enter to send) are
+  saved in their account (`/api/me/preferences`). A small script, `theme-boot.js`, applies the cached theme before the
+  first paint, within the strict CSP. The app also keeps a short sign-in history per user and offers this month's
+  usage, a ZIP export of the user's own data and "delete all my chats" (`/api/me/*`, `DELETE /api/conversations`).
 
 Code layout:
 
 | Path | What |
 |---|---|
 | `backend/app/main.py`, `config.py`, `db.py`, `models.py` | app factory, settings, async SQLAlchemy, ORM |
-| `backend/app/routers/` | `auth`, `models`, `documents`, `conversations`, `chat`, `admin`, `plugins`, `admin_plugins` (all under `/api`) |
-| `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `document_tool` (the chat's `create_document` tool) + `filegen/` (PDF, DOCX, XLSX and MD rendering and image validation, run by `filegen/child.py`), `image_tool` (the chat's `create_image` tool and the monthly image count), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
+| `backend/app/routers/` | `auth`, `me` (the caller's preferences, account, usage and export), `models`, `documents`, `conversations`, `chat`, `admin`, `plugins`, `admin_plugins` (all under `/api`) |
+| `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `document_tool` (the chat's `create_document` tool) + `filegen/` (PDF, DOCX, XLSX and MD rendering and image validation, run by `filegen/child.py`), `image_tool` (the chat's `create_image` tool and the monthly image count), `account` (preferences, sign-in history, the user's usage report), `export` (the data export ZIP), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
 | `backend/app/plugins/` | plugin framework: `base` (the `Plugin` interface), `registry`, `oauth` + `connections` + `crypto` (OAuth, token refresh, encryption), `intent` (the request check), `answer`, `importing`, `audit`, `tasks`, `http`; `gmail/` is the Gmail plugin (`plugin`, `client`, `mime`, `tools`, `sends`, `importer`, `render`, `router`) |
 | `backend/app/fonts/` | Noto Sans fonts for generated PDFs (SIL Open Font License, `OFL.txt`) |
 | `backend/app/worker.py` | ingestion worker (`python -m app.worker`) |
 | `backend/tests/` | integration tests, no Docker needed ([README](backend/tests/README.md)) |
-| `frontend/src/pages/` | `LoginPage`, `ChatPage`, `AdminPage` |
-| `frontend/src/components/` | `chat/` (with `chat/plugins/`: Gmail cards), `documents/` (right-hand panel), `connections/` (Connections dialog, Gmail browser), `admin/`, `ui/` |
+| `frontend/src/pages/` | `LoginPage` (+ `login.css`), `ChatPage`, `AdminPage` |
+| `frontend/src/components/` | `chat/` (top bar, model, Plugins, avatar and "+" menus, thread, composer; `chat/plugins/`: Gmail cards), `documents/` (right-hand panel), `settings/` (the Settings dialog and its tabs), `connections/` (plugin cards, Gmail browser), `admin/`, `ui/` (shared primitives: Modal, Menu, Meter, Switch, SegmentedControl, PasswordInput, icons, …) |
+| `frontend/src/styles/`, `src/assets/fonts/` | the design system: `global.css` (tokens for light, dark, five accents and three chat font sizes, plus shared primitives), `fonts.css` and the bundled fonts with their licences |
+| `frontend/public/theme-boot.js`, `src/theme/appearance.ts` | the theme engine: applies the cached appearance before the first paint, then follows the account's preferences and the OS (System) |
 | `frontend/nginx.conf`, `upload-limit.envsh` | nginx template (security headers, body limits, upload auth check) |
 
 ## 1. Prerequisites
@@ -169,6 +175,10 @@ Notes:
     day and 30 minutes to click Send; per email, 15 MB of attachments; per import, 20 items.
   - A connected user with "Use in chat" on adds about 1,900 input tokens to every model call of a tool-capable chat
     model (measured: 4,882 instead of 3,010 for the same Claude Haiku 5.5 "pong").
+- **Data export** (the Account block in `.env.example`): one "Export my data" ZIP holds at most `EXPORT_MAX_MB` (100)
+  of uncompressed text and is built within `EXPORT_TIMEOUT_SECONDS` (80, at most 90, because nothing is sent before
+  the build ends and the Cloudflare quick tunnel drops a response that stays silent for about 100 s). Older
+  conversations beyond either bound are left out, and the export says how many.
 - `WORKER_MEM_LIMIT` (default `4g`) is the worker container's memory limit (Compose `mem_limit` and
   `memswap_limit`); PDF pages are rendered in child processes limited to 1 GiB each.
 

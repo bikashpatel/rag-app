@@ -200,7 +200,12 @@ function DeleteAllRow({ count, onDeleted }: DeleteRowProps) {
               <button type="button" className="btn btn-sm" onClick={close} disabled={working}>
                 Cancel
               </button>
-              <button type="submit" className="btn btn-sm btn-danger" disabled={!matches || working}>
+              <button
+                type="submit"
+                className="btn btn-sm btn-danger"
+                disabled={!matches}
+                aria-disabled={working || undefined}
+              >
                 {working ? <span className="spinner" aria-hidden="true" /> : null}
                 {action}
               </button>

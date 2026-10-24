@@ -18,7 +18,7 @@ type SegmentedControlProps<T extends string> = {
 
 /**
  * A radio group drawn as segments (theme, chat font size, chart metric). Native radios give it the radio keyboard
- * model: Tab reaches the selected segment, the arrow keys move and select. Selection shows by fill and weight.
+ * model: Tab reaches the selected segment, the arrow keys move and select. Selection shows by fill and a 3:1 ring.
  */
 export default function SegmentedControl<T extends string>({
   label,

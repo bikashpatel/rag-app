@@ -1368,3 +1368,21 @@
     height: 44px;
   }
 }
+
+/* Windows contrast themes (global.css has the shared rules): these indicators were drawn with box-shadows. */
+@media (forced-colors: active) {
+  .settings-theme input:focus-visible + .settings-theme-card,
+  .settings-swatch input:focus-visible + .settings-swatch-dot {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+  .settings-theme input:checked + .settings-theme-card {
+    border: 2px solid Highlight;
+  }
+  .settings-swatch-dot {
+    forced-color-adjust: none;
+  }
+  .settings-size .ui-segment input:checked + span .settings-aa {
+    color: inherit;
+  }
+}

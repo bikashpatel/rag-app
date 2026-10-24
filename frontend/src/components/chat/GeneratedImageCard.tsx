@@ -83,7 +83,7 @@ function cardView(card: FileCard, doc: DocumentItem | null | undefined): CardVie
             ) : null}
             <span>{formatBytes(file.size_bytes)}</span>
             <span>
-              <StatusText status={status} alreadyExisted={false} error={doc?.error ?? null} />
+              <StatusText status={status} stale={doc?.is_stale ?? false} alreadyExisted={false} error={doc?.error ?? null} />
             </span>
           </span>
         ),

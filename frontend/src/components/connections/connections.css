@@ -96,11 +96,12 @@
   overflow-wrap: anywhere;
 }
 /* Parts wrap whole. Every part starts with its "·" and the row is shifted one separator to the left, so the separator
-   that begins each line is clipped: none dangles at a line start (the documents panel's meta line does the same). */
+   that begins each line is clipped: none dangles at a line start (the documents panel's meta line does the same). The
+   clip leaves 4px around the box for the focus ring of "Reconnect"; the centred "·" sits further out than that. */
 .conn-account {
   max-width: 100%;
   margin: 0;
-  overflow: hidden;
+  clip-path: inset(-4px);
   color: var(--text-3);
   font-size: 13.5px;
   overflow-wrap: anywhere;

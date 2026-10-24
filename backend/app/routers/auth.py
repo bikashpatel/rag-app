@@ -11,7 +11,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
-from app.deps import clear_session_cookie, current_session_id, get_current_user, set_session_cookie
+from app.deps import (
+    clear_session_cookie,
+    current_session_expiry,
+    current_session_id,
+    get_current_user,
+    set_session_cookie,
+)
 from app.models import User, utcnow
 from app.redis_client import get_redis
 from app.schemas import Me, UsageSummary, UserLimits
@@ -169,8 +175,9 @@ async def logout_others(
     request: Request, response: Response, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> None:
     """End every other session (other browsers and devices, every Bearer token) and re-issue the caller's cookie with
-    the same session id. Also for the env admin; not throttled; plugin connections are untouched."""
+    the same session id and expiry: no password, so it must not extend a (possibly stolen) session. Also for the env
+    admin; not throttled; plugin connections are untouched."""
     await _lock_session_user(db, user)
     user.token_version += 1
     await db.commit()
-    set_session_cookie(response, user, current_session_id(request))
+    set_session_cookie(response, user, current_session_id(request), current_session_expiry(request))

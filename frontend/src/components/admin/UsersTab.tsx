@@ -101,7 +101,7 @@ export default function UsersTab({ onChanged }: { onChanged: () => void }) {
                     <th scope="col">Uploads</th>
                     <th scope="col">Models</th>
                     <th scope="col">Last login</th>
-                    <th scope="col">
+                    <th scope="col" className="admin-actions-cell">
                       <span className="sr-only">Actions</span>
                     </th>
                   </tr>
@@ -156,7 +156,9 @@ function UserRow({ user, limits, modelNames, canEdit, onEdit, onDelete }: UserRo
       <td>
         <div className="admin-user-cell">
           <Avatar name={user.username} />
-          <span className="admin-user-name">{user.username}</span>
+          <span className="admin-user-name" title={user.username}>
+            {user.username}
+          </span>
           {user.is_admin ? <span className="badge badge-accent">admin</span> : null}
           {user.is_active ? null : <span className="badge badge-neutral">inactive</span>}
         </div>

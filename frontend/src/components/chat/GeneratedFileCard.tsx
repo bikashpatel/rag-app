@@ -5,7 +5,7 @@ import { formatBytes, formatNumber } from "../../lib/format";
 import { useDocumentSnapshot } from "../documents/documentEvents";
 import FileTag from "../documents/FileTag";
 import { fileTypeTag } from "../documents/fileTypes";
-import { AlertCircleIcon, CheckIcon, DownloadIcon } from "../ui/icons";
+import { AlertCircleIcon, AlertIcon, CheckIcon, DownloadIcon } from "../ui/icons";
 import type { FileCard } from "./useChatStream";
 
 type CardView = {
@@ -39,13 +39,19 @@ export function kindName(filename: string): string {
   return KIND_NAMES[extension] ?? fileTypeTag(filename).label;
 }
 
-type StatusTextProps = { status: DocumentStatus | null; alreadyExisted: boolean; error: string | null };
+type StatusTextProps = {
+  status: DocumentStatus | null;
+  /** Indexed with an embedding model that is no longer active (DocumentItem.is_stale, from the panel's list). */
+  stale: boolean;
+  alreadyExisted: boolean;
+  error: string | null;
+};
 
 /**
  * Where a created file or image is now (`status` null: the document was deleted), in the one status vocabulary of
- * the app: Queued, Indexing…, Ready, Failed (visual spec 6.5). Also used by image and Gmail import cards.
+ * the app: Queued, Indexing…, Ready, Needs re-index, Failed (visual spec 6.5). Also used by image and Gmail import cards.
  */
-export function StatusText({ status, alreadyExisted, error }: StatusTextProps) {
+export function StatusText({ status, stale, alreadyExisted, error }: StatusTextProps) {
   switch (status) {
     case null:
       return <span className="chat-file-status chat-file-status-muted">Deleted from your documents</span>;
@@ -59,7 +65,15 @@ export function StatusText({ status, alreadyExisted, error }: StatusTextProps) {
         </span>
       );
     case "ready":
-      return (
+      return stale ? (
+        <span
+          className="chat-file-status chat-file-status-warning"
+          title="Indexed with an embedding model that is no longer active, so search skips it until it is re-indexed"
+        >
+          <AlertIcon size={14} />
+          Needs re-index
+        </span>
+      ) : (
         <span className="chat-file-status chat-file-status-ready">
           <CheckIcon size={14} />
           {alreadyExisted ? "Already in your documents" : "Ready"}
@@ -126,7 +140,12 @@ function cardView(card: FileOnlyCard, doc: DocumentItem | null | undefined): Car
             <span>{kindName(file.filename)}</span>
             <span>{formatBytes(file.size_bytes)}</span>
             <span>
-              <StatusText status={status} alreadyExisted={card.alreadyExisted} error={doc?.error ?? null} />
+              <StatusText
+                status={status}
+                stale={doc?.is_stale ?? false}
+                alreadyExisted={card.alreadyExisted}
+                error={doc?.error ?? null}
+              />
             </span>
           </span>
         ),

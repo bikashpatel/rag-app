@@ -196,21 +196,6 @@ export const KeyIcon = icon(
     <path d="m11 12.5 8.5-8.5M16 7.5l2.5 2.5M13.5 10l2 2" />
   </>,
 );
-export const PaletteIcon = icon(
-  <>
-    <path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.1 0 1.8-.9 1.8-1.9 0-.5-.2-.9-.5-1.3-.3-.3-.5-.8-.5-1.3 0-1 .8-1.8 1.8-1.8H16a4.5 4.5 0 0 0 4.5-4.5c0-3.9-3.8-6.2-8.5-6.2z" />
-    <circle cx="7.5" cy="11.5" r=".9" fill="currentColor" />
-    <circle cx="10.5" cy="7.5" r=".9" fill="currentColor" />
-    <circle cx="15" cy="8" r=".9" fill="currentColor" />
-  </>,
-);
-export const DatabaseIcon = icon(
-  <>
-    <ellipse cx="12" cy="6" rx="7.5" ry="2.75" />
-    <path d="M4.5 6v12c0 1.5 3.4 2.75 7.5 2.75s7.5-1.25 7.5-2.75V6" />
-    <path d="M4.5 12c0 1.5 3.4 2.75 7.5 2.75s7.5-1.25 7.5-2.75" />
-  </>,
-);
 export const SparkleIcon = icon(
   <path
     d="M12 3.5c.6 4.6 2.6 7 7.5 8.5-4.9 1.5-6.9 3.9-7.5 8.5-.6-4.6-2.6-7-7.5-8.5 4.9-1.5 6.9-3.9 7.5-8.5z"
@@ -303,10 +288,4 @@ export const CpuIcon = icon(
   </>,
 );
 export const PenIcon = icon(<path d="M15.5 4.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z" />);
-export const WandIcon = icon(
-  <>
-    <path d="m4 20 11-11M13.5 7.5l3 3" />
-    <path d="M17.5 3.5v3M16 5h3M20 9.5v2M19 10.5h2M9 3.5v2M8 4.5h2" />
-  </>,
-);
 export const StopIcon = icon(<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none" />);

@@ -24,14 +24,6 @@ function isAtBottom(scroller: HTMLElement): boolean {
   return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight <= BOTTOM_SLACK;
 }
 
-function announcement(messages: ThreadMessage[], streaming: boolean): string {
-  if (streaming) return "Generating an answer…";
-  const last = messages.at(-1);
-  if (last?.role !== "assistant") return "";
-  if (last.error) return `The answer failed: ${last.error}`;
-  return last.stopped ? "Answer stopped." : "Answer ready.";
-}
-
 /**
  * Scrollable message thread. Follows the bottom while content grows until the user scrolls up or interacts with a
  * message (e.g. opens its sources); then a "Jump to latest" button appears. Sending a message follows again.
@@ -126,9 +118,6 @@ export default function MessageList({ messages, streaming, onRetry }: MessageLis
           <ArrowDownIcon size={18} />
         </button>
       ) : null}
-      <div className="sr-only" aria-live="polite">
-        {announcement(messages, streaming)}
-      </div>
     </div>
   );
 }

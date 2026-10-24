@@ -13,7 +13,7 @@ type ScopeToggleProps = {
 
 /**
  * Where new uploads go (admins only): an "Upload to" label over a full-width small segmented control. Native radios,
- * so the arrow keys move and select; the selection shows by fill and weight.
+ * so the arrow keys move and select; the selection shows by fill and a 3:1 ring.
  */
 export default function ScopeToggle({ value, onChange }: ScopeToggleProps) {
   const groupName = useId();

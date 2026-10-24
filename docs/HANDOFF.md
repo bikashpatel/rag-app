@@ -3,8 +3,9 @@
 Snapshot taken 2026-10-14 (IST) on macOS (Apple Silicon), after the full build, review and Docker
 run. Updated 2026-10-15 after the vision model for PDFs was built, reviewed, fixed and verified in Docker, and
 2026-10-16 after files from chat and then images from chat went through the same steps. Updated again on 2026-10-17 after
-plugins, with Gmail as the first plugin, were built, reviewed and verified in Docker **against a fake Google only**.
-`SPEC.md` is the binding contract; `README.md` has setup, commands and the architecture.
+plugins, with Gmail as the first plugin, were built, reviewed and verified in Docker **against a fake Google only**, and
+on 2026-10-20 after the top bar, Settings and the warm editorial redesign were built, reviewed, fixed and verified in
+Docker. `SPEC.md` is the binding contract; `README.md` has setup, commands, the architecture and how to use the app.
 
 ## Status
 
@@ -68,9 +69,32 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
   - Tests: 419 new, in 17 files. The framework tests run against `fake_plugin.py`, the Gmail tests against the fake
     Google and mailbox (`fake_google.py`, `fake_gmail.py`), and the independent pass is
     `test_plugins_gmail_independent.py` (68 tests).
-  - Frontend: the account menu's **Connections** dialog (`components/connections/`), the Gmail browser and import
-    dialog, chat cards for activity, drafts, sends and imports (`components/chat/plugins/`, with Edit and Send), email
-    sources and chips, "Imported from Gmail" on documents, and the admin page's fifth tab, **Plugins**.
+  - Frontend: the plugin cards (`components/connections/ConnectionsPanel.tsx`, now in Settings → Plugins & data; the
+    account menu's Connections dialog is gone), the Gmail browser and import dialog, chat cards for activity, drafts,
+    sends and imports (`components/chat/plugins/`, with Edit and Send), email sources and chips, "Imported from Gmail"
+    on documents, and the admin page's fifth tab, **Plugins**.
+- **Top bar, Settings and the redesign** (`docs/briefs/ui-shell-settings.md`, the functional brief, and
+  `docs/briefs/ui-visual-design.md`, the visual spec; both revision 2): a ChatGPT-style top bar (model menu, Plugins
+  menu listing every plugin with its status, Documents toggle, avatar menu), a "+" menu in the composer, a Settings
+  dialog (General, Account, Usage, Plugins & data) with preferences saved in the account, and the "Paper & Clay" warm
+  editorial design on every screen, light and dark, with five accents. See "Top bar, Settings and the redesign" below.
+  - Backend: `routers/me.py` (preferences, account, usage, export), `services/account.py` (preferences, sign-ins,
+    User-Agent parsing, the usage report), `services/export.py` (the ZIP), `schemas_account.py`, plus changes to
+    `auth` (sign-in history, `POST /auth/logout-others`), `security.py` and `deps.py` (the `sid` claim), `conversations`
+    (`DELETE /conversations`), `plugins` (the catalog) and `models` (`supports_tools`), and `plugins/registry.py`
+    (`hydrate_cards`). Two new tables, `user_preferences` and `login_events`; `EXPORT_MAX_MB` and
+    `EXPORT_TIMEOUT_SECONDS`. No new Python package.
+  - Tests: 326 new in 8 files: `test_ui_settings_independent` 182 (an independent pass written from `SPEC.md` and
+    the brief), `test_login_history` 57, `test_preferences` 34, `test_export` 27, `test_logout_others` 12,
+    `test_my_usage` 6, `test_plugin_catalog` 4 and `test_account_postgres` 4 (`postgres`-marked, skipped without
+    `TEST_POSTGRES_URL`), plus "delete all chats" in `test_conversations.py`.
+  - Frontend: the design system (`styles/global.css` tokens and primitives, `styles/fonts.css`, `assets/fonts/`), the
+    theme engine (`public/theme-boot.js`, `theme/appearance.ts`), new primitives in `components/ui/` (`Menu`,
+    `Avatar`, `SegmentedControl`, `Switch`, `Meter`, `PasswordInput`, `FullPageState`, `icons`), the top bar and "+"
+    menu (`chat/TopBar.tsx`, `ModelMenu`, `PluginsMenu`, `AvatarMenu`, `PlusMenu`, `AttachmentChips`, `useAttachments`,
+    `starters.ts`), the Settings dialog (`components/settings/`), `lib/settingsLink.ts` and `lib/appEvents.ts`, and
+    `pages/login.css`. `ChatHeader`, `ModelSelect`, `UserMenu`, `UsageMeter`, `ChangePasswordModal` and
+    `ConnectionsModal` are deleted. No npm package was added.
 
 How the work went: the lead wrote `SPEC.md` and the foundation code. Agents then built the
 feature areas in parallel from `docs/briefs/`, followed by backend integration tests, frontend
@@ -94,16 +118,39 @@ chat"). Plugins went the same way:
 - a Docker rebuild with a smoke run and a browser pass against a local fake Google, which found 1 more high-severity
   bug (nginx) and 2 small ones, all fixed (see "Plugins and Gmail").
 
-The Compose project `rag-app` was left running with its data, on the plugins build. Gmail is **not configured**
-there (`.env` has no Google credentials) and switched off. The vision feature, files from chat and images from chat are
-committed (`9fb8be6`, `70f8076`, then `7eaf587`). **Plugins and Gmail are uncommitted** on top of `7eaf587`. Check
-`git status` before relying on history. The agents' test and smoke scripts lived in scratch directories and are not in
-the repo.
+The redesign went the same way, with a design round first:
+- three visual directions as static mockups, scored by two judges (paper-clay won with 120.5, ahead of
+  soft-warm-minimal at 103.0 and editorial-ink at 101.5; visual spec section 0), then refined into the visual spec;
+- the functional brief and the visual spec, a review of both (25 points, answered in the functional brief's 0.2 and
+  0.3), and second revisions;
+- stage 1: backend and frontend foundation in parallel; stage 2: shell, settings and restyle builders in parallel on
+  the frozen foundation interfaces (functional brief section 17); an independent test pass;
+- a review: 25 confirmed findings, all fixed (see "Top bar, Settings and the redesign");
+- a Docker rebuild with an API smoke, a files-from-chat smoke, a 60-step browser pass on real data and two polish rounds
+  of 193 screenshots each, which found 2 more bugs and 4 visual defects, all fixed.
+
+The Compose project `rag-app` is running with its data, on the final redesign build. The vision feature, files from
+chat, images from chat and plugins are committed (`9fb8be6`, `70f8076`, `7eaf587`, then `c5fb005`). The redesign's
+first version is in `5148b83`, a WIP snapshot pushed to `origin/main` before its review fixes. **The review fixes and
+the Docker-run fixes are uncommitted** on top of it. Check `git status` before relying on history. On 2026-10-18 the
+owner put real Google OAuth credentials and a `TOKEN_ENCRYPTION_KEY` in `.env` and turned Gmail on; at the end of the
+redesign run Admin → Plugins showed it configured and enabled with 1 connection. No agent has made a Google call. The
+agents' test and smoke scripts lived in scratch directories and are not in the repo.
 
 ## How it was verified
 
 | Check | Result |
 |---|---|
+| Backend suite after the redesign, its review fixes and the Docker-run fixes (2026-10-20) | **2242 passed, 5 skipped**, twice (322 s and 377 s). The skips are the `postgres`-marked tests (the image reservation race and the 4 tests of `test_account_postgres.py`). ruff 0.13.0 is clean on app and tests. mypy 1.18.2 reports **1 error** (`app/deps.py:44`, from the logout-others fix: `exp` is narrowed through a boolean, which mypy doesn't follow; the code is correct at runtime). Fix it before committing (next steps) |
+| Frontend after the redesign | `npx tsc --noEmit` clean; `npx vite build` into a temp directory clean (390 modules; only the old chunk-size warning). `package.json` and `package-lock.json` unchanged; no CSS file contains `prefers-color-scheme`; the three woff2 files and both licences match the sha256 values in `fonts.css` and `SOURCES.txt` |
+| Contrast (visual spec section 11) | The design's audit script checked 330 pairs (5 accents × 2 themes: text, accents, status colours, control borders, the switch thumb), 0 under the WCAG 2.2 AA minimum. The script ran from a scratch directory and isn't in the repo; section 11 lists every pair and its minimum |
+| Redesign in Docker (`docker compose up -d --build`; the frontend rebuilt twice more after the run's fixes) | All 6 services up, 5 healthy (the worker has no healthcheck); `/api/health` 200; `/theme-boot.js` served with `Cache-Control: public, max-age=300` and `nosniff`. The tables `user_preferences` and `login_events` were created on the existing database |
+| API smoke after the redesign (users `smoke-*`, deleted afterwards; scratch script) | 31 passed, 1 skipped (the admin model Test, on purpose): login, models (`supports_tools`), PDF and DOCX ingestion, a duplicate upload 409, isolation from the other user, one streamed Claude Haiku 5.5 answer citing both documents, reload, Stop saving the partial answer with its usage, `/auth/me` and `/me/usage`, preferences (a non-preset accent gets 422), sign-ins, the export ZIP holding only the caller's data, logout-others, the plugin catalog (Gmail listed, not connected), `DELETE /conversations` keeping documents, admin stats and the usage report, cleanup |
+| Files-from-chat smoke after the redesign (`--all-haiku --formats pdf,md`) | 27 passed, 1 failed, 1 skipped. The failure was the script's own Qdrant check, which still expected the Word and Excel files this cut-down run doesn't create (fixed in the script). Everything else passed: a Hindi PDF and a Markdown file, cards, downloads and headers, authorization, the file tool not offered at the document limit, upload 409, usage, cleanup |
+| Browser pass after the redesign (Playwright, Chromium; 60 steps; users `smoke-*`) | Run 1: 54 of 60; its 6 failures came from 2 app bugs (fixed, see below), 2 wrong test assumptions and 2 knock-on failures. Run 2 on the final build (`--skip-chat`): 55 passed, 0 failed, 5 skipped (the answer-with-citations and Stop steps, which passed in run 1). Covered: the old flows (upload, streaming, citations, Stop, files from chat, layouts at 1440/1000/700/390, admin tabs, dark mode), plus no theme flash in both directions with the bundle held back, the avatar menu, Settings → General (applies at once, survives a reload, shows in a second browser context, System follows the OS live, a 500 on save reverts with the error, per-chat model pick vs the default, Enter to send off), Settings navigation (`/settings/usage`, `?settings` over `/c/<id>`, Back, arrow keys, Escape returning focus, the OAuth-denied banner), Account (sign-ins, "This device", "Via a local network or proxy", change password, log out others ending the second context), Usage (meters match `/me/usage`, chart text at least 12 px, at 1440/820/390 in both themes), the Plugins menu (Connect never clicked; Google hosts and `/plugins/*/connect` blocked), the "+" menu and its starters, Attach files by keyboard (Send waits for indexing), Settings staying open while a new chat gets its URL, the export ZIP, Delete all chats, top-bar element overflow at 8 widths with the panel shown and collapsed, reduced motion. 0 unexpected console errors, CSP violations, page errors or Google requests |
+| Polish rounds (fictional data on a mocked API) | 193 screenshots per round: login, new chat, an answer with Markdown, a table, code, citations, sources, file and Gmail cards, every top-bar and "+" menu (also with a connected and a many-plugin catalog), the drawer, the documents slide-over, the image viewer, every Settings and admin tab, at 1440, 1000 and 390 px, light and dark, Clay and Ocean. Round 0 led to the visual fixes below; round 1, on the rebuilt Docker frontend, found nothing new and no horizontal, page or top-bar overflow |
+| Real calls in the redesign run | 11 chat model calls (10 Claude Haiku 5.5, 1 Claude Opus 5.5 stopped after a few lines) and about 10 small embedding calls. No Google call, no admin model Test, no image generated, no Gmail connect |
+| `bikash` and Gmail untouched by the redesign run | A read-only snapshot through the admin API (user and document hashes, 8 ready documents) was unchanged; Gmail stayed configured and enabled with the same connection counts (1 connected, 0 reconnect needed, 0 on an old key) |
 | Backend suite after plugins, their review fixes and the Docker-run fixes (2026-10-16) | **1913 passed, 1 skipped**, four runs (269 to 288 s; the skip is still the `postgres`-marked test). 419 new tests: `test_gmail_mime` 85, `test_plugins_gmail_independent` 68, `test_plugins_oauth` 44, `test_gmail_chat` 30, `test_gmail_client` 29, `test_plugins_connections` 27, `test_chat_plugins` 26, `test_gmail_sends` 18, `test_gmail_revise_display_names` 14, `test_gmail_api` 13, `test_admin_plugins` 12, `test_plugin_crypto` 11, `test_plugin_imports` 9, `test_llm_complete` 7, `test_gmail_review_fixes` 6, `test_gmail_tools` 5 and `test_gmail_render` 5, plus 10 in existing files. ruff 0.13.0 (app and tests) and mypy 1.18.2 (70 files) are clean. The 1,494 earlier tests run with an empty plugin registry, so they kept their prompts and tools. No test calls Google |
 | Frontend after plugins | `npx tsc --noEmit` clean; `npx vite build` into a temp directory clean (364 modules; only the old chunk-size warning) |
 | Plugins in Docker (`docker compose up -d --build`, 2026-10-16; backend, worker and frontend rebuilt again after the run's fixes) | All 6 services up, 5 healthy; `pip check` clean; the 6 plugin tables exist. With the repo's `.env` (no Google credentials): Gmail shows "Not configured" with the 3 missing settings; enabling it gives 409; `GET /api/plugins` is `[]`; a connect gives 409. The frontend was force-recreated after each backend recreate (nginx resolves `backend` only at start) |
@@ -216,8 +263,9 @@ All contract changes are already in `SPEC.md` and `frontend/src/api/types.ts`.
   run it and can start at the same time (e.g. `docker compose restart backend worker`). There is no Alembic.
   Each feature added only new tables, never columns: `vision_pages` and `app_state` for vision,
   `message_files` and `generated_documents` for files from chat, `generated_images` and `user_image_limits` for
-  images, and six `plugin_*`/`gmail_*` tables for plugins (see "Plugins and Gmail") (the per-user image limit is a table of its own rather than a `users` column, so Alembic didn't have to come
-  in with a feature; brief section 3.3). A `message_files` row is deleted with its message.
+  images, six `plugin_*`/`gmail_*` tables for plugins (see "Plugins and Gmail"), and `user_preferences` and
+  `login_events` for Settings (the per-user image limit is a table of its own rather than a `users` column, so Alembic
+  didn't have to come in with a feature; brief section 3.3). A `message_files` row is deleted with its message.
   Deleting its document sets its `document_id` to null, and the card then shows "Deleted". `generated_documents`
   and `generated_images` live as long as the document. Images also put new values into existing string columns
   (`llm_models.kind` and `usage_events.kind` `image`; `message_files.format` `png`, `jpeg`, `webp`), which is why a
@@ -269,13 +317,19 @@ All contract changes are already in `SPEC.md` and `frontend/src/api/types.ts`.
 
 ### Frontend
 
-- Routes: `/login`, `/`, `/c/:conversationId`, and `/admin`. The admin page is a lazy chunk: it
-  reloads once if the chunk is missing after a redeploy, then falls back to the app-wide `ErrorBoundary`.
-- Modals are portaled, make `#root` inert and trap focus. A window-level guard
-  (`lib/blockStrayFileDrops.ts`) stops a file dropped outside the panel from replacing the tab.
+- Routes: `/login`, `/`, `/c/:conversationId`, and `/admin`; `/settings` and `/settings/:tab` redirect to
+  `/?settings=<tab>`. The admin page is a lazy chunk: it reloads once if the chunk is missing after a redeploy, then
+  falls back to the app-wide `ErrorBoundary`.
+- Modals are portaled, make `#root` inert and trap focus, and never stack: anything Settings opens is inline, and
+  "Browse Gmail" closes Settings before the Gmail browser opens. Menus are portaled to `<body>` too. A window-level
+  guard (`lib/blockStrayFileDrops.ts`) stops a file dropped outside the panel from replacing the tab.
 - A `/auth/me` failure on boot that isn't a 401 shows "Can't reach the server" with Retry. Login
   returns to the requested URL, except after an explicit logout. Logout waits for the server and
-  reports failure.
+  reports failure. A 401 signs the tab out only after `GET /auth/me` confirms it (see "Top bar, Settings and the
+  redesign").
+- `localStorage` holds only per-browser conveniences, each read in a try/catch: `rag.preferences` (the first-paint
+  cache of the account's preferences) and `rag.documentsPanel` (the desktop Documents toggle). The old per-device
+  `rag.modelId` is deleted when the models load: new chats start with the account's default model.
 - Stop before the `meta` event in a new chat undoes the turn and restores the draft. The model list
   is reloaded after a rejected send.
 
@@ -708,7 +762,8 @@ smoke and browser run used a fake Google.
   can switch the capabilities `read`, `draft` and `send` (all on by default). Turning Gmail on needs
   `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, a valid `TOKEN_ENCRYPTION_KEY` and a valid
   `PUBLIC_BASE_URLS` entry; otherwise the plugin is "not configured" and enabling it gives 409.
-- **Connecting.** A user connects from account menu → Connections:
+- **Connecting.** A user connects from Settings → Plugins & data (the top bar's Plugins menu opens it; before the
+  redesign this was the account menu's Connections dialog):
   - `POST /api/plugins/gmail/connect` stores the state in Redis for 10 minutes, one-time, with the PKCE verifier and
     the redirect URI. It also sets a `rag_oauth_gmail` nonce cookie (`HttpOnly`, `SameSite=Lax`, path
     `/api/plugins/gmail/oauth/`), because the `SameSite=Strict` session cookie doesn't come back from Google.
@@ -905,6 +960,226 @@ Choices still to confirm with the user (the designer's open questions; brief sec
 - "Use in chat" is on by default, so a connected user pays about 1,870 tokens per model call;
 - the spend for the remaining live checks: the request-check Test per chat model, and GPT-5.4 mini with Gmail tools.
 
+### Top bar, Settings and the redesign
+
+Everything in `docs/briefs/ui-shell-settings.md` (the functional brief, revision 2; decisions U1-U32 in its section 0)
+and `docs/briefs/ui-visual-design.md` (the visual spec, revision 2) is built. On looks the visual spec wins; on
+behaviour, accessibility and the contract the functional brief and `SPEC.md` do.
+
+**What users see.**
+
+- **Top bar** over the chat column (`chat/TopBar.tsx`): Conversations (under 1100 px), the model menu, the conversation
+  title, **Plugins**, **Documents** and the avatar. It compacts by the chat column's own width with container queries
+  (labels go under 560 px of column, the title under 720 px; only the model button shrinks), because viewport rules
+  overflowed just above each breakpoint.
+- **Model menu:** new chats start with the account's default model (Settings → General) when the user may use it, else
+  the server's default. A pick applies to the current chat until New chat; it never changes the default.
+- **Plugins menu:** every registered plugin with one status, in this order: Not set up (admins: "Set up in Admin →
+  Plugins"), Turned off by the admin, Reconnect needed, Connected, Not connected. Each row opens the plugin's card in
+  Settings → Plugins & data; the menu never starts OAuth itself. "Manage plugins…" opens that tab.
+- **Documents toggle:** opens the slide-over under 800 px; at 800 px and wider it collapses the right-hand column
+  (remembered per browser). A collapsed panel stays mounted and keeps polling, because attachment chips read its list.
+- **Avatar menu:** username and role, this month's token and image meters ("Almost used up" and "Limit reached" with
+  an icon at 90% and 100%), View usage, Settings, a System / Light / Dark switch, Admin (admins) and Log out. The
+  sidebar footer, its usage meter and the Connections dialog are gone.
+- **"+" menu** in the composer (`chat/PlusMenu.tsx`): Attach files…, Create an image, Create a document (PDF, Word,
+  Excel, Markdown), and a Gmail group (Search my email, Draft an email, Import from Gmail…; or Connect / Reconnect
+  Gmail…). Items for features the user doesn't have are hidden (no model can make images or files, Gmail not set up or
+  off); items that are unavailable now stay, disabled, with the reason as visible text (this model can't, the month's
+  images are used up, documents full, Gmail off in chat, the model can't use tools). Create and Gmail items put a
+  starter such as "Create a PDF document: " before the draft (`chat/starters.ts`; a starter replaces another one,
+  nothing is sent).
+- **Attach files** uploads to My documents through the panel's upload queue. Chips above the input show upload and
+  indexing; **Send waits** until attached files are indexed (removing a chip sends without it), and attached documents
+  join an explicit document selection.
+- **Settings** (`components/settings/`): a dialog over the current page at `?settings=general|account|usage|plugins`
+  (`data` is an alias of `plugins`), a full-screen sheet under 800 px. Opening pushes a history entry and Back closes
+  it; the chat page's own URL changes (a new chat getting `/c/<id>`) keep it open (`useReplacePath` in
+  `lib/settingsLink.ts`). The OAuth return `/?plugin=gmail&oauth=<result>` opens Plugins & data with a banner.
+  - General: theme (System, Light, Dark), accent (Clay, Ocean, Sage, Plum, Slate), chat font size (also sizes the
+    user's bubbles), default chat model, Enter to send (off: Ctrl/Cmd+Enter sends).
+  - Account: username, role, created, last sign-in, the last 20 sign-ins ("This device"; "Via a local network or proxy"
+    for private addresses), change password (hidden for the env admin, with the reason), Log out of all other sessions.
+  - Usage: this month's chat tokens, images and vision tokens against their limits, estimated cost, documents and
+    storage, the requests-per-minute limit, the reset date (the 1st, UTC), a daily SVG chart with a table, per model.
+  - Plugins & data: the plugin cards (`connections/ConnectionsPanel.tsx`: Connect, Reconnect, Grant access, Use in
+    chat, Browse, Disconnect), Export my data, Delete all chats (type `DELETE` to confirm).
+
+**Backend contract** (`SPEC.md` sections 4 and 6; all routes need a session and touch only the caller's rows):
+
+- **Preferences:** `user_preferences` (one JSON row per user; no row means every default). `Me.preferences` comes with
+  the login response and `GET /auth/me`; `GET` and `PATCH /me/preferences` read and change them. Read leniently (a bad
+  stored value reads as its default, unknown keys are kept on write), written strictly: an unknown field, a wrong type
+  or a bad value is 422, and `default_model_id` must be a chat model the caller may use (`"That model isn't available
+  to you."`). A stored default the user can no longer use reads as null and comes back if the model does.
+- **Sign-in history:** `login_events`, one row per successful `POST /auth/login`, the newest 20 per user
+  (`services/account.LOGIN_HISTORY_LIMIT`). Only the approximate IP (IPv4 `a.b.c.x`, IPv6 its /48) and the browser, OS
+  and device parsed from the User-Agent are stored (an in-house parser in `services/account.py`; no package, the raw
+  string isn't kept). `LoginEvent.ip_private` is derived on read. The session JWT carries `sid`, the event's id, so
+  `GET /me/account` marks the caller's own sign-in `current`; re-issued cookies keep it, and older tokens without it
+  stay valid.
+- **`POST /auth/logout-others`** bumps `token_version` under the change-password row lock and re-issues the caller's
+  cookie with the same `sid` **and the same expiry** (`Max-Age` = the time left). It asks for no password, so it must
+  never extend a session (review finding 1). Every other cookie and Bearer token, the caller's own included, ends;
+  plugin connections stay.
+- **`GET /me/usage`** (`MyUsage`): the current UTC month with the same counts the limits use, a daily series from the
+  1st through today with zero days filled in, per-model totals and `resets_at`.
+- **`POST /me/export`** (`services/export.py`): a ZIP with `README.txt`, `account.json` (no secrets or tokens),
+  `documents.json` (metadata of the documents the caller owns; no file bytes), `conversations/index.json` and, per
+  conversation, a Markdown transcript and a JSON file with plugin cards hydrated as `GET /conversations/{id}` shows
+  them (`registry.hydrate_cards`). Newest conversations first, within `EXPORT_MAX_MB` (100) of content and
+  `EXPORT_TIMEOUT_SECONDS` (80, at most 90, because nothing is sent before the build ends and the Cloudflare tunnel
+  drops a response silent for about 100 s); left-out conversations are counted in the files and in
+  `X-Export-Omitted`. One export per user (409, held through the download) and 2 building per process (503); both are
+  freed on success, error and client disconnect. It is a POST so nginx's cross-site check applies.
+- **`DELETE /conversations`** deletes every conversation of the caller exactly like `DELETE /conversations/{id}`
+  (plugin hooks first; documents, generated files and images and the usage history stay), **committing each one on
+  its own**, so a failing plugin hook only keeps its own conversation; `{deleted}` counts the committed ones.
+- **Plugin catalog:** `GET /plugins` lists every registered plugin with `configured` (it used to return `[]` unless
+  Gmail was configured and on). Nothing changes in chat: the tools are offered only when the plugin is configured and
+  enabled and the user is connected with "Use in chat" on. A user who still has a connection to a plugin that is off
+  or no longer set up can disconnect it.
+- **`ChatModel.supports_tools`** (the model gets tools) drives the "+" menu's Gmail items; `can_create_files` can't
+  stand in for it, because it is false whenever `CHAT_FILE_TOOLS` is off.
+- **Rollback:** two new tables and a JWT claim, no new column, so older code runs on this database without SQL.
+
+**Theme engine** (functional brief 6 and 7):
+
+- `frontend/public/theme-boot.js` is a classic script loaded blocking in `<head>` (the CSP allows only `'self'`
+  scripts, so no inline script). Before the first paint it reads `localStorage["rag.preferences"]`, validates it
+  against allow-lists, and sets `data-theme` (the resolved `light`/`dark`), `data-theme-preference`, `data-accent` and
+  `data-chat-font` on `<html>`, plus the `color-scheme` and `theme-color` metas. nginx serves it with `max-age=300`,
+  so after a deploy that changes it a browser may run the old copy for 5 minutes (harmless: the bundle re-applies).
+- `src/theme/appearance.ts` takes over: applying unchanged values is a no-op; a real switch sets
+  `data-theme-switching` for two frames so borders don't animate; while the preference is System it follows
+  `prefers-color-scheme` live; another tab's change arrives as a `storage` event.
+- `AuthContext` owns the preferences: a change applies at once (state, `<html>`, cache), then one `PATCH` per tab is in
+  flight with later changes merged into the next; a failure reverts to the last confirmed value and shows the error
+  next to the control (or in the page notice when the avatar menu has closed). Every `Me` reconciles: fields without a
+  pending change take the server's value, so a theme changed on another device arrives on the next refresh. Logging out
+  keeps the cache, so the login page doesn't flash.
+- **CSS never reads `prefers-color-scheme`**; the engine is the only resolver of System, so Light on a dark OS can't
+  half-apply.
+
+**Session and per-user state** (U25, U30): a 401 no longer signs the tab out by itself. The handler asks
+`GET /auth/me` once (concurrent 401s share the check): 401 signs out, a `Me` keeps the session, any other error keeps
+it too. That is what keeps "Log out others" and a password change from signing out the tab that asked, whose
+in-flight requests still carry the old cookie; such an upload fails alone with "Your session changed during the
+upload. Upload the file again." On every user change (login, logout, a confirmed 401) `lib/appEvents.ts` tells the
+plugin store and the upload queue to drop the previous user's state.
+
+**Design system** ("Paper & Clay"; the values are in the visual spec, section 3):
+
+- **Where:** tokens and the shared primitives (`.btn`, `.input`, `.card`, `.badge`, `.table`, … and the new `ui-*`
+  ones: menus, meters, segmented controls, status lines, notices, skeletons, full-page states) are in
+  `frontend/src/styles/global.css`; fonts in `src/styles/fonts.css` and `src/assets/fonts/`; each area's CSS sits next
+  to its components with its own prefix (`chat-`, `docs-`, `admin-`, `conn-`, `settings-`, `login-` in
+  `pages/login.css`; `chat/plugins/plugins.css` uses `chat-`).
+- **Themes:** light tokens on `:root`, dark on `:root[data-theme="dark"]`; accents on `:root[data-accent="…"]` and
+  `:root[data-theme="dark"][data-accent="…"]` (each also written without `:root`, so the Settings swatches can show
+  another preset); chat sizes on `:root[data-chat-font="small|large"]`.
+- **Rules:**
+  - colours come only from tokens; the exceptions are the `rgba()` inside shadows and the overlay, and the Settings
+    theme previews, which depict a theme;
+  - `--accent` is for fills and marks, `--accent-ink` for accent-coloured text, `--accent-text` for text on an accent
+    fill;
+  - file-type, status and brand colours never follow the accent, and a status always has a word plus an icon or dot;
+  - control boundaries use `--border-control` (3:1); `--border-strong` is decorative;
+  - the assistant's answers and display titles are serif, everything else sans; serif weights only 400-700;
+  - motion uses the `--dur-*` and `--ease-*` tokens and is off under `prefers-reduced-motion` and during a theme
+    switch; `forced-colors` blocks in `global.css` and the feature files redraw focus and state with system colours;
+  - every text and control colour meets WCAG 2.2 AA in both themes with every accent (visual spec section 11 lists
+    the pairs). Its tightest pairs (Sage on its soft fill 4.52, `--text-3` on `--surface-3` 4.55) mean those tokens
+    can't get lighter.
+- **Fonts and licences:** "RAG Serif" (roman and italic) and "RAG Sans" are Latin subsets of Adobe's Source Serif 4
+  and Source Sans 3, 3 woff2 files, 323 KB. They are renamed because "Source" is a Reserved Font Name under the SIL
+  OFL 1.1 and a subset is a modified version. The licences sit unchanged next to the files; the upstream commits and
+  every sha256 are in `assets/fonts/SOURCES.txt` and the comment at the top of `fonts.css`. Each face has a
+  `unicode-range`, so Devanagari and other scripts go to the system fonts. Five metric-matched fallback faces
+  ("RAG Serif Fallback" on Georgia, "RAG Sans Fallback" on Arial) keep text from re-wrapping when the web fonts arrive.
+  To rebuild the files, run the visual spec's appendix A script in a scratch venv (fonttools 4.66.1, brotli 1.1.0;
+  the output is deterministic and must match the recorded sha256), then appendix C for new fallback metrics. Nothing
+  is loaded from a CDN (CSP `font-src 'self' data:`). The PDF fonts of files from chat are separate
+  (`backend/app/fonts`).
+- **How to add an accent preset:**
+  1. Pick light and dark values for the five accent tokens (`--accent`, `--accent-hover`, `--accent-soft`,
+     `--accent-ink`, `--accent-text`) and check them against the accent pairs in visual spec section 11: 4.5:1 for
+     `--accent-text` on the accent and its hover, the accent on `--bg`, `--surface`, `--sidebar` and its soft fill, and
+     `--accent-ink` on the seven grounds and `--surface-3`; 3:1 for the accent as a mark and for the switch thumb on
+     it. The audit script isn't in the repo; any WCAG contrast tool will do.
+  2. Add the two blocks (light, and `[data-theme="dark"]`) to the accent presets in `global.css`, in the same
+     with-and-without-`:root` form.
+  3. Add the id to `AccentColor` in `SPEC.md` section 6, `frontend/src/api/types.ts` and `backend/app/schemas.py`, to
+     `ACCENTS` in `src/theme/appearance.ts` (its label and place in Settings), and to the allow-list in
+     `public/theme-boot.js`.
+  4. Update the accent list in `backend/tests/test_ui_settings_independent.py`. The Settings swatches pick the new
+     preset up from `ACCENTS`. No migration: a stored accent the code doesn't know reads as Clay.
+
+**Review fixes** (25 confirmed findings, all fixed; the backend one has regression tests in `test_logout_others.py`, the
+frontend ones were checked in the Docker browser and polish runs):
+
+- Security: `POST /auth/logout-others` gave any valid token a fresh 12-hour lifetime, so a stolen session could be
+  kept alive forever without the password. The re-issued cookie now keeps the session's expiry.
+- Behaviour (6): height-limited menus couldn't scroll (every scroll re-ran the positioning, which reset `scrollTop`);
+  "Log out others" or a password change dropped every upload in the tab; `refresh()` signed the tab out on any 401,
+  bypassing the session check; "+" starters stacked ("Create a PDF document: Create a Word document: …"); re-picking
+  the same starter left the caret flag armed; a failed theme save in the avatar menu reverted silently.
+- Cleanup: 29 unused icon re-exports, an unused `useMenu` hook, three unused icons and stale comments.
+- Accessibility (7): Windows contrast themes (forced colours) lost the focus ring, switches and the selected segment;
+  the selected segment and theme were shown only by a 1.1-1.3:1 fill (now a 3:1 ring); focus dropped to `<body>` after
+  Stop, after an answer finished while Stop was focused, after Retry and after a failed "Change password" or "Log out
+  others" (the wrong field is now marked invalid); the Gmail card's "Reconnect" focus ring was clipped; the first
+  message of a new chat wasn't announced (`chat/useStreamNote.ts` now owns that live region); each Settings panel
+  exposed an unnamed `banner` landmark.
+- Visual (10): the top-bar model button truncated to "Claud…" next to a long title; Admin → Users' Edit and Delete were
+  off-screen at 1440 px; the Plugins menu wrapped Gmail's description to 5 lines; meters at 90% and 100% wrapped; the
+  admin model form's Kind control overflowed at 390 px; the scope chips in Admin → Plugins broke into fragments; the
+  new-chat image example stayed enabled with no images left; answer tables were cut on phones with no scroll cue; the
+  email source's icon sat alone on a line when the subject wrapped; a stale document showed three different statuses.
+
+**Fixes from the Docker run and the polish rounds** (2026-10-20):
+
+- `documents/DocumentPanel.tsx`: an uploaded document could vanish from the panel (older than the redesign, reproduced
+  with a throttled upload). A list request sent while a slow upload was still running could answer after it finished,
+  without the new file, and replace the list; the panel then said "No documents yet" while the quota said 1. The
+  panel now reloads the list when an upload finishes, which makes the older answer stale.
+- `ui/Menu.tsx`: in the "+" menu, Enter then Enter could start the wrong action, because every item but Gmail's is
+  disabled while the menu checks storage and focus stayed on "Connect Gmail…". Until the user moves, focus now follows
+  to the first item that becomes enabled.
+- `pages/ChatPage.tsx`: focusing the composer after New chat no longer takes focus out of a menu opened meanwhile.
+- `chat.css`: the "·" before a file card's status sat low; on phones an answer without sources showed Copy alone above
+  its meta line. `admin.css`: wide admin tables at 800 to 1100 px and on phones hid columns under the sticky actions
+  column; a scroll-driven shade now marks them.
+
+**What matters when maintaining it:**
+
+- Keep the preference values in sync in `SPEC.md`, `types.ts`, `schemas.py`, `appearance.ts` and `theme-boot.js` (the
+  boot script has its own allow-lists and the two `--bg` colours for `theme-color`).
+- Feature CSS uses only `global.css` tokens and its own prefix; check with `grep -r prefers-color-scheme
+  frontend/src --include='*.css'` (nothing) and a selector grep per file.
+- Menus (`ui/Menu.tsx`) follow the WAI-ARIA menu button pattern, render in a portal and run item actions
+  synchronously in the click or keydown handler: Safari opens a file picker only inside the user gesture. Content
+  that isn't an item goes into labels and descriptions (the avatar menu is "Account: <username>, <role>").
+- ChatPage changes its URL only through `useReplacePath`, or an open Settings dialog closes.
+- `DocumentPanel` must stay mounted when collapsed; the attachment chips and file cards read its published list.
+- The browser and smoke scripts of this run are in scratch directories, not in the repo; the functional brief's 15.4
+  lists what the browser pass checks.
+
+Choices still to confirm with the user (functional brief 16, visual spec 0.4):
+
+- sign-in IPs are stored approximately (`81.2.69.x`, IPv6 as a /48). Behind Docker and the quick tunnel every sign-in
+  comes from Docker's gateway and reads "Via a local network or proxy" until nginx's `set_real_ip_from` is set up
+  (next step 5);
+- Send waits while an attached file uploads or indexes (a large scan read by the vision model can take minutes);
+- non-admin users see the estimated cost of their own usage in Settings → Usage;
+- the top-bar model pick is per chat, and New chat returns to the account default;
+- unconfigured plugins are listed for every user as "Not set up yet", which tells users a Gmail plugin exists;
+- the export leaves out document files and stops at 100 MB of text or 80 s of building, newest conversations first;
+- "Delete all chats" keeps documents (files and images created in chat included) and the usage history;
+- the Documents toggle collapses the right-hand column on desktop, remembered per browser;
+- the accents (Ocean `#22697a` and Slate `#4a5866` are new), the renamed fonts, and "Indexing…" replacing
+  "Processing" in the documents panel.
+
 ## Known limitations and open risks
 
 - **Parsing is only partly isolated.** pypdf, python-docx, python-pptx, openpyxl and BeautifulSoup still parse
@@ -972,7 +1247,8 @@ Choices still to confirm with the user (the designer's open questions; brief sec
     sees and the next turn's history then repeats. It also once said the image is "shown above", although the card is
     below the text (the tool result says "below").
 - **Plugins and Gmail, not yet checked:**
-  - **Real Google** (brief 18.4). Only Google's documentation backs these, because the fake can't show them:
+  - **Real Google** (brief 18.4). The owner configured real credentials on 2026-10-18, but no checked run has been
+    recorded. Only Google's documentation backs these, because the fake can't show them:
     - the consent screens ("Google hasn't verified this app", and "Access blocked" for non-test accounts);
     - the exact `scope` string, also with boxes unticked;
     - that a token with only `gmail.compose` can send;
@@ -1032,14 +1308,32 @@ Choices still to confirm with the user (the designer's open questions; brief sec
   because a major bump may break `pytest-asyncio` 1.2.0.
 - Not done (optional): rate limits on upload and reprocess, and clearing a user's login-failure
   counter when the admin resets their password.
-- Minor UI: right after Stop, the sidebar's "Tokens this month" can lag until the next refresh,
-  because the refresh can run before the server saves the stopped answer's usage. A document row's
-  meta line can wrap with a trailing ` ·`. The overview's embedding tile still shortens "OpenAI
-  text-embedding-3-small" on its second line at 1440 and 390 px (the full name is in the tooltip). A created
-  file card shows the type twice (the tag, then "MD · 503 B"), as brief 12.5 specifies. The composer hint,
-  files sentence included, is hidden on touch devices, as the keyboard hint always was. There, only the
-  empty state's fourth example ("Create a PDF report summarizing my documents") mentions files, and only for a
-  capable model.
+- Minor UI: right after Stop, the avatar menu's "Tokens this month" can lag until the next refresh,
+  because the refresh can run before the server saves the stopped answer's usage. The overview's embedding tile
+  still shortens "OpenAI text-embedding-3-small" on its second line at 1440 and 390 px (the full name is in the
+  tooltip). A created file card shows the type twice (the tag, then "MD · 503 B"), as brief 12.5 specifies. A
+  citation chip right before a full stop leaves about 4 px of space (its 1 px margin plus the serif full stop's side
+  bearing). On touch devices the composer hint drops only its keyboard part; the "+" menu offers files and images
+  there too.
+- **Top bar, Settings and the redesign, limits by design:** Settings → Usage shows only the current month (the admin's
+  Usage tab has history); the export has no document files (each document has Download); there is no session list with
+  per-session sign-out, only "Log out of all other sessions"; accents are the five presets, with no free colour
+  picker; code blocks have no syntax colours (no highlighter in the stack); the bundled fonts cover Latin only, so
+  other scripts use the system fonts; the sign-in history shows Docker's gateway for every sign-in until nginx trusts
+  the outer proxy's client address.
+- **Top bar, Settings and the redesign, not yet checked:**
+  - WebKit isn't installed for Playwright, so the Safari file-picker rule (the "+" menu's Attach files calls
+    `input.click()` inside the gesture) was checked in Chromium and by code review only. The forced-colours rules
+    weren't part of the browser run.
+  - The browser pass's final version, which picks Haiku again before the Stop step, hasn't run end to end; run 2
+    skipped the answer-with-citations and Stop steps, which passed in run 1.
+  - Not repeated on the real stack: the stale-401 check (an upload or poll in flight during "Log out others"; checked
+    on a scratch backend) and the shared-browser check (the admin has no Gmail connection, so nothing could leak).
+  - The files-from-chat smoke covered only PDF and Markdown; the Word and Excel renderers, unchanged since their last
+    full run (40 of 40), weren't re-run.
+  - The 4 `postgres`-marked account tests (`test_account_postgres.py`: the sign-in prune, UTC days, the preferences
+    insert race across two engines, the export's reads) are skipped without `TEST_POSTGRES_URL`; no run against
+    Postgres is recorded.
 - Ops quirk: one `docker compose up -d --build` built a new frontend image but kept the old
   container. `docker compose up -d --force-recreate frontend` fixed it. nginx also resolves `backend` only when it
   starts (there is no `resolver`), so recreate the frontend after recreating the backend.
@@ -1048,12 +1342,20 @@ Choices still to confirm with the user (the designer's open questions; brief sec
 
 ## Next steps
 
-Plugins with Gmail are built, reviewed and verified in Docker against a fake Google (2026-10-16; uncommitted). What
-is left:
+The top bar, Settings and the redesign are built, reviewed and verified in Docker (2026-10-20). What is left:
 
-- Commit the feature, after reviewing `git status`: nothing of it is committed yet.
-- With the user, set up Google Cloud and `.env` by `docs/gmail-setup.md`. The user edits `.env`; never print it. Then
-  run the first real test:
+- Fix the mypy error at `backend/app/deps.py:44` (check the `exp` claim's type inline, so mypy narrows it), re-run
+  ruff, mypy and the suite, then review `git status` and commit the review fixes and the Docker-run fixes on top of the
+  WIP snapshot `5148b83`.
+- Confirm the open points at the end of "Top bar, Settings and the redesign" with the user.
+- Optional, no model spend: run `test_account_postgres.py` against a throwaway Postgres 17; check the forced-colours
+  rules with Chromium's forced-colors emulation; install WebKit for Playwright and check the "+" menu's file picker;
+  repeat the stale-401 and shared-browser checks (functional brief 15.4 #6 and #8) on the real stack.
+
+Plugins with Gmail are built, reviewed and verified in Docker against a fake Google (2026-10-16; committed in
+`c5fb005`). The owner set up Google Cloud and `.env` on 2026-10-18 and turned Gmail on. What is left:
+
+- With the user, run the first real test by `docs/gmail-setup.md` (the user edits `.env`; never print it):
   - a throwaway `smoke-gmail-live` app user, never `bikash`;
   - connect, search and read, one import, one draft, and one send to the user's own address after they check the card
     and click Send;
@@ -1095,8 +1397,8 @@ Files from chat is built and was verified live in Docker on 2026-10-16. What is 
   - downloads from Admin → Documents.
 - Decide the vision `NO_CONTENT` fix (known limitations), and optionally tidy nginx's duplicate headers on `/api/`.
 
-1. Review `git status` and commit plugins with Gmail. Images from chat is already in `7eaf587`, and files from chat,
-   the vision follow-up fix and `test_vision_independent.py` are in `70f8076`.
+1. Review `git status` and commit the redesign's fixes (above). Plugins with Gmail are in `c5fb005`, images from chat
+   in `7eaf587`, and files from chat, the vision follow-up fix and `test_vision_independent.py` in `70f8076`.
 2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
 3. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the
    monthly vision allowance and the automatic activation of the seeded Sonnet vision model).

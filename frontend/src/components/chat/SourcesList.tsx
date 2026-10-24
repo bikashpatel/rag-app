@@ -94,8 +94,11 @@ function EmailSourceItem({ source }: { source: EmailSource }) {
       </span>
       <div className="chat-source-main">
         <div className="chat-source-head">
-          <MailIcon size={15} className="chat-source-mail" />
-          <span className="chat-source-name">{subject}</span>
+          {/* Inside the subject, so a subject that wraps keeps the icon on its first line. */}
+          <span className="chat-source-name">
+            <MailIcon size={15} className="chat-source-mail" />
+            {subject}
+          </span>
           <span className="chat-source-page">
             <span className="chat-source-sender">{source.sender}</span>
             {date ? ` · ${date}` : null}

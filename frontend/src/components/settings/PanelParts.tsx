@@ -13,7 +13,7 @@ type PanelHeadProps = {
 /** The sticky header of a Settings panel: the tab's h2, then its actions and the close button (hidden on phones). */
 export function PanelHead({ title, note, actions, onClose }: PanelHeadProps) {
   return (
-    <header className="settings-head">
+    <div className="settings-head">
       <h2>{title}</h2>
       {note ? <span className="settings-head-note">{note}</span> : null}
       <div className="settings-head-actions">
@@ -22,7 +22,7 @@ export function PanelHead({ title, note, actions, onClose }: PanelHeadProps) {
           <CloseIcon />
         </button>
       </div>
-    </header>
+    </div>
   );
 }
 

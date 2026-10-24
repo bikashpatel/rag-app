@@ -145,17 +145,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const refresh = useCallback(async () => {
     const started = session.current;
     const savesAtRequest = saves.current;
-    let me: Me;
-    try {
-      me = await api.get<Me>("/auth/me");
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) {
-        if (session.current === started) signOutLocally();
-        return;
-      }
-      throw err;
-    }
-    if (session.current === started) receiveMe(me, savesAtRequest);
+    // The session check (U25): getSessionUser waits for a cookie re-issue in flight; null only on 401. A signed-in tab
+    // checks a 401 once more, in case this request left with the cookie "Log out others" or a password change replaced.
+    let me = await getSessionUser();
+    if (me === null && userRef.current !== null && session.current === started) me = await getSessionUser();
+    if (session.current !== started) return;
+    if (me) receiveMe(me, savesAtRequest);
+    else signOutLocally();
   }, [receiveMe, signOutLocally]);
 
   const boot = useCallback(() => {
