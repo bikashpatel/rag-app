@@ -2,7 +2,7 @@ import { useId, useRef, useState, type FormEvent } from "react";
 import { ApiError, changePassword } from "../../api/client";
 import { AlertIcon } from "../ui/icons";
 import PasswordInput from "../ui/PasswordInput";
-import Spinner from "../ui/Spinner";
+import { ButtonSpinner } from "../ui/Spinner";
 
 const MIN_PASSWORD_CHARS = 8;
 
@@ -108,8 +108,8 @@ export default function PasswordForm({ id, onChanged, onCancel }: PasswordFormPr
         </p>
       ) : null}
       <div className="settings-actions">
-        <button type="submit" className="btn btn-primary btn-sm" disabled={!valid} aria-disabled={saving || undefined}>
-          {saving ? <Spinner size={14} label="Saving" /> : null}
+        <button type="submit" className="btn btn-primary btn-sm" disabled={!valid} aria-disabled={saving || undefined} aria-busy={saving || undefined}>
+          {saving ? <ButtonSpinner size={14} /> : null}
           Change password
         </button>
         <button type="button" className="btn btn-ghost btn-sm" onClick={onCancel} disabled={saving}>

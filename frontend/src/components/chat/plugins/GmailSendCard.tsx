@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { ApiError, cancelPendingSend, confirmPendingSend, getPendingSend } from "../../../api/client";
 import type { GmailSendCard as SendCard, PendingSend, PendingSendStatus } from "../../../api/types";
 import { formatDateTime } from "../../../lib/format";
-import Spinner from "../../ui/Spinner";
+import { ButtonSpinner } from "../../ui/Spinner";
 import { AlertIcon, CheckIcon, ClockIcon, ExternalLinkIcon, MailIcon } from "../icons";
 import EditEmailModal from "./EditEmailModal";
 import { formatCountdown, safeHttpsUrl } from "./email";
@@ -186,8 +186,14 @@ function PendingSendView({ pending, onChange }: { pending: PendingSend; onChange
       {status === "pending" || canEdit || sentLink || (status === "replaced" && pending.replaced_by !== null) ? (
         <div className="chat-mail-actions">
           {status === "pending" ? (
-            <button type="button" className="btn btn-primary btn-sm" onClick={send} disabled={action !== null}>
-              {action === "send" ? <Spinner size={12} label="Sending" /> : null}
+            <button
+              type="button"
+              className="btn btn-primary btn-sm"
+              onClick={send}
+              disabled={action !== null}
+              aria-busy={action === "send" || undefined}
+            >
+              {action === "send" ? <ButtonSpinner size={12} /> : null}
               Send
             </button>
           ) : null}
@@ -197,8 +203,14 @@ function PendingSendView({ pending, onChange }: { pending: PendingSend; onChange
             </button>
           ) : null}
           {status === "pending" ? (
-            <button type="button" className="btn btn-ghost btn-sm" onClick={cancel} disabled={action !== null}>
-              {action === "cancel" ? <Spinner size={12} label="Cancelling" /> : null}
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              onClick={cancel}
+              disabled={action !== null}
+              aria-busy={action === "cancel" || undefined}
+            >
+              {action === "cancel" ? <ButtonSpinner size={12} /> : null}
               Cancel
             </button>
           ) : null}

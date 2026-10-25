@@ -310,7 +310,8 @@ async def delete_user(user_id: Id, db: AsyncSession = Depends(get_db)) -> None:
     for doc in documents:
         await remove_document_vectors(db, doc)
         await db.delete(doc)
-    # Explicit, so these go even where the database doesn't enforce ON DELETE CASCADE (SQLite).
+    # ON DELETE CASCADE removes these too (test_deletion_completeness checks every key); they are deleted explicitly
+    # as well for a database whose tables predate a key's ON DELETE, since create_all never alters an existing table.
     conversation_ids = select(Conversation.id).where(Conversation.user_id == user.id)
     message_ids = select(Message.id).where(Message.conversation_id.in_(conversation_ids))
     await db.execute(delete(MessagePluginItem).where(MessagePluginItem.message_id.in_(message_ids)))

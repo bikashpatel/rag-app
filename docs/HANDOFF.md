@@ -5,8 +5,10 @@ run. Updated 2026-10-15 after the vision model for PDFs was built, reviewed, fix
 2026-10-16 after files from chat and then images from chat went through the same steps. Updated again on 2026-10-17 after
 plugins, with Gmail as the first plugin, were built, reviewed and verified in Docker **against a fake Google only**, and
 on 2026-10-20 after the top bar, Settings and the warm editorial redesign were built, reviewed, fixed and verified in
-Docker (committed on 2026-10-24 in `d11a9e5`). `SPEC.md` is the binding contract; `README.md` has setup, commands, the
-architecture and how to use the app.
+Docker (committed on 2026-10-24 in `d11a9e5`), and on 2026-10-25 after the test pass: a frontend Vitest suite, a
+Playwright end-to-end suite, a full-stack integration suite, more backend tests with coverage, and a CI workflow, all
+reviewed, fixed and verified (not committed yet). `SPEC.md` is the binding contract; `README.md` has setup, commands,
+the test suites, the architecture and how to use the app.
 
 ## Status
 
@@ -96,6 +98,17 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
     `starters.ts`), the Settings dialog (`components/settings/`), `lib/settingsLink.ts` and `lib/appEvents.ts`, and
     `pages/login.css`. `ChatHeader`, `ModelSelect`, `UserMenu`, `UsageMeter`, `ChangePasswordModal` and
     `ConnectionsModal` are deleted. No npm package was added.
+- **Test suites and CI** (2026-10-25, in the working tree, not committed yet; `README.md` section 7 has the commands,
+  `SPEC.md` section 9 the rules, and each suite its README). None of them calls a real model or Google:
+  - Backend (`backend/tests/`): 2,379 tests plus 10 `postgres`-marked ones, with coverage (`backend/.coveragerc`).
+    New files: `test_route_guards.py` and `test_deletion_completeness.py` (cross-cutting guards), `test_stores.py`,
+    `test_plugin_token_failures.py` and `test_postgres_locks.py`; additions to 10 files.
+  - Frontend: 710 Vitest tests in 52 files next to the code (`frontend/src/**/*.test.ts(x)`, helpers in
+    `frontend/src/test/`).
+  - End-to-end (`e2e/`): 48 Playwright tests in 10 files against the running stack (1 `@live`, skipped by default).
+  - Integration (`integration/`): 102 tests in 14 files on an isolated Compose project (`rag-it`) with a fake
+    OpenAI-compatible model server and the fake Google.
+  - CI: `.github/workflows/ci.yml` runs all of them (it hasn't run on GitHub yet). See "Test suites and CI" below.
 
 How the work went: the lead wrote `SPEC.md` and the foundation code. Agents then built the
 feature areas in parallel from `docs/briefs/`, followed by backend integration tests, frontend
@@ -136,13 +149,22 @@ is in two commits: `5148b83`, a WIP snapshot pushed to `origin/main` before its 
 fixes and the fixes from the Docker run and the polish rounds. On 2026-10-18 the owner put real Google OAuth
 credentials and a `TOKEN_ENCRYPTION_KEY` in `.env` and turned Gmail on; at the end of the redesign run Admin → Plugins
 showed it configured and enabled with 1 connection. No agent has made a Google call. The
-agents' test and smoke scripts lived in scratch directories and are not in the repo.
+agents' smoke and browser-pass scripts lived in scratch directories and are not in the repo; the test suites of the
+2026-10-25 test pass are (uncommitted), and on that day the stack was rebuilt from the working tree.
 
 ## How it was verified
 
 | Check | Result |
 |---|---|
-| Backend suite after the redesign, its review fixes and the Docker-run fixes (2026-10-20) | **2242 passed, 5 skipped**, twice (322 s and 377 s). The skips are the `postgres`-marked tests (the image reservation race and the 4 tests of `test_account_postgres.py`). ruff 0.13.0 is clean on app and tests. mypy 1.18.2 reports **1 error** (`app/deps.py:44`, from the logout-others fix: `exp` is narrowed through a boolean, which mypy doesn't follow; the code is correct at runtime). The line went into `d11a9e5` unchanged, so the error is still there (next steps) |
+| Backend suite after the test pass and its fixes (2026-10-25; `pytest -q --cov --cov-fail-under=94`) | **2379 passed, 10 skipped**, twice (426 s and 428 s, coverage on). The skips are the `postgres`-marked tests. Coverage 95.1 % combined: 96.4 % of statements (12,295 of 12,757) and 90.4 % of branches (3,107 of 3,438), over the 94 % gate. ruff 0.13.0 is clean on app and tests, and **mypy 1.18.2 is clean** (74 files; the `deps.py` error is fixed) |
+| Backend on Postgres (2026-10-25; a throwaway `postgres:17.11-alpine` container at `docker-compose.yml`'s digest, tmpfs, random port and password, removed afterwards) | `pytest -m postgres`: **10 passed**, twice (about 4 s each): the 4 account tests, the image reservation race and the 5 tests of `test_postgres_locks.py`. Earlier in the test pass, `TEST_DATABASE=postgres` on the changed test files passed 98, and the conftest guards refused a database named `rag` and stopped at a schema holding a table they didn't create (the table was kept) |
+| Frontend after the test pass (2026-10-25) | `npx tsc --noEmit` clean. `npm run test:coverage`: **710 passed in 52 files**, twice (about 5 s each); 92.69 % of statements, 88.19 % of branches, 92.27 % of functions and 94.68 % of lines, over the thresholds (92, 87, 91, 94). It also passed under the de_DE, ja_JP and en_GB locales and with three suites running at once. `npx vite build` into a scratch directory clean (390 modules, only the old chunk-size warning) |
+| End-to-end against the rebuilt live stack (2026-10-25; `cd e2e && npx playwright test`) | **47 passed, 1 skipped** (the `@live` test, never run), twice (14 s each). Teardown left 0 test users, and the admin API listed no `e2e-` user afterwards |
+| Integration (2026-10-25; `integration/run.sh`, default ports 18090 to 18092) | **102 passed**, twice (95 s and 73 s wall clock; pytest 62 s and 44 s, start 22 to 23 s). Afterwards no `rag-it` container, volume or network was left, and every other container, volume and network on the host was unchanged |
+| Live stack rebuilt from the working tree (2026-10-25; `docker compose up -d --build`, then `docker compose up -d --force-recreate frontend`) | All 6 services up, 5 healthy; `/api/health` 200; the frontend serves the same `index-*.js` and `index-*.css` as a local build, and the backend and worker run the new `ingestion.py` and `oauth.py`. A read-only admin-API snapshot (counts and a hash only) was identical before the rebuild, after it and after each e2e run: the env admin and `bikash` (no other user), 8 ready documents of `bikash`, the models and their switches, and Gmail configured and enabled with all three capabilities on, 1 connected, 0 reconnect needed, 0 on an old key and the same redirect URIs |
+| Secret scan of every changed and new file (2026-10-25; 163 files, `node_modules` left out; a scratch script that printed only counts, key names and paths) | No `.env` value (the 8 values of 8 or more characters that differ from `.env.example`), no API key, OAuth secret, token, JWT or private-key pattern, no tunnel URL and no `/Users/` path. No real username beyond the documented `bikash` and `admin` (tests use made-up names), and only made-up email addresses (`example.*`, `.test`, the `company.com` fixture and an IDN test domain). The one key-like match is an npm `integrity` hash in `package-lock.json` |
+| CI rehearsal (2026-10-25, in scratch copies of the working tree) | Every job's commands passed on this Mac: backend 2379 passed with 95.1 % coverage, Postgres 10 passed, frontend 710 passed, e2e 47 passed and 1 skipped on a separate Compose project, integration 102 passed with `--rmi`. The workflow passes actionlint 1.7.12 (with shellcheck). Only a run on GitHub can show that the pinned actions, the caches, the artifact uploads, `--with-deps` and `::add-mask::` work there |
+| Backend suite after the redesign, its review fixes and the Docker-run fixes (2026-10-20) | **2242 passed, 5 skipped**, twice (322 s and 377 s). The skips are the `postgres`-marked tests (the image reservation race and the 4 tests of `test_account_postgres.py`). ruff 0.13.0 is clean on app and tests. mypy 1.18.2 reports **1 error** (`app/deps.py:44`, from the logout-others fix: `exp` is narrowed through a boolean, which mypy doesn't follow; the code is correct at runtime). The line went into `d11a9e5` unchanged; the 2026-10-25 test pass fixed it |
 | Frontend after the redesign | `npx tsc --noEmit` clean; `npx vite build` into a temp directory clean (390 modules; only the old chunk-size warning). `package.json` and `package-lock.json` unchanged; no CSS file contains `prefers-color-scheme`; the three woff2 files and both licences match the sha256 values in `fonts.css` and `SOURCES.txt` |
 | Contrast (visual spec section 11) | The design's audit script checked 330 pairs (5 accents × 2 themes: text, accents, status colours, control borders, the switch thumb), 0 under the WCAG 2.2 AA minimum. The script ran from a scratch directory and isn't in the repo; section 11 lists every pair and its minimum |
 | Redesign in Docker (`docker compose up -d --build`; the frontend rebuilt twice more after the run's fixes) | All 6 services up, 5 healthy (the worker has no healthcheck); `/api/health` 200; `/theme-boot.js` served with `Cache-Control: public, max-age=300` and `nosniff`. The tables `user_preferences` and `login_events` were created on the existing database |
@@ -1183,6 +1205,55 @@ Choices still to confirm with the user (functional brief 16, visual spec 0.4):
 - the accents (Ocean `#22697a` and Slate `#4a5866` are new), the renamed fonts, and "Indexing…" replacing
   "Processing" in the documents panel.
 
+### Test suites and CI
+
+Written by parallel agents against `SPEC.md` on 2026-10-25, then reviewed (mutants killed on purpose, probes such as a
+hidden route without auth or a table without `ON DELETE`), fixed and verified twice. Not committed yet: CI sees only
+committed files.
+
+- **Backend.** `pytest-cov` 7.1.0 and `coverage` 7.16.2 are new dev pins (`requirements-dev.in`). `.coveragerc` measures
+  `app` with branches and `concurrency = thread, greenlet` (without `greenlet`, lines after a database call go
+  unrecorded); the render children are omitted because they run as `python -I`. The CI gate is 94 % combined, about 1
+  point under today's 95.1 %. `TEST_POSTGRES_URL` runs the `postgres`-marked tests (with `TEST_DATABASE=postgres`,
+  everything) on a throwaway database; `conftest.py` refuses a database whose name doesn't contain `test` or `scratch`
+  and never empties a `public` schema it didn't mark. `test_route_guards.py` and `test_admin.py` read the routes with
+  `fastapi.routing.iter_route_contexts(app.routes)`, because with FastAPI 0.142 `app.routes` holds the included
+  routers, not their routes; a test checks that the table covers every route of the API schema.
+- **Frontend.** Vitest 5.0.3 with `@vitest/coverage-v8`, Testing Library and jsdom 30.1.2 (dev only; no runtime
+  package changed). The `test` block of `vite.config.ts` pins `TZ=UTC` and `LANG`/`LC_ALL=en_US.UTF-8` and sets the
+  coverage thresholds just under the current numbers. Vite went from 8.3.1 to 8.3.4 for six advisories of the dev and
+  preview servers (production is unaffected: nginx serves the built files).
+- **End-to-end.** Playwright 1.64.0, Chromium only (desktop and Pixel 7). Users are `e2e-<run id>-<random>`, so runs
+  may overlap; global setup removes only `e2e-` users older than an hour. The admin's browser context
+  (`guardAdminContext` in `e2e/support/fixtures.ts`) blocks every write except to the run's test users, Sign out
+  included, because the admin session is shared by the workers. The `.env` reader follows Compose's `$` rules and
+  refuses `${…}` expansion before any sign-in (failed sign-ins count toward the lockout).
+- **Integration.** `run.sh`, `stack.sh` and `harness.py` accept only the project names `rag-it` and `rag-it-<suffix>`,
+  label everything `rag.it.stack=1` and refuse to run Compose on a project holding anything without that label.
+  `run.sh` exits 2 when the stack can't be set up and 3 when the tests passed but the teardown left something, and
+  saves the stack logs to `IT_LOGS` on a failure. The default ports moved to 18090 to 18092 (8090 was taken here).
+- **CI** (`.github/workflows/ci.yml`): jobs `backend`, `backend-postgres`, `frontend`, `e2e` and `integration`
+  (`README.md` section 7). Actions are pinned to commit SHAs; `UV_EXCLUDE_NEWER` keeps `uvx` (ruff, mypy) to releases
+  before the adoption cutoff; Python 3.13.15, because a bare `3.13` would pick a release after it. The `e2e` job
+  writes a throwaway `.env` with `::add-mask::`ed random secrets and fake provider keys and sets
+  `COMPOSE_PROJECT_NAME=rag-e2e`, which overrides `name: rag-app` in `docker-compose.yml`.
+- **App changes from the test pass:**
+  - `plugins/oauth.normalize_origin` refuses a host with characters outside a host name or an IP address (a bug the
+    tests found).
+  - `deps.py` checks the `exp` claim's type inline, so mypy narrows it (the old mypy error).
+  - Ingestion retries an embedding call, a vector upsert, a collection creation or the deletion of old vectors that
+    failed with a dropped connection or a timeout, after 1 s and then 4 s, and never starts a retry more than 120 s
+    after the first try (`ingestion._retry_transient`, `SPEC.md` section 7). Rejected keys, quotas, rate limits,
+    error responses and malformed replies still fail at once.
+  - `api/client.ts`: the SSE parser keeps a trailing `\r` until the next chunk, so a CRLF split between two chunks no
+    longer ends an event early.
+  - Accessibility: busy buttons keep their own name (`ButtonSpinner` in `ui/Spinner.tsx` is hidden from screen
+    readers, and the button sets `aria-busy`); the default model's menu item is named "Claude Opus 5.5 (default)";
+    during an import the Gmail import dialog's footer button reads "Continue in background" (the import goes on on
+    the server).
+  - `SPEC.md` wording now matches the code for conversation titles, export file names and the order of the Gmail send
+    checks.
+
 ## Known limitations and open risks
 
 - **Parsing is only partly isolated.** pypdf, python-docx, python-pptx, openpyxl and BeautifulSoup still parse
@@ -1228,7 +1299,6 @@ Choices still to confirm with the user (functional brief 16, visual spec 0.4):
 - **Images from chat, not yet checked** (each spends images or needs a scratch database; get the user's approval for
   the spend):
   - the rollback procedure above, on a throwaway Postgres 17 (brief 18.5);
-  - the `postgres`-marked reservation race (`TEST_POSTGRES_URL`; the 1 skipped test);
   - live: Stop during generation, an image through the Cloudflare tunnel, an image requested from GPT-5.4 mini (the
     OpenAI tool-call shape; only Claude Haiku 5.5 and Opus 5.5 made images live), and a real provider refusal (its
     shapes were checked only against a fake server).
@@ -1288,11 +1358,12 @@ Choices still to confirm with the user (functional brief 16, visual spec 0.4):
 - **Usage history goes with the user.** Deleting a user cascades their `usage_events` (SPEC section 4), so their
   chat, embedding, vision and image costs leave the usage report (after the smoke runs, this month's vision total
   was back to 0). Keep cost history elsewhere if it must survive user deletion.
-- **Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks.
-  The delete race and the password-reset race were checked with scratch tests against Postgres 17,
-  and the whole suite passed on Postgres once. The upload lock across several backend processes and
-  the embedding-model locks were never raced there. The image reservation has a `postgres`-marked test (two
-  engines, the asyncio lock defeated), skipped unless `TEST_POSTGRES_URL` is set; it hasn't been run yet.
+- **Some Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks. The 10
+  `postgres`-marked tests (passed on Postgres 17.11 on 2026-10-25; CI's `backend-postgres` job runs them) cover
+  parallel uploads against the document, storage and duplicate checks with only the row lock left, the schema's
+  advisory lock, UTC sessions, the image reservation race and the account tests. Still not raced between processes:
+  an admin password reset against a password change and a document deleted while the worker finishes it (both
+  checked once with scratch tests against Postgres 17), and the embedding model edited while a job writes vectors.
 - **One worker only.** A second worker container would reset the other's in-flight documents (the
   start-up recovery and the sweep assume a single process).
 - **The per-IP login throttle is effectively global.** Behind Docker's port publishing every client
@@ -1306,7 +1377,14 @@ Choices still to confirm with the user (functional brief 16, visual spec 0.4):
   was left when it started, but answers running at the same time don't see each other's tokens.
   Embedding tokens don't count toward the budget (by design).
 - No HTTPS, `COOKIE_SECURE=false`, no backups, no migrations.
-- The frontend has no automated tests in the repo. The browser and smoke scripts weren't committed.
+- **The test suites run without real models or Google**, so a few paths are only covered offline: the e2e suite never
+  uploads a file for real, never streams a real answer and never connects Gmail, and runs Chromium only (no WebKit or
+  Firefox). The live smoke and browser-pass scripts of the earlier runs weren't committed.
+- **CI hasn't run on GitHub yet.** Its commands were rehearsed on this Mac; the pinned actions, caches, artifact
+  uploads, `playwright install --with-deps` and the masking of the e2e job's secrets are proven only by a first run.
+  The backend coverage gate (94 %) is about 1 point under today's 95.1 %.
+- `undici` 8.11.2 (through jsdom, frontend tests only) has an advisory; its fix, 8.12.2, was published on 2026-10-15,
+  too recently for the two-week rule.
 - `pytest` 8.4.2 has advisory GHSA-6w46-j5rx-g56g (dev only; fixed in 9.0.3). It was left pinned
   because a major bump may break `pytest-asyncio` 1.2.0.
 - Not done (optional): rate limits on upload and reprocess, and clearing a user's login-failure
@@ -1338,9 +1416,6 @@ Choices still to confirm with the user (functional brief 16, visual spec 0.4):
     final build on 2026-10-24 (Word with the default chat model, Excel with GPT-5.4 mini): 28 of 29 checks passed.
     The failure was the scratch script's Qdrant check, which always expects the PDF's Hindi heading, so it can't pass
     in a run that creates no PDF; both files had their vectors.
-  - The 4 `postgres`-marked account tests (`test_account_postgres.py`: the sign-in prune, UTC days, the preferences
-    insert race across two engines, the export's reads) are skipped without `TEST_POSTGRES_URL`; no run against
-    Postgres is recorded.
 - Ops quirk: one `docker compose up -d --build` built a new frontend image but kept the old
   container. `docker compose up -d --force-recreate frontend` fixed it. nginx also resolves `backend` only when it
   starts (there is no `resolver`), so recreate the frontend after recreating the backend.
@@ -1349,15 +1424,22 @@ Choices still to confirm with the user (functional brief 16, visual spec 0.4):
 
 ## Next steps
 
+The test suites and CI are written, reviewed and verified (2026-10-25) but not committed. What is left:
+
+- Review and commit them: `backend/.coveragerc`, the new and changed backend tests, `frontend/src/**/*.test.ts(x)` and
+  `frontend/src/test/`, `e2e/`, `integration/`, `.github/`, and the app and doc changes listed in "Test suites and
+  CI". Then push and watch the first CI run, which is the only check of what the rehearsal couldn't show (see "Known
+  limitations").
+- Bump `undici` (through jsdom) to 8.12.2 or later once it is two weeks old, and raise the coverage thresholds
+  (`vite.config.ts`, CI's `--cov-fail-under`) when coverage goes up.
+
 The top bar, Settings and the redesign are built, reviewed, verified in Docker (2026-10-20) and committed (`5148b83`,
 then `d11a9e5`). What is left:
 
-- Fix the mypy error at `backend/app/deps.py:44` (check the `exp` claim's type inline, so mypy narrows it), then re-run
-  ruff, mypy and the suite.
 - Confirm the open points at the end of "Top bar, Settings and the redesign" with the user.
-- Optional, no model spend: run `test_account_postgres.py` against a throwaway Postgres 17; check the forced-colours
-  rules with Chromium's forced-colors emulation; install WebKit for Playwright and check the "+" menu's file picker;
-  repeat the stale-401 and shared-browser checks (functional brief 15.4 #6 and #8) on the real stack.
+- Optional, no model spend: check the forced-colours rules with Chromium's forced-colors emulation; install WebKit
+  for Playwright and check the "+" menu's file picker; repeat the stale-401 and shared-browser checks (functional
+  brief 15.4 #6 and #8) on the real stack.
 
 Plugins with Gmail are built, reviewed and verified in Docker against a fake Google (2026-10-16; committed in
 `c5fb005`). The owner set up Google Cloud and `.env` on 2026-10-18 and turned Gmail on. What is left:
@@ -1379,8 +1461,7 @@ Plugins with Gmail are built, reviewed and verified in Docker against a fake Goo
 Images from chat is built, reviewed and was verified live in Docker on 2026-10-16 (committed in `7eaf587`). What is left
 of it:
 
-- Check the rollback procedure in "Images from chat" on a throwaway Postgres 17 (brief 18.5, no model spend), and run
-  the `postgres`-marked reservation test against one (`TEST_POSTGRES_URL`, see `backend/tests/README.md`).
+- Check the rollback procedure in "Images from chat" on a throwaway Postgres 17 (brief 18.5, no model spend).
 - With the user's approval for the spend (a few cents per image), run the remaining live cases: Stop during
   generation, an image through the Cloudflare tunnel, an image requested from GPT-5.4 mini, and a provider refusal.
   Use a `smoke-*` user, deleted afterwards, never `bikash`.
@@ -1404,9 +1485,9 @@ Files from chat is built and was verified live in Docker on 2026-10-16. What is 
   - downloads from Admin → Documents.
 - Decide the vision `NO_CONTENT` fix (known limitations), and optionally tidy nginx's duplicate headers on `/api/`.
 
-1. Done: everything built so far is committed. The redesign is in `5148b83` and `d11a9e5`, plugins with Gmail in
-   `c5fb005`, images from chat in `7eaf587`, and files from chat, the vision follow-up fix and
-   `test_vision_independent.py` in `70f8076`.
+1. Done: every feature is committed (the test suites and CI aren't yet, see above). The redesign is in `5148b83` and
+   `d11a9e5`, plugins with Gmail in `c5fb005`, images from chat in `7eaf587`, and files from chat, the vision
+   follow-up fix and `test_vision_independent.py` in `70f8076`.
 2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
 3. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the
    monthly vision allowance and the automatic activation of the seeded Sonnet vision model).
@@ -1428,12 +1509,10 @@ Files from chat is built and was verified live in Docker on 2026-10-16. What is 
    counters), and the worker re-queues pending documents from Postgres.
 7. Done: the worker has `mem_limit`/`memswap_limit` `${WORKER_MEM_LIMIT:-4g}` (verified with `docker inspect`).
    An OOM kill stays inside the worker, and the attempt counter fails the document after 3 kills.
-8. Add CI: the backend suite on SQLite and on Postgres 17 (to cover the locks), tsc and the build,
-   plus a committed Playwright smoke test for the UI.
-9. Later: move the remaining parsing (pypdf, Office formats, HTML) into a child process with a hard kill, as
+8. Later: move the remaining parsing (pypdf, Office formats, HTML) into a child process with a hard kill, as
    PDF rendering already is, and bump pytest to 9.x together with a compatible pytest-asyncio.
-10. Later: read images in DOCX and PPTX files with the vision model (PDFs only for now), and remove
-    `llm._allow_effort` once LiteLLM's bundled model map lists `claude-sonnet-5-5`.
+9. Later: read images in DOCX and PPTX files with the vision model (PDFs only for now), and remove
+   `llm._allow_effort` once LiteLLM's bundled model map lists `claude-sonnet-5-5`.
 
 ## macOS setup notes (this machine)
 

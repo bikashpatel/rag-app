@@ -431,7 +431,8 @@ export async function postSSE(
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
-    buffer = (buffer + value).replace(/\r\n?/g, "\n");
+    // A chunk may end between the \r and \n of a CRLF: keep a trailing \r until the next chunk shows which it is.
+    buffer = (buffer + value).replace(/\r\n|\r(?!$)/g, "\n");
     let boundary = buffer.indexOf("\n\n");
     while (boundary !== -1) {
       const message = parseSSEBlock(buffer.slice(0, boundary));
@@ -440,6 +441,6 @@ export async function postSSE(
       boundary = buffer.indexOf("\n\n");
     }
   }
-  const tail = parseSSEBlock(buffer.trim());
+  const tail = parseSSEBlock(buffer.replace(/\r/g, "\n").trim());
   if (tail) onEvent(tail);
 }

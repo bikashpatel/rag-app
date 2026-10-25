@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import litellm
 import pytest
-from conftest import ApiClient, FakeLLM, SseEvent, chat, ingest, pdf_bytes, sse_events, txt_bytes
+from conftest import ApiClient, FakeLLM, SseEvent, chat, ingest, pdf_bytes, sqlite_only, sse_events, txt_bytes
 from fastapi import FastAPI
 from sqlalchemy import select, update
 
@@ -939,6 +939,7 @@ async def test_cancelling_again_while_saving_does_not_lose_the_answer(
     await _assert_stopped_once(alice, turn.conversation_id, "Hello")
 
 
+@sqlite_only
 async def test_shutdown_waits_for_cancelled_answers_to_be_saved(
     create_user: CreateUser, start_turn: StartTurn, fake_llm: FakeLLM, isolated_state: Path
 ) -> None:

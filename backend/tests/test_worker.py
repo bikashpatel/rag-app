@@ -6,11 +6,13 @@ guard against a hung worker.
 
 import asyncio
 import logging
+import signal
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import Any
 
+import litellm
 import pytest
 from conftest import ApiClient, ingest, txt_bytes, upload
 from redis.exceptions import ConnectionError as RedisConnectionError
@@ -551,3 +553,90 @@ async def test_worker_periodically_queues_pending_documents_missing_from_the_que
 
     assert jobs.finished == [doc_id]
     assert await statuses() == {doc_id: "ready"}
+
+
+async def test_a_failing_sweep_is_logged_and_the_worker_keeps_working(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(worker, "_SWEEP_SECONDS", 0)
+
+    async def database_down(*args: Any) -> int:
+        raise OperationalError("SELECT", {}, Exception("server closed the connection"))
+
+    async def redis_down(*args: Any) -> int:
+        raise RedisConnectionError("Connection refused")
+
+    monkeypatch.setattr(worker, "reclaim_interrupted", database_down)
+    monkeypatch.setattr(worker, "requeue_orphans", redis_down)
+    queue_after_recovery(monkeypatch, ["1", "2"])
+    jobs = use_jobs(monkeypatch, Jobs(expected=2, job=do_nothing))
+
+    with caplog.at_level(logging.WARNING, logger="app.worker"):
+        async with running(worker.Worker(1)):
+            await jobs.wait()
+
+    assert jobs.finished == [1, 2]
+    messages = worker_messages(caplog, logging.WARNING)
+    assert any(message.startswith("Could not look for interrupted documents") for message in messages)
+    assert any(message.startswith("Could not look for unqueued documents") for message in messages)
+
+
+# ---------------- Shutdown ----------------
+
+
+async def test_jobs_still_running_after_the_grace_period_are_cancelled_and_retried_on_the_next_start(
+    create_user: CreateUser, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    alice = await create_user("alice")
+    [doc_id] = await uploaded_ids(alice, 1)
+    embedding = asyncio.Event()
+
+    async def endless_embedding(**kwargs: Any) -> Any:
+        embedding.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(litellm, "aembedding", endless_embedding)
+    monkeypatch.setattr(worker, "_SHUTDOWN_GRACE_SECONDS", 0.05)
+    instance = worker.Worker(1)
+
+    with caplog.at_level(logging.WARNING, logger="app.worker"):
+        task = asyncio.create_task(instance.run())
+        await asyncio.wait_for(embedding.wait(), GUARD_SECONDS)
+        instance.stop()
+        await asyncio.wait_for(task, GUARD_SECONDS)
+
+    assert worker_messages(caplog, logging.WARNING) == [
+        "Cancelled 1 unfinished job(s); they are retried on the next start"
+    ]
+    assert await statuses() == {doc_id: "processing"}
+    assert await recover_pending() == 1
+    assert await statuses() == {doc_id: "pending"} and await queued() == [str(doc_id)]
+
+
+async def test_main_stops_on_sigterm_and_sigint_and_always_closes_its_connections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = asyncio.get_running_loop()
+    handlers: dict[int, Callable[[], None]] = {}
+    closed: list[str] = []
+    monkeypatch.setattr(loop, "add_signal_handler", lambda sig, callback: handlers.__setitem__(sig, callback))
+    for name in ("close_redis", "close_qdrant", "close_db"):
+
+        async def close(name: str = name) -> None:
+            closed.append(name)
+
+        monkeypatch.setattr(worker, name, close)
+
+    async def run(self: worker.Worker) -> None:
+        assert set(handlers) == {signal.SIGTERM, signal.SIGINT}
+        handlers[signal.SIGTERM]()
+        assert self._stopping.is_set()
+        handlers[signal.SIGINT]()  # a second signal is harmless
+        raise OSError("the database went away")
+
+    monkeypatch.setattr(worker.Worker, "run", run)
+
+    with pytest.raises(OSError, match="the database went away"):
+        await asyncio.wait_for(worker.main(), GUARD_SECONDS)
+
+    assert closed == ["close_redis", "close_qdrant", "close_db"]

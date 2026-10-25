@@ -205,6 +205,7 @@ function DeleteAllRow({ count, onDeleted }: DeleteRowProps) {
                 className="btn btn-sm btn-danger"
                 disabled={!matches}
                 aria-disabled={working || undefined}
+                aria-busy={working || undefined}
               >
                 {working ? <span className="spinner" aria-hidden="true" /> : null}
                 {action}

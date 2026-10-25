@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { ApiError } from "../../api/client";
 import type { ConversationSummary } from "../../api/types";
 import Menu, { MenuItem } from "../ui/Menu";
-import Spinner from "../ui/Spinner";
+import { ButtonSpinner } from "../ui/Spinner";
 import { MoreIcon, PencilIcon, TrashIcon } from "./icons";
 
 const MAX_TITLE_CHARS = 200;
@@ -160,8 +160,8 @@ export default function ConversationItem({ conversation, active, onOpen, onRenam
             >
               Cancel
             </button>
-            <button type="button" className="btn btn-danger btn-xs" onClick={confirmDelete} disabled={busy}>
-              {busy ? <Spinner size={12} label="Deleting" /> : null}
+            <button type="button" className="btn btn-danger btn-xs" onClick={confirmDelete} disabled={busy} aria-busy={busy || undefined}>
+              {busy ? <ButtonSpinner size={12} /> : null}
               Delete chat
             </button>
           </div>

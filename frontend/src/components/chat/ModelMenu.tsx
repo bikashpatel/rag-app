@@ -42,6 +42,7 @@ export default function ModelMenu({ models: state, onOpenSettings }: ModelMenuPr
         key={model.id}
         className="chat-model-item"
         checked={model.id === selectedId}
+        label={model.id === defaultId ? `${model.display_name} (default)` : undefined}
         onSelect={() => select(model.id)}
         description={
           tags.length > 0 ? (

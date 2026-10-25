@@ -84,12 +84,16 @@ Code layout:
 | `backend/app/plugins/` | plugin framework: `base` (the `Plugin` interface), `registry`, `oauth` + `connections` + `crypto` (OAuth, token refresh, encryption), `intent` (the request check), `answer`, `importing`, `audit`, `tasks`, `http`; `gmail/` is the Gmail plugin (`plugin`, `client`, `mime`, `tools`, `sends`, `importer`, `render`, `router`) |
 | `backend/app/fonts/` | Noto Sans fonts for generated PDFs (SIL Open Font License, `OFL.txt`) |
 | `backend/app/worker.py` | ingestion worker (`python -m app.worker`) |
-| `backend/tests/` | integration tests, no Docker needed ([README](backend/tests/README.md)) |
+| `backend/tests/` | in-process API tests, no Docker needed ([README](backend/tests/README.md)) |
 | `frontend/src/pages/` | `LoginPage` (+ `login.css`), `ChatPage`, `AdminPage` |
 | `frontend/src/components/` | `chat/` (top bar, model, Plugins, avatar and "+" menus, thread, composer; `chat/plugins/`: Gmail cards), `documents/` (right-hand panel), `settings/` (the Settings dialog and its tabs), `connections/` (plugin cards, Gmail browser), `admin/`, `ui/` (shared primitives: Modal, Menu, Meter, Switch, SegmentedControl, PasswordInput, icons, …) |
 | `frontend/src/styles/`, `src/assets/fonts/` | the design system: `global.css` (tokens for light, dark, five accents and three chat font sizes, plus shared primitives), `fonts.css` and the bundled fonts with their licences |
 | `frontend/public/theme-boot.js`, `src/theme/appearance.ts` | the theme engine: applies the cached appearance before the first paint, then follows the account's preferences and the OS (System) |
 | `frontend/nginx.conf`, `upload-limit.envsh` | nginx template (security headers, body limits, upload auth check) |
+| `frontend/src/**/*.test.ts(x)`, `src/test/` | Vitest tests next to the code, and their shared helpers ([README](frontend/src/test/README.md)) |
+| `e2e/` | Playwright browser tests against the running stack ([README](e2e/README.md)) |
+| `integration/` | full-stack tests on an isolated Compose project with fake model and Google servers ([README](integration/README.md)) |
+| `.github/workflows/ci.yml` | CI: every suite on GitHub Actions (section 7) |
 
 ## 1. Prerequisites
 
@@ -435,27 +439,7 @@ without any cloud key. This path hasn't been tested on this machine.
 
 ### Tests and checks
 
-```bash
-# Backend tests: SQLite, fake Redis, in-memory Qdrant, mocked LiteLLM; no Docker or network needed
-cd backend
-uv venv --python 3.13 .venv            # once (uv downloads Python 3.13 if needed)
-uv pip sync requirements-dev.txt       # again whenever the locks change
-#   or, with python3.13 on PATH: python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q          # about 2,250 tests, 5 to 6.5 minutes (5 skipped without TEST_POSTGRES_URL)
-
-# Lint and type-check (tools not in the requirements; run through uvx)
-uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests
-uvx mypy@1.18.2 --python-executable .venv/bin/python --ignore-missing-imports app
-
-# Frontend
-cd ../frontend
-npm ci                                  # installs exactly package-lock.json, as the Docker build does
-npx tsc --noEmit
-npx vite build --outDir "$(mktemp -d)/dist"   # or `npm run build` (writes frontend/dist, git-ignored)
-```
-
-More on the tests: [backend/tests/README.md](backend/tests/README.md). The frontend has no test
-runner; verify it with the manual smoke test in `docs/briefs/frontend-verification.md`.
+The five test suites, the lint and type checks and CI are in [section 7](#7-testing).
 
 ### Running the app outside Docker
 
@@ -505,7 +489,83 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
 - Every dependency is pinned to a version released at least two weeks before adoption. Never use
   LiteLLM 1.82.7 or 1.82.8 (compromised PyPI releases).
 
-## 7. Security notes
+## 7. Testing
+
+Five suites. **None of them calls a real model provider or Google** in its default run, so they cost nothing:
+
+| Suite | Where | What it covers | Needs | Size |
+|---|---|---|---|---|
+| Backend | `backend/tests/` ([README](backend/tests/README.md)) | the whole API in-process: SQLite, fakeredis, in-memory Qdrant, LiteLLM mocked, a fake Google, the real PDF and file render children; route guards and deletion checks that cover new routes and tables without being edited | Python 3.13 | about 2,390 tests (10 skipped without Postgres); coverage 96.4 % of statements, 90.4 % of branches |
+| Backend on Postgres | the `postgres`-marked tests in `backend/tests/` | row locks under parallel uploads, the schema's advisory lock, UTC sessions, the image reservation race, the account tests | a throwaway Postgres 17 (e.g. in Docker) | 10 tests |
+| Frontend | `frontend/src/**/*.test.ts(x)` ([README](frontend/src/test/README.md)) | components, hooks, stores and the API client (the SSE parser included) with Vitest, Testing Library and jsdom; `fetch` is stubbed | Node 22+ | 710 tests in 52 files; coverage 92.7 % of statements, 88.2 % of branches |
+| End-to-end | `e2e/` ([README](e2e/README.md)) | a real Chromium (desktop and a phone) against the running stack: sign-in, top bar, chat streaming and Stop, the composer, documents, Settings, the admin page, phone layout, accessibility | the Docker stack up | 48 tests in 10 files (1 `@live`, skipped) |
+| Integration | `integration/` ([README](integration/README.md)) | an isolated copy of the whole stack (nginx, backend, worker, Postgres, Redis, Qdrant) with a fake OpenAI-compatible model server and the fake Google: ingestion, chat, access, files and images from chat, limits, sessions, the worker, re-indexing, user deletion, export, Gmail, vision | Docker | 102 tests in 14 files |
+
+```bash
+# Backend (from the repo root)
+cd backend
+uv venv --python 3.13 .venv            # once (uv downloads Python 3.13 if needed)
+uv pip sync requirements-dev.txt       # again whenever the locks change
+#   or, with python3.13 on PATH: python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest -q                              # 6 to 9 minutes (10 skipped without TEST_POSTGRES_URL)
+.venv/bin/python -m pytest -q --cov --cov-fail-under=94    # with coverage (.coveragerc); fails under 94 %
+uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests
+uvx mypy@1.18.2 --python-executable .venv/bin/python --ignore-missing-imports app
+
+# Backend on Postgres: start a throwaway container first (backend/tests/README.md, "Postgres")
+TEST_POSTGRES_URL=postgresql+asyncpg://rag:<password>@127.0.0.1:<port>/scratch .venv/bin/python -m pytest -q -m postgres
+
+# Frontend
+cd ../frontend
+npm ci                                  # installs exactly package-lock.json, as the Docker build does
+npx tsc --noEmit                        # the app and the tests
+npm test                                # Vitest, the whole suite once (seconds)
+npm run test:coverage                   # fails below the thresholds in vite.config.ts
+npx vite build --outDir "$(mktemp -d)/dist"   # or `npm run build` (writes frontend/dist, git-ignored)
+
+# End-to-end, against the running stack (docker compose up -d), http://localhost:8080 by default
+cd ../e2e
+npm ci && npx playwright install chromium
+npm test                                # desktop and phone projects, under a minute
+npm run typecheck
+
+# Integration, from the repo root: builds, starts, tests and removes its own stack
+cd ..
+integration/run.sh                      # about 1.5 minutes once the images are built
+```
+
+- **No real calls.** The backend tests mock LiteLLM and serve a fake Google in-process. The e2e suite answers every
+  chat with canned SSE events and blocks requests to other hosts, uploads, plugin connects, the admin's model Test and
+  re-indexing; its one real call, the `@live` test, runs only with `E2E_LIVE=1`. The integration stack has fake
+  provider keys, points every model at its fake server and Google at the fake Google, and its backend and worker sit
+  on an internal network with no route to the internet.
+- **Docker.** The backend and frontend suites need none. The Postgres tests need a throwaway database: its name must
+  contain `test` or `scratch`, and never point `TEST_POSTGRES_URL` at the app's `rag` database. The e2e suite needs
+  the stack running. The integration suite runs its own Compose project, `rag-it` (own volumes, a generated throwaway
+  env file; it never reads `.env` and never touches `rag-app`), on 127.0.0.1 ports 18090 to 18092 (`IT_APP_PORT`,
+  `IT_FAKE_LLM_PORT`, `IT_FAKE_GOOGLE_PORT`), and checks afterwards that nothing of it is left.
+- **The e2e suite on a stack with real data.** It signs in as the env admin (`E2E_ADMIN_USERNAME` and
+  `E2E_ADMIN_PASSWORD`, else `ADMIN_USERNAME` and `ADMIN_PASSWORD` from `.env`) only to create and delete its own
+  `e2e-<run id>-<random>` users; the admin's browser context blocks every other write, so models, plugins, the shared
+  knowledge base and other users never change. Each run adds one sign-in to the admin's history.
+- The frontend tests pin `TZ=UTC` and the `en_US` locale (`vite.config.ts`), so dates and numbers format the same
+  everywhere.
+
+### CI
+
+`.github/workflows/ci.yml` runs every suite on GitHub Actions (`ubuntu-latest`) on pushes to `main`, pull requests and
+by hand, with a read-only token, actions pinned to commit SHAs, a timeout per job and the Python (3.13.15) and Node
+(22.23.3) of the Docker images. It sees only committed files.
+
+| Job | Runs |
+|---|---|
+| `backend` | the hashed dev requirements (`pip install --require-hashes`, `pip check`), ruff, mypy, pytest with coverage (fails under 94 %) |
+| `backend-postgres` | the `postgres`-marked tests against a Postgres 17.11 service container |
+| `frontend` | `npm ci`, `tsc`, Vitest with the coverage thresholds, `vite build` |
+| `e2e` | a throwaway `.env` (random secrets, fake provider keys), the stack as Compose project `rag-e2e`, the e2e type check and Playwright; the report and the stack logs are uploaded on failure, and the stack is removed with its volumes |
+| `integration` | ruff on `integration/`, then `integration/run.sh --rmi`; the stack logs are uploaded on failure |
+
+## 8. Security notes
 
 - The UI is bound to `127.0.0.1` only. Before exposing it on a network, put it behind HTTPS and
   set `COOKIE_SECURE=true` (see `docs/HANDOFF.md`, next steps).
@@ -581,7 +641,7 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
     another app user shares the same Google account.
 - Secrets are never logged; provider errors are turned into user-facing messages (`llm.friendly_error`).
 
-## 8. Known limitations
+## 9. Known limitations
 
 - Scanned PDF pages are read by the vision model, which costs tokens: with Claude Sonnet 5.5 about $0.007 for
   a simple page (measured) and up to about $0.03 for a dense one, up to `VISION_MAX_PAGES` pages per document

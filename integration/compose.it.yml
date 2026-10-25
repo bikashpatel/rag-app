@@ -1,0 +1,104 @@
+# The integration test stack: docker-compose.yml with these overrides, as its own Compose project.
+#
+# Only ever used as (integration/run.sh and integration/stack.sh build this command):
+#   docker compose -p rag-it -f docker-compose.yml -f integration/compose.it.yml --env-file integration/.run/it.env ...
+#
+# - The repository's .env is never read: backend and worker take their environment only from the generated
+#   integration/.run/it.env (`!override` replaces the base file's `env_file: .env`), and `--env-file` replaces .env for
+#   interpolation too. That file holds random secrets and fake provider keys.
+# - The project name gives every container, volume and network a `rag-it_` prefix, apart from the live `rag-app` stack.
+# - The default network is internal: postgres, redis, qdrant, backend and worker can't reach the internet, so no real
+#   model provider or Google endpoint can ever be called. Only the frontend and the two fakes join `edge`, for the ports
+#   published on 127.0.0.1.
+# - Nothing restarts on its own: a stack left behind by an interrupted run stays down after a Docker restart.
+# - Every container, volume and network carries the marker label: stack.sh and harness.py refuse to touch a project
+#   holding anything without it.
+
+x-marker: &marker
+  rag.it.stack: "1"
+
+networks:
+  default:
+    internal: true
+    labels: *marker
+  edge:
+    labels: *marker
+
+volumes:
+  pgdata: {labels: *marker}
+  redisdata: {labels: *marker}
+  qdrantdata: {labels: *marker}
+  uploads: {labels: *marker}
+
+services:
+  postgres:
+    restart: "no"
+    labels: *marker
+
+  redis:
+    restart: "no"
+    labels: *marker
+
+  qdrant:
+    restart: "no"
+    labels: *marker
+
+  backend:
+    restart: "no"
+    labels: *marker
+    env_file: !override
+      - integration/.run/it.env
+
+  worker:
+    restart: "no"
+    labels: *marker
+    env_file: !override
+      - integration/.run/it.env
+
+  frontend:
+    restart: "no"
+    labels: *marker
+    networks: [default, edge]
+    ports: !override
+      - "127.0.0.1:${APP_PORT:?APP_PORT must come from the generated env file}:80"
+
+  # An OpenAI-compatible model server (integration/fake_llm/server.py), run with the backend image.
+  fake-llm:
+    build: ./backend
+    restart: "no"
+    labels: *marker
+    command: ["python", "/fake_llm/server.py", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - ./integration/fake_llm:/fake_llm:ro
+    networks: [default, edge]
+    ports:
+      - "127.0.0.1:${IT_FAKE_LLM_PORT:?}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # The backend tests' fake Google (OAuth and Gmail) plus a state route (integration/fake_google/server.py).
+  # The browser-facing consent URL is published on 127.0.0.1; the backend uses http://fake-google:8099.
+  fake-google:
+    build: ./backend
+    restart: "no"
+    labels: *marker
+    command:
+      - python
+      - /fake_google/server.py
+      - --host=0.0.0.0
+      - --port=8099
+      - --redirect-uri=http://127.0.0.1:${APP_PORT:?}/api/plugins/gmail/oauth/callback
+    volumes:
+      - ./integration/fake_google:/fake_google:ro
+      - ./backend/tests:/fake_google_src:ro
+    networks: [default, edge]
+    ports:
+      - "127.0.0.1:${IT_FAKE_GOOGLE_PORT:?}:8099"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/_state', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20

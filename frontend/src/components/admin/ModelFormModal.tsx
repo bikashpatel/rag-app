@@ -2,7 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { api } from "../../api/client";
 import type { AdminModel, AdminModelCreate, AdminModelUpdate, ModelKind } from "../../api/types";
 import Modal from "../ui/Modal";
-import Spinner from "../ui/Spinner";
+import { ButtonSpinner } from "../ui/Spinner";
 import { errorMessage } from "./adminApi";
 import { Field, SwitchField } from "./Field";
 import { FormValidator, numberText, type FieldErrors } from "./form";
@@ -252,8 +252,8 @@ export default function ModelFormModal({ model, kind, onClose, onSaved }: ModelF
           <button type="button" className="btn" onClick={onClose} disabled={saving}>
             Cancel
           </button>
-          <button type="submit" form={formId} className="btn btn-primary" disabled={saving}>
-            {saving ? <Spinner size={14} label="Saving" /> : null}
+          <button type="submit" form={formId} className="btn btn-primary" disabled={saving} aria-busy={saving || undefined}>
+            {saving ? <ButtonSpinner size={14} /> : null}
             {creating ? "Add model" : "Save changes"}
           </button>
         </>

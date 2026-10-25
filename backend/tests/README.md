@@ -22,7 +22,7 @@ uv venv --python 3.13 .venv && uv pip sync requirements-dev.txt
 # or with a python3.13 on PATH:
 python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
-.venv/bin/python -m pytest -q                    # everything: about 1,900 tests, about 4.5 minutes
+.venv/bin/python -m pytest -q                    # everything: about 2,380 tests, 6 to 9 minutes
 .venv/bin/python -m pytest tests/test_smoke.py   # one file
 .venv/bin/python -m pytest -k chat -x            # by name, stop at the first failure
 ```
@@ -36,22 +36,66 @@ markers) with one event loop for the whole run. You don't need to set any enviro
 `conftest.py` sets them before the app is imported, using dummy provider keys and a temporary
 directory per pytest process. Several pytest processes can run at the same time.
 
-Tests marked `postgres` need a throwaway Postgres database and are skipped unless `TEST_POSTGRES_URL` is set (they
-drop and create every table there), e.g. against a scratch container:
+### Coverage
 
 ```bash
-TEST_POSTGRES_URL=postgresql+asyncpg://user:password@127.0.0.1:55432/scratch .venv/bin/python -m pytest -q -m postgres
+.venv/bin/python -m pytest -q --cov --cov-report=term-missing:skip-covered   # add --cov-report=html for htmlcov/
 ```
+
+`.coveragerc` measures `app` with branch coverage. It sets `concurrency = thread, greenlet`: SQLAlchemy's asyncio layer
+runs the ORM in greenlets, and without `greenlet` every line after a database call goes unrecorded (about 4 points of
+the total). The PDF and file render children (`pdf_render_child.py`, `filegen/child.py`) are omitted: they run as
+`python -I` with a scrubbed environment (test_pdf_images checks it), which coverage's subprocess support needs to pass an
+environment variable through; the code they call is measured in-process. The outputs (`.coverage`, `htmlcov/`,
+`coverage.xml`) are git-ignored.
+
+### Postgres
+
+The tests run on SQLite. Tests marked `postgres` run on a throwaway Postgres database instead, the app included, and are
+skipped unless `TEST_POSTGRES_URL` is set. With `TEST_DATABASE=postgres` as well, every test runs there. Each test drops
+and re-creates the database's `public` schema, so give each pytest process its own database.
+
+**Never point `TEST_POSTGRES_URL` at the app's database.** `docker-compose.dev.yml` publishes the real one (database
+`rag`, with the owner's account, documents and Gmail connection) on 127.0.0.1:5432, and the first test would drop all of
+it. `conftest.py` refuses a database whose name doesn't contain `test` or `scratch`, and stops the run instead of emptying
+a `public` schema that holds tables it didn't create (it marks the schema it creates with a comment).
+
+E.g. against a scratch container (no volume, a random port and password; removed when stopped):
+
+```bash
+name=rag-test-pg-$(openssl rand -hex 4) password=$(openssl rand -hex 16)
+docker run -d --rm --name "$name" -e POSTGRES_USER=rag -e POSTGRES_PASSWORD="$password" -e POSTGRES_DB=scratch \
+  --tmpfs /var/lib/postgresql/data -p 127.0.0.1::5432 \
+  postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24  # docker-compose.yml's
+until docker exec "$name" pg_isready -q -h 127.0.0.1 -U rag; do sleep 1; done
+export TEST_POSTGRES_URL="postgresql+asyncpg://rag:$password@127.0.0.1:$(docker port "$name" 5432 | head -1 | cut -d: -f2)/scratch"
+.venv/bin/python -m pytest -q -m postgres                      # 10 tests, seconds
+TEST_DATABASE=postgres .venv/bin/python -m pytest -q           # everything on Postgres, about 17 minutes
+docker stop "$name"
+```
+
+On Postgres the suite skips one test (marked `sqlite_only`), which reads the SQLite file synchronously.
 
 ## What the suite doesn't cover
 
-SQLite ignores `SELECT ... FOR UPDATE` and the other row locks, so the races they guard are
-untested here (except in the `postgres`-marked test, which runs two image reservations through two engines): uploads from several backend processes against the quota and duplicate checks, an
-admin password reset racing a password change, a document deleted while the worker finishes it,
-and the embedding model edited while a job writes vectors (the tests cover the logic around these,
-not the locking). The advisory lock in `db.init_db` and the UTC session time zone set in
-`db.make_engine` are Postgres-only too. What was checked by hand against Postgres 17 is listed in
-`docs/HANDOFF.md`.
+SQLite ignores `SELECT ... FOR UPDATE` and the other row locks, so the races they guard run only in the
+`postgres`-marked tests: `test_postgres_locks.py` (parallel uploads against the document, storage and duplicate checks
+with the in-process locks taken away, so only the row lock serializes them; `db.init_db`'s advisory lock; the UTC session
+time zone of `db.make_engine` under a database set to another zone), `test_account_postgres.py` and the image
+reservation race in `test_image_tool.py`. Still untested as races between processes: an admin password reset racing a
+password change, a document deleted while the worker finishes it, and the embedding model edited while a job writes
+vectors (the tests cover the logic around these, also on Postgres with `TEST_DATABASE=postgres`, not the locking). What
+was checked by hand against Postgres 17 is listed in `docs/HANDOFF.md`.
+
+Cross-cutting checks that cover new code without being edited: `test_route_guards.py` reads the routes from the app's
+route table, so routes hidden from the OpenAPI schema count too (every route but the public ones answers 401 without a
+session, and a new route taking an id must be classified, and if it is a user's resource, answer another user like a
+missing id; `test_admin.py` lists the admin routes from the same table); `test_deletion_completeness.py` requires every
+foreign key to be `ON DELETE CASCADE` or a listed `SET NULL` key (never `SET NULL` to `users`), follows those keys from
+a deleted user, conversation or document (cascaded rows gone, `SET NULL` rows kept with the key cleared, and nothing of
+a deleted user's kept at all), and its guards fail until the setup gives the deleted user a row in every table and
+`SET NULL` key a deletion reaches. Failures of the stores in best-effort steps are in
+`test_stores.py`, and the OAuth token and revoke endpoints failing in `test_plugin_token_failures.py`.
 
 Files from chat are tested by parsing the generated files back (pypdf, pypdfium2, python-docx, openpyxl),
 in-process and through the render child; `test_document_tool.py` drives whole answers through
@@ -111,10 +155,12 @@ Read `conftest.py` before adding tests. It provides:
 
 - **Fixtures:** `app` (lifespan running: tables created, admin synced, models seeded, including the
   active vision model "Claude Sonnet 5.5 (vision)"), `client` (anonymous), `admin_client`, `create_user`
-  (creates a user through the admin API and returns a logged-in client), `new_client`, and three autouse
+  (creates a user through the admin API and returns a logged-in client), `new_client`, and these autouse
   ones: `isolated_state` (fresh state per test), `fake_llm` (the `FakeLLM` in use; request it to set the
-  streamed chunks, usage, errors or delays) and `vision_sleeps` (the vision reader's retry waits are
-  recorded instead of slept, and its backoff delays are zero).
+  streamed chunks, usage, errors or delays), `vision_sleeps` (the vision reader's retry waits are
+  recorded instead of slept, and its backoff delays are zero) and `ingestion_sleeps` (the waits before
+  ingestion retries a dropped connection or a timeout, recorded instead of slept; the clock that ends the
+  retries is `ingestion._clock`).
 - **FakeLLM vision fields:** a non-streaming call with an image part is a vision call, kept in
   `vision_calls` (not `chat_calls`). `vision_reply` is a string or a function of `(page, mode)` (mode
   "transcribe", "describe" or "test"); a function that raises makes that call fail, e.g. with

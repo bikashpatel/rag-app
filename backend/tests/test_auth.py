@@ -285,6 +285,24 @@ async def test_login_upgrades_an_outdated_password_hash(create_user: CreateUser,
     assert verify_password(USER_PASSWORD, stored)
 
 
+@pytest.mark.parametrize("stored", ["", "not-a-hash", "$argon2id$v=19$m=65536,t=3,p=4$broken"])
+async def test_a_stored_hash_argon2_cant_read_refuses_the_password_without_an_error(
+    stored: str, create_user: CreateUser, client: ApiClient
+) -> None:
+    alice = await create_user("alice")
+    await set_user_columns("alice", password_hash=stored)
+    assert needs_rehash(stored) and not verify_password(USER_PASSWORD, stored)
+
+    login = await client.login("alice", USER_PASSWORD)
+    change = await alice.post(
+        "/api/auth/change-password", json={"current_password": USER_PASSWORD, "new_password": NEW_PASSWORD}
+    )
+
+    assert (login.status_code, login.json()) == (401, INVALID_LOGIN)
+    assert (change.status_code, change.json()) == (400, {"detail": "Current password is incorrect"})
+    assert (await get_user("alice")).password_hash == stored
+
+
 # ---------------- Login throttle ----------------
 
 

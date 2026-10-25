@@ -1,5 +1,6 @@
 """Admin API: access control, users, models, stats, re-indexing, usage reports and documents."""
 
+import asyncio
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -22,6 +23,7 @@ from conftest import (
     upload,
 )
 from fastapi import FastAPI
+from fastapi.routing import APIRoute, iter_route_contexts
 from qdrant_client import models as qm
 from sqlalchemy import event, select, update
 
@@ -29,8 +31,9 @@ from app import db
 from app.config import settings
 from app.db import SessionLocal
 from app.main import app as fastapi_app
-from app.models import Conversation, Document, LLMModel, Message, UsageEvent, User, user_allowed_models
+from app.models import Conversation, Document, LLMModel, Message, UsageEvent, User, UserImageLimit, user_allowed_models
 from app.redis_client import INGEST_QUEUE, get_redis
+from app.routers import admin as admin_router
 from app.schemas import MAX_INT
 from app.services import vectorstore
 from app.services.storage import stored_path
@@ -245,11 +248,12 @@ def embedded_words(fake_llm: FakeLLM) -> int:
 
 
 def test_route_table_lists_every_admin_route() -> None:
+    """From the app's route table, so a route hidden from the OpenAPI schema is listed too."""
     registered = {
-        (method.upper(), path)
-        for path, operations in fastapi_app.openapi()["paths"].items()
-        if path.startswith("/api/admin")
-        for method in operations
+        (method, route.path)
+        for route in iter_route_contexts(fastapi_app.routes)
+        if isinstance(route.original_route, APIRoute) and route.path.startswith("/api/admin")
+        for method in route.methods
     }
 
     assert registered == {(method, path) for method, path, _ in ADMIN_ROUTES}
@@ -425,6 +429,36 @@ async def test_create_user_rejects_a_taken_username(
     assert response.status_code == 409
     assert response.json() == {"detail": "This username is already taken"}
     assert await snapshot() == before
+
+
+async def test_concurrent_creates_of_one_username_make_one_user_and_a_409(
+    admin_client: ApiClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both requests pass the username check before either inserts (they meet while hashing), so the second one is
+    stopped by the unique index and rolled back."""
+    hashing = admin_router.hash_password_async
+    both_checked = asyncio.Barrier(2)
+
+    async def hash_after_both_checks(password: str) -> str:
+        await both_checked.wait()
+        return await hashing(password)
+
+    monkeypatch.setattr(admin_router, "hash_password_async", hash_after_both_checks)
+    body = {"username": "twin", "password": USER_PASSWORD, "monthly_image_limit": 3}
+
+    responses = await asyncio.wait_for(
+        asyncio.gather(*(admin_client.post("/api/admin/users", json=body) for _ in range(2))), 30
+    )
+
+    assert sorted(response.status_code for response in responses) == [201, 409]
+    [refused] = [response for response in responses if response.status_code == 409]
+    assert refused.json() == {"detail": "This username is already taken"}
+    async with SessionLocal() as session:
+        [user_id] = await session.scalars(select(User.id).where(User.username == "twin"))
+        limits = list(await session.scalars(select(UserImageLimit.user_id)))
+    assert limits == [user_id]
+    listed = (await admin_client.get("/api/admin/users")).json()
+    assert [user["username"] for user in listed] == [ADMIN_USERNAME, "twin"]
 
 
 @pytest.mark.parametrize(
@@ -1364,6 +1398,41 @@ async def test_deleting_an_inactive_embedding_model_drops_its_vectors(
     assert await process_queue() == [document["id"]]
     assert (await load(Document, document["id"])).embedding_model_id == large
     assert await point_count(large, document["id"]) > 0
+
+
+@pytest.mark.parametrize("change", ["edit", "delete"])
+async def test_embedding_model_changes_that_drop_vectors_change_nothing_while_qdrant_is_down(
+    change: str,
+    admin_client: ApiClient,
+    create_user: CreateUser,
+    model_ids: dict[str, int],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    small, large = model_ids[SMALL], model_ids[LARGE]
+    alice = await create_user("alice")
+    document = await ingest(alice, "plan.txt", txt_bytes("The migration plan moves billing to the new cluster."))
+    if change == "delete":
+        await activate(admin_client, large)
+    before = await snapshot()
+
+    async def qdrant_down(name: str) -> None:
+        raise ConnectionError("Qdrant is unreachable")
+
+    monkeypatch.setattr(vectorstore, "drop_collection", qdrant_down)
+    if change == "edit":
+        response = await admin_client.patch(
+            f"/api/admin/models/{small}", json={"litellm_model": "openai/text-embedding-3-large"}
+        )
+    else:
+        response = await admin_client.delete(f"/api/admin/models/{small}")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "The vector database is unavailable. Try again shortly."}
+    assert await snapshot() == before
+    model = await load(LLMModel, small)
+    assert model is not None and model.litellm_model == "openai/text-embedding-3-small"
+    assert (await load(Document, document["id"])).embedding_model_id == small
+    assert await point_count(small, document["id"]) == document["num_chunks"]
 
 
 async def test_deleting_an_unused_embedding_model(admin_client: ApiClient, model_ids: dict[str, int]) -> None:

@@ -3,13 +3,16 @@
 cancelled caller still committing."""
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 
 import pytest
 from conftest import ADMIN_USERNAME, ApiClient, pdf_bytes, process_queue, upload
 from fake_plugin import FakePlugin
+from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import func, select
+from sqlalchemy.exc import OperationalError
 
 from app.db import SessionLocal
 from app.models import Document, ImportedDocument, User
@@ -17,6 +20,7 @@ from app.plugins import importing, registry, tasks
 from app.plugins.importing import ImportFile
 from app.redis_client import INGEST_QUEUE, get_redis
 from app.services import storage
+from app.services.ingestion import requeue_orphans
 
 USER = Callable[..., Awaitable[ApiClient]]
 THREAD = "# Invoice 42\n\nEmail conversation imported from Gmail (alice@example.test), 1 message.\n\nPay by Friday.\n"
@@ -195,3 +199,56 @@ async def test_cancelling_the_caller_still_commits(
         assert await db.get(ImportedDocument, documents[0].id) is not None
     assert _stored_files(isolated_state / "uploads") == [documents[0].stored_name]
     assert await get_redis().lrange(INGEST_QUEUE, 0, -1) == [str(documents[0].id)]
+
+
+async def test_an_import_the_database_fails_to_store_leaves_no_file(
+    monkeypatch: pytest.MonkeyPatch,
+    fake: FakePlugin,
+    isolated_state: Path,
+    create_user: USER,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    alice = await create_user("alice")
+
+    async def database_down(*args: object) -> None:
+        raise OperationalError("SELECT", {}, Exception("server closed the connection"))
+
+    monkeypatch.setattr(importing, "_check_quota", database_down)
+    with caplog.at_level(logging.ERROR, logger="app.plugins.importing"):
+        outcome = await _store(alice, fake, _thread())
+
+    assert (outcome.status, outcome.document, outcome.reason) == (
+        "failed",
+        None,
+        "It couldn't be saved because of a server error.",
+    )
+    assert await _documents() == 0
+    assert _stored_files(isolated_state / "uploads") == []
+    assert f"Storing a fake import for user {alice.user_id} failed" in caplog.text
+
+
+async def test_an_import_while_redis_is_down_is_left_for_the_sweep(
+    monkeypatch: pytest.MonkeyPatch, fake: FakePlugin, create_user: USER
+) -> None:
+    alice = await create_user("alice")
+
+    async def redis_down(doc_id: int) -> None:
+        raise RedisConnectionError("Connection refused")
+
+    monkeypatch.setattr(importing, "enqueue_document", redis_down)
+    outcome = await _store(alice, fake, _thread())
+
+    assert outcome.status == "imported" and outcome.document is not None
+    assert outcome.document.status == "pending"
+    assert await get_redis().lrange(INGEST_QUEUE, 0, -1) == []
+    assert await requeue_orphans(0) == 1
+    assert await process_queue() == [outcome.document.id]
+
+
+async def test_an_import_for_a_deleted_account_stores_nothing(
+    fake: FakePlugin, app: object, isolated_state: Path
+) -> None:
+    outcome = await importing.store_import(10_000, fake, "alice@example.test", _thread())
+
+    assert (outcome.status, outcome.reason) == ("failed", "The account no longer exists.")
+    assert await _documents() == 0 and _stored_files(isolated_state / "uploads") == []

@@ -69,6 +69,9 @@ from openpyxl import Workbook  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 from pptx import Presentation  # noqa: E402
 from pptx.util import Inches  # noqa: E402
+from sqlalchemy import make_url  # noqa: E402
+from sqlalchemy import text as sql  # noqa: E402
+from sqlalchemy.ext.asyncio import AsyncEngine  # noqa: E402
 
 from app import db  # noqa: E402
 from app.config import settings  # noqa: E402
@@ -77,7 +80,7 @@ from app.models import Document  # noqa: E402
 from app.plugins import connections, intent, registry  # noqa: E402
 from app.plugins import http as plugin_http  # noqa: E402
 from app.redis_client import INGEST_QUEUE, close_redis, get_redis, set_redis  # noqa: E402
-from app.services import document_tool, image_tool, llm, pdf_images, vision  # noqa: E402
+from app.services import document_tool, image_tool, ingestion, llm, pdf_images, vision  # noqa: E402
 from app.services.ingestion import process_document  # noqa: E402
 from app.services.vectorstore import close_qdrant  # noqa: E402
 
@@ -90,16 +93,61 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
 
 # ---------------- Isolated state ----------------
 
+# The database of a test is a new SQLite file, or the TEST_POSTGRES_URL database for tests marked `postgres` (skipped
+# without it) and, with TEST_DATABASE=postgres, for every test. The Postgres database's public schema is dropped and
+# re-created before each test, so give each pytest process its own database. Two guards keep that away from real data:
+# the database's name must say it is a throwaway one, and a schema holding tables is emptied only when these tests
+# marked it as theirs.
+POSTGRES_URL = os.environ.get("TEST_POSTGRES_URL", "")
+ON_POSTGRES = os.environ.get("TEST_DATABASE") == "postgres"
+if ON_POSTGRES and not POSTGRES_URL:
+    raise RuntimeError("TEST_DATABASE=postgres needs TEST_POSTGRES_URL")
+if POSTGRES_URL and not re.search(r"test|scratch", make_url(POSTGRES_URL).database or "", re.IGNORECASE):
+    raise RuntimeError(
+        "TEST_POSTGRES_URL must name a throwaway database (its name containing 'test' or 'scratch'): every test drops "
+        "its public schema"
+    )
+_SCRATCH_MARK = "rag-app tests: emptied before every test"
+sqlite_only = pytest.mark.skipif(ON_POSTGRES, reason="reads the SQLite test database directly")
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    if not POSTGRES_URL:
+        skip = pytest.mark.skip(reason="TEST_POSTGRES_URL isn't set")
+        for item in items:
+            if item.get_closest_marker("postgres"):
+                item.add_marker(skip)
+
+
+async def _empty_postgres_engine() -> AsyncEngine:
+    engine = db.make_engine(POSTGRES_URL)
+    async with engine.begin() as connection:
+        tables = await connection.scalar(sql("SELECT count(*) FROM pg_tables WHERE schemaname = 'public'"))
+        mark = await connection.scalar(sql("SELECT obj_description('public'::regnamespace, 'pg_namespace')"))
+        if tables and mark != _SCRATCH_MARK:
+            pytest.exit(
+                f"Refusing to empty the TEST_POSTGRES_URL database: its public schema holds {tables} tables these "
+                "tests didn't create. Point TEST_POSTGRES_URL at a new, empty database.",
+                returncode=4,
+            )
+        await connection.execute(sql("DROP SCHEMA public CASCADE"))
+        await connection.execute(sql("CREATE SCHEMA public"))
+        await connection.execute(sql(f"COMMENT ON SCHEMA public IS '{_SCRATCH_MARK}'"))
+    return engine
+
 
 @pytest.fixture(autouse=True)
-async def isolated_state(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[Path]:
+async def isolated_state(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> AsyncIterator[Path]:
     """Fresh database, upload directory, Redis and Qdrant for every test; yields the test's scratch dir.
 
     Tables exist only once the `app` fixture has run its lifespan. Override settings per test with
     `monkeypatch.setattr(settings, "<field>", value)` (every module shares that one object).
     """
     workdir = Path(tempfile.mkdtemp(dir=_ROOT))
-    engine = db.make_engine(f"sqlite+aiosqlite:///{workdir / 'app.db'}")
+    if ON_POSTGRES or request.node.get_closest_marker("postgres"):
+        engine = await _empty_postgres_engine()
+    else:
+        engine = db.make_engine(f"sqlite+aiosqlite:///{workdir / 'app.db'}")
     monkeypatch.setattr(db, "engine", engine)
     db.SessionLocal.configure(bind=engine)
     monkeypatch.setattr(settings, "upload_dir", str(workdir / "uploads"))
@@ -693,6 +741,18 @@ def file_child(monkeypatch: pytest.MonkeyPatch, isolated_state: Path) -> Callabl
         return FileChild(directory)
 
     return install
+
+
+@pytest.fixture(autouse=True)
+def ingestion_sleeps(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The waits ingestion asked for before retrying a dropped connection or a timeout (none actually happen)."""
+    sleeps: list[float] = []
+
+    async def record(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(ingestion, "_sleep", record)
+    return sleeps
 
 
 @pytest.fixture(autouse=True)

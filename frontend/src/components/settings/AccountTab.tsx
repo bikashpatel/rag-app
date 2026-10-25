@@ -5,7 +5,7 @@ import { useAuth } from "../../auth/AuthContext";
 import { formatDate, formatRelativeTime } from "../../lib/format";
 import Avatar from "../ui/Avatar";
 import { AlertIcon, CheckCircleIcon, ChevronDownIcon, KeyIcon, LaptopIcon, LogoutIcon, MonitorIcon, PhoneIcon, TabletIcon } from "../ui/icons";
-import Spinner from "../ui/Spinner";
+import { ButtonSpinner } from "../ui/Spinner";
 import { AccountSkeleton, PanelError, PanelHead } from "./PanelParts";
 import PasswordForm from "./PasswordForm";
 import { useLoad } from "./useLoad";
@@ -361,9 +361,10 @@ function SessionsSection() {
               className="btn btn-primary btn-sm"
               onClick={logOutOthers}
               aria-disabled={working || undefined}
+              aria-busy={working || undefined}
               aria-describedby={error ? errorId : undefined}
             >
-              {working ? <Spinner size={14} label="Signing out other sessions" /> : null}
+              {working ? <ButtonSpinner size={14} /> : null}
               Log out others
             </button>
             <button type="button" className="btn btn-ghost btn-sm" onClick={cancel} disabled={working}>

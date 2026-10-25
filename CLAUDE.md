@@ -50,13 +50,22 @@ Decisions the user made when asked:
 ## Commands
 
 ```bash
-# Backend tests (no Docker needed; see backend/tests/README.md once written)
+# Backend tests (no Docker needed; see backend/tests/README.md)
 cd backend && python3.13 -m venv .venv && source .venv/bin/activate
 pip install -r requirements-dev.txt && pytest
+pytest --cov --cov-fail-under=94  # coverage gate, as in CI
 
 # Frontend
 cd frontend && npm ci && npx tsc --noEmit && npx vite build
+npm test                          # Vitest unit/component tests (TZ and locale pinned)
+npm run test:coverage             # fails below the thresholds in vite.config.ts
 npm run dev                       # http://localhost:5173, proxies /api to :8000
+
+# Browser end-to-end (against the running stack; canned answers, no model calls)
+cd e2e && npm ci && npx playwright install chromium && npx playwright test
+
+# Full-stack integration (isolated rag-it stack with fake model and Google servers)
+integration/run.sh                # ports 18090-18092; never touches rag-app or .env
 
 # Whole stack
 cp .env.example .env              # fill SECRET_KEY, ADMIN_PASSWORD, POSTGRES_PASSWORD, keys

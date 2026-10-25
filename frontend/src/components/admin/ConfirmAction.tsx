@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import Spinner from "../ui/Spinner";
+import { ButtonSpinner } from "../ui/Spinner";
 import { errorMessage } from "./adminApi";
 
 type ConfirmActionProps = {
@@ -107,9 +107,10 @@ export default function ConfirmAction({
           type="button"
           className={`btn btn-sm ${tone === "danger" ? "btn-danger" : "btn-primary"}`}
           disabled={busy}
+          aria-busy={busy || undefined}
           onClick={() => void confirm()}
         >
-          {busy ? <Spinner size={12} label="Working" /> : null}
+          {busy ? <ButtonSpinner size={12} /> : null}
           {confirmLabel}
         </button>
         <button ref={cancelRef} type="button" className="btn btn-sm" disabled={busy} onClick={close}>

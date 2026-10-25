@@ -235,6 +235,29 @@ def test_parsing_stops_at_the_deadline(write: WriteFile, monkeypatch: pytest.Mon
     assert error == "The file is too large or complex to process (it took over 60 seconds)."
 
 
+def test_a_page_that_cant_be_read_is_skipped_and_the_rest_kept(
+    write: WriteFile, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    extract = PageObject.extract_text
+
+    def flaky(page: PageObject, *args: object, **kwargs: object) -> str:
+        text = extract(page, *args, **kwargs)
+        if "Two" in text:
+            raise KeyError("/Font")  # e.g. a page whose resources are broken
+        return text
+
+    monkeypatch.setattr(PageObject, "extract_text", flaky)
+
+    parsed = parse(write, "report.pdf", pdf_bytes("Page One text", "Page Two text", "Page Three text"))
+
+    assert [(segment.page, segment.text) for segment in parsed.segments] == [
+        (1, "Page One text"),
+        (3, "Page Three text"),
+    ]
+    assert parsed.num_pages == 3
+    assert "Skipping unreadable page 2 of report.pdf" in caplog.text
+
+
 # ---------------- Office formats ----------------
 
 
@@ -330,6 +353,33 @@ def test_xlsx_has_one_segment_per_non_empty_sheet(write: WriteFile) -> None:
         ],
         num_pages=None,
     )
+
+
+def test_xlsx_rows_past_the_row_limit_are_left_out(write: WriteFile, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(parsing, "_XLSX_MAX_ROWS", 3)
+
+    parsed = parse(write, "long.xlsx", xlsx_bytes([[f"Row {number}"] for number in range(1, 8)], title="Log"))
+
+    assert parsed.segments == [Segment("Sheet: Log\nRow 1\nRow 2\nRow 3", None)]
+
+
+def test_xlsx_with_too_many_cells_is_refused(write: WriteFile, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(parsing, "_XLSX_MAX_CELLS", 10)
+
+    error = parse_error(write, "wide.xlsx", xlsx_bytes([["a", "b", "c", "d"]] * 3))
+
+    assert error == "The spreadsheet is too large to process."
+
+
+def test_xlsx_parsing_stops_at_the_deadline_between_rows(write: WriteFile, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "parse_timeout_seconds", 60)
+    monkeypatch.setattr(parsing, "_XLSX_DEADLINE_ROWS", 2)
+    clock = iter(range(0, 10_000, 45))  # every reading is 45 s later
+    monkeypatch.setattr(parsing, "time", SimpleNamespace(monotonic=lambda: next(clock)))
+
+    error = parse_error(write, "slow.xlsx", xlsx_bytes([[f"Row {number}"] for number in range(10)]))
+
+    assert error == "The file is too large or complex to process (it took over 60 seconds)."
 
 
 def test_xlsx_builder_output_is_extracted_as_rows(write: WriteFile) -> None:

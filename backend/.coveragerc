@@ -1,0 +1,29 @@
+# Coverage for `pytest --cov` (see tests/README.md). Outputs (.coverage, htmlcov/, coverage.xml) are git-ignored.
+[run]
+source = app
+branch = true
+relative_files = true
+# SQLAlchemy's asyncio layer runs the ORM in greenlets: without `greenlet`, lines after a database call go unrecorded.
+concurrency =
+    thread
+    greenlet
+# The PDF and file render children run as `python -I` with a scrubbed environment (test_pdf_images checks it), so
+# coverage's subprocess patch, which needs an inherited environment variable, can't reach them. The code they call
+# (pdf_images, filegen) is measured in-process.
+omit =
+    */app/services/pdf_render_child.py
+    */app/services/filegen/child.py
+
+[report]
+precision = 1
+show_missing = true
+skip_empty = true
+exclude_also =
+    if TYPE_CHECKING:
+    if __name__ == .__main__.:
+
+[html]
+directory = htmlcov
+
+[xml]
+output = coverage.xml

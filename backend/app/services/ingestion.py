@@ -1,18 +1,21 @@
 """Ingestion queue and the parse -> chunk -> embed -> index pipeline (SPEC section 7)."""
 
 import asyncio
+import functools
 import logging
 import tempfile
 import time
 from collections import Counter
-from collections.abc import AsyncIterator, Callable, Collection, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 from weakref import WeakKeyDictionary
 
+import httpx
+import litellm
 from pypdf import PdfReader
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +32,8 @@ from app.services.usage import record_usage, vision_tokens_this_month
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 NO_EMBEDDING_MODEL = "No active embedding model is configured. Ask the admin to enable one."
 _MISSING_FILE = "The uploaded file is missing from storage."
 _MAX_ERROR_CHARS = 1000
@@ -42,6 +47,20 @@ _ATTEMPTS_TTL_SECONDS = 86_400
 _INTERRUPTED = (
     f"Processing was interrupted {MAX_INTERRUPTED_RUNS} times; the file may be too large or complex to process."
 )
+# An embedding or Qdrant call that fails with a dropped connection or a timeout (a stale keep-alive connection after
+# the host slept, a restarting service) is tried again after each of these waits before the document fails, unless
+# the retry would start more than _TRANSIENT_RETRY_SECONDS after the first try (a call that hung until its timeout).
+_TRANSIENT_RETRY_DELAYS = (1.0, 4.0)
+_TRANSIENT_RETRY_SECONDS = 120.0
+_TRANSIENT = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+    ConnectionError,
+    TimeoutError,
+    litellm.APIConnectionError,
+    litellm.Timeout,
+)
 
 _locks: dict[int, asyncio.Lock] = {}
 _lock_users: Counter[int] = Counter()
@@ -52,6 +71,7 @@ _vision_phase_listener: Callable[[bool], None] | None = None
 # At most WORKER_CONCURRENCY documents read pages at once; one semaphore per event loop (asyncio primitives bind to
 # the loop that first waits on them) and configured size.
 _vision_phase_limits: WeakKeyDictionary[asyncio.AbstractEventLoop, tuple[int, asyncio.Semaphore]] = WeakKeyDictionary()
+_clock: Callable[[], float] = time.monotonic  # the transient retries' clock (tests replace it)
 
 
 class _IngestionError(Exception):
@@ -459,28 +479,61 @@ async def _index(job: _Job, model: LLMModel, usage: _Usage) -> tuple[int, int | 
     batch_size = max(1, settings.embed_batch_size)
     for start in range(0, len(chunks), batch_size):
         batch = chunks[start : start + batch_size]
-        result = await llm.embed_texts(model, [chunk.text for chunk in batch])
+        embed = functools.partial(llm.embed_texts, model, [chunk.text for chunk in batch])
+        result = await _retry_transient(embed, job.doc_id, "Embedding")
         usage.embedding.prompt_tokens += result.usage.prompt_tokens
         usage.embedding.cost_usd += result.usage.cost_usd
         if start == 0:
             await _prepare_collection(job, model, collection, len(result.vectors[0]))
-        await vectorstore.upsert_chunks(
-            collection,
-            [
-                vectorstore.ChunkPoint(
-                    doc_id=job.doc_id,
-                    chunk_index=chunk.index,
-                    vector=vector,
-                    owner_id=job.owner_id,
-                    scope=job.scope,
-                    filename=job.filename,
-                    page=chunk.page,
-                    text=chunk.text,
-                )
-                for chunk, vector in zip(batch, result.vectors, strict=True)
-            ],
-        )
+        points = [
+            vectorstore.ChunkPoint(
+                doc_id=job.doc_id,
+                chunk_index=chunk.index,
+                vector=vector,
+                owner_id=job.owner_id,
+                scope=job.scope,
+                filename=job.filename,
+                page=chunk.page,
+                text=chunk.text,
+            )
+            for chunk, vector in zip(batch, result.vectors, strict=True)
+        ]
+        upsert = functools.partial(vectorstore.upsert_chunks, collection, points)
+        await _retry_transient(upsert, job.doc_id, "Writing the vectors")
     return len(chunks), parsed.num_pages, vision_keys
+
+
+async def _retry_transient(call: Callable[[], Awaitable[T]], doc_id: int, step: str) -> T:
+    """`call`, tried again after each of _TRANSIENT_RETRY_DELAYS while it fails with a dropped connection or a timeout
+    (see _TRANSIENT_RETRY_SECONDS). Every other error (a rejected request, a quota, an unexpected response) is raised
+    at once."""
+    give_up = _clock() + _TRANSIENT_RETRY_SECONDS
+    for delay in _TRANSIENT_RETRY_DELAYS:
+        try:
+            return await call()
+        except Exception as exc:
+            if not _is_transient(exc) or _clock() + delay > give_up:
+                raise
+            logger.warning("%s for document %s failed (%s); retrying in %.0f s", step, doc_id, exc, delay)
+        await _sleep(delay)
+    return await call()
+
+
+def _is_transient(exc: BaseException) -> bool:
+    """A dropped connection or a timeout, also as wrapped by llm.embed_texts (the cause) or Qdrant (`source`)."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if isinstance(current, _TRANSIENT):
+            return True
+        seen.add(id(current))
+        source = getattr(current, "source", None)
+        current = source if isinstance(source, BaseException) else current.__cause__
+    return False
+
+
+async def _sleep(seconds: float) -> None:
+    await asyncio.sleep(seconds)
 
 
 async def _read_with_vision(
@@ -593,7 +646,9 @@ async def _prepare_collection(job: _Job, model: LLMModel, collection: str, dim: 
         # The lock keeps the admin from dropping the collection between this check and its creation.
         if not await _model_current_in(db, job, model.id, lock=True):
             raise _ModelChanged
-        await vectorstore.ensure_collection(collection, dim)
+        await _retry_transient(
+            functools.partial(vectorstore.ensure_collection, collection, dim), job.doc_id, "Creating the collection"
+        )
         litellm_model, api_base = job.model_target
         await db.execute(
             update(LLMModel)
@@ -608,7 +663,8 @@ async def _prepare_collection(job: _Job, model: LLMModel, collection: str, dim: 
         )
         await db.commit()
     for name in _collections(job, model):
-        await vectorstore.delete_document_points(name, job.doc_id)
+        delete_old = functools.partial(vectorstore.delete_document_points, name, job.doc_id)
+        await _retry_transient(delete_old, job.doc_id, "Deleting the old vectors")
 
 
 def _collections(job: _Job, model: LLMModel) -> set[str]:

@@ -40,8 +40,11 @@ async def get_current_user(request: Request, db: AsyncSession = Depends(get_db))
         raise _unauthorized()
     sid, exp = payload.get("sid"), payload.get("exp")
     request.state.session_id = sid if isinstance(sid, int) and not isinstance(sid, bool) else None
-    valid_exp = isinstance(exp, (int, float)) and not isinstance(exp, bool)
-    request.state.session_expires_at = datetime.fromtimestamp(exp, timezone.utc) if valid_exp else None
+    request.state.session_expires_at = (
+        datetime.fromtimestamp(exp, timezone.utc)
+        if isinstance(exp, (int, float)) and not isinstance(exp, bool)
+        else None
+    )
     return user
 
 

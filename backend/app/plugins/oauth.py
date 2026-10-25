@@ -41,6 +41,7 @@ _RATE_KEY = "plugin:connect:{}:{}"
 _GOOGLE_ISSUERS = frozenset({"https://accounts.google.com", "accounts.google.com"})
 _CLOCK_SKEW_SECONDS = 300
 _ERROR_CODE = re.compile(r"[^a-z0-9_.-]")
+_HOST = re.compile(r"[a-z0-9_.-]+|[0-9a-f:.]+")  # a host name or IPv4 address, or an IPv6 address (in brackets)
 
 
 def callback_path(plugin_id: str) -> str:
@@ -71,7 +72,7 @@ def normalize_origin(value: str) -> str | None:
         return None
     scheme = parts.scheme.lower()
     host = parts.hostname
-    if scheme not in ("http", "https") or not host or parts.path not in ("", "/"):
+    if scheme not in ("http", "https") or not host or not _HOST.fullmatch(host) or parts.path not in ("", "/"):
         return None
     if parts.query or parts.fragment or parts.username is not None or parts.password is not None:
         return None

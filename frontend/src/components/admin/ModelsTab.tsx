@@ -2,7 +2,7 @@ import { useId, useState } from "react";
 import { api } from "../../api/client";
 import type { AdminModel, AdminModelUpdate, ModelKind, ModelTestResult } from "../../api/types";
 import { formatNumber } from "../../lib/format";
-import Spinner from "../ui/Spinner";
+import Spinner, { ButtonSpinner } from "../ui/Spinner";
 import { deleteResource, errorMessage } from "./adminApi";
 import ConfirmAction from "./ConfirmAction";
 import FlashMessage from "./FlashMessage";
@@ -482,10 +482,11 @@ function DefaultControl({ model, actions, flash }: { model: AdminModel; actions:
       className="btn btn-sm"
       aria-label={`Make ${model.display_name} the ${role}`}
       disabled={!model.enabled || busy}
+      aria-busy={busy || undefined}
       title={disabledReason}
       onClick={() => void makeDefault()}
     >
-      {busy ? <Spinner size={12} label="Saving" /> : null}
+      {busy ? <ButtonSpinner size={12} /> : null}
       Make {label.toLowerCase()}
     </button>
   );

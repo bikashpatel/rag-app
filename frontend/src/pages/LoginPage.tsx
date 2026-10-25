@@ -5,7 +5,7 @@ import { useAuth } from "../auth/AuthContext";
 import { postLoginPath } from "../auth/loginRedirect";
 import { AlertCircleIcon, FileIcon, LockIcon, QuoteIcon, ShieldIcon, SparkleIcon } from "../components/ui/icons";
 import PasswordInput from "../components/ui/PasswordInput";
-import Spinner from "../components/ui/Spinner";
+import { ButtonSpinner } from "../components/ui/Spinner";
 import "./login.css";
 
 /** The brand mark and name (decorative here: the page's heading names the app for assistive tech). */
@@ -177,8 +177,9 @@ export default function LoginPage() {
               className="btn btn-primary login-submit"
               type="submit"
               disabled={submitting || !username.trim() || !password}
+              aria-busy={submitting || undefined}
             >
-              {submitting ? <Spinner size={15} label="Signing in" /> : null}
+              {submitting ? <ButtonSpinner size={15} /> : null}
               Sign in
             </button>
           </form>

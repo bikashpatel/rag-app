@@ -58,6 +58,17 @@ def test_rotation_keeps_old_tokens_readable() -> None:
         crypto.TokenCipher([Fernet.generate_key()]).decrypt(1, "gmail", ciphertext)  # the key was removed
 
 
+@pytest.mark.parametrize(
+    "plaintext",
+    [b'["u", 1]', b'{"u": 1, "p": "gmail"}', b'{"u": 1, "p": "gmail", "t": 42}', b'{"u": "1", "p": "gmail", "t": "x"}'],
+)
+def test_a_decryptable_payload_that_isnt_a_bound_token_is_unreadable(plaintext: bytes) -> None:
+    key = Fernet.generate_key()
+    ciphertext = Fernet(key).encrypt(plaintext).decode()
+    with pytest.raises(crypto.TokenUnreadable):
+        crypto.TokenCipher([key]).decrypt(1, "gmail", ciphertext)
+
+
 def test_key_id_is_short_and_not_the_key() -> None:
     key = Fernet.generate_key()
     assert len(crypto.key_id(key)) == 16 and crypto.key_id(key) not in key.decode()
@@ -121,6 +132,30 @@ async def test_rotate_all_re_encrypts_dormant_rows_and_leaves_unreadable_ones(
     assert only_new.decrypt(bob.user_id, "fake", (await _row(unreadable)).refresh_token_enc) == "1//bob"
     listed = (await admin_client.get("/api/admin/plugins")).json()[0]
     assert listed["connections"]["old_key"] == 0
+
+
+async def test_rotate_all_drops_an_unreadable_access_token_and_keeps_the_refresh_token(
+    monkeypatch: pytest.MonkeyPatch, fake: FakePlugin, create_user: Callable[..., Awaitable[ApiClient]]
+) -> None:
+    alice = await create_user("alice")
+    assert alice.user_id is not None
+    connection_id = await insert_connection(alice.user_id, key=TEST_TOKEN_KEY, refresh_token="1//alice")
+    foreign = crypto.TokenCipher([Fernet.generate_key()]).encrypt(alice.user_id, "fake", "ya29.other-key")
+    async with SessionLocal() as db:
+        row = await db.get(PluginConnection, connection_id)
+        assert row is not None
+        row.access_token_enc = foreign
+        await db.commit()
+    new = Fernet.generate_key().decode()
+    monkeypatch.setattr(settings, "token_encryption_key", f"{new},{TEST_TOKEN_KEY}")
+
+    assert await crypto.rotate_all() == (1, 0)
+
+    row = await _row(connection_id)
+    only_new = crypto.TokenCipher([new.encode()])
+    assert row.key_id == only_new.key_id
+    assert only_new.decrypt(alice.user_id, "fake", row.refresh_token_enc) == "1//alice"
+    assert (row.access_token_enc, row.access_expires_at) == (None, None)  # the next use refreshes it
 
 
 async def test_startup_runs_the_rotation_and_the_plugins_startup(

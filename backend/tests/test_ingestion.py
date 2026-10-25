@@ -2,11 +2,13 @@
 
 import asyncio
 import io
+import logging
 import zipfile
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
 import litellm
 import pytest
 from conftest import (
@@ -22,14 +24,17 @@ from conftest import (
 )
 from pypdf import PdfWriter
 from qdrant_client import models as qm
+from qdrant_client.http.exceptions import ResponseHandlingException, UnexpectedResponse
 from qdrant_client.models import Record
+from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import select, update
+from sqlalchemy.exc import OperationalError
 
 from app.config import settings
 from app.db import SessionLocal
 from app.models import Document, LLMModel, UsageEvent
 from app.redis_client import INGEST_QUEUE, get_redis, ingest_attempts_key
-from app.services import ingestion, llm, vectorstore
+from app.services import ingestion, llm, storage, vectorstore
 from app.services.ingestion import NO_EMBEDDING_MODEL, process_document
 from app.services.model_registry import get_active_embedding_model
 from app.services.parsing import SUPPORTED_EXTENSIONS, DocumentParseError
@@ -387,22 +392,23 @@ async def test_embedding_provider_errors_fail_with_a_friendly_message(
 
 
 async def test_a_failing_later_batch_keeps_the_usage_and_leaves_no_vectors(
-    alice: ApiClient, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+    alice: ApiClient, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch, ingestion_sleeps: list[float]
 ) -> None:
     monkeypatch.setattr(settings, "chunk_size", 200)
     monkeypatch.setattr(settings, "chunk_overlap", 0)
     monkeypatch.setattr(settings, "embed_batch_size", 1)
 
-    async def fail_second_call(call: int) -> None:
-        if call == 2:
+    async def fail_from_the_second_call(call: int) -> None:
+        if call >= 2:
             raise litellm.APIConnectionError(message="connection reset", llm_provider="openai", model="x")
 
-    wrap_embedding(monkeypatch, fake_llm, fail_second_call)
+    wrap_embedding(monkeypatch, fake_llm, fail_from_the_second_call)
 
     item = await ingest(alice, "long.txt", txt_bytes(PARAGRAPH * 3))
 
     assert item["status"] == "failed"
     assert item["error"] == "Could not connect to the model provider."
+    assert ingestion_sleeps == [1.0, 4.0]  # the second batch, tried three times
     assert await all_point_count(item["id"]) == 0
     [event] = await embedding_events()
     assert event.prompt_tokens == len(fake_llm.embedding_calls[0]["input"][0].split())
@@ -691,3 +697,342 @@ async def test_switching_the_model_marks_old_documents_stale_and_indexes_new_one
     assert listing == {first["id"]: True, second["id"]: False}
     assert len(await points(old.id, first["id"])) == first["num_chunks"]
     assert len(await points(new.id, second["id"])) == second["num_chunks"]
+
+
+# ---------------- Best-effort steps that fail ----------------
+
+
+class RedisDown:
+    """A Redis client whose pipelines fail, as while the server is unreachable."""
+
+    def pipeline(self, *args: Any, **kwargs: Any) -> Any:
+        raise RedisConnectionError("Connection refused")
+
+
+async def test_a_run_finishes_when_redis_cant_count_the_attempt(
+    alice: ApiClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    doc_id = await uploaded_id(alice, "notes.txt", txt_bytes(PARAGRAPH))
+    monkeypatch.setattr(ingestion, "get_redis", RedisDown)
+
+    with caplog.at_level(logging.WARNING, logger="app.services.ingestion"):
+        document = await process(doc_id)
+
+    assert document is not None and document.status == "ready"
+    assert f"Could not count the ingestion attempt of document {doc_id}" in caplog.text
+
+
+async def test_a_stored_file_that_cant_be_read_fails_the_document(alice: ApiClient) -> None:
+    doc_id = await uploaded_id(alice, "notes.txt", txt_bytes(PARAGRAPH))
+    async with SessionLocal() as session:
+        stored_name = await session.scalar(select(Document.stored_name).where(Document.id == doc_id))
+    assert stored_name is not None
+    path = storage.stored_path(stored_name)
+    path.unlink()
+    path.mkdir()  # still there, but not readable as a file
+
+    document = await process(doc_id)
+
+    assert document is not None
+    assert (document.status, document.error) == ("failed", "The uploaded file could not be read.")
+    assert await all_point_count(doc_id) == 0
+
+
+async def test_usage_that_cant_be_recorded_doesnt_fail_the_document(
+    alice: ApiClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    async def database_down(*args: Any, **kwargs: Any) -> None:
+        raise OperationalError("INSERT INTO usage_events", {}, Exception("server closed the connection"))
+
+    monkeypatch.setattr(ingestion, "record_usage", database_down)
+
+    with caplog.at_level(logging.ERROR, logger="app.services.ingestion"):
+        item = await ingest(alice, "notes.txt", txt_bytes(PARAGRAPH))
+
+    assert item["status"] == "ready" and item["num_chunks"] > 0
+    assert await embedding_events() == []
+    assert f"Could not record the usage of document {item['id']}" in caplog.text
+
+
+async def test_a_document_queued_again_while_redis_is_down_is_left_for_the_sweep(
+    alice: ApiClient,
+    admin_client: ApiClient,
+    fake_llm: FakeLLM,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    model = await active_model()
+    doc_id = await uploaded_id(alice, "notes.txt", txt_bytes(PARAGRAPH))
+
+    async def edit_the_model(call: int) -> None:
+        if call == 1:
+            edited = await admin_client.patch(f"/api/admin/models/{model.id}", json={"api_base": "https://emb.example/v1"})
+            assert edited.status_code == 200
+
+    async def redis_down(doc_id: int) -> None:
+        raise RedisConnectionError("Connection refused")
+
+    wrap_embedding(monkeypatch, fake_llm, edit_the_model)
+    monkeypatch.setattr(ingestion, "enqueue_document", redis_down)
+    with caplog.at_level(logging.WARNING, logger="app.services.ingestion"):
+        interrupted = await process(doc_id)
+
+    assert interrupted is not None and interrupted.status == "pending"
+    assert await get_redis().lrange(INGEST_QUEUE, 0, -1) == []
+    assert f"Could not queue document {doc_id} again" in caplog.text
+    assert await ingestion.requeue_orphans(0) == 1
+    assert await get_redis().lrange(INGEST_QUEUE, 0, -1) == [str(doc_id)]
+
+
+async def test_a_deleted_models_collection_that_cant_be_dropped_doesnt_stop_the_retry(
+    alice: ApiClient,
+    admin_client: ApiClient,
+    fake_llm: FakeLLM,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    old = await active_model()
+    new = await model_named("openai/text-embedding-3-large")
+    doc_id = await uploaded_id(alice, "notes.txt", txt_bytes(PARAGRAPH))
+
+    async def qdrant_down(name: str) -> None:
+        raise ConnectionError("Qdrant is unreachable")
+
+    async def replace_the_model(call: int) -> None:
+        if call == 1:
+            switched = await admin_client.patch(
+                f"/api/admin/models/{new.id}", json={"enabled": True, "is_default": True}
+            )
+            deleted = await admin_client.delete(f"/api/admin/models/{old.id}")
+            assert (switched.status_code, deleted.status_code) == (200, 204)
+            monkeypatch.setattr(vectorstore, "drop_collection", qdrant_down)
+
+    wrap_embedding(monkeypatch, fake_llm, replace_the_model)
+    with caplog.at_level(logging.ERROR, logger="app.services.ingestion"):
+        interrupted = await process(doc_id)
+
+    assert interrupted is not None and interrupted.status == "pending"
+    assert await get_redis().lrange(INGEST_QUEUE, 0, -1) == [str(doc_id)]
+    assert f"Could not drop the vector collection {vectorstore.collection_name(old.id)}" in caplog.text
+    document = await process(doc_id)
+    assert document is not None and (document.status, document.embedding_model_id) == ("ready", new.id)
+
+
+# ---------------- Dropped connections and timeouts ----------------
+
+DISCONNECTED = "Server disconnected without sending a response."
+
+
+def dropped_connection() -> Exception:
+    return litellm.APIConnectionError(message=DISCONNECTED, llm_provider="openai", model="text-embedding-3-small")
+
+
+def timed_out() -> Exception:
+    return litellm.Timeout(message="Request timed out.", model="text-embedding-3-small", llm_provider="openai")
+
+
+def caused_by(error: Exception, cause: BaseException) -> Exception:
+    error.__cause__ = cause
+    return error
+
+
+def cause_cycle() -> Exception:
+    first, second = ValueError("first"), ValueError("second")
+    first.__cause__, second.__cause__ = second, first
+    return first
+
+
+@pytest.mark.parametrize(
+    ("error", "transient"),
+    [
+        (httpx.RemoteProtocolError(DISCONNECTED), True),
+        (httpx.ConnectError("Connection refused"), True),
+        (httpx.ReadError("Connection reset by peer"), True),
+        (httpx.ReadTimeout("timed out"), True),
+        (ConnectionResetError(), True),
+        (TimeoutError(), True),
+        (dropped_connection(), True),
+        (timed_out(), True),
+        (caused_by(llm.LLMError("Could not connect to the model provider."), dropped_connection()), True),
+        (ResponseHandlingException(httpx.RemoteProtocolError(DISCONNECTED)), True),
+        (httpx.UnsupportedProtocol("Request URL has an unsupported protocol 'ftp://'."), False),
+        (httpx.LocalProtocolError("Illegal header value"), False),
+        (litellm.AuthenticationError(message="bad key", llm_provider="openai", model="m"), False),
+        (litellm.RateLimitError(message="insufficient_quota", llm_provider="openai", model="m"), False),
+        (litellm.BadRequestError(message="input too long", llm_provider="openai", model="m"), False),
+        (litellm.InternalServerError(message="server error", llm_provider="openai", model="m"), False),
+        (llm.LLMError("The embedding provider returned an unexpected response."), False),
+        (UnexpectedResponse(400, "Bad Request", b"{}", httpx.Headers()), False),
+        (ResponseHandlingException(ValueError("not a valid response")), False),
+        (RuntimeError("socket closed"), False),
+        (cause_cycle(), False),
+    ],
+    ids=lambda value: type(value).__name__ if isinstance(value, BaseException) else str(value),
+)
+def test_only_dropped_connections_and_timeouts_are_retried(error: BaseException, transient: bool) -> None:
+    assert ingestion._is_transient(error) is transient
+
+
+@pytest.mark.parametrize("error", [dropped_connection, timed_out])
+async def test_an_embedding_call_that_drops_its_connection_is_retried_and_the_document_gets_ready(
+    alice: ApiClient,
+    fake_llm: FakeLLM,
+    monkeypatch: pytest.MonkeyPatch,
+    ingestion_sleeps: list[float],
+    error: Callable[[], Exception],
+) -> None:
+    async def fail_twice(call: int) -> None:
+        if call <= 2:
+            raise error()
+
+    wrap_embedding(monkeypatch, fake_llm, fail_twice)
+
+    item = await ingest(alice, "notes.txt", txt_bytes(PARAGRAPH))
+
+    assert (item["status"], item["error"]) == ("ready", None)
+    assert ingestion_sleeps == [1.0, 4.0]
+    assert len(fake_llm.embedding_calls) == 1 and await all_point_count(item["id"]) == item["num_chunks"]
+    assert len(await embedding_events()) == 1
+
+
+async def test_an_embedding_provider_that_stays_unreachable_fails_the_document_after_three_tries(
+    alice: ApiClient, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch, ingestion_sleeps: list[float]
+) -> None:
+    calls: list[int] = []
+
+    async def unreachable(call: int) -> None:
+        calls.append(call)
+        raise dropped_connection()
+
+    wrap_embedding(monkeypatch, fake_llm, unreachable)
+
+    item = await ingest(alice, "notes.txt", txt_bytes(PARAGRAPH))
+
+    assert (item["status"], item["error"]) == ("failed", "Could not connect to the model provider.")
+    assert calls == [1, 2, 3] and ingestion_sleeps == [1.0, 4.0]
+    # One run with a result: the retries don't count toward MAX_INTERRUPTED_RUNS.
+    assert await get_redis().exists(ingest_attempts_key(item["id"])) == 0
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        litellm.AuthenticationError(message="bad key", llm_provider="openai", model="text-embedding-3-small"),
+        litellm.RateLimitError(message="insufficient_quota", llm_provider="openai", model="text-embedding-3-small"),
+        litellm.BadRequestError(message="input too long", llm_provider="openai", model="text-embedding-3-small"),
+        litellm.InternalServerError(message="server error", llm_provider="openai", model="text-embedding-3-small"),
+        RuntimeError("socket closed"),
+    ],
+    ids=["auth", "quota", "bad-request", "server-error", "other"],
+)
+async def test_other_embedding_errors_fail_the_document_at_once(
+    alice: ApiClient,
+    fake_llm: FakeLLM,
+    monkeypatch: pytest.MonkeyPatch,
+    ingestion_sleeps: list[float],
+    error: Exception,
+) -> None:
+    calls: list[int] = []
+
+    async def refuse(call: int) -> None:
+        calls.append(call)
+        raise error
+
+    wrap_embedding(monkeypatch, fake_llm, refuse)
+
+    item = await ingest(alice, "notes.txt", txt_bytes(PARAGRAPH))
+
+    assert item["status"] == "failed"
+    assert calls == [1] and ingestion_sleeps == []
+
+
+@pytest.mark.parametrize("method", ["create_collection", "delete", "upsert"])
+async def test_a_qdrant_call_that_drops_its_connection_is_retried(
+    alice: ApiClient, monkeypatch: pytest.MonkeyPatch, ingestion_sleeps: list[float], method: str
+) -> None:
+    client = vectorstore.get_qdrant()
+    real = getattr(client, method)
+    calls = 0
+
+    async def drop_the_first(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ResponseHandlingException(httpx.RemoteProtocolError(DISCONNECTED))
+        return await real(*args, **kwargs)
+
+    monkeypatch.setattr(client, method, drop_the_first)
+
+    item = await ingest(alice, "notes.txt", txt_bytes(PARAGRAPH))
+
+    assert (item["status"], item["error"]) == ("ready", None)
+    assert calls == 2 and ingestion_sleeps == [1.0]
+    assert await all_point_count(item["id"]) == item["num_chunks"]
+
+
+async def test_a_qdrant_error_response_fails_the_document_at_once(
+    alice: ApiClient, monkeypatch: pytest.MonkeyPatch, ingestion_sleeps: list[float]
+) -> None:
+    client = vectorstore.get_qdrant()
+    calls = 0
+
+    async def reject(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        raise UnexpectedResponse(400, "Bad Request", b"{}", httpx.Headers())
+
+    monkeypatch.setattr(client, "upsert", reject)
+
+    item = await ingest(alice, "notes.txt", txt_bytes(PARAGRAPH))
+
+    assert item["status"] == "failed" and item["error"].startswith("Processing failed: Unexpected Response: 400")
+    assert calls == 1 and ingestion_sleeps == []
+
+
+async def test_no_retry_starts_more_than_two_minutes_after_the_first_try(
+    alice: ApiClient, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch, ingestion_sleeps: list[float]
+) -> None:
+    now = 1000.0
+    monkeypatch.setattr(ingestion, "_clock", lambda: now)
+    calls: list[int] = []
+
+    async def time_out_after_100_seconds(call: int) -> None:
+        nonlocal now
+        calls.append(call)
+        now += 100
+        raise timed_out()
+
+    wrap_embedding(monkeypatch, fake_llm, time_out_after_100_seconds)
+
+    item = await ingest(alice, "notes.txt", txt_bytes(PARAGRAPH))
+
+    assert (item["status"], item["error"]) == ("failed", "The model provider timed out.")
+    # The retry after 1 s starts at 101 s; the next would start at 204 s.
+    assert calls == [1, 2] and ingestion_sleeps == [1.0]
+
+
+async def test_a_shutdown_during_a_retry_wait_leaves_the_document_for_the_next_start(
+    alice: ApiClient, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    waiting = asyncio.Event()
+
+    async def wait_forever(seconds: float) -> None:
+        waiting.set()
+        await asyncio.Event().wait()
+
+    async def unreachable(call: int) -> None:
+        raise dropped_connection()
+
+    monkeypatch.setattr(ingestion, "_sleep", wait_forever)
+    wrap_embedding(monkeypatch, fake_llm, unreachable)
+    doc_id = await uploaded_id(alice, "notes.txt", txt_bytes(PARAGRAPH))
+    await get_redis().lrem(INGEST_QUEUE, 0, str(doc_id))
+    job = asyncio.create_task(process_document(doc_id))
+    await asyncio.wait_for(waiting.wait(), 10)
+    job.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await job
+
+    async with SessionLocal() as session:
+        document = await session.get(Document, doc_id)
+    assert document is not None and document.status == "processing"  # retried on the next start

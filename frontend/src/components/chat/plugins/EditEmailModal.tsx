@@ -5,7 +5,7 @@ import { useAuth } from "../../../auth/AuthContext";
 import { formatBytes } from "../../../lib/format";
 import { useDocumentList } from "../../documents/documentEvents";
 import Modal from "../../ui/Modal";
-import Spinner from "../../ui/Spinner";
+import { ButtonSpinner } from "../../ui/Spinner";
 import { CloseIcon, PaperclipIcon } from "../icons";
 import { formatAddressForInput, splitAddressList } from "./email";
 import { ReplyToLine } from "./EmailDetails";
@@ -153,8 +153,8 @@ export default function EditEmailModal({ pending, onClose, onRevised }: EditEmai
           <button type="button" className="btn" onClick={onClose} disabled={saving}>
             Cancel
           </button>
-          <button type="submit" form={formId} className="btn btn-primary" disabled={saving}>
-            {saving ? <Spinner size={14} label="Saving" /> : null}
+          <button type="submit" form={formId} className="btn btn-primary" disabled={saving} aria-busy={saving || undefined}>
+            {saving ? <ButtonSpinner size={14} /> : null}
             Save changes
           </button>
         </>

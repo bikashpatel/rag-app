@@ -192,6 +192,22 @@ async def test_a_broken_plugin_never_breaks_chat(fake: FakePlugin, alice: ApiCli
     assert "tools" not in fake_llm.chat_calls[-1]
 
 
+async def test_a_plugin_whose_tools_fail_to_start_answers_without_them(
+    alice: ApiClient, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken(self: object, tool_name: str) -> None:
+        raise RuntimeError("the session couldn't start")
+
+    monkeypatch.setattr("fake_plugin.FakeSession.runner", broken)
+
+    with caplog.at_level(logging.ERROR, logger="app.routers.chat"):
+        response, events = await chat(alice, "Look up my invoices", document_ids=[])
+
+    assert response.status_code == 200 and names(events)[-1] == "done"
+    assert "tools" not in fake_llm.chat_calls[-1]
+    assert "The fake plugin failed to start its tools" in caplog.text
+
+
 async def test_tool_order_and_identical_prompts_across_calls(
     monkeypatch: pytest.MonkeyPatch, alice: ApiClient, fake_llm: FakeLLM
 ) -> None:

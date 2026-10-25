@@ -17,7 +17,7 @@ from sqlalchemy import select
 from app.db import SessionLocal
 from app.main import _RedactPluginQuery
 from app.models import PluginAuditEvent, PluginConnection
-from app.plugins import connections, registry
+from app.plugins import connections, oauth, registry
 from app.redis_client import get_redis
 
 USER = Callable[..., Awaitable[ApiClient]]
@@ -51,6 +51,60 @@ async def _audit(user_id: int | None) -> list[tuple[str, str, str]]:
 
 def _params(url: str) -> dict[str, str]:
     return dict(httpx.URL(url).params)
+
+
+# ---------------- PUBLIC_BASE_URLS ----------------
+
+
+@pytest.mark.parametrize(
+    ("value", "origin"),
+    [
+        ("HTTPS://Rag.Example.COM:443/", "https://rag.example.com"),
+        ("http://localhost:80", "http://localhost"),
+        ("http://127.0.0.1:8080", "http://127.0.0.1:8080"),
+        ("http://[::1]:8080/", "http://[::1]:8080"),
+        ("  https://rag.example.com  ", "https://rag.example.com"),
+        ("", None),
+        ("   ", None),
+        ("rag.example.com", None),
+        ("ftp://rag.example.com", None),
+        ("javascript://rag.example.com", None),
+        ("https://rag.example.com/app", None),
+        ("https://rag.example.com/?next=/", None),
+        ("https://rag.example.com?", None),
+        ("https://rag.example.com#", None),
+        ("https://rag.example.com/#top", None),
+        ("https://user@rag.example.com", None),
+        ("https://user:secret@rag.example.com", None),
+        ("https://rag.example.com:99999", None),
+        ("https://rag.example.com:port", None),
+        ("https://", None),
+        ("http://rag_backend:8000", "http://rag_backend:8000"),
+        ("http://a b", None),
+        ('http://rag"example.com', None),
+        ("http://rag.example.com\\", None),
+        ("http://bücher.example", None),  # browsers send the punycode form as the Origin
+    ],
+)
+def test_only_plain_http_origins_are_valid_base_urls(value: str, origin: str | None) -> None:
+    assert oauth.normalize_origin(value) == origin
+
+
+def test_base_urls_are_normalized_deduplicated_and_invalid_ones_logged(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from app.config import settings
+
+    source = "https://rag.example.com, HTTPS://RAG.example.com:443/, http://a b, http://localhost:8080,,https://x/y"
+    monkeypatch.setattr(settings, "public_base_urls", source)
+
+    with caplog.at_level(logging.WARNING, logger="app.plugins.oauth"):
+        assert oauth.public_base_urls() == ["https://rag.example.com", "http://localhost:8080"]
+        assert oauth.public_base_urls() == ["https://rag.example.com", "http://localhost:8080"]  # parsed once
+
+    assert [record.getMessage() for record in caplog.records] == [
+        "Ignoring invalid PUBLIC_BASE_URLS entries (scheme://host[:port] only): http://a b, https://x/y"
+    ]
 
 
 # ---------------- Connect ----------------

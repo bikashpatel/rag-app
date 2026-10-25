@@ -3,7 +3,7 @@ import { api, ApiError } from "../../api/client";
 import type { AdminConfig, AdminModel, AdminUser, AdminUserCreate, AdminUserUpdate } from "../../api/types";
 import Modal from "../ui/Modal";
 import PasswordInput from "../ui/PasswordInput";
-import Spinner from "../ui/Spinner";
+import { ButtonSpinner } from "../ui/Spinner";
 import { AlertCircleIcon, AlertIcon } from "../ui/icons";
 import { errorMessage } from "./adminApi";
 import { Field, SwitchField } from "./Field";
@@ -160,8 +160,8 @@ export default function UserFormModal({ user, config, chatModels, modelsError, o
           <button type="button" className="btn" onClick={onClose} disabled={saving}>
             Cancel
           </button>
-          <button type="submit" form={formId} className="btn btn-primary" disabled={saving}>
-            {saving ? <Spinner size={14} label="Saving" /> : null}
+          <button type="submit" form={formId} className="btn btn-primary" disabled={saving} aria-busy={saving || undefined}>
+            {saving ? <ButtonSpinner size={14} /> : null}
             {creating ? "Create user" : "Save changes"}
           </button>
         </>

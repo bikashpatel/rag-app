@@ -120,7 +120,7 @@ rag-app/
         documents.py        INGESTION   /api/documents/*
         conversations.py    CHAT        /api/conversations/*
         chat.py             CHAT        /api/chat/stream
-    tests/                  (integration tests, see section 9)
+    tests/                  (in-process API tests, see section 9)
   frontend/
     Dockerfile  .dockerignore  package.json  package-lock.json  vite.config.ts
     tsconfig.json  index.html                 index.html loads public/theme-boot.js first in <head>
@@ -142,6 +142,12 @@ rag-app/
       pages/AdminPage.tsx + components/admin/* FE-ADMIN
       components/connections/*                 FE-CONN (connection cards, Gmail browser and import; CSS prefix conn-)
       components/settings/*                    FE-SETTINGS (the Settings dialog; CSS prefix settings-)
+      **/*.test.ts(x), test/                   Vitest tests next to the code; shared test helpers (section 9)
+  integration/              full-stack tests (section 9): run.sh, stack.sh, gen_env.py, compose.it.yml,
+                            fake_llm/ (a fake OpenAI-compatible server), fake_google/ (serves the fakes in
+                            backend/tests), tests/
+  e2e/                      Playwright browser tests against the running stack (section 9)
+  .github/workflows/ci.yml  CI: every suite (section 9)
 ```
 
 Each router module exposes `router = APIRouter(prefix="/<area>", tags=[...])`;
@@ -509,7 +515,10 @@ type MyUsage = { month: string /* "YYYY-MM", UTC */; period_start: string; reset
   file bytes), `conversations/index.json`, and per conversation
   `conversations/<id>-<slug>.md` (a transcript, with one line per plugin card)
   and `.json` (messages with sources, files and plugin cards with their current
-  state, as `GET /conversations/{id}` shows them). Only the caller's own data, the
+  state, as `GET /conversations/{id}` shows them); `<id>` is zero-padded to 6
+  digits and `<slug>` is the title's ASCII letters and digits, lowercased, other
+  runs as `-`, at most 40 characters (`conversation` when nothing is left), e.g.
+  `conversations/000062-trip-plan.md`. Only the caller's own data, the
   admin included; never passwords, tokens or keys. Newest conversations first,
   within `EXPORT_MAX_MB` of content and `EXPORT_TIMEOUT_SECONDS`. Headers:
   `Content-Disposition: attachment; filename="rag-assistant-export-<username>-<YYYY-MM-DD>.zip"`,
@@ -635,10 +644,11 @@ thinking or writing a long file, a file rendering), the server sends an SSE
 comment line `: keepalive` (followed by a blank line). Clients must ignore
 comment lines.
 
-Server behaviour: new conversation title = first 60 chars of the message
-(whitespace collapsed). The user message is saved before streaming; the
-assistant message is saved at the end, **including partial content if the
-client disconnects or the provider errors** (then `error` is set). Usage is
+Server behaviour: new conversation title = the message with whitespace
+collapsed, cut to its first 60 characters followed by "…" when longer. The user
+message is saved before streaming; the assistant message is saved at the end,
+**including partial content if the client disconnects or the provider errors**
+(then `error` is set). Usage is
 recorded as a `chat` usage event (provider-reported tokens, else estimated
 with `litellm.token_counter`), committed before the message so a message that
 can't be stored is still billed; NUL characters are dropped from the answer. Retrieval failures don't fail the chat: they
@@ -869,7 +879,11 @@ type PluginCard =
 Plugin problems never answer 401 (that means "signed out"): not connected,
 reconnect needed or another Google account → 409; the plugin or the capability
 turned off → 403; Gmail unreachable or rate limited → 503; an unknown Gmail id →
-404; another user's pending send → 404. In Google's testing mode a connection
+404; another user's pending send → 404. Send and revise check the caller's own
+Gmail access before the pending send (turned off → 403; not connected,
+reconnect needed or send not granted → 409, e.g. "Gmail isn't connected."), so
+only a caller who could send gets that 404; get and cancel answer 404 to any
+other user. In Google's testing mode a connection
 reads as reconnect needed (`expired_testing`) once it is 7 days old, without
 waiting for a failed call.
 
@@ -1117,12 +1131,16 @@ type RequestCheckTestResult = { ok: boolean; message: string; latency_ms: number
    the active embedding model, ensures the collection, deletes the document's
    old points (in the old and the new collection), upserts, records an
    `embedding` usage event (and a `vision` one) for the owner, then sets `ready` with `num_chunks`,
-   `num_pages` and `embedding_model_id`. Any failure → `failed` with a
-   human-readable `error` (≤ 1000 chars). If the embedding model was edited
-   (`litellm_model`/`api_base`) or deleted during the run, its vectors are
-   dropped and the document goes back to `pending` and is re-enqueued for the
-   model active now (Postgres row locks keep the run from recreating a
-   dropped collection).
+   `num_pages` and `embedding_model_id`. An embedding or Qdrant call that
+   fails with a dropped connection or a timeout is tried again after 1 s and
+   then 4 s (no retry starts more than 120 s after the first try); other errors
+   (rejected requests, quotas, error responses) aren't retried. The retries are
+   part of the run (they don't count toward the 3 interrupted runs). Any
+   failure → `failed` with a human-readable `error` (≤ 1000 chars). If the
+   embedding model was edited (`litellm_model`/`api_base`) or deleted during
+   the run, its vectors are dropped and the document goes back to `pending` and
+   is re-enqueued for the model active now (Postgres row locks keep the run from
+   recreating a dropped collection).
 4. **Vision (PDFs only, when a vision model is active as the run starts).**
    *Measuring* (pypdf, in the parse thread): pages that draw images (image
    XObjects, also inside forms, or inline images) get their content streams
@@ -1405,4 +1423,42 @@ plugin registry is empty unless a test opts in, the same fake runs
 standalone for Docker smoke runs, and one test runs the real LiteLLM for the
 request check with the HTTP layer replaced and checks the request bodies).
 Models therefore stick to portable column types (`JSON`, not `JSONB`).
-Run with `pytest` from `backend/` (see `backend/tests/README.md`).
+Run with `pytest` from `backend/` (see `backend/tests/README.md`). The
+Postgres database must be a throwaway one: its name must contain `test` or
+`scratch`, and a `public` schema holding tables the tests didn't create (they
+mark the schema they create) is never emptied. Cross-cutting guards cover new
+code without being edited: every route of the route table (hidden ones
+included) answers 401 without a session unless it is public, and every route
+taking a user's resource id is classified; every foreign key cascades or is a
+listed `SET NULL` key, and deleting a user, a conversation or a document is
+checked over every table those keys reach.
+
+`integration/` runs the whole stack in Docker: `integration/run.sh` starts an
+isolated Compose project (`rag-it`: its own volumes, an internal network, a
+generated throwaway env file; the repository's `.env` is never read), runs
+pytest from the host against it and tears it down. Ports on 127.0.0.1 come from
+`IT_APP_PORT`, `IT_FAKE_LLM_PORT` and `IT_FAKE_GOOGLE_PORT` (defaults in
+`integration/README.md`). Every enabled model points at `fake_llm/` (an
+OpenAI-compatible chat, embedding, vision and image server) and Google at
+`fake_google/`, which runs `backend/tests/fake_google.py`, `fake_gmail.py` and
+`fake_google_server.py` (mounted read-only from `backend/tests`), so changes to
+those fakes must keep both suites passing. Real providers and Google are never
+reached.
+
+`e2e/` is a Playwright suite (Chromium, desktop and phone) against the running
+stack (`http://localhost:8080` by default). It creates and deletes its own
+`e2e-<run id>-<random>` users through the admin API, answers chat with canned
+SSE, and blocks model, Google, upload and re-index calls (and, in the admin's
+browser context, every write except to its own test users); the one `@live`
+test (a real model call) is skipped unless `E2E_LIVE=1`. See `e2e/README.md`.
+
+`frontend/src/**/*.test.ts(x)` are Vitest tests (Testing Library, jsdom) with
+`fetch` stubbed, run with `TZ=UTC` and the `en_US` locale; `npm run
+test:coverage` fails below the thresholds in `vite.config.ts`. See
+`frontend/src/test/README.md`.
+
+`.github/workflows/ci.yml` runs every suite on pushes to `main` and pull
+requests: the backend with ruff, mypy and coverage (at least 94 %), the
+`postgres`-marked tests against a Postgres service, the frontend (`tsc`,
+Vitest, the build), e2e against a stack with a throwaway `.env` and fake
+provider keys, and `integration/run.sh`.

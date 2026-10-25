@@ -14,7 +14,7 @@ import { DocsIcon, ExternalLinkIcon, PaperclipIcon, SearchIcon } from "../ui/ico
 import { formatEmailDate, importStatusView, plural, safeHttpsUrl } from "../chat/plugins/email";
 import { announceDocument, requestDocumentsReload } from "../documents/documentEvents";
 import Modal from "../ui/Modal";
-import Spinner from "../ui/Spinner";
+import Spinner, { ButtonSpinner } from "../ui/Spinner";
 import "./connections.css";
 
 const PAGE_SIZE = 20;
@@ -225,15 +225,16 @@ export default function GmailImportModal({ plugin, onClose }: GmailImportModalPr
           </button>
         ) : null}
         <button type="button" className="btn" onClick={onClose}>
-          {importing ? "Close" : "Cancel"}
+          {importing ? "Continue in background" : "Cancel"}
         </button>
         <button
           type="button"
           className="btn btn-primary"
           onClick={() => void runImport()}
           disabled={importing || selected === 0 || overLimit}
+          aria-busy={importing || undefined}
         >
-          {importing ? <Spinner size={14} label="Importing" /> : null}
+          {importing ? <ButtonSpinner size={14} /> : null}
           {importing ? "Importing…" : `Import ${plural(selected, "item")}`}
         </button>
       </div>
@@ -322,8 +323,9 @@ export default function GmailImportModal({ plugin, onClose }: GmailImportModalPr
               className="btn btn-sm conn-load-more"
               onClick={() => void runSearch(query, nextPage)}
               disabled={searching !== null}
+              aria-busy={searching === "more" || undefined}
             >
-              {searching === "more" ? <Spinner size={12} label="Loading more" /> : null}
+              {searching === "more" ? <ButtonSpinner size={12} /> : null}
               Load more
             </button>
           ) : null}

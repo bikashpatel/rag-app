@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { AdminStats } from "../../api/types";
 import { formatNumber } from "../../lib/format";
-import Spinner from "../ui/Spinner";
+import { ButtonSpinner } from "../ui/Spinner";
 import { errorMessage, queuedMessage, reindexDocuments } from "./adminApi";
 import FlashMessage from "./FlashMessage";
 import { useFlash, usePolling, type Resource } from "./hooks";
@@ -152,9 +152,10 @@ export default function StatsBar({ stats, onOpenModels }: StatsBarProps) {
             type="button"
             className="btn btn-primary btn-sm"
             disabled={reindexing}
+            aria-busy={reindexing || undefined}
             onClick={() => void reindexStaleAndFailed()}
           >
-            {reindexing ? <Spinner size={12} label="Queuing" /> : null}
+            {reindexing ? <ButtonSpinner size={12} /> : null}
             {stale > 0 ? "Re-index now" : "Retry failed"}
           </button>
         </div>

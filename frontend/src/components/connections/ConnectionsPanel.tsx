@@ -16,7 +16,7 @@ import {
   MailIcon,
   SearchIcon,
 } from "../ui/icons";
-import Spinner from "../ui/Spinner";
+import { ButtonSpinner } from "../ui/Spinner";
 import "./connections.css";
 import {
   gmailReady,
@@ -411,8 +411,9 @@ function PluginConnectionCard({ plugin, headingId, onBrowse, onDisconnected }: P
       className="btn btn-primary btn-sm"
       onClick={(event) => requestConnect({}, event.currentTarget)}
       disabled={busy}
+      aria-busy={redirecting || undefined}
     >
-      {redirecting ? <Spinner size={12} label="Opening Google" /> : null}
+      {redirecting ? <ButtonSpinner size={12} /> : null}
       Reconnect
     </button>
   );
@@ -437,9 +438,10 @@ function PluginConnectionCard({ plugin, headingId, onBrowse, onDisconnected }: P
                 className="conn-link-btn conn-account-action"
                 onClick={(event) => requestConnect({}, event.currentTarget)}
                 disabled={busy}
+                aria-busy={redirecting || undefined}
                 aria-label={`Reconnect ${name}`}
               >
-                {redirecting ? <Spinner size={11} label="Opening Google" /> : null}
+                {redirecting ? <ButtonSpinner size={11} /> : null}
                 Reconnect
               </button>
             </span>
@@ -503,8 +505,9 @@ function PluginConnectionCard({ plugin, headingId, onBrowse, onDisconnected }: P
                 className="btn btn-primary btn-sm"
                 onClick={(event) => requestConnect({}, event.currentTarget)}
                 disabled={busy}
+                aria-busy={redirecting || undefined}
               >
-                {redirecting ? <Spinner size={12} label="Opening Google" /> : null}
+                {redirecting ? <ButtonSpinner size={12} /> : null}
                 Connect {name}
               </button>
             ) : null}
@@ -661,8 +664,14 @@ function PluginConnectionCard({ plugin, headingId, onBrowse, onDisconnected }: P
             >
               Cancel
             </button>
-            <button type="button" className="btn btn-danger btn-sm" onClick={() => void disconnect()} disabled={disconnecting}>
-              {disconnecting ? <Spinner size={12} label="Disconnecting" /> : null}
+            <button
+              type="button"
+              className="btn btn-danger btn-sm"
+              onClick={() => void disconnect()}
+              disabled={disconnecting}
+              aria-busy={disconnecting || undefined}
+            >
+              {disconnecting ? <ButtonSpinner size={12} /> : null}
               Disconnect {name}
             </button>
           </div>
