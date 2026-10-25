@@ -108,7 +108,8 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
   - End-to-end (`e2e/`): 48 Playwright tests in 10 files against the running stack (1 `@live`, skipped by default).
   - Integration (`integration/`): 102 tests in 14 files on an isolated Compose project (`rag-it`) with a fake
     OpenAI-compatible model server and the fake Google.
-  - CI: `.github/workflows/ci.yml` runs all of them (it hasn't run on GitHub yet). See "Test suites and CI" below.
+  - CI: `.github/workflows/ci.yml` runs all of them on every push; all five jobs passed on GitHub on 2026-10-25. See
+    "Test suites and CI" below.
 
 How the work went: the lead wrote `SPEC.md` and the foundation code. Agents then built the
 feature areas in parallel from `docs/briefs/`, followed by backend integration tests, frontend
@@ -1380,9 +1381,10 @@ committed files.
 - **The test suites run without real models or Google**, so a few paths are only covered offline: the e2e suite never
   uploads a file for real, never streams a real answer and never connects Gmail, and runs Chromium only (no WebKit or
   Firefox). The live smoke and browser-pass scripts of the earlier runs weren't committed.
-- **CI hasn't run on GitHub yet.** Its commands were rehearsed on this Mac; the pinned actions, caches, artifact
-  uploads, `playwright install --with-deps` and the masking of the e2e job's secrets are proven only by a first run.
-  The backend coverage gate (94 %) is about 1 point under today's 95.1 %.
+- **CI** passed all five jobs on GitHub on 2026-10-25 (commit `d4eada1`). The first run (`3a277a0`) failed two backend
+  tests that only CI's runner exposed: a 1 s timing limit (now 5 s), and SQLite rounding `date()` to the millisecond,
+  which moved 23:59:59.9995 into the next day (usage is now grouped per day with `usage.utc_day`). The backend coverage
+  gate (94 %) is about 1 point under today's 95.1 %.
 - `undici` 8.11.2 (through jsdom, frontend tests only) has an advisory; its fix, 8.12.2, was published on 2026-10-15,
   too recently for the two-week rule.
 - `pytest` 8.4.2 has advisory GHSA-6w46-j5rx-g56g (dev only; fixed in 9.0.3). It was left pinned
@@ -1424,12 +1426,9 @@ committed files.
 
 ## Next steps
 
-The test suites and CI are written, reviewed and verified (2026-10-25) but not committed. What is left:
+The test suites and CI are written, reviewed, verified and committed (`3a277a0`, then `d4eada1`), and CI is green on
+GitHub (2026-10-25). What is left:
 
-- Review and commit them: `backend/.coveragerc`, the new and changed backend tests, `frontend/src/**/*.test.ts(x)` and
-  `frontend/src/test/`, `e2e/`, `integration/`, `.github/`, and the app and doc changes listed in "Test suites and
-  CI". Then push and watch the first CI run, which is the only check of what the rehearsal couldn't show (see "Known
-  limitations").
 - Bump `undici` (through jsdom) to 8.12.2 or later once it is two weeks old, and raise the coverage thresholds
   (`vite.config.ts`, CI's `--cov-fail-under`) when coverage goes up.
 
