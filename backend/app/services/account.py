@@ -279,7 +279,7 @@ async def my_usage(db: AsyncSession, user: User) -> MyUsage:
     now = current_time()
     start = usage.month_start(now)
     end = usage.next_month(start)
-    day = func.date(UsageEvent.created_at)
+    day = usage.utc_day(UsageEvent.created_at)
     rows = await db.execute(
         select(
             day,

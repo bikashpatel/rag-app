@@ -8,11 +8,13 @@ from typing import Any
 import pytest
 from conftest import ApiClient, txt_bytes, upload
 from sqlalchemy import delete
+from sqlalchemy.dialects import postgresql, sqlite
 
 from app.config import settings
 from app.db import SessionLocal
 from app.models import UsageEvent, UserImageLimit
 from app.services import account
+from app.services.usage import utc_day
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
@@ -223,3 +225,10 @@ async def test_usage_needs_a_session(client: ApiClient) -> None:
     response = await client.get("/api/me/usage")
 
     assert (response.status_code, response.json()) == (401, {"detail": "Not authenticated"})
+
+
+def test_usage_days_are_cut_from_the_timestamp_on_sqlite() -> None:
+    """Some SQLite versions round date('… 23:59:59.9995') to the next day; Postgres casts in the UTC session."""
+    day = utc_day(UsageEvent.__table__.c.created_at)
+    assert str(day.compile(dialect=sqlite.dialect())) == "substr(usage_events.created_at, 1, 10)"
+    assert str(day.compile(dialect=postgresql.dialect())) == "date(usage_events.created_at)"

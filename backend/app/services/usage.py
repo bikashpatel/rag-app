@@ -4,10 +4,14 @@ import logging
 import secrets
 import time
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.compiler import SQLCompiler
+from sqlalchemy.sql.functions import FunctionElement
 
 from app.config import settings
 from app.models import LLMModel, UsageEvent, User, UserImageLimit
@@ -42,6 +46,26 @@ def month_bounds(month: str | None) -> tuple[datetime, datetime, str]:
 def next_month(start: datetime) -> datetime:
     """The 1st of the month after `start` (the 1st of a month); December rolls over to January."""
     return start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+
+
+class utc_day(FunctionElement[Any]):
+    """The UTC calendar day of a timestamp column, for grouping usage per day (sessions run in UTC).
+
+    Some SQLite versions round date() to the millisecond (CI's moves 23:59:59.9995 to the next day), so on SQLite the
+    day is cut from the stored "YYYY-MM-DD HH:MM:SS.ffffff" text instead.
+    """
+
+    inherit_cache = True
+
+
+@compiles(utc_day)
+def _utc_day(element: utc_day, compiler: SQLCompiler, **kw: Any) -> str:
+    return f"date({compiler.process(element.clauses, **kw)})"
+
+
+@compiles(utc_day, "sqlite")
+def _utc_day_sqlite(element: utc_day, compiler: SQLCompiler, **kw: Any) -> str:
+    return f"substr({compiler.process(element.clauses, **kw)}, 1, 10)"
 
 
 def user_limits(user: User) -> dict:

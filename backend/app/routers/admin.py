@@ -68,7 +68,7 @@ from app.services.storage import (
     remove_file,
     vision_page_counts,
 )
-from app.services.usage import month_bounds
+from app.services.usage import month_bounds, utc_day
 
 logger = logging.getLogger(__name__)
 
@@ -518,7 +518,7 @@ async def usage_report(
         .order_by(UsageEvent.kind, total_tokens.desc(), UsageEvent.model_name)
     )
 
-    day = func.date(UsageEvent.created_at)
+    day = utc_day(UsageEvent.created_at)
     daily = await db.execute(
         select(day, _CHAT_TOKENS, _EMBEDDING_TOKENS, _VISION_TOKENS, _IMAGES, _COST)
         .where(*in_month)

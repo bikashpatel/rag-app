@@ -240,7 +240,7 @@ def test_the_form_reuse_bomb_is_not_renderable_and_measured_quickly() -> None:
 
     result = measure(form_bomb())
 
-    assert time.monotonic() - started < 1
+    assert time.monotonic() - started < 5  # unguarded it parses 6 million operators; CI with coverage takes ~1.7 s
     assert result.renderable is False
     assert result.images[0].share == pytest.approx(1.0)  # the images seen before it stopped are kept
 
