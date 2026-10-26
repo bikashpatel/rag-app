@@ -110,7 +110,7 @@ describe("PluginsDataTab", () => {
       await user.click(submit);
 
       const result = await screen.findByText("Deleted 12 conversations.");
-      expect(result.closest("[role=status]")).toHaveFocus();
+      await waitFor(() => expect(result.closest("[role=status]")).toHaveFocus());
       expect(screen.queryByRole("form", { name: "Confirm deleting all chats" })).not.toBeInTheDocument();
       expect(screen.getByText("You have no conversations right now.")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Delete all chats…" })).toHaveAttribute("aria-disabled", "true");

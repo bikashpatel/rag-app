@@ -168,7 +168,7 @@ describe("AccountTab", () => {
       await user.type(screen.getByLabelText("Confirm new password"), "correct-horse-battery{Enter}");
       const result = await screen.findByRole("status");
       expect(result).toHaveTextContent("Your password was changed. Your other sessions were signed out.");
-      expect(result).toHaveFocus();
+      await waitFor(() => expect(result).toHaveFocus());
       expect(screen.queryByRole("form", { name: "Change password" })).not.toBeInTheDocument();
       expect(posted(calls, "/auth/change-password")).toEqual([
         { current_password: "old-secret", new_password: "correct-horse-battery" },
@@ -240,7 +240,7 @@ describe("AccountTab", () => {
       response.resolve(noContent());
       await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Other sessions were signed out."));
       const result = screen.getByRole("status");
-      expect(result).toHaveFocus();
+      await waitFor(() => expect(result).toHaveFocus());
       expect(screen.queryByRole("group", { name: "Confirm logging out of other sessions" })).not.toBeInTheDocument();
       expect(posted(calls, "/auth/logout-others")).toHaveLength(1);
     });
