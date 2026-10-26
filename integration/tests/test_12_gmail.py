@@ -15,35 +15,15 @@ import httpx
 import pytest
 from harness import (
     APP_URL,
-    FAKE_GOOGLE_URL,
     User,
     assert_sse_contract,
     chat,
     check,
     document,
+    gmail_connect,
+    google_state,
     wait_document,
 )
-
-
-def _google_state() -> dict:
-    return check(httpx.get(f"{FAKE_GOOGLE_URL}/_state", timeout=10)).json()
-
-
-def connect(user: User) -> str:
-    """The browser flow: connect -> the fake's consent (answers at once) -> the app's callback. Returns the result."""
-    start = check(user.client.post("/api/plugins/gmail/connect", json={}, headers={"Origin": APP_URL})).json()
-    authorize = urlparse(start["authorize_url"])
-    assert f"{authorize.scheme}://{authorize.netloc}" == FAKE_GOOGLE_URL
-    query = parse_qs(authorize.query)
-    assert query["code_challenge_method"] == ["S256"] and query["access_type"] == ["offline"]
-    assert "code_verifier" not in query and "client_secret" not in query
-    consent = httpx.get(start["authorize_url"], follow_redirects=False, timeout=10)
-    assert consent.status_code == 302, consent.text
-    callback = urlparse(consent.headers["location"])
-    assert f"{callback.scheme}://{callback.netloc}" == APP_URL and callback.path == "/api/plugins/gmail/oauth/callback"
-    finished = user.client.get(f"{callback.path}?{callback.query}", follow_redirects=False)
-    assert finished.status_code == 303
-    return parse_qs(urlparse(finished.headers["location"]).query)["oauth"][0]
 
 
 def _card(result, card_type: str) -> dict:
@@ -64,14 +44,14 @@ def gmail_on(admin) -> Iterator[None]:
 @pytest.fixture(scope="module")
 def mailbox_user(gmail_on, user_factory) -> User:
     user = user_factory("gmail")
-    assert connect(user) == "connected"
+    assert gmail_connect(user) == "connected"
     return user
 
 
 def test_connect_through_the_fake_oauth_flow(mailbox_user: User, make_user) -> None:
     (gmail,) = [plugin for plugin in check(mailbox_user.client.get("/api/plugins")).json() if plugin["id"] == "gmail"]
     connection = gmail["connection"]
-    assert connection["status"] == "connected" and connection["account_email"] == _google_state()["account"]
+    assert connection["status"] == "connected" and connection["account_email"] == google_state()["account"]
     assert connection["chat_enabled"] is True
     assert {capability["id"] for capability in gmail["capabilities"] if capability["granted"]} == {
         "read",
@@ -154,7 +134,7 @@ def test_chat_searches_gmail_and_cites_the_email(mailbox_user: User, fake) -> No
 
 
 def test_draft_is_created_and_nothing_is_sent(mailbox_user: User, fake) -> None:
-    before = _google_state()
+    before = google_state()
     mark = fake.mark()
     result = chat(
         mailbox_user.client, 'Draft an email to bob@company.com with the subject "Kickoff agenda"', document_ids=[]
@@ -163,7 +143,7 @@ def test_draft_is_created_and_nothing_is_sent(mailbox_user: User, fake) -> None:
     card = _card(result, "gmail_draft")
     assert card["status"] == "created" and [recipient["address"] for recipient in card["to"]] == ["bob@company.com"]
     assert [entry["kind"] for entry in fake.log(after=mark) if entry["kind"] == "request_check"] == ["request_check"]
-    after = _google_state()
+    after = google_state()
     assert len(after["drafts"]) == len(before["drafts"]) + 1 and len(after["sent"]) == len(before["sent"])
     draft = after["drafts"][-1]
     assert draft["to"] == "bob@company.com" and draft["subject"] == "Kickoff agenda" and not draft["bcc"]
@@ -171,7 +151,7 @@ def test_draft_is_created_and_nothing_is_sent(mailbox_user: User, fake) -> None:
 
 @pytest.mark.deadline(240)
 def test_send_happens_only_after_confirm_and_once(mailbox_user: User, make_user) -> None:
-    sent_before = len(_google_state()["sent"])
+    sent_before = len(google_state()["sent"])
     result = chat(
         mailbox_user.client, 'Send an email to bob@company.com with the subject "Status update"', document_ids=[]
     )
@@ -180,27 +160,27 @@ def test_send_happens_only_after_confirm_and_once(mailbox_user: User, make_user)
     pending = card["pending"]
     assert card["status"] == "proposed" and pending["status"] == "pending"
     assert [recipient["address"] for recipient in pending["to"]] == ["bob@company.com"]
-    assert len(_google_state()["sent"]) == sent_before, "proposing an email must not send it"
+    assert len(google_state()["sent"]) == sent_before, "proposing an email must not send it"
 
     send = f"/api/plugins/gmail/sends/{pending['id']}"
     other = make_user("gmail-thief")  # connected to the same Google account, but not the proposal's owner
-    assert connect(other) == "connected"
+    assert gmail_connect(other) == "connected"
     assert other.client.get(send).status_code == 404
     assert other.client.post(f"{send}/send", json={"content_hash": pending["content_hash"]}).status_code == 404
     assert mailbox_user.client.post(f"{send}/send", json={"content_hash": "0" * 64}).status_code == 409
-    assert len(_google_state()["sent"]) == sent_before
-    revocations = _google_state()["revocations"]
+    assert len(google_state()["sent"]) == sent_before
+    revocations = google_state()["revocations"]
     check(other.client.delete("/api/plugins/gmail/connection"), 204)
-    assert _google_state()["revocations"] == revocations, "a grant another connection shares must not be revoked"
+    assert google_state()["revocations"] == revocations, "a grant another connection shares must not be revoked"
 
     done = check(mailbox_user.client.post(f"{send}/send", json={"content_hash": pending["content_hash"]})).json()
     assert done["status"] == "sent" and done["gmail_url"]
-    state = _google_state()
+    state = google_state()
     assert len(state["sent"]) == sent_before + 1
     assert state["sent"][-1]["to"] == "bob@company.com" and state["sent"][-1]["subject"] == "Status update"
     again = mailbox_user.client.post(f"{send}/send", json={"content_hash": pending["content_hash"]})
     assert again.status_code == 409
-    assert len(_google_state()["sent"]) == sent_before + 1
+    assert len(google_state()["sent"]) == sent_before + 1
 
 
 def test_users_without_a_connection_get_no_gmail_tools(gmail_on, make_user, fake) -> None:
@@ -213,9 +193,9 @@ def test_users_without_a_connection_get_no_gmail_tools(gmail_on, make_user, fake
 
 
 def test_disconnect_revokes_the_grant(mailbox_user: User) -> None:
-    revocations = _google_state()["revocations"]
+    revocations = google_state()["revocations"]
     check(mailbox_user.client.delete("/api/plugins/gmail/connection"), 204)
-    assert _google_state()["revocations"] == revocations + 1
+    assert google_state()["revocations"] == revocations + 1
     (gmail,) = [plugin for plugin in check(mailbox_user.client.get("/api/plugins")).json() if plugin["id"] == "gmail"]
     assert gmail["connection"] is None
     assert mailbox_user.client.post("/api/plugins/gmail/threads/search", json={}).status_code == 409

@@ -40,7 +40,9 @@ fi
 
 # Interpolation must come only from the env file: the shell's values would win over it.
 exec env -u POSTGRES_USER -u POSTGRES_PASSWORD -u POSTGRES_DB -u APP_PORT -u WORKER_MEM_LIMIT \
-  -u MAX_UPLOAD_MB_HARD -u IT_FAKE_LLM_PORT -u IT_FAKE_GOOGLE_PORT \
+  -u MAX_UPLOAD_MB_HARD -u IT_FAKE_LLM_PORT -u IT_FAKE_GOOGLE_PORT -u APP_VERSION -u QDRANT_API_KEY \
+  -u QDRANT_COLLECTION_PREFIX -u BACKUP_DIR -u BACKUP_SCHEDULE -u BACKUP_KEEP_DAILY -u BACKUP_KEEP_WEEKLY \
+  -u BACKUP_START_DELAY_SECONDS -u BACKUP_UID -u BACKUP_GID \
   -u COMPOSE_FILE -u COMPOSE_PROJECT_NAME -u COMPOSE_ENV_FILES -u COMPOSE_PROFILES \
   docker compose -p "$PROJECT" --project-directory "$ROOT" \
   -f "$ROOT/docker-compose.yml" -f "$ROOT/integration/compose.it.yml" --env-file "$ENV_FILE" "$@"

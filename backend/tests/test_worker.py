@@ -6,21 +6,28 @@ guard against a hung worker.
 
 import asyncio
 import logging
+import os
 import signal
+import sqlite3
+import subprocess
+import sys
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, closing
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import litellm
 import pytest
+from alembic.util import CommandError
 from conftest import ApiClient, ingest, txt_bytes, upload
 from redis.exceptions import ConnectionError as RedisConnectionError
 from sqlalchemy import select, update
 from sqlalchemy.exc import OperationalError
 
 from app import worker
-from app.db import SessionLocal
+from app.db import SchemaMismatchError, SessionLocal
 from app.models import Document, utcnow
 from app.redis_client import INGEST_QUEUE, get_redis, ingest_attempts_key
 from app.routers import documents
@@ -392,6 +399,77 @@ async def test_worker_gives_up_when_the_database_never_comes_up(monkeypatch: pyt
 
     with pytest.raises(OSError, match="connection refused"):
         await asyncio.wait_for(worker.Worker(1).run(), GUARD_SECONDS)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        SchemaMismatchError("The database differs from the baseline in 1 way(s) that can't be repaired automatically"),
+        CommandError("Can't locate revision identified by '0099'"),
+    ],
+)
+async def test_worker_stops_at_once_on_a_schema_it_cannot_use(
+    monkeypatch: pytest.MonkeyPatch, pauses: list[float], error: Exception
+) -> None:
+    """Waiting doesn't change a schema made before migrations that differs, or one a newer release migrated."""
+    attempts = 0
+
+    async def unusable() -> None:
+        nonlocal attempts
+        attempts += 1
+        raise error
+
+    monkeypatch.setattr(worker, "init_db", unusable)
+
+    with pytest.raises(type(error)):
+        await asyncio.wait_for(worker.Worker(1).run(), GUARD_SECONDS)
+
+    assert (attempts, pauses) == (1, [])
+
+
+BACKEND = Path(__file__).resolve().parent.parent
+
+
+@pytest.mark.parametrize(
+    ("statements", "message"),
+    [
+        (
+            ["CREATE TABLE users (id INTEGER PRIMARY KEY, nickname TEXT)"],
+            "differs from the baseline in",
+        ),
+        (
+            [
+                "CREATE TABLE alembic_version (version_num VARCHAR(32) PRIMARY KEY)",
+                "INSERT INTO alembic_version VALUES ('0099')",
+            ],
+            "Can't locate revision identified by '0099'",
+        ),
+    ],
+    ids=["made-before-migrations-and-differs", "migrated-by-a-newer-release"],
+)
+def test_the_worker_process_exits_with_the_reason_instead_of_retrying(
+    tmp_path: Path, statements: list[str], message: str
+) -> None:
+    database = tmp_path / "old.db"
+    with closing(sqlite3.connect(database)) as connection:
+        for statement in statements:
+            connection.execute(statement)
+        connection.commit()
+    started = time.monotonic()
+    result = subprocess.run(
+        [sys.executable, "-m", "app.worker"],
+        cwd=BACKEND,
+        env=os.environ | {"DATABASE_URL": f"sqlite+aiosqlite:///{database}"},
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 1, result.stderr[-2000:]
+    assert time.monotonic() - started < worker._DB_STARTUP_SECONDS / 2  # no retries
+    assert "Not starting: this release can't use the database's schema: " in result.stderr
+    assert message in result.stderr
+    assert "Database not ready" not in result.stderr and "Traceback" not in result.stderr
 
 
 async def test_worker_retries_queue_recovery_while_redis_is_down(

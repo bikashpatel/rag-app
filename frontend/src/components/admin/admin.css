@@ -1124,6 +1124,141 @@
   }
 }
 
+/* ---------- System ---------- */
+.admin-system-checks,
+.admin-system-alerts {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.admin-system-check {
+  display: grid;
+  grid-template-columns: 18px minmax(10rem, 13rem) 5.5rem minmax(0, 1fr);
+  align-items: center;
+  gap: 6px 12px;
+  padding: 11px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.admin-system-check:last-child,
+.admin-system-alert:last-child {
+  border-bottom: 0;
+}
+.admin-system-check-label {
+  color: var(--text);
+  font-weight: 600;
+}
+.admin-system-check-detail {
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.admin-system-icon {
+  display: inline-flex;
+}
+.admin-system-icon-ok {
+  color: var(--success);
+}
+.admin-system-icon-warning {
+  color: var(--warning);
+}
+.admin-system-icon-critical,
+.admin-system-failing {
+  color: var(--danger);
+}
+.admin-system-icon-unknown {
+  color: var(--text-3);
+}
+.admin-system-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 20px;
+  margin: 0;
+  padding: 16px 20px;
+  font-size: 14px;
+}
+.admin-system-facts dt {
+  color: var(--text-3);
+}
+.admin-system-facts dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.admin-system-empty {
+  margin: 0;
+  padding: 16px 20px;
+  color: var(--text-3);
+  font-size: 14px;
+}
+.admin-system-channels {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 8px;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.admin-system-last-run {
+  margin-left: auto;
+}
+.admin-system-alert {
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.admin-system-alert-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 14px;
+}
+.admin-system-alert-title {
+  min-width: 0;
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.admin-system-alert-lines {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: var(--text-2);
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+.admin-system-alert-delivery {
+  margin: 4px 0 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+@media (max-width: 719.98px) {
+  .admin-system-check {
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    padding: 11px 16px;
+  }
+  .admin-system-check-detail {
+    grid-column: 2 / -1;
+  }
+  .admin-system-facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+    padding: 14px 16px;
+  }
+  .admin-system-facts dd + dt {
+    margin-top: 8px;
+  }
+  .admin-system-channels,
+  .admin-system-alert,
+  .admin-system-empty {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+  .admin-system-last-run {
+    margin-left: 0;
+  }
+}
+
 /* Windows contrast themes drop background fills: the selected tab's underline is redrawn in a system colour. */
 @media (forced-colors: active) {
   .admin-tab[aria-selected="true"]::after {

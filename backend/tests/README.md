@@ -22,7 +22,7 @@ uv venv --python 3.13 .venv && uv pip sync requirements-dev.txt
 # or with a python3.13 on PATH:
 python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
-.venv/bin/python -m pytest -q                    # everything: about 2,380 tests, 6 to 9 minutes
+.venv/bin/python -m pytest -q                    # everything: about 2,450 tests, 6 to 9 minutes
 .venv/bin/python -m pytest tests/test_smoke.py   # one file
 .venv/bin/python -m pytest -k chat -x            # by name, stop at the first failure
 ```
@@ -49,6 +49,15 @@ the total). The PDF and file render children (`pdf_render_child.py`, `filegen/ch
 environment variable through; the code they call is measured in-process. The outputs (`.coverage`, `htmlcov/`,
 `coverage.xml`) are git-ignored.
 
+### Lint and types
+
+```bash
+uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests migrations
+uvx mypy@1.18.2 --python-executable .venv/bin/python --ignore-missing-imports app migrations
+```
+
+CI runs the same commands, with `UV_EXCLUDE_NEWER` keeping `uvx` to releases from before the adoption cutoff.
+
 ### Postgres
 
 The tests run on SQLite. Tests marked `postgres` run on a throwaway Postgres database instead, the app included, and are
@@ -69,23 +78,57 @@ docker run -d --rm --name "$name" -e POSTGRES_USER=rag -e POSTGRES_PASSWORD="$pa
   postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24  # docker-compose.yml's
 until docker exec "$name" pg_isready -q -h 127.0.0.1 -U rag; do sleep 1; done
 export TEST_POSTGRES_URL="postgresql+asyncpg://rag:$password@127.0.0.1:$(docker port "$name" 5432 | head -1 | cut -d: -f2)/scratch"
-.venv/bin/python -m pytest -q -m postgres                      # 10 tests, seconds
+.venv/bin/python -m pytest -q -m postgres                      # 35 tests, seconds
 TEST_DATABASE=postgres .venv/bin/python -m pytest -q           # everything on Postgres, about 17 minutes
 docker stop "$name"
 ```
 
-On Postgres the suite skips one test (marked `sqlite_only`), which reads the SQLite file synchronously.
+On Postgres the suite skips two tests: one marked `sqlite_only`, which reads the SQLite file synchronously, and the
+migration test of SQLite's `PRAGMA foreign_key_check` (Postgres enforces foreign keys throughout a migration).
+
+## Schema and migrations
+
+The tests build their schema the way the app does: the `app` fixture's lifespan (and every direct `init_db()` call) runs
+the Alembic migrations (`app.db.init_db`, `migrations/README.md`), on SQLite as on Postgres. It costs about what
+`create_all` did (some 25 ms per SQLite database), so no test takes a shortcut. A few tests that need tables on engines
+of their own (`test_account_postgres.py`, the image reservation race) still call `create_all` on them.
+
+`test_migrations.py` covers the start-up path; most of its tests run twice, on SQLite and (marked `postgres`) on
+`TEST_POSTGRES_URL`:
+
+- an empty database gets every migration and matches the models; the migrations make exactly what `create_all` makes
+  (every table's reflected columns, keys, indexes and constraints compared); the migrations are one line from the
+  baseline, which can't be downgraded;
+- the **drift guard**: after `upgrade head`, autogenerate finds nothing against the models (it fails when a model
+  changes without a migration, and is shown to catch an added column);
+- a database made by `create_all` (with rows) is stamped at the baseline and kept; missing tables and indexes are
+  created; foreign keys with other `ON DELETE` rules get the baseline's on Postgres (names kept, the rules checked by
+  deleting rows) and are refused on SQLite;
+- every other kind of difference (extra or missing column, type, nullability, server default, extra table or index,
+  missing unique index or constraint, a named check constraint) refuses start-up with one error listing it, and the
+  database is unchanged (reflected shape and row counts compared), even with a repairable difference beside it; the
+  align migration refuses a database stamped by hand that differs;
+- the app's lifespan starts on a database made before migrations and doesn't start on one that differs; `init_db`
+  doesn't start on a database a newer release migrated (an unknown revision);
+- two processes started while the test holds the advisory lock both wait; then one migrates and the other finds the
+  schema up to date (Postgres only);
+- a later revision (the `later_migration` fixture writes one into a copy of the migrations) that copies a table, a
+  batch `alter_column` on `users`, keeps every row referring to it, by start-up and by the command line, with foreign
+  keys on again afterwards; on SQLite, one that leaves rows referring to missing ones is rolled back whole by
+  `PRAGMA foreign_key_check`;
+- the alembic command line (`upgrade head`, `check`, `current`) through `alembic.ini` and `env.py`, and its
+  `upgrade` leaving a database made before migrations unchanged (no `alembic_version` either).
 
 ## What the suite doesn't cover
 
 SQLite ignores `SELECT ... FOR UPDATE` and the other row locks, so the races they guard run only in the
 `postgres`-marked tests: `test_postgres_locks.py` (parallel uploads against the document, storage and duplicate checks
-with the in-process locks taken away, so only the row lock serializes them; `db.init_db`'s advisory lock; the UTC session
-time zone of `db.make_engine` under a database set to another zone), `test_account_postgres.py` and the image
-reservation race in `test_image_tool.py`. Still untested as races between processes: an admin password reset racing a
-password change, a document deleted while the worker finishes it, and the embedding model edited while a job writes
-vectors (the tests cover the logic around these, also on Postgres with `TEST_DATABASE=postgres`, not the locking). What
-was checked by hand against Postgres 17 is listed in `docs/HANDOFF.md`.
+with the in-process locks taken away, so only the row lock serializes them; `db.init_db`'s advisory lock, also between
+processes in `test_migrations.py`; the UTC session time zone of `db.make_engine` under a database set to another zone),
+`test_account_postgres.py` and the image reservation race in `test_image_tool.py`. Still untested as races between
+processes: an admin password reset racing a password change, a document deleted while the worker finishes it, and the
+embedding model edited while a job writes vectors (the tests cover the logic around these, also on Postgres with
+`TEST_DATABASE=postgres`, not the locking). What was checked by hand against Postgres 17 is listed in `docs/HANDOFF.md`.
 
 Cross-cutting checks that cover new code without being edited: `test_route_guards.py` reads the routes from the app's
 route table, so routes hidden from the OpenAPI schema count too (every route but the public ones answers 401 without a

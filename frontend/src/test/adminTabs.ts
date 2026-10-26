@@ -1,4 +1,4 @@
-import type { AdminPlugin, AdminStats, PluginActivityReport, UsageReport } from "../api/types";
+import type { AdminPlugin, AdminStats, PluginActivityReport, SystemStatus, UsageReport } from "../api/types";
 
 export function makeAdminStats(overrides: Partial<AdminStats> = {}): AdminStats {
   return {
@@ -91,6 +91,79 @@ export function makeActivityReport(overrides: Partial<PluginActivityReport> = {}
         ],
       },
       { user_id: 7, username: "maya.chen", actions: [{ action: "search", ok: 10, failed: 0, refused: 0 }, { action: "send", ok: 2, failed: 0, refused: 0 }] },
+    ],
+    ...overrides,
+  };
+}
+
+export function makeSystemStatus(overrides: Partial<SystemStatus> = {}): SystemStatus {
+  return {
+    status: "ok",
+    checked_at: "2026-10-20T09:29:50Z",
+    app_version: "v1.4.0-3-gabc1234",
+    checks: [
+      { id: "postgres", label: "Database (Postgres)", status: "ok", detail: "Reachable; the database holds 48 MB" },
+      { id: "redis", label: "Redis", status: "ok", detail: "Reachable" },
+      { id: "qdrant", label: "Vector store (Qdrant)", status: "ok", detail: "Reachable; 1 collection" },
+      { id: "worker", label: "Ingestion worker", status: "ok", detail: "Heartbeat 4 s ago; 0 jobs running" },
+      { id: "queue", label: "Ingestion queue", status: "ok", detail: "Idle" },
+      { id: "backup", label: "Backups", status: "ok", detail: "Last backup 7.0 h ago (512 MB)" },
+      { id: "disk_uploads", label: "Disk space for uploads", status: "ok", detail: "40 GB free of 100 GB (40 %)" },
+      { id: "disk_backups", label: "Disk space for backups", status: "ok", detail: "40 GB free of 100 GB (40 %)" },
+      { id: "proxy", label: "Web server (nginx)", status: "ok", detail: "The app answers through nginx" },
+      { id: "monitor", label: "Monitor and alerts", status: "ok", detail: "Ran 20 s ago; alerts go to webhook, ntfy" },
+    ],
+    worker: { heartbeat_age_seconds: 4.2, running_jobs: 0 },
+    queue: { queued: 0, pending: 0, processing: 0, oldest_pending_age_seconds: null },
+    failed_documents_24h: 0,
+    database_size_bytes: 48 * 1024 ** 2,
+    disks: [
+      { id: "uploads", label: "Uploads", free_bytes: 40 * 1024 ** 3, total_bytes: 100 * 1024 ** 3, checked_at: "2026-10-20T09:29:50Z" },
+      { id: "backups", label: "Backups", free_bytes: 40 * 1024 ** 3, total_bytes: 100 * 1024 ** 3, checked_at: "2026-10-20T09:25:00Z" },
+    ],
+    backup: {
+      status_seen: true,
+      max_age_hours: 26,
+      last_success_at: "2026-10-20T02:30:41Z",
+      last_success_name: "20261020T023000Z-scheduled",
+      last_success_size_bytes: 512 * 1024 ** 2,
+      last_success_duration_seconds: 41,
+      age_hours: 7,
+      last_failure_at: null,
+      last_failure_error: null,
+      failing: false,
+      running_since: null,
+      schedule: "02:30",
+      next_run_at: "2026-10-21T02:30:00Z",
+      scheduler_seen_at: "2026-10-20T09:25:00Z",
+      backups_kept: 9,
+      total_size_bytes: 4 * 1024 ** 3,
+    },
+    gmail_reconnect_needed: 0,
+    monitor: {
+      running: true,
+      last_run_at: "2026-10-20T09:29:30Z",
+      interval_seconds: 60,
+      channels: ["webhook", "ntfy"],
+      test_pending: false,
+    },
+    alerts: [
+      {
+        at: "2026-10-20T08:12:00Z",
+        kind: "recovery",
+        title: "[RAG Assistant] Resolved: Vector store (Qdrant)",
+        lines: ["RESOLVED Vector store (Qdrant): OK again after 4 min (Reachable; 1 collection)", "At 2026-10-20 08:12:00 UTC.", "Details: http://localhost:8080/admin#system"],
+        delivered: ["webhook", "ntfy"],
+        failed: [],
+      },
+      {
+        at: "2026-10-20T08:08:00Z",
+        kind: "problem",
+        title: "[RAG Assistant] Problem: Vector store (Qdrant)",
+        lines: ["PROBLEM Vector store (Qdrant) (critical): Unreachable: connection refused", "At 2026-10-20 08:08:00 UTC."],
+        delivered: ["webhook"],
+        failed: ["ntfy"],
+      },
     ],
     ...overrides,
   };

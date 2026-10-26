@@ -7,8 +7,19 @@ import httpx
 import pytest
 from harness import APP_URL, ENV, FAKE_API_BASE, MARKER, PROJECT, check, client, docker, exec_in, python_in, services
 
-EXPECTED_SERVICES = {"postgres", "redis", "qdrant", "backend", "worker", "frontend", "fake-llm", "fake-google"}
-WITH_HEALTHCHECK = EXPECTED_SERVICES - {"worker"}
+EXPECTED_SERVICES = {
+    "postgres",
+    "redis",
+    "qdrant",
+    "backend",
+    "worker",
+    "frontend",
+    "monitor",
+    "backup",
+    "fake-llm",
+    "fake-google",
+    "fake-alerts",
+}
 # What a backend-image container may have in its environment: the generated env file, docker-compose.yml's
 # `environment`, the image's ENV and what Docker adds. Anything else would have come from somewhere else (.env).
 COMPOSE_ENVIRONMENT = {
@@ -18,6 +29,7 @@ COMPOSE_ENVIRONMENT = {
     "QDRANT_URL",
     "UPLOAD_DIR",
     "LITELLM_LOCAL_MODEL_COST_MAP",
+    "APP_VERSION",
 }
 IMAGE_ENVIRONMENT = {
     "PATH",
@@ -75,7 +87,8 @@ def test_project_is_isolated() -> None:
     assert all(info["name"].startswith(f"{PROJECT}-") for info in found.values()), found
     label = f"label=com.docker.compose.project={PROJECT}"
     volumes = docker("volume", "ls", "--filter", label, "--format", "{{.Name}}").split()
-    assert sorted(volumes) == sorted(f"{PROJECT}_{name}" for name in ("pgdata", "redisdata", "qdrantdata", "uploads"))
+    names = ("pgdata", "redisdata", "qdrantdata", "uploads", "backupstatus")
+    assert sorted(volumes) == sorted(f"{PROJECT}_{name}" for name in names)
     networks = docker("network", "ls", "--filter", label, "--format", "{{.Name}}").split()
     assert sorted(networks) == [f"{PROJECT}_default", f"{PROJECT}_edge"]
     internal = docker("network", "inspect", f"{PROJECT}_default", "--format", "{{.Internal}}").strip()
@@ -89,7 +102,7 @@ def test_project_is_isolated() -> None:
 def test_every_service_is_running_and_healthy() -> None:
     found = services()
     assert all(info["state"] == "running" for info in found.values()), found
-    assert all(found[name]["health"] == "healthy" for name in WITH_HEALTHCHECK), found
+    assert all(info["health"] == "healthy" for info in found.values()), found
 
 
 def test_health_through_nginx() -> None:
@@ -100,9 +113,10 @@ def test_health_through_nginx() -> None:
     assert page.headers["x-frame-options"] == "DENY"
 
 
-@pytest.mark.parametrize("service", ["backend", "worker"])
+@pytest.mark.parametrize("service", ["backend", "worker", "monitor"])
 def test_container_environment_is_only_the_generated_env_file(service: str) -> None:
-    """Backend and worker got exactly the generated env file: every value of it, fake keys, nothing from .env."""
+    """Backend, worker and monitor got exactly the generated env file: every value of it, fake keys, nothing from
+    .env."""
     assert ENV["OPENAI_API_KEY"] == "sk-it-fake" and ENV["ANTHROPIC_API_KEY"] == "sk-ant-it-fake"
     digests = {name: _digest(value) for name, value in ENV.items()}
     allowed = sorted(set(ENV) | COMPOSE_ENVIRONMENT | IMAGE_ENVIRONMENT)
@@ -115,7 +129,14 @@ def test_frontend_gets_no_secrets() -> None:
     assert output.strip() == "true"
 
 
-@pytest.mark.parametrize("service", ["backend", "worker"])
+def test_the_backup_service_gets_only_the_database_password() -> None:
+    names = ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "SECRET_KEY", "ADMIN_PASSWORD", "TOKEN_ENCRYPTION_KEY")
+    secrets = "".join(f"${name}" for name in (*names, "GOOGLE_OAUTH_CLIENT_SECRET"))
+    output = exec_in("backup", "sh", "-c", f'test -z "{secrets}" && test -n "$PGPASSWORD" && echo true')
+    assert output.strip() == "true"
+
+
+@pytest.mark.parametrize("service", ["backend", "worker", "monitor"])
 def test_no_internet_from_the_app_containers(service: str) -> None:
     """The default network is internal: no real provider or Google endpoint is reachable, whatever the config."""
     assert python_in(service, EGRESS_CHECK) == "True"

@@ -4,9 +4,7 @@ live rag-app stack (when this machine runs one) is exactly as it was when the se
 import httpx
 import pytest
 from conftest import LIVE_BASELINE
-from harness import ENV, compose, live_containers
-
-SECRETS = ("SECRET_KEY", "ADMIN_PASSWORD", "POSTGRES_PASSWORD", "TOKEN_ENCRYPTION_KEY", "GOOGLE_OAUTH_CLIENT_SECRET")
+from harness import compose, leaked_secrets, live_containers
 
 
 def test_every_model_call_went_to_the_fake_with_the_placeholder_key(fake) -> None:
@@ -17,10 +15,10 @@ def test_every_model_call_went_to_the_fake_with_the_placeholder_key(fake) -> Non
 
 
 def test_no_secret_in_the_service_logs() -> None:
+    """test_14 checks the logs of the containers it replaces before replacing them."""
     logs = compose("logs", "--no-color", timeout=120)
     assert logs
-    leaked = [name for name in SECRETS if ENV[name] in logs]
-    leaked += [key for key in ("sk-it-fake", "sk-ant-it-fake") if key in logs]
+    leaked = leaked_secrets(logs)
     assert not leaked, f"secrets found in the stack logs: {leaked}"
 
 

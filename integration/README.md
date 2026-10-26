@@ -1,8 +1,8 @@
 # Integration tests
 
 These tests start an isolated copy of the whole Docker stack: nginx frontend, FastAPI backend, ingestion worker,
-Postgres, Redis and Qdrant. Next to it run a **fake OpenAI-compatible model server** and the **fake Google** (OAuth and
-Gmail) from `backend/tests`. The tests drive real cross-service flows through nginx, then tear everything down.
+Postgres, Redis, Qdrant, the monitor and the backup service. Next to it run a **fake OpenAI-compatible model server**,
+the **fake Google** (OAuth and Gmail) from `backend/tests` and a **fake alert receiver** for the monitor. The tests drive real cross-service flows through nginx, then tear everything down.
 
 They complement the other suites:
 
@@ -72,8 +72,9 @@ openpyxl, fpdf2, pypdf and Pillow. Test documents are generated at test time.
   when anything lacks the label, so a `down -v --remove-orphans` can never remove another stack's data that happens to
   use the name.
 - **The repository's `.env` is never read.**
-  - `compose.it.yml` replaces the base file's `env_file: .env` for the backend and the worker with
-    `env_file: !override [integration/.run/it.env]`.
+  - `compose.it.yml` replaces the base file's `env_file: .env` for the backend, the worker and the monitor with
+    `env_file: !override [integration/.run/it.env]`. The backup and restore services get their few settings only
+    from interpolation, which `--env-file` points at the same file.
   - Passing `--env-file` replaces `.env` for variable interpolation as well.
   - The shell variables that would win over the env file in interpolation (`POSTGRES_PASSWORD`, `APP_PORT`, …) are
     unset for every Compose call.
@@ -82,8 +83,10 @@ openpyxl, fpdf2, pypdf and Pillow. Test documents are generated at test time.
 - **Throwaway secrets.** `gen_env.py` writes a new `SECRET_KEY`, `ADMIN_PASSWORD`, `POSTGRES_PASSWORD` and
   `TOKEN_ENCRYPTION_KEY` on every run. The file is git-ignored and mode 600. It also holds the fake provider keys and
   the fake Google endpoints and client.
-- **No egress.** The default network is `internal: true`. Only the frontend and the two fakes also join `edge`, for
-  their ports on 127.0.0.1.
+- **No egress.** The default network is `internal: true`. Only the frontend and the model and Google fakes also join
+  `edge`, for their ports on 127.0.0.1. The monitor alerts the fake receiver (`fake_alerts/`) on the internal network.
+- **Backups stay in the run.** `BACKUP_DIR` is `integration/.run/backups` (git-ignored). `run.sh` empties it at the
+  start and at teardown, from a container (on Linux root owns the files).
 - **Only fake models.** At session start (`conftest.py`, fixture `models`), the admin API adds these fake models with
   `api_base` `http://fake-llm:8000/v1`, makes them the defaults, and disables every seeded model:
   - two chat models;
@@ -107,7 +110,7 @@ openpyxl, fpdf2, pypdf and Pillow. Test documents are generated at test time.
 
 | File | Flow |
 |---|---|
-| `test_01_stack.py` | all 8 services up and healthy, isolation (see above), env admin login, 403 on admin routes for users and 401 anonymous, only fake models enabled, every admin model **Test** (chat, embedding, vision, image) reaching the fake |
+| `test_01_stack.py` | all 11 services up and healthy, isolation (see above), the backup service holding no app secret, env admin login, 403 on admin routes for users and 401 anonymous, only fake models enabled, every admin model **Test** (chat, embedding, vision, image) reaching the fake |
 | `test_02_ingestion.py` | every supported extension (`.pdf .docx .pptx .xlsx .html .htm .md .markdown .txt .csv .json`). Each goes upload → file on the shared volume → queue → worker parse, chunk and embed through the fake → Qdrant points = `num_chunks` → `ready` → found in chat. Also: corrupt PDF, DOCX, PPTX and XLSX files fail with a readable error; empty, unsupported, legacy and duplicate uploads are rejected; an embedding outage fails the document and Retry recovers it; other users get 404 |
 | `test_03_chat.py` | SSE through nginx: event order, deltas spread over time (no buffering), sources from the right document, `[n]` citations that map to sources, the prompt the fake received, history and retrieval query in turn 2, `document_ids` narrowing or skipping retrieval, persisted conversations and messages, a provider outage ending with `error` (saved), a client disconnect mid-answer saving the partial answer as stopped, and usage that matches the fake's reported tokens, `/auth/me`, `/me/usage`, the admin usage report, the user list and the `usage_events` rows |
 | `test_04_access.py` | a user's private passage never reaches another user's sources or prompt (checked in the fake's request log), also with that document's id in `document_ids`. The admin's shared document reaches every user (who can't delete it). Deleting a document removes its Qdrant points, its stored file and its retrieval |
@@ -120,6 +123,9 @@ openpyxl, fpdf2, pypdf and Pillow. Test documents are generated at test time.
 | `test_11_export.py` | the export ZIP holds the caller's account, documents and conversation (exact file set) and nothing of another user's, no password or key |
 | `test_12_gmail.py` | against the fake Google: the OAuth connect flow (PKCE, nonce cookie, callback 303); a replayed callback and a foreign `Origin` refused; the Gmail browser (search, read, import a thread with its PDF and DOCX attachments, indexed, re-import links); chat search citing the email as an `EmailSource`; a draft (request check, draft at the fake, nothing sent); a send that happens only after the confirm with the right `content_hash`, exactly once (another connected user gets 404, a wrong hash 409, a second confirm 409); no revoke while another connection shares the Google account; disconnect revokes; no Gmail tools for unconnected users |
 | `test_13_vision_and_images.py` | a scanned PDF fails while no vision model is active. After activating the fake vision model, Retry sends the page image to it, and the transcript is indexed, cited with page 1, and counted as vision tokens. An image from chat goes `writing` → `generating` → `created`: a 1024×1024 PNG with a WebP thumbnail, prompt details, private to its owner, counted as one image. The monthly image limit removes the tool |
+| `test_14_backup_restore.py` | the start-up backup and its status in Admin → System, with no backup alert while it was due (it comes 20 s after the start); a manual backup's manifest (rows per table, Alembic revision, version) and modes (700/600); restore refusing to run without `--yes`; retention (daily and weekly, and a manual backup never pushing out another); the scheduler catching up on a missed backup (its clock fixed). **The restore drill**: users, indexed documents (one shared), a conversation with a generated file and a Gmail connection are backed up; `down -v` destroys the stack and its volumes, an empty one starts, and `scripts/restore.sh --yes` brings back the same rows, files, points and token (decrypting with the same key). Logins work, downloads have the same bytes, search returns the same passages with only the question embedded (nothing re-indexed), the conversation is unchanged, and the app is ready. It checks the logs of the containers it replaces for secrets first. **The hard cases**: a restore over a stack that changed since the backup (a deleted and a new document, re-indexing into the second embedding model's collection, an extra collection) brings back exactly the backed-up rows (a checksum of every table), files and points; a backup paused between its parts (a test hook in a backup container) while a document is deleted and another added, restored and reconciled (the added one failed and its vectors removed, the deleted one's file removed); a `--migrate` restore of a dump at revision 0001, reconciling only after the migration; 24 snapshot uploads to a Qdrant limited to half a CPU (`docker update --cpus`). **Failure injection**, each leaving the stack running with exactly its data from before and no leftovers: a corrupt or missing snapshot, a corrupt archive, `uploads.sha256` disagreeing with the archive (verification refuses before anything stops); a dump that fails to restore and a snapshot Qdrant refuses half-way through (refused before anything is replaced); the swap failing at the last collection, the uploads and the database (`lib.sh` sourced with that step replaced; undone) |
+| `test_16_watchdog.py` | the host watchdog against stand-ins for curl, docker and sleep (no stack): one failed probe restarts nothing; two start the containers as they are (`docker compose start`, then `restart`; never `up` or a build); success is the app answering, not an exit code; alerts on going down and on recovery; a maintenance file keeps it away (a deploy, a running restore's process id, `hold`), unless it was left behind |
+| `test_15_monitoring.py` | `GET /api/health/ready` public and status-only; Admin → System for the admin only, with every check OK and the monitor's channels. Stopping Qdrant, the worker or nginx: readiness 503 (Qdrant, worker), one problem and one recovery alert per channel at the fake webhook and ntfy topic (title, priority and tags headers); a test alert delivered after two failed deliveries; no secret, username or document name in any alert |
 | `test_99_final.py` | the run-wide checks listed under isolation |
 
 ### Not covered
@@ -127,6 +133,8 @@ openpyxl, fpdf2, pypdf and Pillow. Test documents are generated at test time.
 - Real providers, by design.
 - Browser behaviour, which `e2e/` covers.
 - Load and long-running streams (the 15 s keepalive).
+- The email alert channel, which the backend tests cover, and the watchdog starting Docker itself (its Docker and
+  alert calls are stand-ins).
 - The import of Gmail threads from chat (`gmail_import`): the UI import endpoint is covered.
 
 ## The fake model server (`fake_llm/server.py`)
@@ -151,6 +159,10 @@ no new image or dependency. The backend and the worker reach it as `http://fake-
 - `POST /_config` takes the knobs `vision_reply`, `fail_embeddings`, `fail_chat` and `chunk_delay`; tests use
   `fake.knobs(...)`, which restores them. `POST /_reset` clears the log and the knobs.
 
+`fake_alerts/server.py` (the backend image, mounted read-only) records the monitor's webhook (`POST /webhook`) and
+ntfy (`POST /ntfy/<topic>`) alerts; `GET /_log` lists them and `POST /_fail {"count": N}` makes the next N fail.
+Tests read it with `harness.alerts_received()` through `docker compose exec`.
+
 `fake_google/server.py` serves the backend tests' fake Google (mounted read-only from `backend/tests`) with one fixed
 account and the default mailbox. It adds `GET /_state`: the drafts and sent emails it received, revocations and
 active grants. The backend reaches it as `http://fake-google:8099`; the consent URL the browser follows is the
@@ -168,9 +180,12 @@ and `test_99_final.py` checks that none of them reaches a service log. The gener
 ## Writing tests
 
 - `tests/harness.py` has:
-  - `compose`, `exec_in`, `python_in`, `sql`/`sql_value` (psql in the Postgres container), `redis_cli`, and
+  - `compose` (and `compose_started`, left running), `limit_cpus` (`docker update --cpus` on a test stack
+    container), `exec_in`, `python_in`, `sql`/`sql_value` (psql in the Postgres container), `redis_cli`, and
     `qdrant`/`qdrant_points`/`qdrant_vector_size` (calls made from the backend container);
-  - `stored_files` and `stored_names`;
+  - `stored_files`, `stored_names`, `table_counts` and `qdrant_collections`;
+  - `script("backup.sh" | "restore.sh", ...)`, which runs the scripts against the test stack (`RAG_COMPOSE` set to
+    `stack.sh`), `gmail_connect` and `google_state`, `alerts_received` and `leaked_secrets`;
   - the API helpers `login`, `upload`, `documents`, `wait_document`, `wait_queue_idle`, `chat` (a parsed SSE stream
     with arrival times) and `assert_sse_contract`;
   - `FakeLLM`, with `mark()` then `log(kind, after=mark)` for the requests an action made;

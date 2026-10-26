@@ -39,8 +39,9 @@ Decisions the user made when asked:
 - One Qdrant collection per embedding model; switching the active embedding model marks
   documents stale and offers re-indexing. Every search carries the access filter.
 - The monthly budget counts chat tokens only. Embedding tokens are tracked but don't count.
-- Tables are created with `create_all` (no Alembic yet). Add migrations before changing the
-  schema of a database with real data.
+- Schema changes go through Alembic (`backend/migrations/`, README there): `init_db` runs `upgrade head` at
+  start-up in one transaction under the advisory lock. Every change, a new table included, needs a reviewed
+  revision; migrations only go forward, and a rollback means restoring the backup taken before the deploy.
 - Default chat model: `anthropic/claude-opus-5-5`. Claude 5.5 models reject a custom
   `temperature`, so leave it null. Seeded OpenAI models (`openai/gpt-5.5`,
   `openai/gpt-5.4-mini`) came from LiteLLM's model map; confirm them with the admin **Test** button.
@@ -70,6 +71,21 @@ integration/run.sh                # ports 18090-18092; never touches rag-app or 
 # Whole stack
 cp .env.example .env              # fill SECRET_KEY, ADMIN_PASSWORD, POSTGRES_PASSWORD, keys
 docker compose up -d --build      # http://localhost:8080
+
+# Deploy (the backend migrates the database while it starts)
+scripts/backup.sh                 # first; keep the BACKUP_NAME it prints (the way back)
+APP_VERSION=$(git describe --always --dirty) docker compose up -d --build
+docker compose up -d --force-recreate frontend   # nginx finds the new backend only after a restart
+docker compose exec backend alembic current      # the schema's revision
+
+# Migrations (backend/migrations/README.md): a new revision, against a throwaway Postgres only
+cd backend && .venv/bin/alembic revision --autogenerate --rev-id 0003 -m "..."
+.venv/bin/python -m pytest -q tests/test_migrations.py
+
+# Backups and restore (scripts/README.md)
+docker compose run --rm restore list           # verify NAME / show NAME
+scripts/restore.sh NAME                        # dry run; --yes restores (destructive)
+integration/run.sh                             # includes the restore drill and the alert test
 ```
 
 ## Conventions

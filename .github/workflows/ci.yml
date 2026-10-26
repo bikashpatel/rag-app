@@ -50,9 +50,9 @@ jobs:
           .venv/bin/pip install --require-hashes --no-deps -r requirements-dev.txt
           .venv/bin/pip check
       - name: ruff
-        run: uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests
+        run: uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests migrations
       - name: mypy
-        run: uvx mypy@1.18.2 --python-executable .venv/bin/python --ignore-missing-imports app
+        run: uvx mypy@1.18.2 --python-executable .venv/bin/python --ignore-missing-imports app migrations
       - name: pytest with coverage
         run: .venv/bin/python -m pytest -q --cov --cov-report=term-missing:skip-covered --cov-fail-under=94
 

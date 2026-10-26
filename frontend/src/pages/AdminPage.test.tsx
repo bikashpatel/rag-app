@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import type { AdminStats } from "../api/types";
 import { formatNumber } from "../lib/format";
-import { makeActivityReport, makeAdminPlugin, makeAdminStats, makeUsageReport } from "../test/adminTabs";
+import { makeActivityReport, makeAdminPlugin, makeAdminStats, makeSystemStatus, makeUsageReport } from "../test/adminTabs";
 import { makeAdminConfig, makeAdminMe, makeAdminModel, makeAdminUser, makeMe } from "../test/fixtures";
 import { errorResponse, stubFetch, type FetchCall, type Route } from "../test/http";
 import { renderWithAuth } from "../test/render";
@@ -21,6 +21,7 @@ function adminRoutes(stats: AdminStats | Route = makeAdminStats(), extra: Record
     "GET /admin/documents": [],
     "GET /admin/plugins": [makeAdminPlugin()],
     "GET /admin/plugins/gmail/activity": makeActivityReport(),
+    "GET /admin/system": makeSystemStatus(),
     ...extra,
   };
 }
@@ -71,7 +72,7 @@ describe("AdminPage", () => {
       "Image model": "Off",
     });
     const tabs = within(screen.getByRole("tablist", { name: "Admin sections" })).getAllByRole("tab");
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["Users", "Models", "Usage", "Documents", "Plugins"]);
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["Users", "Models", "Usage", "Documents", "Plugins", "System"]);
     expect(screen.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel", { name: "Users" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "New user" })).toBeInTheDocument();
@@ -81,6 +82,13 @@ describe("AdminPage", () => {
     await renderAdmin(adminRoutes(), "#usage");
     expect(screen.getByRole("tab", { name: "Usage" })).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByRole("heading", { name: /^Usage in / })).toBeInTheDocument();
+  });
+
+  it("opens the System tab", async () => {
+    await renderAdmin(adminRoutes(), "#system");
+    expect(screen.getByRole("tab", { name: "System" })).toHaveAttribute("aria-selected", "true");
+    const panel = screen.getByRole("tabpanel", { name: "System" });
+    expect(await within(panel).findByRole("heading", { level: 2, name: "System status" })).toBeInTheDocument();
   });
 
   it("switches tabs by click and keeps the hash in sync", async () => {
@@ -105,11 +113,11 @@ describe("AdminPage", () => {
     expect(tab("Models")).toHaveFocus();
     expect(tab("Models")).toHaveAttribute("aria-selected", "true");
     await user.keyboard("{End}");
-    expect(tab("Plugins")).toHaveFocus();
+    expect(tab("System")).toHaveFocus();
     await user.keyboard("{ArrowRight}");
     expect(tab("Users")).toHaveFocus();
     await user.keyboard("{ArrowLeft}");
-    expect(tab("Plugins")).toHaveFocus();
+    expect(tab("System")).toHaveFocus();
     await user.keyboard("{Home}");
     expect(tab("Users")).toHaveFocus();
     expect(location()).toBe("/admin#users");

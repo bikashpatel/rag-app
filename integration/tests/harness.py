@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 
@@ -34,11 +35,25 @@ _SHELL_VARIABLES = (
     "MAX_UPLOAD_MB_HARD",
     "IT_FAKE_LLM_PORT",
     "IT_FAKE_GOOGLE_PORT",
+    "APP_VERSION",
+    "QDRANT_API_KEY",
+    "QDRANT_COLLECTION_PREFIX",
+    "BACKUP_DIR",
+    "BACKUP_SCHEDULE",
+    "BACKUP_KEEP_DAILY",
+    "BACKUP_KEEP_WEEKLY",
+    "BACKUP_START_DELAY_SECONDS",
+    "BACKUP_UID",
+    "BACKUP_GID",
     "COMPOSE_FILE",
     "COMPOSE_PROJECT_NAME",
     "COMPOSE_ENV_FILES",
     "COMPOSE_PROFILES",
 )
+
+
+# Values of the generated env file that must never appear in a log, a backup listing or an alert.
+SECRETS = ("SECRET_KEY", "ADMIN_PASSWORD", "POSTGRES_PASSWORD", "TOKEN_ENCRYPTION_KEY", "GOOGLE_OAUTH_CLIENT_SECRET")
 
 
 def _read_env() -> dict[str, str]:
@@ -56,6 +71,12 @@ ENV = _read_env()
 APP_URL = f"http://127.0.0.1:{ENV['APP_PORT']}"
 FAKE_LLM_URL = f"http://127.0.0.1:{ENV['IT_FAKE_LLM_PORT']}"
 FAKE_GOOGLE_URL = f"http://127.0.0.1:{ENV['IT_FAKE_GOOGLE_PORT']}"
+
+
+def leaked_secrets(text: str) -> list[str]:
+    """The names of the generated secrets (and fake provider keys) that appear in `text`."""
+    leaked = [name for name in SECRETS if ENV[name] in text]
+    return leaked + [key for key in ("sk-it-fake", "sk-ant-it-fake") if key in text]
 
 
 def unique(prefix: str) -> str:
@@ -89,7 +110,8 @@ def _docker() -> str:
 
 
 def docker(*args: str, timeout: float = 60) -> str:
-    """A read-only docker CLI call (ps, volume ls, network ls, inspect)."""
+    """A docker CLI call: read-only (ps, volume ls, network ls, inspect, info), or `update` of a test stack container
+    (limit_cpus)."""
     result = subprocess.run([_docker(), *args], capture_output=True, text=True, timeout=timeout, check=False)
     if result.returncode != 0:
         raise RuntimeError(f"docker {args[0]} failed ({result.returncode}): {result.stderr[-2000:]}")
@@ -131,8 +153,7 @@ def _own_project() -> None:
         raise RuntimeError(f"Refusing: the Compose project {PROJECT!r} holds objects without the marker: {foreign}")
 
 
-def compose(*args: str, timeout: float = 180, stdin: str | None = None) -> str:
-    """A docker compose command for the test stack (RuntimeError when it fails); its stdout."""
+def _compose_command(*args: str) -> tuple[list[str], dict[str, str]]:
     _own_project()
     environment = {name: value for name, value in os.environ.items() if name not in _SHELL_VARIABLES}
     command = [
@@ -150,12 +171,51 @@ def compose(*args: str, timeout: float = 180, stdin: str | None = None) -> str:
         str(ENV_FILE),
         *args,
     ]
+    return command, environment
+
+
+def compose(*args: str, timeout: float = 180, stdin: str | None = None) -> str:
+    """A docker compose command for the test stack (RuntimeError when it fails); its stdout."""
+    command, environment = _compose_command(*args)
     result = subprocess.run(
         command, input=stdin, capture_output=True, text=True, env=environment, timeout=timeout, check=False
     )
     if result.returncode != 0:
         raise RuntimeError(f"docker compose {args[0]} failed ({result.returncode}): {result.stderr[-2000:]}")
     return result.stdout
+
+
+def compose_started(*args: str) -> subprocess.Popen[str]:
+    """A docker compose command for the test stack, left running: the caller waits for it (stderr in stdout)."""
+    command, environment = _compose_command(*args)
+    return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=environment)
+
+
+def limit_cpus(service: str, cpus: float | None) -> None:
+    """Gives a container of the test stack `cpus` CPUs (None: all of the machine's)."""
+    (name,) = [item["name"] for key, item in services().items() if key == service]
+    value = cpus if cpus is not None else int(docker("info", "--format", "{{.NCPU}}").strip())
+    docker("update", "--cpus", str(value), name)
+
+
+def script(name: str, *args: str, timeout: float = 900) -> subprocess.CompletedProcess[str]:
+    """Runs scripts/<name> (backup.sh, restore.sh) against the test stack: Compose through integration/stack.sh, the
+    maintenance flag in integration/.run. Returns the finished process whatever its exit code."""
+    _own_project()
+    environment = {name: value for name, value in os.environ.items() if name not in _SHELL_VARIABLES}
+    environment |= {
+        "RAG_COMPOSE": str(ROOT / "integration" / "stack.sh"),
+        "RAG_MAINTENANCE_FILE": str(ROOT / "integration" / ".run" / "maintenance"),
+        "IT_PROJECT": PROJECT,
+    }
+    return subprocess.run(
+        [str(ROOT / "scripts" / name), *args],
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=timeout,
+        check=False,
+    )
 
 
 def exec_in(service: str, *command: str, stdin: str | None = None, timeout: float = 60) -> str:
@@ -247,6 +307,23 @@ def stored_names(doc_ids: list[int]) -> dict[int, str]:
         return {}
     ids = ",".join(str(int(doc_id)) for doc_id in doc_ids)
     return {int(doc_id): name for doc_id, name in sql(f"select id, stored_name from documents where id in ({ids})")}
+
+
+def table_counts() -> dict[str, int]:
+    """Rows in every table of the test stack's database."""
+    tables = [row[0] for row in sql("select tablename from pg_tables where schemaname = 'public' order by 1")]
+    query = " union all ".join(f"select '{table}', count(*) from public.\"{table}\"" for table in tables)
+    return {table: int(count) for table, count in sql(query)}
+
+
+def qdrant_collections() -> dict[str, int]:
+    """Collection -> its exact point count."""
+    (listed,) = qdrant([{"method": "GET", "path": "/collections"}])
+    names = [item["name"] for item in listed["body"]["result"]["collections"]]
+    counts = qdrant(
+        [{"method": "POST", "path": f"/collections/{name}/points/count", "body": {"exact": True}} for name in names]
+    )
+    return {name: int(result["body"]["result"]["count"]) for name, result in zip(names, counts, strict=True)}
 
 
 def stored_files() -> set[str]:
@@ -409,6 +486,36 @@ def assert_sse_contract(result: ChatResult) -> None:
     assert set(names) <= allowed, names
     meta = result.meta
     assert {"conversation_id", "title", "user_message_id", "model"} <= set(meta), meta
+
+
+def google_state() -> dict:
+    """The fake Google's record of drafts, sends, revocations and grants."""
+    return check(httpx.get(f"{FAKE_GOOGLE_URL}/_state", timeout=10)).json()
+
+
+def gmail_connect(user: User) -> str:
+    """The browser flow: connect -> the fake's consent (answers at once) -> the app's callback. Returns the result."""
+    start = check(user.client.post("/api/plugins/gmail/connect", json={}, headers={"Origin": APP_URL})).json()
+    authorize = urlparse(start["authorize_url"])
+    assert f"{authorize.scheme}://{authorize.netloc}" == FAKE_GOOGLE_URL
+    query = parse_qs(authorize.query)
+    assert query["code_challenge_method"] == ["S256"] and query["access_type"] == ["offline"]
+    assert "code_verifier" not in query and "client_secret" not in query
+    consent = httpx.get(start["authorize_url"], follow_redirects=False, timeout=10)
+    assert consent.status_code == 302, consent.text
+    callback = urlparse(consent.headers["location"])
+    assert f"{callback.scheme}://{callback.netloc}" == APP_URL and callback.path == "/api/plugins/gmail/oauth/callback"
+    finished = user.client.get(f"{callback.path}?{callback.query}", follow_redirects=False)
+    assert finished.status_code == 303
+    return parse_qs(urlparse(finished.headers["location"]).query)["oauth"][0]
+
+
+def alerts_received() -> list[dict]:
+    """What the fake alert receiver got (webhook and ntfy), oldest first."""
+    code = (
+        "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/_log', timeout=10).read().decode())"
+    )
+    return json.loads(python_in("fake-alerts", code))["received"]
 
 
 # ---------------- The fake model server ----------------

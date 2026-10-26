@@ -7,8 +7,10 @@ plugins, with Gmail as the first plugin, were built, reviewed and verified in Do
 on 2026-10-20 after the top bar, Settings and the warm editorial redesign were built, reviewed, fixed and verified in
 Docker (committed on 2026-10-24 in `d11a9e5`), and on 2026-10-25 after the test pass: a frontend Vitest suite, a
 Playwright end-to-end suite, a full-stack integration suite, more backend tests with coverage, and a CI workflow, all
-reviewed, fixed and verified (not committed yet). `SPEC.md` is the binding contract; `README.md` has setup, commands,
-the test suites, the architecture and how to use the app.
+reviewed, fixed and verified (committed in `3a277a0` and `d4eada1`). Updated again later on 2026-10-25 after operations: Alembic
+migrations, backups with a tested restore, and monitoring with alerts, built, reviewed, fixed and deployed to the live
+stack (not committed yet). `SPEC.md` is the binding contract; `README.md` has setup, commands, the test suites,
+operations (section 8), the architecture and how to use the app.
 
 ## Status
 
@@ -19,8 +21,8 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
   (`services/rag.py`, `routers/{conversations,chat}.py`), on top of the foundation modules.
 - **Frontend:** chat page (`pages/ChatPage.tsx`, `components/chat/`), document panel
   (`components/documents/`), admin page (`pages/AdminPage.tsx`, `components/admin/`).
-- **Infra:** Docker Compose stack with six services (postgres, redis, qdrant, backend, worker,
-  frontend/nginx).
+- **Infra:** Docker Compose stack with eight services (postgres, redis, qdrant, backend, worker,
+  frontend/nginx, monitor, backup), plus `restore` (profile `restore`, run only by `scripts/restore.sh`).
 - **Vision model for PDFs** (`docs/briefs/vision-pdf.md`, revision 2): scanned PDF pages are transcribed and
   images on pages with text are described by the active vision model ("Claude Sonnet 5.5 (vision)"); see
   "Vision model for PDFs" below. Backend: `services/{pdf_images,pdf_render_child,vision}.py` plus changes to
@@ -98,7 +100,7 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
     `starters.ts`), the Settings dialog (`components/settings/`), `lib/settingsLink.ts` and `lib/appEvents.ts`, and
     `pages/login.css`. `ChatHeader`, `ModelSelect`, `UserMenu`, `UsageMeter`, `ChangePasswordModal` and
     `ConnectionsModal` are deleted. No npm package was added.
-- **Test suites and CI** (2026-10-25, in the working tree, not committed yet; `README.md` section 7 has the commands,
+- **Test suites and CI** (2026-10-25, committed in `3a277a0` and `d4eada1`; `README.md` section 7 has the commands,
   `SPEC.md` section 9 the rules, and each suite its README). None of them calls a real model or Google:
   - Backend (`backend/tests/`): 2,379 tests plus 10 `postgres`-marked ones, with coverage (`backend/.coveragerc`).
     New files: `test_route_guards.py` and `test_deletion_completeness.py` (cross-cutting guards), `test_stores.py`,
@@ -110,6 +112,27 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
     OpenAI-compatible model server and the fake Google.
   - CI: `.github/workflows/ci.yml` runs all of them on every push; all five jobs passed on GitHub on 2026-10-25. See
     "Test suites and CI" below.
+- **Operations** (2026-10-25, in the working tree, not committed yet; `README.md` section 8, `SPEC.md` section 10, see
+  "Operations" below). Deployed to the live `rag-app` stack on 2026-10-25 after a verified backup:
+  - **Migrations:** Alembic 1.20.0 (`backend/migrations/`: baseline 0001 and the align migration 0002), run by
+    `app.db.init_db` at start-up in one transaction under the advisory lock. The live database was stamped at 0001
+    with no difference and is at 0002. Tests: `test_migrations.py`.
+  - **Backups and restore:** the `backup` service (the pinned postgres image running `scripts/backup/backup.sh`) backs
+    up daily at 02:30 UTC: `pg_dump`, the uploads and Qdrant snapshots, verified before they count, with retention.
+    `scripts/backup.sh` backs up now; `scripts/restore.sh` verifies, takes a safety backup, prepares and checks every
+    part before swapping it in, reconciles documents (`app/ops/reconcile.py`) and waits for readiness. Tests:
+    `test_ops_reconcile.py` and the integration restore drill (`integration/tests/test_14_backup_restore.py`).
+  - **Monitoring and alerts:** the `monitor` service (`app/ops/`: `checks`, `monitor`, `alerts`, `channels`,
+    `monitor_state`) checks Postgres, Redis, Qdrant, the worker's heartbeat (`app/ops/heartbeat.py`, also the worker's
+    healthcheck), the queue, backups, disks and the app through nginx every 60 s, and alerts by webhook, ntfy or email.
+    Admin → System (`SystemTab.tsx`) and `GET /api/admin/system` show it; `GET /api/health/ready` is public. Tests:
+    `test_ops_*.py`, `test_system_api.py`, `SystemTab.test.tsx`, and `integration/tests/test_15_monitoring.py` with a
+    fake alert receiver (`integration/fake_alerts/`).
+  - **Watchdog** (`scripts/watchdog/`, optional, not installed): a host LaunchAgent or systemd timer that restarts
+    Docker and the stack when the app stops answering.
+  - **Review fixes** (2026-10-25/26): the 8 confirmed findings of the operations review are fixed, with failure
+    injection in the restore drill and `integration/tests/test_16_watchdog.py` (see "Operations" below and "How it
+    was verified"). Not yet on the live stack.
 
 How the work went: the lead wrote `SPEC.md` and the foundation code. Agents then built the
 feature areas in parallel from `docs/briefs/`, followed by backend integration tests, frontend
@@ -157,6 +180,14 @@ agents' smoke and browser-pass scripts lived in scratch directories and are not 
 
 | Check | Result |
 |---|---|
+| Operations review fixes (2026-10-25/26; OPS-1 to OPS-5, OPS-7 to OPS-9) | Backend: ruff 0.13.0 clean on app, tests and migrations; mypy 1.18.2 clean on app and migrations (89 files); `pytest -q --cov --cov-fail-under=94` **2516 passed, 35 skipped** (622 s), coverage 95.4 %; `pytest -m postgres` on a throwaway Postgres 17.11 (tmpfs, random port and password, removed) **35 passed** (22 s). Integration (`integration/run.sh`, once): **147 passed, 1 failed** of 148 in 17 files (727 s of tests; the Mac slept for hours mid-run, lid closed on battery). The failure was `test_a_restore_with_migrate_reconciles_only_after_migrating`: its migration and reconcile output were right, but readiness answered 503 at the one check right after a wake; restore.sh now asks for up to a minute. Teardown left nothing. Control for OPS-1: the same 24 uploads to a Qdrant on half a CPU failed 16 times with the old pipe-into-nc method and 0 times with `lib.sh`. **Not yet done:** two clean integration runs, the redeploy of backend, worker, monitor and backup to the live stack, and the e2e run against it |
+| Live deploy of operations (2026-10-25, Compose project `rag-app`) | Before: the admin API listed the env admin and `bikash`, 8 documents (all ready), 9 models, Gmail configured, enabled, 1 connection; per-table row counts recorded read-only (21 tables). A fresh backup with `scripts/backup.sh` (`20261025T143921Z-manual`, 35.8 MB) passed `sha256sum -c`, the restore service's `verify`, `pg_restore --list`, and a restore into a throwaway Postgres 17.11 (no network, tmpfs, removed) with every table's rows equal to the live counts; its 16 archived files matched the live volume's checksums. `docker compose up -d --build`, then `--force-recreate frontend`: the backend logged "Database made before migrations: stamping revision 0001, 0 difference(s)", ran 0001 → 0002 and started; the worker found the schema up to date. After: `alembic current` 0002 (head), `alembic check` "No new upgrade operations detected", `pg_dump -s` identical to before apart from `alembic_version`; all 21 tables' row counts unchanged; users, documents, models and Gmail status unchanged in the admin API (`old_key` 0, `reconnect_needed` 0, and a read-only check decrypted 1 of 1 connections' tokens); every document's file present at its recorded size; Qdrant `rag_chunks_6` 60 points as before; `/api/health/ready` 200; Admin → System every check `ok` except `monitor` (warning: no alert channel configured); the backup service scheduled for 02:30 UTC (no start-up backup needed, today's exist); all 8 services healthy |
+| Backend after operations (2026-10-25; `pytest -q --cov --cov-fail-under=94`) | **2509 passed, 35 skipped** in 477 s, coverage 95.4 % combined. ruff 0.13.0 clean on app, tests and migrations; mypy 1.18.2 clean (86 files) |
+| Backend on Postgres after operations (2026-10-25; throwaway `postgres:17.11-alpine`, tmpfs, random port and password) | `pytest -m postgres`: **35 passed** (14 s). `TEST_DATABASE=postgres`, the whole suite: **2542 passed, 2 skipped** (641 s), after fixing `test_system_api.py`'s SQLite-only assumption about the database size |
+| Frontend after operations (2026-10-25) | `tsc` clean; `npm run test:coverage` **719 passed in 53 files** (7 s), 92.8 % statements, 88.2 % branches, 92.4 % functions, 94.8 % lines, over the thresholds; `vite build` clean (391 modules) |
+| End-to-end against the redeployed live stack (2026-10-25) | **47 passed, 1 skipped** (15 s); 0 test users left, no `e2e-` user in the admin API, row counts unchanged |
+| CI rehearsal of the `e2e` job (2026-10-25) | the working tree copied to a scratch folder with the CI's throwaway `.env` (port 18180 instead of 8080, which the live stack holds), Compose project `rag-e2e`: `up -d --build --wait` brought all 8 services to healthy in 28 s, including `monitor` and `backup`; Playwright as CI runs it **47 passed, 1 skipped**; the start-up backup ran after 120 s and verified; `down -v --remove-orphans` left nothing. No workflow change needed |
+| Integration after operations (2026-10-25; `integration/run.sh`) | **121 passed in 16 files** (165 s of tests), including the restore drill and the alert tests; teardown left nothing. The first run failed only `test_retention_keeps_daily_and_weekly_backups`, whose expectations predated the "keep everything under 48 hours" rule and depended on the date; it now fixes the script's clock |
 | Backend suite after the test pass and its fixes (2026-10-25; `pytest -q --cov --cov-fail-under=94`) | **2379 passed, 10 skipped**, twice (426 s and 428 s, coverage on). The skips are the `postgres`-marked tests. Coverage 95.1 % combined: 96.4 % of statements (12,295 of 12,757) and 90.4 % of branches (3,107 of 3,438), over the 94 % gate. ruff 0.13.0 is clean on app and tests, and **mypy 1.18.2 is clean** (74 files; the `deps.py` error is fixed) |
 | Backend on Postgres (2026-10-25; a throwaway `postgres:17.11-alpine` container at `docker-compose.yml`'s digest, tmpfs, random port and password, removed afterwards) | `pytest -m postgres`: **10 passed**, twice (about 4 s each): the 4 account tests, the image reservation race and the 5 tests of `test_postgres_locks.py`. Earlier in the test pass, `TEST_DATABASE=postgres` on the changed test files passed 98, and the conftest guards refused a database named `rag` and stopped at a schema holding a table they didn't create (the table was kept) |
 | Frontend after the test pass (2026-10-25) | `npx tsc --noEmit` clean. `npm run test:coverage`: **710 passed in 52 files**, twice (about 5 s each); 92.69 % of statements, 88.19 % of branches, 92.27 % of functions and 94.68 % of lines, over the thresholds (92, 87, 91, 94). It also passed under the de_DE, ja_JP and en_GB locales and with three suites running at once. `npx vite build` into a scratch directory clean (390 modules, only the old chunk-size warning) |
@@ -283,9 +314,24 @@ All contract changes are already in `SPEC.md` and `frontend/src/api/types.ts`.
 - Timestamps use `models.UTCDateTime`, which is timezone-aware on SQLite too. asyncpg sessions are
   forced to `timezone=UTC` (`db.make_engine`), so `date()` in the usage report splits days in UTC
   whatever the server's `TimeZone`.
-- `init_db` runs `create_all` under `pg_advisory_xact_lock`, because the backend and the worker both
-  run it and can start at the same time (e.g. `docker compose restart backend worker`). There is no Alembic.
-  Each feature added only new tables, never columns: `vision_pages` and `app_state` for vision,
+- `init_db` runs the Alembic migrations (`backend/migrations/README.md`) in one transaction under
+  `pg_advisory_xact_lock`, because the backend and the worker both run it and can start at the same time (e.g.
+  `docker compose restart backend worker`). A database made by `create_all` before migrations is compared with the
+  baseline (0001), then stamped and aligned (0002), or refused unchanged (`SchemaMismatchError`); the live database's
+  schema has no difference from the baseline. On SQLite the migrations run with foreign keys off, then
+  `PRAGMA foreign_key_check` before the commit: SQLite runs a batch operation as a table copy, and with foreign keys on,
+  dropping the old copy would delete or null every row referring to it. Every schema change, a new table included,
+  needs a revision now (`create_all` no longer runs; the drift guard in `test_migrations.py` fails without one).
+- Rolling back: migrations only go forward. Check out and build the previous release, then restore the backup taken
+  before the deploy with `scripts/restore.sh NAME --yes`; it compares the backup's `alembic_revision` with the image's
+  migrations before stopping anything, refusing a revision they don't know and, without `--migrate`, one they would
+  migrate forward. Restoring first, with the new release's images, would migrate the restored database again.
+  Releases up to `c1da1d0` predate migrations and have no `restore.sh`: their `create_all` ignores `alembic_version`,
+  starts on any schema without a warning and would recreate a table a migration dropped. Going back to one needs a
+  backup at revision 0002 (exactly `create_all`'s schema) or from before migrations, restored with the current
+  release's `scripts/restore.sh NAME --yes --no-start`; then check out and start the old release, and delete
+  `.maintenance`.
+- Before migrations, each feature added only new tables, never columns: `vision_pages` and `app_state` for vision,
   `message_files` and `generated_documents` for files from chat, `generated_images` and `user_image_limits` for
   images, six `plugin_*`/`gmail_*` tables for plugins (see "Plugins and Gmail"), and `user_preferences` and
   `login_events` for Settings (the per-user image limit is a table of its own rather than a `users` column, so Alembic
@@ -330,7 +376,9 @@ All contract changes are already in `SPEC.md` and `frontend/src/api/types.ts`.
 - **Shutdown:** the backend has `stop_grace_period: 30s` and uvicorn `--timeout-graceful-shutdown 15`,
   then `drain_answers` waits up to 10 s so cancelled streams can save. The worker has
   `stop_grace_period: 75s`, and running jobs get 60 s.
-- Healthchecks exist for every service except the worker. The frontend's goes through nginx to `/api/health`.
+- Every service has a healthcheck. The frontend's goes through nginx to `/api/health`; the worker's is its Redis
+  heartbeat (`python -m app.ops.heartbeat`); the monitor's is its last cycle; the backup service's its scheduler's
+  heartbeat.
 - `LITELLM_LOCAL_MODEL_COST_MAP=True`, so the cost map isn't fetched from GitHub at start.
   LiteLLM's own logger is set to WARNING.
 - **Supply chain:** Python dependencies are hashed universal locks (`uv pip compile --exclude-newer`;
@@ -709,7 +757,7 @@ The running stack has used it: it has the seeded model, the admin's Test event a
 code types model kinds, usage kinds and file formats as Literals, so `GET /admin/models`, `GET /admin/usage` for a
 month with image events and `GET /conversations/{id}` of a conversation with an image would return 500. Image
 documents would also fail if re-indexed, and deleting one would leave its renditions behind. Run this first, after a
-backup (next step 6):
+backup (`scripts/backup.sh`):
 
 ```bash
 docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"' <<'SQL'
@@ -1209,8 +1257,8 @@ Choices still to confirm with the user (functional brief 16, visual spec 0.4):
 ### Test suites and CI
 
 Written by parallel agents against `SPEC.md` on 2026-10-25, then reviewed (mutants killed on purpose, probes such as a
-hidden route without auth or a table without `ON DELETE`), fixed and verified twice. Not committed yet: CI sees only
-committed files.
+hidden route without auth or a table without `ON DELETE`), fixed and verified twice, then committed (`3a277a0`,
+`d4eada1`).
 
 - **Backend.** `pytest-cov` 7.1.0 and `coverage` 7.16.2 are new dev pins (`requirements-dev.in`). `.coveragerc` measures
   `app` with branches and `concurrency = thread, greenlet` (without `greenlet`, lines after a database call go
@@ -1254,6 +1302,50 @@ committed files.
     the server).
   - `SPEC.md` wording now matches the code for conversation titles, export file names and the order of the Gmail send
     checks.
+
+### Operations: backups, restore, monitoring
+
+Built on 2026-10-25 by parallel agents against `SPEC.md` section 10 (migrations, backups, monitoring), then reviewed,
+fixed, and deployed to the live stack. Migrations are under "Database" above.
+
+- **The backup service needs no image of its own.** It runs `scripts/backup/backup.sh` (busybox `sh`, steps in
+  `lib.sh`) in the pinned `postgres:17.11-alpine` image, which has `pg_dump`, `pg_restore`, `psql`, `tar`, `wget` and
+  `nc`; it talks to Qdrant over plain HTTP. It gets only the settings it needs through interpolation, never the whole
+  `.env`. Backups go to the bind-mounted `BACKUP_DIR`; its status file (no personal data) is on the `backupstatus`
+  volume, read-only in the backend and the monitor. One backup or restore runs at a time (`flock` on that volume).
+- **Backups are taken live, part after part:** the uploads, then Qdrant, then Postgres. A document deleted meanwhile is
+  then missing from the dump rather than coming back without its file. Whatever still differs after a restore is fixed
+  by `python -m app.ops.reconcile` (failed, re-indexed, leftover vectors and files no document has removed), which
+  first migrates the database to the release's head. Qdrant snapshots are included so a restore costs no embedding
+  tokens; Qdrant's own copy of each snapshot is deleted after the download. The uploads' checksums are taken from the
+  archive itself, and verification extracts it and checks every file.
+- **A restore prepares everything before it replaces anything** (`<db>_restoring`, `.restore-staging`,
+  `<collection>-restoring`, and a snapshot of every current collection kept inside Qdrant), checks row counts,
+  checksums and point counts, then swaps (the database last, renamed in one transaction). A swap step that fails is
+  undone from `.restore-previous` and the kept snapshots; only a failed undo leaves the stack mixed (exit 4, the app
+  stopped, `.maintenance` saying `hold`). It takes a `pre-restore` safety backup first, refuses a backup whose schema
+  revision the image doesn't know or would migrate (without `--migrate`), and keeps the host watchdog away with
+  `.maintenance` (its process id while it runs).
+- **Snapshot uploads keep nc's input open until Qdrant answers** (`q_request` in `lib.sh`): busybox `nc` half-closes
+  the connection when its input ends, and a busy Qdrant then refused a body it hadn't read yet ("Payload error"). On
+  half a CPU the old way failed 16 of 24 uploads, the new one none (the drill's upload test).
+- **The watchdog never deploys:** two failed probes 30 s apart, then `docker compose start` / `restart`, success
+  decided by the app answering, and nothing while `.maintenance` is there (deploys create it).
+- **The monitor is the only service that sends alerts.** It runs the same checks as `GET /api/admin/system`
+  (`app/ops/checks.py`) plus the proxy check, and publishes its results, alert states and last 50 alerts in Redis
+  (`rag:monitor:status`), which the backend reads. "Send a test alert" only asks the monitor (through Redis) to send one
+  on its next cycle, so only the monitor ever talks to the channels. Messages are built from fixed
+  sentences and scrubbed of secret-looking settings and URLs.
+- **The worker's heartbeat** (`rag:worker:heartbeat` in Redis, every `WORKER_HEARTBEAT_SECONDS`) is its Docker
+  healthcheck, part of readiness and the monitor's `worker` check. `GET /api/health/ready` is public and answers only
+  ready or unready (cached for 2 s), for an uptime check.
+- **Operations settings never stop a service:** a value that doesn't validate falls back to its default with a warning
+  naming the setting (`app/ops/settings.py`).
+- **Deploys:** `touch .maintenance`, back up (`scripts/backup.sh`), `APP_VERSION=$(git describe --always --dirty)
+  docker compose up -d --build`, then `docker compose up -d --force-recreate frontend` (nginx resolves the backend only
+  when it starts), and `rm .maintenance`.
+- **The worker stops at once on a schema this release can't use** (one made before migrations that differs, or one a
+  newer release migrated), with the reason, instead of retrying for 60 s like a database that is still starting.
 
 ## Known limitations and open risks
 
@@ -1359,10 +1451,10 @@ committed files.
 - **Usage history goes with the user.** Deleting a user cascades their `usage_events` (SPEC section 4), so their
   chat, embedding, vision and image costs leave the usage report (after the smoke runs, this month's vision total
   was back to 0). Keep cost history elsewhere if it must survive user deletion.
-- **Some Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks. The 10
+- **Some Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks. The 35
   `postgres`-marked tests (passed on Postgres 17.11 on 2026-10-25; CI's `backend-postgres` job runs them) cover
-  parallel uploads against the document, storage and duplicate checks with only the row lock left, the schema's
-  advisory lock, UTC sessions, the image reservation race and the account tests. Still not raced between processes:
+  parallel uploads against the document, storage and duplicate checks with only the row lock left, the migrations and
+  the schema's advisory lock across two processes, UTC sessions, the image reservation race and the account tests. Still not raced between processes:
   an admin password reset against a password change and a document deleted while the worker finishes it (both
   checked once with scratch tests against Postgres 17), and the embedding model edited while a job writes vectors.
 - **One worker only.** A second worker container would reset the other's in-flight documents (the
@@ -1377,7 +1469,27 @@ committed files.
   calls; it stops calling once it used what
   was left when it started, but answers running at the same time don't see each other's tokens.
   Embedding tokens don't count toward the budget (by design).
-- No HTTPS, `COOKIE_SECURE=false`, no backups, no migrations.
+- No HTTPS, `COOKIE_SECURE=false`.
+- **Backups stay on this Mac** (`./backups`) until an off-site copy is set up (next step 7), and the Mac sleeps and
+  Docker Desktop quits now and then; while it is down nothing is backed up and nothing alerts. **No alert channel is
+  configured yet** (next step 6): alerts are only logged and shown in Admin → System, whose `monitor` check stays a
+  warning until one is set. When the Mac sleeps, the worker's heartbeat expires and the monitor reports the worker as
+  down, then resolved on waking: on the deploy day a sleep of about 20 minutes logged one such pair (the worker never
+  restarted). `.env` is in no backup by design: keep it in a password manager.
+- The monitor runs inside Docker, so Docker or the whole machine stopping is reported only by the host watchdog (not
+  installed, next step 8) or an external uptime check on `/api/health/ready` (needs a public address, next step 5).
+- A backup is taken while the app runs, part after part (uploads, Qdrant, Postgres), not as one snapshot. A document
+  added or deleted meanwhile can come back with only some of its parts; the restore's reconcile step marks it failed
+  (file missing: the user uploads it again) or re-indexes it (vectors missing), which costs embedding tokens for those
+  documents only, and removes the vectors and files of documents deleted meanwhile. The integration drill shows it with
+  a backup paused between its parts.
+- Restores were drilled only on the isolated integration stack and throwaway containers, never on the live stack. The
+  drill covers restoring over changed data and injected failures (damaged backups, a failing dump or snapshot, a swap
+  failing at each step); a failure while undoing a swap (exit 4) is handled by restoring the safety backup by hand.
+- A restore needs room for a second copy of the data while it runs: the prepared database, the extracted uploads, and
+  in Qdrant both the prepared collections and the kept snapshots of the current ones.
+- Migrations only go forward (the baseline refuses `alembic downgrade`): a deploy is undone by restoring the backup
+  taken before it, and releases up to `c1da1d0` don't check the schema's revision at all (see "Database").
 - **The test suites run without real models or Google**, so a few paths are only covered offline: the e2e suite never
   uploads a file for real, never streams a real answer and never connects Gmail, and runs Chromium only (no WebKit or
   Firefox). The live smoke and browser-pass scripts of the earlier runs weren't committed.
@@ -1484,34 +1596,43 @@ Files from chat is built and was verified live in Docker on 2026-10-16. What is 
   - downloads from Admin → Documents.
 - Decide the vision `NO_CONTENT` fix (known limitations), and optionally tidy nginx's duplicate headers on `/api/`.
 
-1. Done: every feature is committed (the test suites and CI aren't yet, see above). The redesign is in `5148b83` and
-   `d11a9e5`, plugins with Gmail in `c5fb005`, images from chat in `7eaf587`, and files from chat, the vision
-   follow-up fix and `test_vision_independent.py` in `70f8076`.
+1. Done: every feature, the test suites and CI are committed. The redesign is in `5148b83` and `d11a9e5`, plugins
+   with Gmail in `c5fb005`, images from chat in `7eaf587`, files from chat, the vision follow-up fix and
+   `test_vision_independent.py` in `70f8076`, and the test suites and CI in `3a277a0` and `d4eada1`. Operations
+   (migrations, backups, monitoring) are deployed but not committed yet: commit them so CI runs them.
 2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
 3. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the
    monthly vision allowance and the automatic activation of the seeded Sonnet vision model).
-4. Add Alembic before any schema change on a database with real data. Baseline it on the current
-   models and keep the advisory lock around the migration run.
-5. Before exposing the app beyond localhost: put HTTPS in front, set `COOKIE_SECURE=true` (the OAuth nonce cookie
-   then gets `Secure` too), list the public address in `PUBLIC_BASE_URLS` and register its Gmail callback in Google,
-   configure `set_real_ip_from`/`real_ip_header` in `nginx.conf` for the outer proxy so the per-IP
-   throttle sees real clients, and consider rate limits on upload and reprocess.
-6. Set up backups. Postgres and the `uploads` volume hold everything that matters:
-   ```bash
-   docker compose exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' > rag-$(date +%F).dump
-   docker compose exec -T worker tar czf - -C /data/uploads . > uploads-$(date +%F).tgz
-   ```
-   Both commands were checked against the running stack; a restore hasn't been tested. The dump holds users' Gmail
-   tokens encrypted: keep `TOKEN_ENCRYPTION_KEY` with it (separately), or every user reconnects after a restore. Qdrant can
-   be rebuilt from the uploads with Admin → Documents → **Re-index all documents** (this costs
-   embedding tokens). Redis holds only transient state (queue, throttles, answer slots, attempt
-   counters), and the worker re-queues pending documents from Postgres.
-7. Done: the worker has `mem_limit`/`memswap_limit` `${WORKER_MEM_LIMIT:-4g}` (verified with `docker inspect`).
-   An OOM kill stays inside the worker, and the attempt counter fails the document after 3 kills.
-8. Later: move the remaining parsing (pypdf, Office formats, HTML) into a child process with a hard kill, as
-   PDF rendering already is, and bump pytest to 9.x together with a compatible pytest-asyncio.
-9. Later: read images in DOCX and PPTX files with the vision model (PDFs only for now), and remove
-   `llm._allow_effort` once LiteLLM's bundled model map lists `claude-sonnet-5-5`.
+4. **Hosting** (the owner's choice): the stack runs on Docker Desktop on this Mac, which sleeps and quits now and then.
+   A small Linux server with Docker Engine and Compose is enough (8 GB of memory: the worker alone may use 4 GB). Moving there: clone, put `.env` back,
+   copy a backup into `./backups`, `docker compose up -d --build`, then `scripts/restore.sh latest --yes
+   --no-safety-backup` (`scripts/README.md`, "A new machine"); install the watchdog's systemd timer (step 8).
+5. Before exposing the app beyond localhost (the owner will give the domain, managed in Cloudflare): put HTTPS in
+   front, set `COOKIE_SECURE=true` (the OAuth nonce cookie then gets `Secure` too), list the public address in
+   `PUBLIC_BASE_URLS` and register its Gmail callback in Google, configure `set_real_ip_from`/`real_ip_header` in
+   `nginx.conf` for the outer proxy so the per-IP throttle sees real clients, and consider rate limits on upload and
+   reprocess. Then point an external uptime check at `https://<domain>/api/health/ready`.
+6. **Choose an alert channel** (the owner): a webhook (Slack, Google Chat, Discord, Teams), ntfy (the simplest for
+   push to a phone) or email. Put its `ALERT_*` settings in `.env` (`README.md` section 8), run `docker compose up -d
+   monitor`, then press **Send a test alert** in Admin → System. Until then alerts are only logged.
+7. **Set up off-site backup copies** (the owner picks the storage): copy `./backups` off this machine after the daily
+   02:30 UTC backup, encrypted (rclone with a `crypt` remote, an encrypted drive, or restic; `scripts/README.md`,
+   "Off-site copies"), and keep `.env` in a password manager. Test a restore from the copy on a throwaway Compose
+   project now and then.
+8. **Install the watchdog** (optional; `scripts/watchdog/README.md`): the LaunchAgent on this Mac (and keep the Mac
+   awake, Docker Desktop starting at sign-in), or the systemd timer on a server. Check it with
+   `scripts/watchdog/watchdog.sh --test` once an alert channel is set.
+9. **Gmail's Google app** (the owner): it is in Google's testing mode, so connections end every 7 days and only
+   listed test users can connect. If every user is in the owner's Google Workspace, mark the app **Internal** (no
+   Google review), then set `GOOGLE_OAUTH_TESTING_MODE=false`; otherwise add the users as test users or apply for
+   verification (`docs/gmail-setup.md`).
+10. Done: the worker has `mem_limit`/`memswap_limit` `${WORKER_MEM_LIMIT:-4g}` (verified with `docker inspect`).
+    An OOM kill stays inside the worker, and the attempt counter fails the document after 3 kills.
+11. Later: move the remaining parsing (pypdf, Office formats, HTML) into a child process with a hard kill, as
+    PDF rendering already is, and bump pytest to 9.x together with a compatible pytest-asyncio. A load test with many
+    users at once hasn't been run.
+12. Later: read images in DOCX and PPTX files with the vision model (PDFs only for now), and remove
+    `llm._allow_effort` once LiteLLM's bundled model map lists `claude-sonnet-5-5`.
 
 ## macOS setup notes (this machine)
 

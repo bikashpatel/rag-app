@@ -13,3 +13,7 @@ dist/
 *.log
 .DS_Store
 claude-service-account-gcp.json
+# Backups hold personal data (scripts/README.md); BACKUP_DIR defaults to ./backups
+/backups/
+# Set by scripts/restore.sh while it runs; the watchdog leaves the stack alone meanwhile
+/.maintenance

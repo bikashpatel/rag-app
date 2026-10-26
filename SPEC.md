@@ -81,7 +81,12 @@ rag-app/
       deps.py               FOUNDATION  get_current_user, get_current_admin
       redis_client.py       FOUNDATION  get_redis(), queue key names
       bootstrap.py          AUTH-ADMIN  admin sync + model seeding
-      worker.py             INGESTION   ingestion worker process (python -m app.worker)
+      worker.py             INGESTION   ingestion worker process (python -m app.worker); refreshes its heartbeat (ops)
+      schemas_system.py     OPS         health and system status shapes
+      ops/                  OPS         section 10: settings, checks (readiness, Admin → System, the monitor), heartbeat
+                                        (the worker's, and the worker's healthcheck), backup_status (the backup service's
+                                        status file), alerts (the state machine), channels (webhook, ntfy, SMTP),
+                                        monitor_state (what the monitor publishes in Redis), monitor (python -m app.ops.monitor)
       services/
         __init__.py
         llm.py              FOUNDATION  LiteLLM wrappers: stream_chat, embed_texts, read_image, generate_image, test_model, compute_cost
@@ -120,6 +125,7 @@ rag-app/
         documents.py        INGESTION   /api/documents/*
         conversations.py    CHAT        /api/conversations/*
         chat.py             CHAT        /api/chat/stream
+        system.py           OPS         /api/health/ready, /api/admin/system/*
     tests/                  (in-process API tests, see section 9)
   frontend/
     Dockerfile  .dockerignore  package.json  package-lock.json  vite.config.ts
@@ -145,7 +151,9 @@ rag-app/
       **/*.test.ts(x), test/                   Vitest tests next to the code; shared test helpers (section 9)
   integration/              full-stack tests (section 9): run.sh, stack.sh, gen_env.py, compose.it.yml,
                             fake_llm/ (a fake OpenAI-compatible server), fake_google/ (serves the fakes in
-                            backend/tests), tests/
+                            backend/tests), fake_alerts/ (a webhook and ntfy receiver for the monitor), tests/
+  scripts/                  OPS (section 10): backup.sh, restore.sh, backup/backup.sh (run by the backup and restore
+                            services), watchdog/ (an optional host watchdog: launchd and systemd), README.md
   e2e/                      Playwright browser tests against the running stack (section 9)
   .github/workflows/ci.yml  CI: every suite (section 9)
 ```
@@ -204,6 +212,20 @@ See `backend/app/config.py` for defaults. Important ones:
 | `GMAIL_MAX_ATTACHMENT_MB` (15, at most 18) | total attachment size of one draft or email (the built message must also stay under Gmail's 25 MB) |
 | `GMAIL_IMPORT_MAX_ITEMS` (20) | threads plus attachments per import, from the Gmail browser or from chat |
 | `EXPORT_MAX_MB` (100, 1 to 1000) | uncompressed content of one data export (`POST /me/export`); older conversations beyond it are left out, and the export says how many |
+| `BACKUP_DIR` (`./backups`; Compose only) | where backups go on the host; personal data: outside every build context, git-ignored (section 10) |
+| `BACKUP_SCHEDULE` (`02:30`) | daily backup times in UTC, `HH:MM`, comma-separated for several |
+| `BACKUP_START_DELAY_SECONDS` (120) | after the backup service starts, one backup runs this much later while none exists |
+| `BACKUP_KEEP_DAILY` (7), `BACKUP_KEEP_WEEKLY` (4) | retention: the newest backup of each of the last N days and weeks that have one (pre-restore backups: N days) |
+| `BACKUP_UID`, `BACKUP_GID` (unset) | give the backup files to this user (Linux; root owns them otherwise) |
+| `BACKUP_MAX_AGE_HOURS` (26) | alert when the last successful backup is older (0 = no backup checks) |
+| `APP_VERSION` (empty) | shown in Admin → System and written to backup manifests |
+| `MONITOR_INTERVAL_SECONDS` (60), `MONITOR_APP_URL` (`http://frontend/api/health`) | the monitor's check interval, and the app through nginx (empty: not checked) |
+| `ALERT_CONFIRM_CHECKS` (2), `ALERT_REPEAT_HOURS` (6) | results in a row before a problem or recovery is announced; "still failing" reminders (0 = none) |
+| `ALERT_NAME` (`RAG Assistant`) | the name alert titles start with |
+| `ALERT_QUEUE_STUCK_MINUTES` (30), `ALERT_DISK_MIN_FREE_PERCENT` (10) | a stuck ingestion queue; low disk (critical below half of it) |
+| `WORKER_HEARTBEAT_SECONDS` (15), `WORKER_HEARTBEAT_MAX_AGE_SECONDS` (60) | the worker's heartbeat interval; older (or none): the worker isn't ready |
+| `ALERT_WEBHOOK_URL`, `ALERT_NTFY_URL`, `ALERT_NTFY_TOKEN` | alert channels: a JSON `{"text"}` webhook (Slack, Google Chat, Discord's `/slack`, Teams), an ntfy topic |
+| `ALERT_SMTP_HOST/PORT/USERNAME/PASSWORD/FROM/TO`, `ALERT_SMTP_SECURITY` (`starttls`) | the email channel (`ssl` for port 465, `none` for a local relay); `TO` comma-separated |
 | `EXPORT_TIMEOUT_SECONDS` (80, 10 to 90) | time from the request to the end of the build of one data export (nothing is sent before the build ends); conversations not reached are left out the same way. At most 90: the Cloudflare tunnel drops a response that sends nothing for about 100 s |
 
 ## 4. Data model (SQLAlchemy, `app/models.py`)
@@ -337,13 +359,22 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   derived from `ip` on read (`LoginEvent.ip_private`). One row per successful
   `POST /auth/login`; the newest 20 per user are kept (older rows are deleted when
   one is added). Shown only to the user (`GET /me/account`) and in their export.
-- New tables are created by `create_all` on an existing database; no column is
-  added to an existing table, so no migration is needed (the choice against
-  introducing Alembic for the image limit is explained in
-  `docs/briefs/image-generation.md` section 3.3, and holds for the plugin and
-  account tables; rolling back past plugins needs the SQL in
+- The schema is managed by Alembic (`backend/migrations/`, README there):
+  `init_db` runs `upgrade head` at start-up, in one transaction under the schema's
+  advisory lock (on SQLite with foreign keys off, then `PRAGMA foreign_key_check`
+  before the commit). Every schema change, a new table included, needs a
+  revision: `create_all` no longer runs, so a model without one creates nothing
+  (and fails the drift guard in `test_migrations.py`). A database made by
+  `create_all` before migrations is compared with the baseline (revision 0001),
+  then stamped and aligned by 0002, or refused unchanged. Migrations only go
+  forward: a rollback restores the backup taken before the deploy, with the
+  previous release checked out and built first (`scripts/restore.sh` checks the
+  backup's revision). Up to revision 0002 the schema is exactly what `create_all`
+  made; releases up to `c1da1d0` predate migrations, ignore `alembic_version` and
+  start on any schema, so go back to one only with a database at 0002 or from
+  before migrations. Rolling back past plugins needs the SQL in
   `docs/briefs/plugins-gmail.md` 3.3; rolling back past the account tables needs
-  none: older code ignores them and the session id claim).
+  none: older code ignores them and the session id claim.
 
 ## 5. Qdrant layout
 
@@ -441,6 +472,13 @@ active embedding model (or has no embedding model). For the user's own counts
 (`document_count`, `storage_bytes`) only documents they own count; for the admin
 `max_documents`/`max_storage_mb` are reported as 0 (unlimited) and
 `max_upload_mb` as `MAX_UPLOAD_MB_HARD`.
+
+### Health — `main.py`, `routers/system.py` (public)
+- `GET /health` → `{status: "ok"}`: liveness, cheap, no dependency checked (the Compose healthchecks use it).
+- `GET /health/ready` → 200 `{status: "ready"}` or 503 `{status: "unready"}`, nothing else: Postgres and Redis
+  answer, Qdrant lists its collections, and the worker's heartbeat (Redis `rag:worker:heartbeat`) is at most
+  `WORKER_HEARTBEAT_MAX_AGE_SECONDS` old. Each check has a 3 s timeout; answers within 2 s share one round of
+  checks; `Cache-Control: no-store`.
 
 ### Auth — `routers/auth.py`
 - `POST /auth/login` `{username, password}` → `Me`; sets the cookie. Throttled
@@ -1108,6 +1146,41 @@ type RequestCheckTestResult = { ok: boolean; message: string; latency_ms: number
   preferences and sign-in history. The admin API never shows users' sign-in
   history or preferences.
 
+System — `routers/system.py` (section 10):
+
+```ts
+type CheckStatus = "ok"|"warning"|"critical"|"unknown"
+type CheckId = "postgres"|"redis"|"qdrant"|"worker"|"queue"|"backup"|"disk_uploads"|"disk_backups"|"proxy"|"monitor"
+type AlertChannel = "webhook"|"ntfy"|"email"
+type SystemCheck = { id: CheckId; label: string; status: CheckStatus; detail: string }
+type SystemAlert = { at: string; kind: "problem"|"reminder"|"recovery"|"test"; title: string; lines: string[];
+  delivered: AlertChannel[]; failed: AlertChannel[] /* retried for up to an hour */ }
+type SystemStatus = { status: CheckStatus /* the worst; unknown counts as warning */; checked_at: string;
+  app_version: string|null; checks: SystemCheck[];
+  worker: { heartbeat_age_seconds: number|null; running_jobs: number|null };
+  queue: { queued: number|null; pending: number|null; processing: number|null; oldest_pending_age_seconds: number|null };
+  failed_documents_24h: number|null; database_size_bytes: number|null /* null on SQLite */;
+  disks: { id: "uploads"|"backups"; label: string; free_bytes: number; total_bytes: number; checked_at: string }[];
+  backup: { status_seen: boolean; max_age_hours: number; last_success_at: string|null; last_success_name: string|null;
+    last_success_size_bytes: number|null; last_success_duration_seconds: number|null; age_hours: number|null;
+    last_failure_at: string|null; last_failure_error: string|null; failing: boolean; running_since: string|null;
+    schedule: string|null; next_run_at: string|null; scheduler_seen_at: string|null; backups_kept: number|null;
+    total_size_bytes: number|null };
+  gmail_reconnect_needed: number|null /* reconnect_needed, or ended by Google's 7-day testing limit */;
+  monitor: { running: boolean; last_run_at: string|null; interval_seconds: number|null; channels: AlertChannel[];
+    test_pending: boolean };
+  alerts: SystemAlert[] /* the monitor's, newest first, at most 50 */ }
+type AlertTestQueued = { queued_at: string }
+```
+- `GET /admin/system` → `SystemStatus`. The checks run in the backend at once (5 s timeout each) and never fail the
+  request: a service that can't be reached is its check's `critical`, a check that depends on it is `unknown`. `proxy`
+  and `monitor`, the channels and the alerts come from what the monitor last published (`rag:monitor:status`); the
+  monitor counts as running when it published within three intervals plus 30 s. Details name no document, user,
+  email address, host or exception message.
+- `POST /admin/system/test-alert` → 202 `AlertTestQueued`: leaves a request (`rag:monitor:test_alert`, 10 minutes)
+  that the monitor takes on its next cycle and sends to every channel. 409 when the monitor isn't running, has no
+  channel, or a test alert is already waiting. The backend itself never sends alerts.
+
 ## 7. Ingestion pipeline
 
 1. `POST /documents` stores the file under `UPLOAD_DIR/<stored_name>`, creates
@@ -1379,6 +1452,12 @@ type RequestCheckTestResult = { ok: boolean; message: string; latency_ms: number
   redirect URIs to register, testing mode, connection counts (and connections on
   an older encryption key), a request-check Test per chat model, this month's
   activity, per-user activity, Disconnect all.
+  Admin → **System** (`#system`, `components/admin/SystemTab.tsx`, CSS prefix `admin-system-`; refreshed every 15 s
+  while open): every check with its status and detail and a notice naming those that need attention, tiles (worker
+  heartbeat, documents waiting, failed in 24 h, database size, free disk per location, app version), Gmail connections
+  needing reconnect, Backups (last success and failure, schedule and next run, backups kept; a footnote that `.env`
+  isn't backed up), Alerts (the channels, the monitor's last check, Send a test alert, the recent alerts with their
+  delivery).
 - Streaming uses `postSSE` from `src/api/client.ts` (fetch + ReadableStream,
   `AbortController` for the Stop button). Assistant messages render Markdown
   (`react-markdown` + `remark-gfm`, raw HTML disabled) with `[n]` citations
@@ -1443,7 +1522,9 @@ OpenAI-compatible chat, embedding, vision and image server) and Google at
 `fake_google/`, which runs `backend/tests/fake_google.py`, `fake_gmail.py` and
 `fake_google_server.py` (mounted read-only from `backend/tests`), so changes to
 those fakes must keep both suites passing. Real providers and Google are never
-reached.
+reached. The monitor alerts `fake_alerts/` (a webhook and an ntfy topic), and backups go to
+`integration/.run/backups`. `test_14_backup_restore.py` is the restore drill (section 10), and
+`test_15_monitoring.py` stops Qdrant, the worker and nginx and checks readiness and the alerts.
 
 `e2e/` is a Playwright suite (Chromium, desktop and phone) against the running
 stack (`http://localhost:8080` by default). It creates and deletes its own
@@ -1462,3 +1543,113 @@ requests: the backend with ruff, mypy and coverage (at least 94 %), the
 `postgres`-marked tests against a Postgres service, the frontend (`tsc`,
 Vitest, the build), e2e against a stack with a throwaway `.env` and fake
 provider keys, and `integration/run.sh`.
+
+## 10. Operations: backups, restore, monitoring
+
+Services in `docker-compose.yml` beside the app's: `backup` (the pinned postgres image running
+`scripts/backup/backup.sh schedule`), `restore` (profile `restore`, only for `docker compose run`), and `monitor` (the
+backend image, `python -m app.ops.monitor`). The `backupstatus` volume holds the backup service's status file, mounted
+read-only into the backend and the monitor. Every service has a healthcheck: the worker's is its heartbeat
+(`python -m app.ops.heartbeat`), the monitor's is its last cycle, and the backup service's is its scheduler's heartbeat.
+
+**Backups** (`scripts/README.md`). A backup is a folder `BACKUP_DIR/<YYYYMMDDTHHMMSSZ>-<label>` (labels `scheduled`,
+`startup`, `manual`, `pre-restore`), mode 700 and files 600. It holds:
+
+- `postgres.dump` (`pg_dump -Fc`) and `postgres.rows` (rows per table, counted from the dump);
+- `uploads.tar.gz` and `uploads.sha256` (every file's checksum);
+- `qdrant/<collection>.snapshot` (Qdrant's snapshot API, so restores need no re-embedding) and `qdrant.collections`
+  (points per collection, `exact` when unchanged during the snapshot);
+- `manifest.json`: the time, `app_version`, `alembic_revision` (from the dump; null without Alembic), rows per table,
+  uploads' file count and bytes, points per collection, and each file's sha256 and bytes;
+- `SHA256SUMS`.
+
+A backup is written to `.tmp-<name>` and verified before it is renamed: each snapshot against the checksum Qdrant
+reported, `SHA256SUMS` and the same checksums in `manifest.json`, `pg_restore --list` and the dump's rows counted again
+against `postgres.rows`, and every archived file extracted and checked against `uploads.sha256`; a failure deletes it
+and is recorded. The parts are taken one after the other while the app runs (uploads, Qdrant, then Postgres). One
+backup or restore runs at a time (`flock` on the status volume). `.env` is never in a backup: keep it in a password
+manager, since without the same `TOKEN_ENCRYPTION_KEY` users must reconnect Gmail.
+
+Retention keeps every backup younger than 48 hours; manual and pre-restore backups for `BACKUP_KEEP_DAILY` days; of the
+scheduled and start-up backups, the newest of each of the last `BACKUP_KEEP_DAILY` days and `BACKUP_KEEP_WEEKLY` weeks
+(Monday to Sunday, UTC) that have one; and always the newest.
+
+The scheduler backs up at every `BACKUP_SCHEDULE` time (UTC). When it starts and no backup other than a pre-restore one
+began since the latest scheduled time, a `startup` backup follows `BACKUP_START_DELAY_SECONDS` later (`catch_up_at`).
+
+The status file `status.json` holds `updated_at`, `scheduler` (`seen_at`, `schedule`, `next_run_at`, `catch_up_at`),
+`running_since`, `last_success` (`name`, `finished_at`, `size_bytes`, `duration_seconds`), `last_failure` (`at`,
+`error`: a fixed sentence), `backups` (`count`, `total_bytes`) and `disk` (`free_bytes`, `total_bytes` of
+`BACKUP_DIR`).
+
+**Restore**: `scripts/restore.sh NAME|latest --yes [--no-safety-backup] [--migrate] [--no-start]`.
+
+1. It verifies the backup first and refuses a backup that fails. Then it compares the manifest's `alembic_revision`
+   with the backend image's migrations (`alembic history`): it refuses a revision they don't know (exit 1), and one
+   they would migrate forward at start-up (an older revision, or null: made before migrations) unless `--migrate` or
+   `--no-start` is given (exit 2). It refuses without `--yes` (exit 2). Nothing is stopped before these checks.
+2. It stops the app (frontend, monitor, backup, worker, backend) and takes a pre-restore safety backup.
+3. Every part is prepared next to the current one and checked (`backup.sh restore` in the `restore` service): Postgres
+   in a fresh database (`<db>_restoring`; its tables and row counts must equal `postgres.rows`), the uploads in
+   `.restore-staging` on the uploads volume (every checksum and the file count), and each collection as
+   `<name>-restoring` from its snapshot (each upload tried up to 3 times; point counts checked), and a snapshot of
+   every current collection is kept inside Qdrant. When one fails, what was prepared is dropped and nothing is changed
+   (exit 1, and the app starts again).
+4. Then the parts are swapped in: each collection recovered from its prepared copy, then the uploads (the current
+   files moved to `.restore-previous`), last the database (renamed in one transaction); then the collections with the
+   app's prefix that the backup doesn't have are dropped, with the kept snapshots and `.restore-previous`. A step of
+   the swap that fails is undone: the files move back, each collection is recovered from its kept snapshot and those
+   the backup added are dropped (exit 1, nothing changed, the app starts again). Only when undoing fails too does it
+   exit 4: the app stays stopped, the maintenance file says `hold`, and the script prints how to restore the safety
+   backup or try again.
+5. Redis's ingestion queue, the worker heartbeat and the attempt counters are cleared. With `--no-start` the restore
+   ends here, the app stopped and the maintenance file left in place saying `hold` (so the watchdog doesn't start this
+   release) until the operator deletes it.
+6. `python -m app.ops.reconcile` (the backend image, the app stopped) first migrates the database to this release's
+   head, as the backend's start would (`app.db.init_db`; a restore with `--migrate` brings an older revision), then makes
+   every document agree with its file and vectors again: a document whose file is missing or has another size is
+   marked `failed` ("upload it again", its vectors deleted); a `ready` document whose vectors in its model's collection
+   don't number its chunks goes back to `pending` for the worker; vectors of failed or unknown documents are deleted,
+   and so are files on the uploads volume that no document has (dot-folders aside). It prints the migration's log line
+   and what it changed, by document id only. Then the app starts, and the restore ends when `/api/health/ready` answers
+   200.
+
+**Monitoring.** The worker refreshes `rag:worker:heartbeat` (`{at, jobs}`, TTL `WORKER_HEARTBEAT_MAX_AGE_SECONDS`)
+every `WORKER_HEARTBEAT_SECONDS` while it takes jobs, and deletes it when it stops. Every `MONITOR_INTERVAL_SECONDS`
+the monitor runs the checks of `GET /admin/system` plus `proxy` (`GET MONITOR_APP_URL`), then publishes them, its
+alert states and its last 50 alerts in `rag:monitor:status`. The checks:
+
+| Check | Problem |
+|---|---|
+| `postgres`, `redis`, `qdrant` | unreachable: `critical` |
+| `worker` | no heartbeat, or an older one: `critical` |
+| `queue` | pending documents waited over `ALERT_QUEUE_STUCK_MINUTES` while none finished as long: `warning` |
+| `backup` | the last attempt failed: `critical`; no success yet, the last success older than `BACKUP_MAX_AGE_HOURS`, or the scheduler silent for 30 minutes outside a running backup: `warning`. No success yet or an old one is `unknown` (no alert) while a backup runs or a start-up backup is due (until 10 minutes after `catch_up_at`), and while the status file is missing in the monitor's first 10 minutes |
+| `disk_uploads`, `disk_backups` | free space under `ALERT_DISK_MIN_FREE_PERCENT`: `warning`; under half of it: `critical` |
+| `proxy` | the app doesn't answer 200 through nginx: `critical` |
+
+**Alerts** (`app.ops.alerts`):
+
+- A check must show a new status `ALERT_CONFIRM_CHECKS` times in a row before it changes. Problems and severity changes
+  are then announced, and so is the return to `ok` (with how long it failed).
+- A check still failing is announced again every `ALERT_REPEAT_HOURS`.
+- `unknown` results change nothing.
+- Everything that changed in one cycle goes out as one notification. Its title is `[ALERT_NAME] Problem|Still
+  failing|Resolved|Test alert: <labels>`, and it has one line per change plus a link to `/admin#system`.
+- Messages are built only from fixed sentences and check details. They are scrubbed of every environment value whose
+  name looks secret, the channel URLs and URL credentials. They never hold document names, email contents or usernames.
+- The channels are combinable. The webhook gets `POST {"text": title + "\n" + lines}`. ntfy gets the lines as the body,
+  with `Title`, `Priority` (high for problems), `Tags` and an optional `Authorization: Bearer` header. Email goes over
+  SMTP with STARTTLS (or SSL, or none).
+- A channel that fails is retried on later cycles for up to an hour. Failures are logged with a short reason, never a
+  URL or credential, and never stop the monitor. With no channel, alerts are logged and shown in Admin → System.
+- The monitor reloads its states and alerts after a restart, so it neither repeats an ongoing problem nor misses its
+  recovery.
+
+**Watchdog** (`scripts/watchdog/`, optional, not installed by default). It runs on the host every 5 minutes (launchd
+or a systemd timer). When `http://127.0.0.1:8080/api/health` doesn't answer twice, 30 s apart, it starts Docker if
+needed and the stack's containers as they are (`docker compose start`, then `docker compose restart`: never a build or
+a recreated container), decides whether that worked by the app answering within 5 minutes, and alerts through the same
+channels on a state change. It skips its checks while `.maintenance` exists: deploys create it, and `restore.sh` writes
+`pid=<its process id>` into it while it runs and `hold` when it leaves the app stopped on purpose. A file older than 2
+hours is ignored as left behind, unless it says `hold` or names a running process.

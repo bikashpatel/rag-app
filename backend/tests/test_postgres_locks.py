@@ -90,12 +90,13 @@ async def test_parallel_uploads_of_one_file_make_one_document(create_user: Creat
 
 
 async def test_processes_starting_together_create_the_schema_once() -> None:
-    """The backend and the worker run create_all at start-up; the advisory lock in init_db keeps them apart."""
+    """The backend and the worker run the migrations at start-up; the advisory lock in init_db keeps them apart (with
+    separate processes in test_migrations.py)."""
     await asyncio.gather(*(db.init_db() for _ in range(4)))
 
     async with db.engine.connect() as connection:
         tables = await connection.run_sync(lambda sync: inspect(sync).get_table_names())
-    assert set(tables) == set(Base.metadata.tables)
+    assert set(tables) == {*Base.metadata.tables, "alembic_version"}
 
 
 async def test_sessions_run_in_utc_whatever_the_databases_time_zone() -> None:

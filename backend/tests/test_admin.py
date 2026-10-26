@@ -119,6 +119,8 @@ ADMIN_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/api/admin/plugins/{plugin_id}/activity", None),
     ("POST", "/api/admin/plugins/{plugin_id}/disconnect-all", None),
     ("POST", "/api/admin/plugins/request-check/test", {"model_id": 1}),
+    ("GET", "/api/admin/system", None),
+    ("POST", "/api/admin/system/test-alert", None),
 ]
 
 

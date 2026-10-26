@@ -771,3 +771,82 @@ export type RequestCheckTestResult = {
   latency_ms: number;
   answer: Record<"file" | "image" | "draft" | "send" | "import", boolean> | null; // null without valid JSON
 };
+
+// ---------------- Health and Admin: system (SPEC.md section 10) ----------------
+
+/** GET /health/ready (public): 200 when Postgres, Redis and Qdrant answer and the worker's heartbeat is fresh, else 503. */
+export type Readiness = { status: "ready" | "unready" };
+
+export type CheckStatus = "ok" | "warning" | "critical" | "unknown";
+export type CheckId =
+  | "postgres"
+  | "redis"
+  | "qdrant"
+  | "worker"
+  | "queue"
+  | "backup"
+  | "disk_uploads"
+  | "disk_backups"
+  | "proxy" // checked by the monitor service
+  | "monitor";
+export type AlertChannel = "webhook" | "ntfy" | "email";
+export type AlertKind = "problem" | "reminder" | "recovery" | "test";
+
+export type SystemCheck = { id: CheckId; label: string; status: CheckStatus; detail: string };
+
+export type SystemAlert = {
+  at: string;
+  kind: AlertKind;
+  title: string;
+  lines: string[];
+  delivered: AlertChannel[];
+  failed: AlertChannel[]; // still being retried (for up to an hour), or given up on
+};
+
+/** GET /admin/system */
+export type SystemStatus = {
+  status: CheckStatus; // the worst check ("unknown" counts as a warning)
+  checked_at: string;
+  app_version: string | null;
+  checks: SystemCheck[];
+  worker: { heartbeat_age_seconds: number | null; running_jobs: number | null };
+  queue: {
+    queued: number | null; // ids waiting in Redis
+    pending: number | null;
+    processing: number | null;
+    oldest_pending_age_seconds: number | null;
+  };
+  failed_documents_24h: number | null;
+  database_size_bytes: number | null; // null on SQLite
+  disks: { id: "uploads" | "backups"; label: string; free_bytes: number; total_bytes: number; checked_at: string }[];
+  backup: {
+    status_seen: boolean; // the backup service's status file exists
+    max_age_hours: number; // 0: backup checks are off
+    last_success_at: string | null;
+    last_success_name: string | null;
+    last_success_size_bytes: number | null;
+    last_success_duration_seconds: number | null;
+    age_hours: number | null;
+    last_failure_at: string | null;
+    last_failure_error: string | null;
+    failing: boolean; // the latest attempt failed
+    running_since: string | null;
+    schedule: string | null; // "02:30" or "02:30,14:30" (UTC)
+    next_run_at: string | null;
+    scheduler_seen_at: string | null;
+    backups_kept: number | null;
+    total_size_bytes: number | null;
+  };
+  gmail_reconnect_needed: number | null;
+  monitor: {
+    running: boolean;
+    last_run_at: string | null;
+    interval_seconds: number | null;
+    channels: AlertChannel[];
+    test_pending: boolean;
+  };
+  alerts: SystemAlert[]; // newest first, at most 50
+};
+
+/** POST /admin/system/test-alert: 202; 409 when the monitor isn't running, has no channel, or a test is waiting. */
+export type AlertTestQueued = { queued_at: string };

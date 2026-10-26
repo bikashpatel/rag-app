@@ -3,9 +3,10 @@
 # Only ever used as (integration/run.sh and integration/stack.sh build this command):
 #   docker compose -p rag-it -f docker-compose.yml -f integration/compose.it.yml --env-file integration/.run/it.env ...
 #
-# - The repository's .env is never read: backend and worker take their environment only from the generated
+# - The repository's .env is never read: backend, worker and monitor take their environment only from the generated
 #   integration/.run/it.env (`!override` replaces the base file's `env_file: .env`), and `--env-file` replaces .env for
-#   interpolation too. That file holds random secrets and fake provider keys.
+#   interpolation too (the backup and restore services get theirs only from interpolation). That file holds random
+#   secrets and fake provider keys.
 # - The project name gives every container, volume and network a `rag-it_` prefix, apart from the live `rag-app` stack.
 # - The default network is internal: postgres, redis, qdrant, backend and worker can't reach the internet, so no real
 #   model provider or Google endpoint can ever be called. Only the frontend and the two fakes join `edge`, for the ports
@@ -29,6 +30,7 @@ volumes:
   redisdata: {labels: *marker}
   qdrantdata: {labels: *marker}
   uploads: {labels: *marker}
+  backupstatus: {labels: *marker}
 
 services:
   postgres:
@@ -54,6 +56,21 @@ services:
     labels: *marker
     env_file: !override
       - integration/.run/it.env
+
+  # Alerts go to the fake receiver below (ALERT_WEBHOOK_URL, ALERT_NTFY_URL in the generated env file).
+  monitor:
+    restart: "no"
+    labels: *marker
+    env_file: !override
+      - integration/.run/it.env
+
+  # Backups go to integration/.run/backups (BACKUP_DIR in the generated env file).
+  backup:
+    restart: "no"
+    labels: *marker
+
+  restore:
+    labels: *marker
 
   frontend:
     restart: "no"
@@ -99,6 +116,20 @@ services:
       - "127.0.0.1:${IT_FAKE_GOOGLE_PORT:?}:8099"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8099/_state', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # Receives the monitor's webhook and ntfy alerts (integration/fake_alerts/server.py), run with the backend image.
+  fake-alerts:
+    build: ./backend
+    restart: "no"
+    labels: *marker
+    command: ["python", "/fake_alerts/server.py", "--host", "0.0.0.0", "--port", "8000"]
+    volumes:
+      - ./integration/fake_alerts:/fake_alerts:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 3s
       timeout: 5s
       retries: 20

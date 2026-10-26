@@ -31,6 +31,8 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
                                └── uploads volume (shared)
               worker (same image) <── Redis list rag:ingest_queue
                  parse ─> [PDF pages: render (child process) ─> vision model (LiteLLM)] ─> chunk ─> embed (LiteLLM) ─> Qdrant
+              monitor (same image)  checks every service, the app through nginx, backups and disks ─> alert channels
+              backup (postgres image)  daily: pg_dump + uploads + Qdrant snapshots ─> ./backups (BACKUP_DIR)
 ```
 
 - **Upload:** nginx checks the session, then streams the file to the backend, which validates it,
@@ -65,6 +67,8 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
   **Send**. A separate model call (the "request check") confirms that the user asked for each draft, proposal or
   import in their own words. Setup: [`docs/gmail-setup.md`](docs/gmail-setup.md).
 - **Admin:** one admin account, defined in `.env`. Users exist only if the admin creates them.
+- **Operations:** the backend migrates the database with Alembic when it starts, the `backup` service backs up daily
+  with a verified, tested restore, and the `monitor` service alerts when something breaks (section 8).
 - **Account and Settings:** each user's preferences (theme, accent, chat font size, default model, Enter to send) are
   saved in their account (`/api/me/preferences`). A small script, `theme-boot.js`, applies the cached theme before the
   first paint, within the strict CSP. The app also keeps a short sign-in history per user and offers this month's
@@ -78,8 +82,10 @@ Code layout:
 
 | Path | What |
 |---|---|
-| `backend/app/main.py`, `config.py`, `db.py`, `models.py` | app factory, settings, async SQLAlchemy, ORM |
-| `backend/app/routers/` | `auth`, `me` (the caller's preferences, account, usage and export), `models`, `documents`, `conversations`, `chat`, `admin`, `plugins`, `admin_plugins` (all under `/api`) |
+| `backend/app/main.py`, `config.py`, `db.py`, `models.py` | app factory, settings, async SQLAlchemy (and the migrations run at start-up), ORM |
+| `backend/migrations/`, `backend/alembic.ini` | Alembic migrations ([README](backend/migrations/README.md)) |
+| `backend/app/routers/` | `auth`, `me` (the caller's preferences, account, usage and export), `models`, `documents`, `conversations`, `chat`, `admin`, `plugins`, `admin_plugins`, `system` (readiness and Admin → System) (all under `/api`) |
+| `backend/app/ops/` | operations: `checks` (every health check), `monitor` (the monitor service), `alerts` + `channels` (alert states, webhook, ntfy, email), `heartbeat` (the worker's), `backup_status`, `reconcile` (after a restore), `settings` |
 | `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `document_tool` (the chat's `create_document` tool) + `filegen/` (PDF, DOCX, XLSX and MD rendering and image validation, run by `filegen/child.py`), `image_tool` (the chat's `create_image` tool and the monthly image count), `account` (preferences, sign-in history, the user's usage report), `export` (the data export ZIP), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
 | `backend/app/plugins/` | plugin framework: `base` (the `Plugin` interface), `registry`, `oauth` + `connections` + `crypto` (OAuth, token refresh, encryption), `intent` (the request check), `answer`, `importing`, `audit`, `tasks`, `http`; `gmail/` is the Gmail plugin (`plugin`, `client`, `mime`, `tools`, `sends`, `importer`, `render`, `router`) |
 | `backend/app/fonts/` | Noto Sans fonts for generated PDFs (SIL Open Font License, `OFL.txt`) |
@@ -94,6 +100,7 @@ Code layout:
 | `e2e/` | Playwright browser tests against the running stack ([README](e2e/README.md)) |
 | `integration/` | full-stack tests on an isolated Compose project with fake model and Google servers ([README](integration/README.md)) |
 | `.github/workflows/ci.yml` | CI: every suite on GitHub Actions (section 7) |
+| `scripts/` | `backup.sh`, `restore.sh`, the backup service's steps (`backup/`) and the optional host watchdog (`watchdog/`) ([README](scripts/README.md)) |
 
 ## 1. Prerequisites
 
@@ -191,12 +198,15 @@ Notes:
   conversations beyond either bound are left out, and the export says how many.
 - `WORKER_MEM_LIMIT` (default `4g`) is the worker container's memory limit (Compose `mem_limit` and
   `memswap_limit`); PDF pages are rendered in child processes limited to 1 GiB each.
+- **Backups and alerts** (`BACKUP_*`, `ALERT_*`, `MONITOR_*` in `.env.example`): section 8 has the table. Backups run
+  with the defaults; alerts need one channel set (a webhook, ntfy or email), or they are only logged and shown in
+  Admin → System. Keep a copy of `.env` itself in a password manager: it isn't in any backup.
 
 ## 3. Run
 
 ```bash
 docker compose up -d --build
-docker compose ps                  # wait until the services report "healthy" (the worker has no healthcheck)
+docker compose ps                  # wait until every service reports "healthy"
 ```
 
 Open **http://localhost:8080** (or your `APP_PORT`) and sign in with the admin credentials from `.env`.
@@ -208,12 +218,15 @@ docker compose logs -f backend     # API logs
 docker compose logs -f worker      # document processing logs
 docker compose restart backend worker
 docker compose down                # stop (data is kept in Docker volumes)
-docker compose down -v             # stop AND delete all data
+docker compose down -v             # stop AND delete all data (backups in ./backups stay)
 ```
 
 - After editing `.env`, run `docker compose up -d` (it recreates the containers whose settings changed).
-- After changing code, run `docker compose up -d --build`. If a rebuilt service still serves the
-  old version, run `docker compose up -d --force-recreate <service>` (seen once with `frontend`).
+- Before deploying new code, back up (`scripts/backup.sh`; keep the `BACKUP_NAME` it prints): the backend migrates the
+  database while it starts, and that backup is the way back (`backend/migrations/README.md`, "On a deploy").
+- After changing code, run `APP_VERSION=$(git describe --always --dirty) docker compose up -d --build` (the version
+  shows in Admin → System and in backup manifests), then `docker compose up -d --force-recreate frontend`: nginx finds
+  a recreated backend only when it restarts.
 - Stopping can take a while by design: the backend gives open answers up to about 30 s to save
   their partial text, and the worker gives running jobs up to 60 s to finish.
 
@@ -495,11 +508,11 @@ Five suites. **None of them calls a real model provider or Google** in its defau
 
 | Suite | Where | What it covers | Needs | Size |
 |---|---|---|---|---|
-| Backend | `backend/tests/` ([README](backend/tests/README.md)) | the whole API in-process: SQLite, fakeredis, in-memory Qdrant, LiteLLM mocked, a fake Google, the real PDF and file render children; route guards and deletion checks that cover new routes and tables without being edited | Python 3.13 | about 2,390 tests (10 skipped without Postgres); coverage 96.4 % of statements, 90.4 % of branches |
-| Backend on Postgres | the `postgres`-marked tests in `backend/tests/` | row locks under parallel uploads, the schema's advisory lock, UTC sessions, the image reservation race, the account tests | a throwaway Postgres 17 (e.g. in Docker) | 10 tests |
-| Frontend | `frontend/src/**/*.test.ts(x)` ([README](frontend/src/test/README.md)) | components, hooks, stores and the API client (the SSE parser included) with Vitest, Testing Library and jsdom; `fetch` is stubbed | Node 22+ | 710 tests in 52 files; coverage 92.7 % of statements, 88.2 % of branches |
+| Backend | `backend/tests/` ([README](backend/tests/README.md)) | the whole API in-process: SQLite, fakeredis, in-memory Qdrant, LiteLLM mocked, a fake Google, the real PDF and file render children; route guards and deletion checks that cover new routes and tables without being edited; the migrations, the monitor, alerts and channels, readiness and Admin → System, and the restore's reconcile step | Python 3.13 | about 2,540 tests (35 skipped without Postgres); coverage 95.4 % (statements and branches) |
+| Backend on Postgres | the `postgres`-marked tests in `backend/tests/` (with `TEST_DATABASE=postgres`, all of them) | the migrations (adopting a database made before them, repairs and refusals, the advisory lock across two processes), row locks under parallel uploads, UTC sessions, the image reservation race, the account tests | a throwaway Postgres 17 (e.g. in Docker) | 35 tests |
+| Frontend | `frontend/src/**/*.test.ts(x)` ([README](frontend/src/test/README.md)) | components, hooks, stores and the API client (the SSE parser included) with Vitest, Testing Library and jsdom; `fetch` is stubbed | Node 22+ | 719 tests in 53 files; coverage 92.8 % of statements, 88.2 % of branches |
 | End-to-end | `e2e/` ([README](e2e/README.md)) | a real Chromium (desktop and a phone) against the running stack: sign-in, top bar, chat streaming and Stop, the composer, documents, Settings, the admin page, phone layout, accessibility | the Docker stack up | 48 tests in 10 files (1 `@live`, skipped) |
-| Integration | `integration/` ([README](integration/README.md)) | an isolated copy of the whole stack (nginx, backend, worker, Postgres, Redis, Qdrant) with a fake OpenAI-compatible model server and the fake Google: ingestion, chat, access, files and images from chat, limits, sessions, the worker, re-indexing, user deletion, export, Gmail, vision | Docker | 102 tests in 14 files |
+| Integration | `integration/` ([README](integration/README.md)) | an isolated copy of the whole stack (nginx, backend, worker, Postgres, Redis, Qdrant, the monitor and the backup service) with a fake OpenAI-compatible model server, the fake Google and a fake alert receiver: ingestion, chat, access, files and images from chat, limits, sessions, the worker, re-indexing, user deletion, export, Gmail, vision, backups and the restore drill, monitoring and alerts, the host watchdog | Docker | 148 tests in 17 files |
 
 ```bash
 # Backend (from the repo root)
@@ -507,10 +520,10 @@ cd backend
 uv venv --python 3.13 .venv            # once (uv downloads Python 3.13 if needed)
 uv pip sync requirements-dev.txt       # again whenever the locks change
 #   or, with python3.13 on PATH: python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q                              # 6 to 9 minutes (10 skipped without TEST_POSTGRES_URL)
+.venv/bin/python -m pytest -q                              # 6 to 9 minutes (35 skipped without TEST_POSTGRES_URL)
 .venv/bin/python -m pytest -q --cov --cov-fail-under=94    # with coverage (.coveragerc); fails under 94 %
-uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests
-uvx mypy@1.18.2 --python-executable .venv/bin/python --ignore-missing-imports app
+uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests migrations
+uvx mypy@1.18.2 --python-executable .venv/bin/python --ignore-missing-imports app migrations
 
 # Backend on Postgres: start a throwaway container first (backend/tests/README.md, "Postgres")
 TEST_POSTGRES_URL=postgresql+asyncpg://rag:<password>@127.0.0.1:<port>/scratch .venv/bin/python -m pytest -q -m postgres
@@ -531,7 +544,7 @@ npm run typecheck
 
 # Integration, from the repo root: builds, starts, tests and removes its own stack
 cd ..
-integration/run.sh                      # about 1.5 minutes once the images are built
+integration/run.sh                      # about 4 minutes of tests once the images are built (the restore drill included)
 ```
 
 - **No real calls.** The backend tests mock LiteLLM and serve a fake Google in-process. The e2e suite answers every
@@ -565,7 +578,168 @@ by hand, with a read-only token, actions pinned to commit SHAs, a timeout per jo
 | `e2e` | a throwaway `.env` (random secrets, fake provider keys), the stack as Compose project `rag-e2e`, the e2e type check and Playwright; the report and the stack logs are uploaded on failure, and the stack is removed with its volumes |
 | `integration` | ruff on `integration/`, then `integration/run.sh --rmi`; the stack logs are uploaded on failure |
 
-## 8. Security notes
+## 8. Operations
+
+Three parts keep the data safe and say when something breaks: migrations at start-up, daily verified backups with a
+tested restore, and a monitor that sends alerts. The details are in [`scripts/README.md`](scripts/README.md) (backups
+and restore), [`backend/migrations/README.md`](backend/migrations/README.md) and
+[`scripts/watchdog/README.md`](scripts/watchdog/README.md); the contract is `SPEC.md` section 10.
+
+### Backups
+
+- **What a backup holds.** A folder `BACKUP_DIR/<UTC time>-<label>` (default `./backups`, git-ignored; the folder is
+  mode 700 and its files 600) with the database (`pg_dump -Fc`), every uploaded or generated file (`uploads.tar.gz`,
+  with each file's checksum) and Qdrant snapshots of the vector collections, so a restore needs no paid re-embedding.
+  `manifest.json` records the time, the app version (`APP_VERSION`), the Alembic revision, the rows per table, the
+  files, the points per collection and every file's checksum.
+- **When.** The `backup` service backs up daily at `BACKUP_SCHEDULE` (UTC; the default `02:30` is 08:00 in India). It
+  also backs up `BACKUP_START_DELAY_SECONDS` (120) after it starts when no backup began since the last scheduled time
+  (there is none yet, or the stack was down then); the monitor doesn't alert about a missing or old backup while that
+  one is due. `scripts/backup.sh` backs up now.
+- **Verified before it counts.** A backup is written to `.tmp-<name>` and checked: every checksum, the dump's table of
+  contents (`pg_restore --list`) and its rows counted again, every archived file extracted and compared with its
+  checksum, and each snapshot against the checksum Qdrant reported. Only then is it renamed. A failed backup is
+  deleted, recorded and alerted.
+- **Retention.** Every backup younger than 48 hours; manual and pre-restore backups for `BACKUP_KEEP_DAILY` days; of
+  the scheduled and start-up backups, the newest of each of the last `BACKUP_KEEP_DAILY` (7) days and
+  `BACKUP_KEEP_WEEKLY` (4) weeks (Monday to Sunday, UTC) that have one; and always the newest backup.
+- **Not in any backup: `.env`** (`SECRET_KEY`, `TOKEN_ENCRYPTION_KEY`, the provider keys, the passwords). Keep a copy
+  in a password manager. Without the same `TOKEN_ENCRYPTION_KEY` every user must reconnect Gmail after a restore; a
+  different `SECRET_KEY` signs everyone out. Redis isn't backed up either: it holds only short-lived state, and the
+  worker re-queues unfinished documents from Postgres.
+- **Off-site copies.** A backup on the app's disk doesn't survive losing that disk. Copy `./backups` somewhere else
+  after the daily backup, encrypted: rclone with a `crypt` remote (`rclone copy --max-age 48h ./backups
+  b2-crypt:rag-backups`), an encrypted external drive (`rsync -a --delete ./backups/ /Volumes/Backup/rag-backups/`),
+  or restic or borg. `scripts/README.md` has the details. Backups hold personal data: never send one anywhere
+  unencrypted.
+
+```bash
+scripts/backup.sh                                  # back up now; the last line is BACKUP_NAME=...
+docker compose run --rm restore list               # the backups and their sizes
+docker compose run --rm restore verify NAME        # verify one without restoring it
+docker compose run --rm restore show NAME          # its manifest
+docker compose logs backup                         # what the scheduled backups did
+```
+
+### Restore
+
+```bash
+scripts/restore.sh NAME            # verifies the backup and says what --yes would do; changes nothing
+scripts/restore.sh NAME --yes      # restores ("latest" works as a name too); destructive
+```
+
+1. It verifies the backup and refuses one that fails. It compares the backup's Alembic revision with this release's
+   migrations: it refuses a revision they don't know (a newer release made the backup), and without `--migrate` one
+   that starting this release would migrate forward. Nothing is stopped before these checks.
+2. It stops the app and takes a `pre-restore` safety backup of the current data (`--no-safety-backup` skips it).
+   Restoring the safety backup undoes the restore.
+3. It prepares every part next to the current one and checks it: the database in `<db>_restoring` (row counts), the
+   files in a staging folder (checksums), each collection as `<name>-restoring` (point counts), and keeps a snapshot of
+   every current collection inside Qdrant. If any check fails, nothing is changed and the app starts again.
+4. It swaps in Qdrant, then the files, last the database (in one transaction), and clears Redis's ingestion queue. If
+   a step of the swap fails, it is undone (the files and collections from before come back), and the app starts again.
+5. It migrates the database to this release's schema (with `--migrate`), then reconciles every document with its file
+   and vectors (`python -m app.ops.reconcile`): a document whose file the backup lacks is marked failed, one whose
+   vectors don't match is re-indexed, and vectors of deleted or failed documents and files no document has are removed.
+6. It starts the app and waits until `GET /api/health/ready` answers.
+
+With `--no-start` it stops after step 4 and leaves the app stopped, with a `.maintenance` file that keeps the watchdog
+away until you delete it. The restore drill in the integration suite (`integration/tests/test_14_backup_restore.py`)
+runs on every CI run: it backs up a stack with data, destroys it with `down -v`, starts an empty one, restores, and
+checks logins, document bytes, search results without re-embedding, conversations and the Gmail token. It also
+restores over a stack that changed since the backup, restores a backup taken while documents changed, restores with
+`--migrate`, and injects failures (damaged backups, a dump that fails to restore, a snapshot Qdrant refuses, a swap
+failing at each step), after which the stack must hold exactly its data from before (`scripts/README.md`).
+
+- **A new machine:** clone the repo, put the saved `.env` back, copy the backup folder into `./backups`, run
+  `docker compose up -d --build`, then `scripts/restore.sh latest --yes --no-safety-backup` (add `--migrate` if it
+  says this release would migrate the backup's schema).
+- **Rolling back a deploy:** check out and build the previous release first (`git checkout <release> && docker compose
+  build`), then restore the backup taken before the deploy with that release's `scripts/restore.sh NAME --yes`.
+  Releases up to `c1da1d0` predate migrations: see `backend/migrations/README.md`, "Rolling back".
+
+### Migrations
+
+- The backend and the worker run `init_db` when they start: Alembic's `upgrade head` in one transaction, under a
+  Postgres advisory lock so that only one of them migrates. You never run a migration by hand on a deploy.
+- A database made before migrations (tables but no `alembic_version`) is compared with the baseline (revision 0001):
+  it is stamped and aligned by revision 0002, or, for a difference that can't be repaired automatically, left
+  unchanged while the backend refuses to start and logs one error listing every difference. The live database was
+  adopted this way on 2026-10-25, with no difference.
+- **A deploy:** `touch .maintenance` (the watchdog leaves the stack alone meanwhile), `scripts/backup.sh` (keep the
+  `BACKUP_NAME`: that backup is the way back), then `APP_VERSION=$(git describe --always --dirty) docker compose up -d
+  --build` and `docker compose up -d --force-recreate frontend`, and `rm .maintenance` once the app answers. `docker
+  compose logs backend` shows `Database schema migrated from ... to revision ...` or `Database schema up to date
+  (revision ...)`; `docker compose exec backend alembic current` shows the revision.
+- **Adding a migration:** change `backend/app/models.py`, generate a revision against a throwaway Postgres at the
+  current head (`alembic revision --autogenerate --rev-id 0003 -m "..."`), review it by hand (renames, values for new
+  `NOT NULL` columns, named constraints, no import of `app.models`), and test it with `tests/test_migrations.py`, whose
+  drift guard fails while the models and the migrations differ. Every schema change needs a revision, a new table
+  included. Never edit a migration that has run on real data. The steps are in `backend/migrations/README.md`,
+  "Writing a migration".
+
+### Monitoring and alerts
+
+The `monitor` service runs these checks every `MONITOR_INTERVAL_SECONDS` (60):
+
+| Check | A problem when |
+|---|---|
+| `postgres`, `redis`, `qdrant` | it doesn't answer (critical) |
+| `worker` | its heartbeat is missing or too old (critical) |
+| `queue` | pending documents waited over `ALERT_QUEUE_STUCK_MINUTES` (30) while none finished (warning) |
+| `backup` | the last backup failed (critical), or there is no backup yet, the last one is older than `BACKUP_MAX_AGE_HOURS` (26), or the scheduler went silent (warning); not while a backup runs or a start-up backup is due |
+| `disk_uploads`, `disk_backups` | less than `ALERT_DISK_MIN_FREE_PERCENT` (10 %) free (warning; under half of it critical) |
+| `proxy` | the app doesn't answer through nginx (`MONITOR_APP_URL`) (critical) |
+
+An alert goes out when a check has shown a problem `ALERT_CONFIRM_CHECKS` (2) times in a row, so a blip sends
+nothing; again every `ALERT_REPEAT_HOURS` (6) while it lasts; and when it recovers. Alerts never hold secrets,
+document names, email contents or usernames. The channels can be combined; with none, alerts are only logged
+(`docker compose logs monitor`) and shown in Admin → System:
+
+| Channel | Settings in `.env` | How |
+|---|---|---|
+| Webhook | `ALERT_WEBHOOK_URL` | receives `POST {"text": ...}`: a Slack or Google Chat incoming webhook, a Discord webhook with `/slack` at the end, or a Microsoft Teams incoming webhook. The URL is a secret |
+| ntfy (push to a phone) | `ALERT_NTFY_URL`, `ALERT_NTFY_TOKEN` | install the ntfy app, pick a long random topic and subscribe to it; set `ALERT_NTFY_URL=https://ntfy.sh/<topic>` (or your own ntfy server), plus a token if the topic is protected |
+| Email | `ALERT_SMTP_HOST`, `ALERT_SMTP_PORT` (587), `ALERT_SMTP_SECURITY` (`starttls`; `ssl` for port 465; `none` for a local relay), `ALERT_SMTP_USERNAME`, `ALERT_SMTP_PASSWORD`, `ALERT_SMTP_FROM`, `ALERT_SMTP_TO` (comma-separated) | needs the host, the sender and a recipient; for Gmail use an app password |
+
+After setting a channel, run `docker compose up -d monitor`, then press **Send a test alert** in Admin → System.
+
+- **Admin → System** shows the overall status and every check with its detail, the app version, the worker, the
+  queue, failed documents of the last 24 hours, the database size, the disks, Gmail connections that need a
+  reconnect, the backups (the last one, the schedule, how many are kept, the last failure), and the alert channels with
+  the recent alerts.
+- **`GET /api/health/ready`** (no sign-in) answers `200 {"status": "ready"}` while Postgres, Redis and Qdrant answer
+  and the worker's heartbeat is fresh, else `503 {"status": "unready"}`. Point an external uptime check at it once the
+  app has a public address: it also notices the whole machine going away.
+- **The watchdog** (optional, not installed): the monitor runs inside Docker, so it can't report Docker itself
+  stopping. `scripts/watchdog/watchdog.sh` runs on the host every 5 minutes; when `http://127.0.0.1:8080/api/health`
+  doesn't answer twice, 30 s apart, it starts Docker and the stack's containers as they are (`docker compose start`,
+  never a build) and alerts through the same channels. It leaves the stack alone while `.maintenance` exists (a deploy,
+  a running restore, an app left stopped on purpose). Install it as a macOS LaunchAgent or a Linux systemd timer
+  (`scripts/watchdog/README.md`), then check the channels with `scripts/watchdog/watchdog.sh --test`.
+
+### Operations settings
+
+Every one is optional; the defaults are in `.env.example`. After a change, run `docker compose up -d`.
+
+| Setting (default) | What it does |
+|---|---|
+| `BACKUP_DIR` (`./backups`) | where backups go on this machine; keep it outside `./backend` and `./frontend` (the build contexts) and out of git |
+| `BACKUP_SCHEDULE` (`02:30`) | daily backup times in UTC, `HH:MM`, comma-separated for several |
+| `BACKUP_START_DELAY_SECONDS` (120) | the delay of the start-up backup |
+| `BACKUP_KEEP_DAILY` (7), `BACKUP_KEEP_WEEKLY` (4) | retention (above) |
+| `BACKUP_UID`, `BACKUP_GID` (unset) | Linux only: the owner of the backup files, so an off-site copy can read them without root |
+| `APP_VERSION` (empty) | shown in Admin → System and written to backup manifests; set by the deploy command |
+| `MONITOR_INTERVAL_SECONDS` (60) | how often the monitor checks |
+| `MONITOR_APP_URL` (`http://frontend/api/health`) | the app through nginx, from inside Docker; empty: not checked |
+| `ALERT_CONFIRM_CHECKS` (2), `ALERT_REPEAT_HOURS` (6, 0: never) | results in a row before an alert, and the reminder interval |
+| `ALERT_NAME` (`RAG Assistant`) | the start of every alert's title |
+| `BACKUP_MAX_AGE_HOURS` (26, 0: no backup checks) | the oldest the last good backup may be |
+| `ALERT_QUEUE_STUCK_MINUTES` (30), `ALERT_DISK_MIN_FREE_PERCENT` (10) | the queue and disk thresholds |
+| `WORKER_HEARTBEAT_SECONDS` (15), `WORKER_HEARTBEAT_MAX_AGE_SECONDS` (60) | the worker's heartbeat, and the age that makes the app "unready" |
+| `ALERT_WEBHOOK_URL`, `ALERT_NTFY_URL`, `ALERT_NTFY_TOKEN`, `ALERT_SMTP_*` (empty) | the alert channels (above) |
+
+## 9. Security notes
 
 - The UI is bound to `127.0.0.1` only. Before exposing it on a network, put it behind HTTPS and
   set `COOKIE_SECURE=true` (see `docs/HANDOFF.md`, next steps).
@@ -641,7 +815,7 @@ by hand, with a read-only token, actions pinned to commit SHAs, a timeout per jo
     another app user shares the same Google account.
 - Secrets are never logged; provider errors are turned into user-facing messages (`llm.friendly_error`).
 
-## 9. Known limitations
+## 10. Known limitations
 
 - Scanned PDF pages are read by the vision model, which costs tokens: with Claude Sonnet 5.5 about $0.007 for
   a simple page (measured) and up to about $0.03 for a dense one, up to `VISION_MAX_PAGES` pages per document
@@ -692,11 +866,18 @@ by hand, with a read-only token, actions pinned to commit SHAs, a timeout per jo
 - Behind Docker's port publishing every sign-in in the history reads "Via a local network or proxy", because nginx
   doesn't yet trust an outer proxy's client address (`set_real_ip_from`; see `docs/HANDOFF.md`, next step 5).
 - Legacy `.doc`, `.ppt` and `.xls` files must be saved in the modern format first.
-- Database tables are created automatically on start. There are no migrations yet: add Alembic
-  before changing the schema of a database with real data. Rolling the code back to a release before images needs
-  the SQL in `docs/HANDOFF.md` ("Images from chat") first, and back to a release before plugins the SQL in
+- The backend migrates the database while it starts (Alembic, `backend/migrations/README.md`), and migrations only go
+  forward. To roll a deploy back, check out and build the previous release, then restore the backup taken before the
+  deploy with `scripts/restore.sh`, which refuses a backup whose schema revision that release doesn't know or would
+  migrate. Releases up to `c1da1d0` predate migrations: they ignore the schema's revision and start on any schema
+  without a warning, so go back to one only with a backup at revision 0002 or from before migrations
+  (`backend/migrations/README.md`, "Rolling back"). Rolling the code back to a release before images needs the SQL in
+  `docs/HANDOFF.md` ("Images from chat") first, and back to a release before plugins the SQL in
   `docs/briefs/plugins-gmail.md` (section 3.3).
 - Run exactly one worker container. Scale with `WORKER_CONCURRENCY` instead.
-- No backups are configured.
+- Backups stay on the app's machine until you copy them off it (section 8, "Off-site copies"), and they never include
+  `.env`. Alerts are only logged and shown in Admin → System until an alert channel is set. The monitor runs inside
+  Docker, so nothing reports Docker or the machine stopping unless the host watchdog is installed or an external
+  uptime check watches `/api/health/ready`.
 
 The full list, with the open risks, is in `docs/HANDOFF.md`.

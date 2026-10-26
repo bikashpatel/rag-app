@@ -8,6 +8,30 @@ x-backend-env: &backend-env
   UPLOAD_DIR: /data/uploads
   # Use LiteLLM's bundled price/context map instead of fetching it from GitHub at startup.
   LITELLM_LOCAL_MODEL_COST_MAP: "True"
+  # Shown in Admin -> System and written to backup manifests, e.g. APP_VERSION=$(git describe) docker compose up -d.
+  APP_VERSION: ${APP_VERSION:-}
+
+# The backup and restore services (scripts/backup/backup.sh): the pinned postgres image has pg_dump, pg_restore, psql,
+# tar and busybox. They get only the settings they need, never the whole .env.
+x-backup: &backup
+  image: postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+  entrypoint: ["/bin/sh", "/opt/backup/backup.sh"]
+  environment:
+    PGHOST: postgres
+    PGPORT: "5432"
+    PGUSER: ${POSTGRES_USER:-rag}
+    PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    PGDATABASE: ${POSTGRES_DB:-rag}
+    QDRANT_URL: http://qdrant:6333
+    QDRANT_API_KEY: ${QDRANT_API_KEY:-}
+    QDRANT_COLLECTION_PREFIX: ${QDRANT_COLLECTION_PREFIX:-rag_chunks}
+    APP_VERSION: ${APP_VERSION:-}
+    BACKUP_SCHEDULE: ${BACKUP_SCHEDULE:-02:30}
+    BACKUP_KEEP_DAILY: ${BACKUP_KEEP_DAILY:-7}
+    BACKUP_KEEP_WEEKLY: ${BACKUP_KEEP_WEEKLY:-4}
+    BACKUP_START_DELAY_SECONDS: ${BACKUP_START_DELAY_SECONDS:-120}
+    BACKUP_UID: ${BACKUP_UID:-}
+    BACKUP_GID: ${BACKUP_GID:-}
 
 # Images are pinned by digest to builds at least two weeks old; bump them deliberately.
 services:
@@ -59,6 +83,7 @@ services:
     environment: *backend-env
     volumes:
       - uploads:/data/uploads
+      - backupstatus:/backup-status:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -87,6 +112,13 @@ services:
     environment: *backend-env
     volumes:
       - uploads:/data/uploads
+    # Healthy while its heartbeat in Redis is fresh (app/ops/heartbeat.py).
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.ops.heartbeat"]
+      interval: 15s
+      timeout: 10s
+      retries: 4
+      start_period: 30s
     depends_on:
       backend:
         condition: service_healthy
@@ -108,8 +140,64 @@ services:
       backend:
         condition: service_healthy
 
+  # Checks every service, the app through nginx, backups and disks every MONITOR_INTERVAL_SECONDS and sends alerts on
+  # state changes to the ALERT_* channels (app/ops/monitor.py). The only service that sends alerts.
+  monitor:
+    build: ./backend
+    restart: unless-stopped
+    command: ["python", "-m", "app.ops.monitor"]
+    env_file: .env
+    environment: *backend-env
+    volumes:
+      - uploads:/data/uploads:ro
+      - backupstatus:/backup-status:ro
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.ops.monitor", "--check"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  # Daily backups at BACKUP_SCHEDULE (UTC) into BACKUP_DIR, plus one shortly after start while there is none
+  # (scripts/README.md). BACKUP_DIR holds personal data: keep it outside every build context and out of git.
+  backup:
+    <<: *backup
+    restart: unless-stopped
+    command: ["schedule"]
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups
+      - uploads:/data/uploads:ro
+      - backupstatus:/status
+      - ./scripts/backup:/opt/backup:ro
+    healthcheck:
+      test: ["CMD", "/bin/sh", "/opt/backup/backup.sh", "health"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    depends_on:
+      # The backend creates the schema and the uploads volume's owner first.
+      backend:
+        condition: service_healthy
+
+  # Used only by scripts/restore.sh (docker compose run --rm restore ...): the backups read-only, the uploads writable.
+  restore:
+    <<: *backup
+    profiles: ["restore"]
+    restart: "no"
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups:ro
+      - uploads:/data/uploads
+      - backupstatus:/status
+      - ./scripts/backup:/opt/backup:ro
+
 volumes:
   pgdata:
   redisdata:
   qdrantdata:
   uploads:
+  # The backup service's status file (no personal data), read by the backend and the monitor.
+  backupstatus:

@@ -7,9 +7,10 @@ import { useResource } from "../components/admin/hooks";
 import ModelsTab from "../components/admin/ModelsTab";
 import PluginsTab from "../components/admin/PluginsTab";
 import StatsBar from "../components/admin/StatsBar";
+import SystemTab from "../components/admin/SystemTab";
 import UsageTab from "../components/admin/UsageTab";
 import UsersTab from "../components/admin/UsersTab";
-import { ChartIcon, CpuIcon, DocsIcon, PlugIcon, UsersIcon, type IconProps } from "../components/ui/icons";
+import { ChartIcon, CpuIcon, DocsIcon, MonitorIcon, PlugIcon, UsersIcon, type IconProps } from "../components/ui/icons";
 import "../components/admin/admin.css";
 
 const TABS = [
@@ -18,6 +19,7 @@ const TABS = [
   { id: "usage", label: "Usage", icon: ChartIcon },
   { id: "documents", label: "Documents", icon: DocsIcon },
   { id: "plugins", label: "Plugins", icon: PlugIcon },
+  { id: "system", label: "System", icon: MonitorIcon },
 ] as const satisfies readonly { id: string; label: string; icon: ComponentType<IconProps> }[];
 
 type TabId = (typeof TABS)[number]["id"];
@@ -71,7 +73,7 @@ export default function AdminPage() {
       <main className="admin-main">
         <div className="admin-heading">
           <h1 className="admin-title">Administration</h1>
-          <p className="admin-lede">Accounts, models, usage, the document index and plugins.</p>
+          <p className="admin-lede">Accounts, models, usage, the document index, plugins and the system's health.</p>
         </div>
         <StatsBar stats={stats} onOpenModels={() => selectTab("models")} />
         <div className="admin-tabs" role="tablist" aria-label="Admin sections" onKeyDown={onTabKeyDown}>
@@ -98,6 +100,7 @@ export default function AdminPage() {
           {active === "usage" ? <UsageTab /> : null}
           {active === "documents" ? <DocumentsTab onChanged={refreshStats} /> : null}
           {active === "plugins" ? <PluginsTab /> : null}
+          {active === "system" ? <SystemTab /> : null}
         </div>
       </main>
     </div>

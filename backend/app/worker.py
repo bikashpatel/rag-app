@@ -4,11 +4,15 @@ import asyncio
 import contextlib
 import logging
 import signal
+import sys
 
+from alembic.util import CommandError
 from redis.exceptions import RedisError
 
 from app.config import settings
-from app.db import close_db, init_db
+from app.db import SchemaMismatchError, close_db, init_db
+from app.ops import heartbeat
+from app.ops.settings import ops_settings
 from app.redis_client import INGEST_QUEUE, close_redis, get_redis
 from app.schemas import MAX_INT
 from app.services.ingestion import (
@@ -38,6 +42,7 @@ class Worker:
 
     A job is popped only when a slot is free, so stopping never strands a popped id: running jobs get a
     grace period, and anything still unfinished stays "processing" until recover_pending() on the next start.
+    While it takes jobs it refreshes its heartbeat in Redis (app.ops.heartbeat), and removes it when it stops.
     A job that ends without recording a result (e.g. the database failed its final update) leaves its document
     "processing" too; the periodic sweep retries it. A job reading pages with the vision model (network waits) gives
     its slot back until it leaves that phase.
@@ -60,11 +65,31 @@ class Worker:
         if not await self._init_db() or not await self._recover():
             return
         set_vision_phase_listener(self._vision_phase_changed)
+        beating = asyncio.create_task(self._beat(), name="worker-heartbeat")
         try:
             await self._consume()
             await self._drain()
         finally:
+            beating.cancel()
+            await asyncio.gather(beating, return_exceptions=True)
+            with contextlib.suppress(Exception):
+                await heartbeat.clear()
             set_vision_phase_listener(None)
+
+    async def _beat(self) -> None:
+        """Refreshes the heartbeat until shutdown is requested; a failed refresh is logged once per outage."""
+        failing = False
+        while not self._stopping.is_set():
+            try:
+                await heartbeat.beat(len(self._tasks))
+            except Exception as exc:
+                if not failing:
+                    logger.warning("Could not refresh the worker heartbeat (%s)", type(exc).__name__)
+                failing = True
+            else:
+                failing = False
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopping.wait(), ops_settings.worker_heartbeat_seconds)
 
     def _vision_phase_changed(self, entering: bool) -> None:
         """Called from inside a job's task when it enters or leaves the vision phase."""
@@ -86,7 +111,9 @@ class Worker:
             await asyncio.wait_for(self._stopping.wait(), seconds)
 
     async def _init_db(self) -> bool:
-        """Create tables, retrying while the database starts up. False if shutdown came first."""
+        """Migrate the schema, retrying while the database starts up. False if shutdown came first. A schema this
+        release can't use (made before migrations and differing, or migrated by a newer release) raises at once:
+        waiting doesn't change it."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + _DB_STARTUP_SECONDS
         delay = 1.0
@@ -94,6 +121,8 @@ class Worker:
             try:
                 await init_db()
                 return True
+            except (SchemaMismatchError, CommandError):
+                raise
             except Exception as exc:
                 if loop.time() + delay > deadline:
                     raise
@@ -210,4 +239,8 @@ async def main() -> None:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except (SchemaMismatchError, CommandError) as exc:
+        logger.error("Not starting: this release can't use the database's schema: %s", exc)
+        sys.exit(1)

@@ -59,6 +59,16 @@ leftovers() {
     docker network ls --filter "$label" --format 'network {{.Name}}'
 }
 
+# The backups of a run (BACKUP_DIR=integration/.run/backups) are removed from inside a container of the backup image
+# (on Linux root owns them), which mounts only that folder.
+clear_backups() {
+  local image
+  image=$(sed -n 's/^  image: \(postgres:.*\)$/\1/p' "$ROOT/docker-compose.yml" | head -1)
+  mkdir -p "$ROOT/integration/.run/backups"
+  docker run --rm --network none -v "$ROOT/integration/.run/backups:/backups" "$image" \
+    find /backups -mindepth 1 -delete > /dev/null 2>&1 || echo "Couldn't remove the test backups in integration/.run/backups" >&2
+}
+
 save_logs() {
   mkdir -p "$(dirname "$LOGS")"
   "$STACK" logs --no-color > "$LOGS" 2>&1 || true
@@ -78,6 +88,7 @@ if [ -n "$left" ]; then
   fi
 fi
 "$PY" "$ROOT/integration/gen_env.py" || exit 2
+clear_backups
 
 teardown() {
   local status=$? left
@@ -90,6 +101,7 @@ teardown() {
     exit "$status"
   fi
   echo "Tearing down the $IT_PROJECT stack"
+  clear_backups
   local down=(down -v --remove-orphans)
   if [ "$RMI" = 1 ]; then
     down+=(--rmi local)

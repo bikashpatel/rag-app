@@ -23,6 +23,7 @@ PUBLIC: set[Operation] = {
     ("POST", "/api/auth/login"),
     ("POST", "/api/auth/logout"),
     ("GET", "/api/health"),
+    ("GET", "/api/health/ready"),
     # Identified by the server-side state and the nonce cookie: the browser arrives from the provider's site, without
     # the SameSite=Strict session cookie.
     ("GET", "/api/plugins/{plugin_id}/oauth/callback"),

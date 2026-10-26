@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The watchdog as a macOS LaunchAgent: every 5 minutes, and at login. A template: install it as
+     scripts/watchdog/README.md says (it replaces __RAG_APP_DIR__ and __HOME__). -->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>local.rag-assistant.watchdog</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__RAG_APP_DIR__/scripts/watchdog/watchdog.sh</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>RAG_APP_DIR</key>
+    <string>__RAG_APP_DIR__</string>
+    <key>RAG_APP_URL</key>
+    <string>http://127.0.0.1:8080/api/health</string>
+    <key>PATH</key>
+    <string>__HOME__/.docker/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>300</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>__HOME__/Library/Logs/rag-assistant-watchdog.log</string>
+  <key>StandardErrorPath</key>
+  <string>__HOME__/Library/Logs/rag-assistant-watchdog.log</string>
+</dict>
+</plist>

@@ -90,9 +90,14 @@ def display_filename(filename: str | None, extension: str) -> str:
     return stem[: _MAX_FILENAME_CHARS - len(suffix)] + suffix
 
 
+def file_names(stored_name: str) -> tuple[str, ...]:
+    """A document's file and the sidecars it may have (Markdown source, image renditions)."""
+    return stored_name, source_name(stored_name), preview_name(stored_name), thumb_name(stored_name)
+
+
 def remove_file(stored_name: str) -> None:
     """Remove a stored file and its sidecars (Markdown source, image renditions), if any."""
-    for name in (stored_name, source_name(stored_name), preview_name(stored_name), thumb_name(stored_name)):
+    for name in file_names(stored_name):
         try:
             stored_path(name).unlink(missing_ok=True)
         except Exception:

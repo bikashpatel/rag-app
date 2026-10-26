@@ -62,6 +62,7 @@ test("the admin's avatar menu has Admin, which opens the admin page", async ({ a
     "Usage",
     "Documents",
     "Plugins",
+    "System",
   ]);
 });
 
@@ -72,6 +73,7 @@ test("the other admin tabs load (read only)", async ({ adminPage }) => {
     ["Usage", /^Usage in /],
     ["Documents", /^Documents$/],
     ["Plugins", /^Gmail/],
+    ["System", /^System status$/],
   ];
   for (const [tab, heading] of sections) {
     await adminPage.getByRole("tab", { name: tab }).click();

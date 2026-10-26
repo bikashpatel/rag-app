@@ -13,6 +13,9 @@ COPY requirements.txt .
 RUN pip install --require-hashes --no-deps -r requirements.txt && pip check
 
 COPY app ./app
+# The schema migrations, which app.db.init_db runs at start-up (migrations/README.md).
+COPY alembic.ini ./
+COPY migrations ./migrations
 
 RUN useradd --create-home --uid 10001 appuser \
     && mkdir -p /data/uploads \
