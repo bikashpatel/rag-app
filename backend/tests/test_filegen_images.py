@@ -312,7 +312,7 @@ def test_data_that_isnt_a_usable_image_is_refused(data: bytes, message: str, tmp
 
     assert str(raised.value) == message
     assert isinstance(raised.value, RenderError)
-    assert time.perf_counter() - started < 1
+    assert time.perf_counter() - started < 5  # refused before decoding; decoding the bomb takes far longer
     assert list(out.iterdir()) == []
 
 

@@ -498,7 +498,7 @@ def test_deeply_nested_html_is_read_in_linear_time(write: WriteFile, page: str) 
 
     text = parse(write, "deep.html", page.encode()).segments[0].text
 
-    assert time.perf_counter() - started < 5  # it used to take minutes
+    assert time.perf_counter() - started < 30  # it used to take minutes; a slow CI runner with coverage takes ~5 s
     assert text.startswith("x")
 
 
