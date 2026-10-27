@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes, useNavigate } from "react-router-dom";
 import { describe, expect, it } from "vitest";
@@ -78,7 +78,7 @@ describe("RequireAuth needsPlan", () => {
     view.unmount();
 
     const other = await renderAt("/c/12?settings=billing&x=1#m3", () => makeMe({ plan: makeLapsedPlanAccess("none") }));
-    expect(other.location()).toBe("/plans?settings=billing");
+    await waitFor(() => expect(other.location()).toBe("/plans?settings=billing"));
   });
 
   it("lets a user with a plan and the admin in", async () => {
@@ -94,7 +94,7 @@ describe("RequireAuth needsPlan", () => {
 
   it("sends a signed-out visitor to the login page", async () => {
     const view = await renderAt("/c/12", () => errorResponse(401, "Not authenticated"));
-    expect(view.location()).toBe("/login");
+    await waitFor(() => expect(view.location()).toBe("/login"));
   });
 
   it("keeps the page shown when the plan ends there, until the next navigation", async () => {
@@ -113,7 +113,7 @@ describe("RequireAuth needsPlan", () => {
     expect(screen.getByRole("heading", { name: "Chat" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Other chat" }));
-    expect(view.location()).toBe("/plans");
+    await waitFor(() => expect(view.location()).toBe("/plans"));
   });
 });
 
