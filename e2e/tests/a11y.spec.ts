@@ -56,6 +56,8 @@ test.describe("signed in", () => {
     const menu = page.getByRole("menu", { name: /^Account: / });
     await expect(menu.getByRole("menuitem", { name: "View usage" })).toBeFocused();
     await page.keyboard.press("ArrowDown");
+    await expect(menu.getByRole("menuitem", { name: "Plan & billing" })).toBeFocused();
+    await page.keyboard.press("ArrowDown");
     await expect(menu.getByRole("menuitem", { name: "Settings", exact: true })).toBeFocused();
     await page.keyboard.press("Enter");
 

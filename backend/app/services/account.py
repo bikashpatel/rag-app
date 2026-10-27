@@ -1,5 +1,6 @@
 """The caller's own account (docs/briefs/ui-shell-settings.md, section 4): preferences, the sign-in history (approximate
-IPs, parsed User-Agents), the account view and this month's usage report. Nothing here reads another user's rows."""
+IPs, parsed User-Agents), the account view and the usage report of the allowance window. Nothing here reads another
+user's rows."""
 
 import ipaddress
 import re
@@ -14,7 +15,6 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import settings
 from app.models import Conversation, LLMModel, LoginEvent, UsageEvent, User, UserPreference, utcnow
 from app.schemas import MAX_INT, Preferences
 from app.schemas_account import (
@@ -30,6 +30,7 @@ from app.schemas_account import (
 )
 from app.schemas_account import LoginEvent as LoginEventInfo
 from app.services import storage, usage
+from app.services.billing.entitlements import Entitlements, allows_model
 
 LOGIN_HISTORY_LIMIT = 20  # sign-ins kept per user
 MODEL_UNAVAILABLE = "That model isn't available to you."
@@ -87,40 +88,40 @@ def _stored_values(data: object) -> tuple[dict[str, Any], int | None]:
     return values, model_id
 
 
-async def usable_chat_model(db: AsyncSession, user: User, model_id: int) -> bool:
-    """An enabled chat model the user may use now, as GET /models lists them."""
+async def usable_chat_model(db: AsyncSession, model_id: int, ent: Entitlements) -> bool:
+    """An enabled chat model the user may use now, as GET /models lists them (none without access)."""
     model = await db.get(LLMModel, model_id)
-    if model is None or model.kind != "chat" or not model.enabled:
-        return False
-    return user.is_admin or not user.restrict_models or any(allowed.id == model.id for allowed in user.allowed_models)
+    return model is not None and model.kind == "chat" and model.enabled and allows_model(ent, model.id)
 
 
-async def _preferences(db: AsyncSession, user: User, data: object) -> Preferences:
+async def _preferences(db: AsyncSession, data: object, ent: Entitlements) -> Preferences:
     values, model_id = _stored_values(data)
     # The stored id stays when the model isn't usable now, so it is the default again once it is.
-    if model_id is not None and await usable_chat_model(db, user, model_id):
+    if model_id is not None and await usable_chat_model(db, model_id, ent):
         values["default_model_id"] = model_id
     return Preferences(**values)
 
 
-async def read_preferences(db: AsyncSession, user: User) -> Preferences:
-    """One primary-key select (plus the model's when a default is stored): /auth/me also serves nginx's upload check."""
+async def read_preferences(db: AsyncSession, user: User, ent: Entitlements) -> Preferences:
+    """One primary-key select (plus the model's when a default is stored)."""
     row = await db.get(UserPreference, user.id)
-    return await _preferences(db, user, row.data if row is not None else None)
+    return await _preferences(db, row.data if row is not None else None, ent)
 
 
 async def _locked_row(db: AsyncSession, user_id: int) -> UserPreference | None:
     return await db.get(UserPreference, user_id, with_for_update=True, populate_existing=True)
 
 
-async def update_preferences(db: AsyncSession, user: User, update: PreferencesUpdate) -> Preferences:
+async def update_preferences(
+    db: AsyncSession, user: User, update: PreferencesUpdate, ent: Entitlements
+) -> Preferences:
     """Merge the given fields into the stored ones (unknown stored keys are kept) and commit. 422 when
-    default_model_id isn't a model the user may use."""
+    default_model_id isn't a model the user may use (any id without access)."""
     patch = update.model_dump(exclude_unset=True)
     if not patch:
-        return await read_preferences(db, user)
+        return await read_preferences(db, user, ent)
     model_id = patch.get("default_model_id")
-    if model_id is not None and not await usable_chat_model(db, user, model_id):
+    if model_id is not None and not await usable_chat_model(db, model_id, ent):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=MODEL_UNAVAILABLE)
     data = patch
     for attempt in range(2):
@@ -140,7 +141,7 @@ async def update_preferences(db: AsyncSession, user: User, update: PreferencesUp
                 raise
             continue
         break
-    return await _preferences(db, user, data)
+    return await _preferences(db, data, ent)
 
 
 # ---------------- Sign-ins ----------------
@@ -274,11 +275,11 @@ def _cost(value: float) -> float:
     return round(value, 6)
 
 
-async def my_usage(db: AsyncSession, user: User) -> MyUsage:
-    """The user's usage this UTC month against their limits (the counts the limits use), per day and per model."""
+async def my_usage(db: AsyncSession, user: User, ent: Entitlements) -> MyUsage:
+    """The user's usage in the allowance window (usage.usage_window) against their limits (the counts the limits use),
+    per day and per model."""
     now = current_time()
-    start = usage.month_start(now)
-    end = usage.next_month(start)
+    start, end = usage.usage_window(ent, now)
     day = usage.utc_day(UsageEvent.created_at)
     rows = await db.execute(
         select(
@@ -288,6 +289,7 @@ async def my_usage(db: AsyncSession, user: User) -> MyUsage:
             func.coalesce(func.sum(UsageEvent.total_tokens), 0),
             func.coalesce(func.sum(UsageEvent.prompt_tokens), 0),
             func.coalesce(func.sum(UsageEvent.completion_tokens), 0),
+            func.coalesce(func.sum(UsageEvent.allowance_tokens), 0),
             func.coalesce(func.sum(UsageEvent.cost_usd), 0.0),
             func.count(UsageEvent.id),
         )
@@ -297,23 +299,28 @@ async def my_usage(db: AsyncSession, user: User) -> MyUsage:
     tokens: defaultdict[str, int] = defaultdict(int)
     costs: defaultdict[str, float] = defaultdict(float)
     events: defaultdict[str, int] = defaultdict(int)
+    allowance = 0
     daily: defaultdict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
-    by_model: defaultdict[tuple[str, str], list[float]] = defaultdict(lambda: [0, 0, 0.0])
-    for day_value, kind, model_name, total, prompt, completion, cost, count in rows.tuples():
+    by_model: defaultdict[tuple[str, str], list[float]] = defaultdict(lambda: [0, 0, 0, 0.0])
+    for day_value, kind, model_name, total, prompt, completion, counted, cost, count in rows.tuples():
         if kind not in _KINDS:
             continue
         total, cost, count = int(total or 0), float(cost or 0.0), int(count or 0)
+        counted = int(counted or 0) if kind == "chat" else 0
         tokens[kind] += total
         costs[kind] += cost
         events[kind] += count
+        allowance += counted
         today = daily[str(day_value)]
         today[f"{kind}_tokens"] += total
         today[f"{kind}_events"] += count
+        today["chat_allowance"] += counted
         today["cost"] += cost
         entry = by_model[(model_name, kind)]
         entry[0] += int(prompt or 0) + int(completion or 0)
-        entry[1] += count
-        entry[2] += cost
+        entry[1] += counted
+        entry[2] += count
+        entry[3] += cost
 
     names: dict[str, str] = {}
     if by_model:
@@ -329,20 +336,23 @@ async def my_usage(db: AsyncSession, user: User) -> MyUsage:
             model_name=names.get(model_name, model_name),
             kind=kind,  # type: ignore[arg-type]
             tokens=int(model_tokens),
+            allowance_tokens=int(counted),
             requests=int(requests),
             cost_usd=_cost(cost),
         )
-        for (model_name, kind), (model_tokens, requests, cost) in by_model.items()
+        for (model_name, kind), (model_tokens, counted, requests, cost) in by_model.items()
     ]
     models.sort(key=lambda entry: (-entry.cost_usd, -entry.tokens, entry.model_name, entry.kind))
 
     days: list[MyUsageDay] = []
     current: date = start.date()
-    while current <= now.astimezone(timezone.utc).date():
+    last = min(now.astimezone(timezone.utc), end - timedelta(microseconds=1)).date()
+    while current <= last:
         found_day: Mapping[str, float] = daily.get(current.isoformat(), {})
         days.append(
             MyUsageDay(
                 date=current.isoformat(),
+                chat_allowance=int(found_day.get("chat_allowance", 0)),
                 chat_tokens=int(found_day.get("chat_tokens", 0)),
                 requests=int(found_day.get("chat_events", 0)),
                 images=int(found_day.get("image_events", 0)),
@@ -353,20 +363,19 @@ async def my_usage(db: AsyncSession, user: User) -> MyUsage:
         )
         current += timedelta(days=1)
 
-    limits = usage.user_limits(user)
+    limits = ent.limits
     document_count, storage_bytes = await storage.owned_totals(db, user.id)
     return MyUsage(
         month=start.strftime("%Y-%m"),
         period_start=start,
         resets_at=end,
-        chat_tokens=UsageAmount(used=tokens["chat"], limit=limits["monthly_token_limit"]),
-        images=UsageAmount(used=events["image"], limit=await usage.monthly_image_limit(db, user)),
-        vision_tokens=UsageAmount(
-            used=tokens["vision"], limit=0 if user.is_admin else settings.vision_monthly_token_limit
-        ),
+        chat_allowance=UsageAmount(used=allowance, limit=limits.monthly_token_limit),
+        chat_tokens=tokens["chat"],
+        images=UsageAmount(used=events["image"], limit=limits.monthly_image_limit),
+        vision_tokens=UsageAmount(used=tokens["vision"], limit=limits.vision_monthly_token_limit),
         embedding_tokens=tokens["embedding"],
         requests=events["chat"],
-        rate_limit_per_min=limits["rate_limit_per_min"],
+        rate_limit_per_min=limits.rate_limit_per_min,
         cost_usd=UsageCosts(
             total=_cost(sum(costs.values())),
             chat=_cost(costs["chat"]),
@@ -376,10 +385,10 @@ async def my_usage(db: AsyncSession, user: User) -> MyUsage:
         ),
         documents=DocumentUsage(
             count=document_count,
-            max_documents=limits["max_documents"],
+            max_documents=limits.max_documents,
             storage_bytes=storage_bytes,
-            max_storage_mb=limits["max_storage_mb"],
-            max_upload_mb=limits["max_upload_mb"],
+            max_storage_mb=limits.max_storage_mb,
+            max_upload_mb=limits.max_upload_mb,
         ),
         daily=days,
         by_model=models,

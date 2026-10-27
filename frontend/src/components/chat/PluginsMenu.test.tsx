@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginInfo } from "../../api/types";
 import { announceUserChanged } from "../../lib/appEvents";
-import { makeConnection, makeGmailPlugin } from "../../test/fixtures";
+import { makeConnection, makeGmailPlugin, makePlanAccess } from "../../test/fixtures";
 import { deferred, errorResponse, stubFetch, type Route } from "../../test/http";
 import { renderWithRouter } from "../../test/render";
 import { reloadPlugins } from "../connections/pluginStore";
@@ -16,7 +16,9 @@ async function setup(plugins: Route, { isAdmin = false } = {}) {
   stubFetch({ "GET /plugins": plugins });
   const user = userEvent.setup();
   const onOpenPlugin = vi.fn();
-  const view = renderWithRouter(<PluginsMenu isAdmin={isAdmin} onOpenPlugin={onOpenPlugin} />);
+  const view = renderWithRouter(
+    <PluginsMenu isAdmin={isAdmin} unlock={makePlanAccess().unlock} onOpenPlugin={onOpenPlugin} />,
+  );
   await act(() => reloadPlugins());
   return { user, view, onOpenPlugin };
 }
@@ -98,6 +100,25 @@ describe("PluginsMenu", () => {
     expect(onOpenPlugin).not.toHaveBeenCalled();
   });
 
+  it("says a plugin outside the plan is kept connected and where it is included, with Upgrade", async () => {
+    const { user, onOpenPlugin } = await setup([makeGmailPlugin({ in_plan: false })]);
+    await openMenu(user);
+    const item = screen.getByRole("menuitem", { name: "Gmail" });
+    expect(item).toHaveTextContent("Not in your plan");
+    expect(item).toHaveTextContent("Included in Professional. Your connection is kept.");
+    expect(within(item).getByText("Upgrade")).toBeInTheDocument();
+    await user.click(item);
+    expect(onOpenPlugin).toHaveBeenCalledExactlyOnceWith("gmail");
+  });
+
+  it("names where a plugin outside the plan is included when the user isn't connected", async () => {
+    const { user } = await setup([makeGmailPlugin({ in_plan: false, connection: null })]);
+    await openMenu(user);
+    const item = screen.getByRole("menuitem", { name: "Gmail" });
+    expect(item).toHaveTextContent("Included in Professional.");
+    expect(item).not.toHaveTextContent("Your connection is kept.");
+  });
+
   it("tells a member that a plugin isn't set up yet", async () => {
     const { user } = await setup([makeGmailPlugin({ configured: false, enabled: false, connection: null })]);
     await openMenu(user);
@@ -132,7 +153,7 @@ describe("PluginsMenu", () => {
     const pending = deferred<PluginInfo[]>();
     stubFetch({ "GET /plugins": () => pending.promise });
     const user = userEvent.setup();
-    renderWithRouter(<PluginsMenu isAdmin={false} onOpenPlugin={vi.fn()} />);
+    renderWithRouter(<PluginsMenu isAdmin={false} unlock={null} onOpenPlugin={vi.fn()} />);
     void reloadPlugins();
     const menu = await openMenu(user);
     expect(menu).toHaveAccessibleDescription("Apps the assistant can use for you in chat. Loading plugins…");

@@ -20,6 +20,9 @@ first; it is the binding contract. Status of every file is in [`../HANDOFF.md`](
 | [plugins-gmail.md](plugins-gmail.md) | plugins, with Gmail as the first plugin (revision 2, built, reviewed and verified in Docker against a fake Google on 2026-10-16; commit `c5fb005`; turned on with real Google credentials on 2026-10-18, but no agent has made a Google call): the plugin framework (`app/plugins/`: the `Plugin` interface, registry, admin switches, OAuth 2.0 with state + PKCE, encrypted tokens and key rotation, refresh and reconnect states, the request check, imports, audit), the Gmail plugin (REST client, MIME parsing and building, six chat tools in the shared loop, email sources, import, drafts, pending sends confirmed by a click), the Connections dialog, Gmail browser, cards and the admin Plugins tab, nginx and log redaction, the fake Google. Decisions P1-P28 and the review responses are in its section 0; the builder split in section 21; the owner's setup guide is [`../gmail-setup.md`](../gmail-setup.md); what is left is in `../HANDOFF.md` |
 | [ui-shell-settings.md](ui-shell-settings.md) | top bar, Settings and the warm editorial redesign (revision 2, built, reviewed and verified in Docker on 2026-10-20; commits `5148b83` and `d11a9e5`): the ChatGPT-style top bar (model menu, Plugins menu with every plugin's status, Documents toggle, avatar menu), the composer's "+" menu (attach files, create an image or a document, Gmail shortcuts), the Settings dialog (General, Account, Usage, Plugins & data) with account-level preferences (`user_preferences`), the theme engine (System/Light/Dark, accents, chat font size, no flash under the CSP), sign-in history (`login_events`), log out other sessions, `GET /me/usage`, the data export, delete all chats, the plugin catalog, and the four-builder frontend split. Decisions U1-U32 and the review responses are in its section 0; the split in section 17 |
 | [ui-visual-design.md](ui-visual-design.md) | the visual spec for `ui-shell-settings.md` (revision 2): "Paper & Clay", the warm editorial design chosen from three mockups; tokens for light and dark and the five accents (with the contrast audit), the bundled RAG Serif / RAG Sans fonts and their metric-matched fallbacks, layout, every component and screen, motion, mobile rules, and the mockup class map. On looks it wins; on behaviour the functional brief and `SPEC.md` do |
+| [plans-billing.md](plans-billing.md) | plans, checkout and plan-based access (revision 2, built, reviewed and deployed to the live stack on 2026-10-27, not committed yet; Razorpay itself not yet tried with real keys): Starter, Standard and Professional as editable plans with prepaid 30-day periods; the plan page after sign-in, checkout and payment through Razorpay Payment Links (no Razorpay script on our origin), confirmation by callback, webhook and reconciler into one exactly-once apply; `now` checkouts (upgrades and a new period, with a credit), dated and open-ended complimentary plans, refunds, disputes, offline bank transfers and receipts; the chat allowance counted in standard tokens; enforcement of features and limits in every existing path (402 codes, the entitlement matrix), "Your data" for lapsed users; Admin → Plans and Billing; public policy pages as Markdown in the repo; migration 0003, monitoring and tests. Decisions B1-B45 and the responses to the security, product and design reviews are in its section 0; the four-builder split and frozen interfaces in section 13; the owner's open questions in section 14. Razorpay facts: [payments-razorpay-research.md](payments-razorpay-research.md) |
+| [plans-billing-visual.md](plans-billing-visual.md) | the visual brief for `plans-billing.md` (revision 2, built with it on 2026-10-27), on the "Paper & Clay" design system: plan cards and the compare table, checkout with its summary and phone pay bar, the redirect interstitial, the return page's states, locked features in the chat menus, the plan-ended panel, Settings → Plan & billing and "Your data", Admin → Plans and Billing, the receipt PDF, public pages and reminder emails; no new colour tokens (contrast audited). Section 0.4 lists what changed after its screenshots were taken. On looks it wins; on behaviour the functional brief and `SPEC.md` do |
+| [payments-razorpay-research.md](payments-razorpay-research.md) | research for `plans-billing.md` (Razorpay's documentation as read on 2026-10-26; its recommendations were built on 2026-10-27, and its test-mode questions are still open): integration options and the choice of Payment Links (R1 to R6), the API flow and signatures, webhooks, test mode, UPI, refunds, going live (KYC, website review, fees), and the open questions to check in test mode (section 10, taken up in `plans-billing.md` 14.2) |
 
 ## Rules that apply to every area
 
@@ -42,13 +45,17 @@ Under `backend/app/`: `config.py` (Settings), `db.py` (async engine, `SessionLoc
 `deps.py` (`get_current_user`, `get_current_admin`, session cookie helpers), `redis_client.py`
 (`get_redis`, `INGEST_QUEUE`), `main.py` (router wiring), and `services/`: `llm.py` (LiteLLM:
 `stream_chat`, `embed_texts`, `test_model`, `compute_cost`, `LLMError`, `Usage`), `usage.py`
-(rate limit, budget, `record_usage`, `usage_summary`, `user_limits`, `month_bounds`),
+(rate limit, budget, `record_usage`, `usage_summary`, `month_bounds`; the limits themselves now come from
+`billing.entitlements`),
 `vectorstore.py` (Qdrant), `model_registry.py` (model lookups), `storage.py` (upload paths,
 `document_item`, `delete_document_completely`). Later features added services of their own, described in their
 briefs: `pdf_images.py`, `pdf_render_child.py` and `vision.py` (vision), `document_tool.py` plus the `filegen/`
 package (files from chat), and `image_tool.py` plus `filegen/images.py` (images from chat). Plugins live in their own
 package, `app/plugins/` (framework) with `app/plugins/gmail/` (the Gmail plugin), plus `schemas_plugins.py` and the
 routers `plugins.py` and `admin_plugins.py`; `plugins-gmail.md` section 4.2 has the interface a plugin implements.
+Plans and payments live in `services/billing/` with `schemas_billing.py`, `errors.py` and the routers `billing.py`,
+`admin_billing.py` and `public.py`; `plans-billing.md` section 13.3 has the frozen interfaces (`entitlements.load`,
+`deps.get_entitled_user`).
 
 Pinned libs: FastAPI 0.142, SQLAlchemy 2.0 async (asyncpg in prod, aiosqlite in tests, so
 keep queries portable, with no Postgres-only SQL), pydantic v2, redis-py asyncio, qdrant-client 1.19
@@ -58,7 +65,8 @@ loading: `User.allowed_models` and `Document.owner` are `selectin`; `Conversatio
 
 ## Frontend foundation (already written; build on it)
 
-Under `frontend/`: `src/App.tsx` (routes `/login`, `/`, `/c/:conversationId`, `/admin`),
+Under `frontend/`: `src/App.tsx` (routes `/login`, `/`, `/c/:conversationId`, `/admin`; since plans also `/plans`,
+`/plans/checkout/:code`, `/billing/return` and the public pages),
 `src/api/types.ts` (all API types; import from here and don't redeclare them), `src/api/client.ts`
 (`api.get/post/patch/del`, `postSSE`, `ApiError`, `errorMessageFromBody`, `notifyUnauthorized`),
 `src/auth/AuthContext.tsx` (`useAuth`: `user`, `refresh`, `logout`), `src/styles/global.css`

@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import LLMModel, User
+from app.services.billing.entitlements import Entitlements, allows_model, feature_error
 
 
 def provider_of(litellm_model: str) -> str:
@@ -34,20 +35,25 @@ async def get_active_image_model(db: AsyncSession) -> LLMModel | None:
     return await _active_model(db, "image")
 
 
-async def list_chat_models_for_user(db: AsyncSession, user: User) -> list[LLMModel]:
-    """Enabled chat models the user may use; the default first, then by name."""
+async def list_chat_models_for_user(db: AsyncSession, user: User, ent: Entitlements) -> list[LLMModel]:
+    """The enabled chat models the user may use (the plan's, narrowed by their allowed list; none without access): the
+    default first (the plan's default model, else the server's, when the user may use it; else the first), then by
+    name."""
     result = await db.execute(select(LLMModel).where(LLMModel.kind == "chat", LLMModel.enabled.is_(True)))
-    models = list(result.scalars())
-    if not user.is_admin and user.restrict_models:
-        allowed = {m.id for m in user.allowed_models}
-        models = [m for m in models if m.id in allowed]
-    models.sort(key=lambda m: (not m.is_default, m.display_name.lower()))
+    models = [model for model in result.scalars() if allows_model(ent, model.id)]
+    models.sort(key=lambda m: m.display_name.lower())
+    default = next((m for m in models if m.id == ent.default_chat_model_id), None)
+    default = default or next((m for m in models if m.is_default), None)
+    if default is not None:
+        models.remove(default)
+        models.insert(0, default)
     return models
 
 
-async def resolve_chat_model(db: AsyncSession, user: User, model_id: int | None) -> LLMModel:
-    """The model to use for a chat request. 400 if none is available, 403 if not allowed."""
-    models = await list_chat_models_for_user(db, user)
+async def resolve_chat_model(db: AsyncSession, user: User, model_id: int | None, ent: Entitlements) -> LLMModel:
+    """The model to use for a chat request. 400 if none is available; for an enabled chat model the user may not use,
+    402 feature_not_in_plan when the plan doesn't include it, else 403 (their allowed list excludes it)."""
+    models = await list_chat_models_for_user(db, user, ent)
     if model_id is None:
         if not models:
             raise HTTPException(
@@ -60,5 +66,7 @@ async def resolve_chat_model(db: AsyncSession, user: User, model_id: int | None)
             return model
     requested = await db.get(LLMModel, model_id)
     if requested is not None and requested.kind == "chat" and requested.enabled:
+        if ent.plan_model_ids is not None and requested.id not in ent.plan_model_ids:
+            raise await feature_error(db, ent, f"model:{requested.id}", requested.display_name)
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not allowed to use this model.")
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This model is not available.")

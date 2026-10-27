@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Discriminator, Field, Tag
+from pydantic import BaseModel, Discriminator, Tag
 
 # Largest Postgres INTEGER: no id or INTEGER column can hold more, and bigger values make the driver fail (a 500).
 MAX_INT = 2_147_483_647
@@ -16,22 +16,30 @@ ChatFontSize = Literal["small", "default", "large"]
 
 
 class UserLimits(BaseModel):
-    monthly_token_limit: int
+    """Per period for users with a plan (an open-ended plan and the admin: per UTC calendar month); 0 = unlimited."""
+
+    monthly_token_limit: int  # the chat allowance, in standard tokens (plans-billing 3.3)
     rate_limit_per_min: int
     max_upload_mb: int
     max_documents: int
     max_storage_mb: int
-    monthly_image_limit: int = 0  # images per UTC month; 0 = unlimited (the admin's is 0)
+    monthly_image_limit: int
+    vision_monthly_token_limit: int  # plain vision tokens (scanned PDF pages)
 
 
 class UsageSummary(BaseModel):
-    month: str
-    chat_tokens: int
+    """The usage counted in the allowance window (the counts the limits use)."""
+
+    month: str  # "YYYY-MM" of window_start
+    chat_tokens: int  # plain tokens of chat answers
     embedding_tokens: int
     vision_tokens: int
-    images: int = 0  # images generated this month (image usage events)
-    cost_usd: float
-    monthly_token_limit: int
+    images: int  # image usage events
+    cost_usd: float  # every kind
+    monthly_token_limit: int  # counts chat_allowance_used
+    chat_allowance_used: int  # standard tokens
+    window_start: datetime
+    window_end: datetime
 
 
 class Preferences(BaseModel):
@@ -43,15 +51,6 @@ class Preferences(BaseModel):
     enter_to_send: bool = True  # False: Ctrl/Cmd+Enter sends and Enter adds a new line
     # The chat model new chats start with; None when unset or no longer one the user may use (the server's default)
     default_model_id: int | None = None
-
-
-class Me(BaseModel):
-    id: int
-    username: str
-    is_admin: bool
-    limits: UserLimits
-    usage: UsageSummary
-    preferences: Preferences = Field(default_factory=Preferences)
 
 
 ImageQuality = Literal["low", "medium", "high"]

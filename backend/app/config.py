@@ -1,18 +1,21 @@
+import logging
+import os
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy import URL
 
-# Largest Postgres BIGINT (app.schemas_admin.MAX_BIGINT, which imports this module).
-_MAX_BIGINT = 9_223_372_036_854_775_807
+logger = logging.getLogger(__name__)
+
+RAZORPAY_API_BASE = "https://api.razorpay.com"
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=None, extra="ignore", case_sensitive=False)
 
-    app_name: str = "RAG App"
+    app_name: str = "RAG Assistant"
 
     # --- Security ---
     secret_key: str = Field(min_length=32)
@@ -41,12 +44,7 @@ class Settings(BaseSettings):
     qdrant_collection_prefix: str = "rag_chunks"
     upload_dir: str = "/data/uploads"
 
-    # --- Defaults for new users (0 = unlimited where noted in SPEC) ---
-    default_monthly_token_limit: int = 1_000_000
-    default_rate_limit_per_min: int = 20
-    default_max_upload_mb: int = 25
-    default_max_documents: int = 100
-    default_max_storage_mb: int = 500
+    # --- Limits (per plan, docs/briefs/plans-billing.md 3.1; this one caps every plan and override) ---
     max_upload_mb_hard: int = 100
 
     # --- RAG / ingestion ---
@@ -69,7 +67,6 @@ class Settings(BaseSettings):
     vision_concurrency: int = Field(default=3, ge=1, le=16)  # calls in flight per document
     vision_max_in_flight: int = Field(default=4, ge=1, le=64)  # calls in flight in the whole worker
     vision_timeout_seconds: int = Field(default=1800, ge=60, le=86_400)  # no call starts after this, per document
-    vision_monthly_token_limit: int = Field(default=2_000_000, ge=0, le=_MAX_BIGINT)  # per user; 0 = unlimited
     vision_min_text_chars: int = Field(default=40, ge=0, le=10_000)  # fewer non-whitespace characters: no text
     vision_min_image_ratio: float = Field(default=0.1, gt=0, le=1)  # share of the page images must cover
     vision_max_image_px: int = Field(default=1568, ge=256, le=2576)  # long edge of a rendered page
@@ -87,8 +84,6 @@ class Settings(BaseSettings):
     # --- Images from chat (services/image_tool.py) ---
     chat_image_tools: bool = True  # offer create_image when an image model is active and the chat model has tools
     generated_images_per_answer: int = Field(default=3, ge=1, le=10)
-    # Per user per UTC month, for users without their own value (and the user form's default); 0 = unlimited
-    default_monthly_image_limit: int = Field(default=30, ge=0, le=2_147_483_647)
     image_max_quality: Literal["low", "medium", "high"] = "medium"  # the highest quality create_image may use
     image_output_format: Literal["png", "jpeg", "webp"] = "png"  # asked of GPT image models; stored as returned
     # One image call, waiting for an image slot and quick provider retries included
@@ -123,10 +118,40 @@ class Settings(BaseSettings):
     # response that sends nothing for about 100 s
     export_timeout_seconds: int = Field(default=80, ge=10, le=90)
 
+    # --- Payments (Razorpay) and plans (app/services/billing; docs/briefs/plans-billing.md 6.10) ---
+    # Both keys set: online payments are available; the key id's prefix sets the mode (razorpay_mode). Never logged.
+    razorpay_key_id: str = ""
+    razorpay_key_secret: str = ""
+    razorpay_webhook_secret: str = ""  # webhooks are accepted only when set
+    razorpay_webhook_secret_previous: str = ""  # also accepted, for the day after a rotation
+    # Another origin only for a fake (plain http allowed, as the integration stack's fakes); live keys need the default
+    razorpay_api_base: str = Field(default=RAZORPAY_API_BASE, pattern=r"^https?://[^\s/?#]+$")
+    billing_checkout_minutes: int = Field(default=20, ge=16, le=120)  # a payment link's lifetime
+    billing_late_capture_days: int = Field(default=5, ge=1, le=10)  # how long an unpaid checkout is still watched
+    billing_reminder_days: int = Field(default=5, ge=1, le=14)  # the "ends soon" banner and first reminder email
+    billing_reconcile_seconds: int = Field(default=30, ge=2, le=300)  # the worker's billing loop
+    billing_usd_inr: float = Field(default=88, ge=1, le=1000)  # rupees per dollar, for cost estimates only
+    billing_email_from: str = Field(default="", pattern=r"^$|^[^@\s]+@[^@\s]+\.[^@\s]+$")  # plan reminder emails
+
     @field_validator("admin_username")
     @classmethod
     def _lower_admin(cls, v: str) -> str:
         return v.strip().lower()
+
+    @model_validator(mode="after")
+    def _live_keys_use_razorpay(self) -> "Settings":
+        if self.razorpay_key_id.startswith("rzp_live_") and self.razorpay_api_base != RAZORPAY_API_BASE:
+            raise ValueError(f"With a live RAZORPAY_KEY_ID, RAZORPAY_API_BASE must be {RAZORPAY_API_BASE}")
+        return self
+
+    @property
+    def razorpay_mode(self) -> Literal["test", "live"] | None:
+        """The payments mode of the keys: None when either is missing or the key id has another prefix (off)."""
+        if not (self.razorpay_key_id and self.razorpay_key_secret):
+            return None
+        if self.razorpay_key_id.startswith("rzp_test_"):
+            return "test"
+        return "live" if self.razorpay_key_id.startswith("rzp_live_") else None
 
     @property
     def sqlalchemy_url(self) -> str | URL:
@@ -143,9 +168,32 @@ class Settings(BaseSettings):
         )
 
 
+# Ignored since plans set every limit (docs/briefs/plans-billing.md 6.10): Admin → Plans, and per-user overrides.
+REMOVED_SETTINGS = (
+    "DEFAULT_MONTHLY_TOKEN_LIMIT",
+    "DEFAULT_RATE_LIMIT_PER_MIN",
+    "DEFAULT_MAX_UPLOAD_MB",
+    "DEFAULT_MAX_DOCUMENTS",
+    "DEFAULT_MAX_STORAGE_MB",
+    "DEFAULT_MONTHLY_IMAGE_LIMIT",
+    "VISION_MONTHLY_TOKEN_LIMIT",
+)
+
+
+def warn_removed_settings() -> list[str]:
+    """One warning per removed setting still in the environment (its value is ignored); returns their names."""
+    present = {name.upper() for name in os.environ}
+    found = [name for name in REMOVED_SETTINGS if name in present]
+    for name in found:
+        logger.warning("%s is ignored: it is now set per plan in Admin → Plans.", name)
+    return found
+
+
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()  # type: ignore[call-arg]
+    loaded = Settings()  # type: ignore[call-arg]
+    warn_removed_settings()
+    return loaded
 
 
 settings = get_settings()

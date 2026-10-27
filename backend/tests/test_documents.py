@@ -7,12 +7,13 @@ import re
 import threading
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import httpx
 import pytest
 from conftest import ADMIN_USERNAME, ApiClient, ingest, pdf_bytes, process, txt_bytes, upload
-from fastapi import HTTPException, UploadFile
+from fastapi import HTTPException, Request, UploadFile
 from qdrant_client import models as qm
 from sqlalchemy import select, update
 
@@ -22,6 +23,7 @@ from app.models import Document, LLMModel, User
 from app.redis_client import INGEST_QUEUE, get_redis
 from app.routers import documents
 from app.services import vectorstore
+from app.services.billing import entitlements
 from app.services.ingestion import NO_EMBEDDING_MODEL
 from app.services.parsing import SUPPORTED_EXTENSIONS
 
@@ -212,9 +214,14 @@ async def test_upload_limit_is_enforced_while_streaming_an_unsized_upload(create
     async with SessionLocal() as session:
         user = await session.get(User, alice.user_id)
         assert user is not None
+        request = SimpleNamespace(state=SimpleNamespace(entitlements=await entitlements.load(session, user)))
         with pytest.raises(HTTPException) as caught:
             await documents.upload_document(
-                file=UploadFile(file=source, filename="stream.txt"), scope="private", user=user, db=session
+                request=cast(Request, request),
+                file=UploadFile(file=source, filename="stream.txt"),
+                scope="private",
+                user=user,
+                db=session,
             )
 
     assert caught.value.status_code == 413
@@ -277,7 +284,9 @@ async def test_document_count_quota(create_user: CreateUser) -> None:
 
     assert (first.status_code, second.status_code) == (201, 201)
     assert third.status_code == 409
-    assert third.json() == {"detail": "You've reached your limit of 2 documents. Delete a document to upload another."}
+    assert third.json() == {
+        "detail": "You've reached your limit of 2 documents. Delete some documents or upgrade your plan."
+    }
     assert len(stored_files()) == 2
 
     assert (await alice.delete(f"/api/documents/{first.json()['id']}")).status_code == 204
@@ -295,7 +304,7 @@ async def test_storage_quota(create_user: CreateUser) -> None:
     assert first.status_code == 201
     assert over.status_code == 409
     assert over.json() == {
-        "detail": "This upload would exceed your storage limit of 1 MB. Delete some documents to free up space."
+        "detail": "This upload would exceed your storage limit of 1 MB. Delete some documents or upgrade your plan."
     }
     assert fits.status_code == 201, fits.text
     assert sorted(path.stat().st_size for path in stored_files()) == [400 * 1024, 600 * 1024]

@@ -25,13 +25,13 @@ function useDocumentsNote(selection: DocumentSelection): string {
 type EmptyStateProps = {
   username: string | null;
   disabled: boolean;
-  /** The selected model can create files: adds an example that asks for one. */
+  /** The selected model can create files and the plan includes them: adds an example that asks for one. */
   canCreateFiles: boolean;
-  /** The selected model can generate images and the month's images aren't used up: adds an example that asks for one. */
+  /** The selected model can generate images, the plan includes them and they aren't used up: adds an example for one. */
   canCreateImages: boolean;
   /** The documents the next answer searches (for the summary example's note). */
   selection: DocumentSelection;
-  /** Under the image example: "18 of 30 left this month" or "Saved to My documents". */
+  /** Under the image example: "18 of 30 left this period" or "Saved to My documents". */
   imagesNote: string;
   onPick: (prompt: string) => void;
 };

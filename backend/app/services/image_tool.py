@@ -1,4 +1,4 @@
-"""The create_image tool: its schema and prompt, argument validation, the monthly image count's reservation, the image
+"""The create_image tool: its schema and prompt, argument validation, the image allowance's reservation, the image
 job (generating with the active image model, validating in the filegen child, storing the image as one of the user's
 private documents and linking it to the answer), resolving image references for create_document, and the image
 model's admin Test (docs/briefs/image-generation.md, sections 4 to 10 and 13).
@@ -39,11 +39,13 @@ from app.models import (
 )
 from app.schemas import MAX_INT, DocumentItem, GeneratedFile
 from app.services import document_tool, filegen, llm, storage
+from app.services.billing import entitlements
+from app.services.billing.entitlements import Entitlements
 from app.services.document_tool import ToolInputError, ToolResult
 from app.services.filegen.images import IMAGE_FORMATS
 from app.services.ingestion import enqueue_document
 from app.services.model_registry import get_active_embedding_model, get_active_image_model
-from app.services.usage import images_this_month, monthly_image_limit, record_usage, user_limits
+from app.services.usage import allowance_ending, images_in_window, record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +118,13 @@ NO_IMAGE_TOOLS_NOTE = (
     "that another chat model in the model menu may be able to; never claim to have generated an image."
 )
 _IMAGE_LIMIT_NOTE = (
-    "The user has used all {limit} images of their monthly image allowance. If they ask for an image, tell them so: "
-    "it resets on the 1st of next month (UTC), and the admin can raise it. Never claim to have generated an image."
+    "The user has used all {limit} images of this period's image allowance. If they ask for an image, tell them so. "
+    "{ending} Never claim to have generated an image."
+)
+_NOT_IN_PLAN_NOTE = (
+    "The user's plan doesn't include generating images. If the user asks for an image, tell them their plan doesn't "
+    "include images from chat and that {unlock} does, which they can choose in Settings → Plan & billing; never claim "
+    "to have made an image."
 )
 _IMAGE_ROOM_NOTE = (
     "The user can't get new images right now because {reason}. If they ask for an image, tell them so and that they "
@@ -132,7 +139,7 @@ _SAVED = (
 )
 _TELL = "Tell the user."
 _NO_RETRY = "Tell the user; don't retry in this answer."
-_COUNTED = "It counts toward the user's monthly images."
+_COUNTED = "It counts toward the user's images this period."
 CALL_FAILED = "The model call failed before the image was requested."
 DECLINED = "The model declined to continue, so the image wasn't generated."
 INCOMPLETE = "The model's response ended before the image request was complete, so no image was generated."
@@ -152,7 +159,7 @@ class _NotProcessed(Exception):
 
 class ImageLimitReached(Exception):
     def __init__(self, limit: int) -> None:
-        super().__init__(f"monthly image limit {limit} reached")
+        super().__init__(f"image allowance {limit} reached")
         self.limit = limit
 
 
@@ -317,8 +324,9 @@ def _default_quality() -> Quality:
     return min("medium", _max_quality(), key=_QUALITIES.index)
 
 
-async def plan(db: AsyncSession, user: User, chat_model: LLMModel) -> ImagePlan:
-    """Whether this turn offers create_image, and what the system prompt says about images."""
+async def plan(db: AsyncSession, user: User, chat_model: LLMModel, ent: Entitlements) -> ImagePlan:
+    """Whether this turn offers create_image, and what the system prompt says about images (the plan must include
+    them)."""
     if not settings.chat_image_tools:
         return ImagePlan([], None)
     model = await get_active_image_model(db)
@@ -332,15 +340,19 @@ async def plan(db: AsyncSession, user: User, chat_model: LLMModel) -> ImagePlan:
         return ImagePlan([], with_app_note(_IMAGE_BROKEN_NOTE))
     if not await llm.supports_tools(chat_model):
         return ImagePlan([], no_tools_note())
+    if not ent.images:
+        unlock = document_tool.unlock_phrase((await entitlements.unlock(db)).images)
+        return ImagePlan([], with_app_note(_NOT_IN_PLAN_NOTE.format(unlock=unlock)))
     allowance = ""
-    if not user.is_admin:
-        if reason := await _no_image_room(db, user):
+    if not ent.is_admin:
+        if reason := await _no_image_room(db, user, ent):
             return ImagePlan([], with_app_note(_IMAGE_ROOM_NOTE.format(reason=reason)))
-        limit = await monthly_image_limit(db, user)
+        limit = ent.limits.monthly_image_limit
         if limit > 0:
-            left = limit - await images_this_month(db, user.id)
+            left = limit - await images_in_window(db, user.id, ent)
             if left <= 0:
-                return ImagePlan([], with_app_note(_IMAGE_LIMIT_NOTE.format(limit=limit)))
+                note = _IMAGE_LIMIT_NOTE.format(limit=limit, ending=allowance_ending(user, ent))
+                return ImagePlan([], with_app_note(note))
             allowance = _allowance(left)
     per_answer = f"Generate one image per call and at most {settings.generated_images_per_answer} per answer."
     prompt = _IMAGE_TOOL_PROMPT.format(per_answer=f"{per_answer} {allowance}".strip())
@@ -348,12 +360,12 @@ async def plan(db: AsyncSession, user: User, chat_model: LLMModel) -> ImagePlan:
 
 
 def _allowance(left: int) -> str:
-    return f"The user can generate {left} more image{'' if left == 1 else 's'} this month."
+    return f"The user can generate {left} more image{'' if left == 1 else 's'} this period."
 
 
-async def _no_image_room(db: AsyncSession, user: User) -> str | None:
+async def _no_image_room(db: AsyncSession, user: User, ent: Entitlements) -> str | None:
     """Why the user can't get another image: no document slot, or less than _IMAGE_ROOM_BYTES of storage left."""
-    return await document_tool._no_room(db, user, _IMAGE_ROOM_BYTES)
+    return await document_tool._no_room(db, user, ent, _IMAGE_ROOM_BYTES)
 
 
 # ---------------- Unusable models (I22) ----------------
@@ -460,26 +472,27 @@ def _quality(value: object) -> tuple[Quality, bool]:
     return name, False  # type: ignore[return-value]
 
 
-# ---------------- The monthly image count (section 10) ----------------
+# ---------------- The image allowance (section 10; plans-billing 5.3) ----------------
 
 
 @dataclass(frozen=True)
 class Reservation:
     event_id: int
-    left: int | None  # images left this month after this one (None: no limit)
+    left: int | None  # images left in the allowance window after this one (None: no limit)
 
 
-async def reserve(user: User, model: LLMModel) -> Reservation:
-    """Count the user's images this month and insert this one's usage event (zero cost) in one transaction under the
-    user's lock, so answers running at once can't both pass the check. ImageLimitReached when none are left."""
+async def reserve(user: User, model: LLMModel, ent: Entitlements) -> Reservation:
+    """Count the user's images in the allowance window and insert this one's usage event (zero cost) in one
+    transaction under the user's lock, so answers running at once can't both pass the check. ImageLimitReached when
+    none are left."""
     async with SessionLocal() as db:
-        return await _reserve(db, user, model)
+        return await _reserve(db, user, model, ent)
 
 
-async def _reserve(db: AsyncSession, user: User, model: LLMModel) -> Reservation:
+async def _reserve(db: AsyncSession, user: User, model: LLMModel, ent: Entitlements) -> Reservation:
     async with storage.serialized_uploads(db, user.id):
-        limit = await monthly_image_limit(db, user)
-        used = await images_this_month(db, user.id)
+        limit = 0 if ent.is_admin else ent.limits.monthly_image_limit
+        used = await images_in_window(db, user.id, ent)
         if limit > 0 and used >= limit:
             await db.rollback()
             raise ImageLimitReached(limit)
@@ -556,6 +569,7 @@ class _Job:
     args: CreateImageArgs
     event_id: int
     sink: ImageSink
+    ent: Entitlements
     detached: bool = False
     sent: bool = False  # the request may have left the server
     settled: bool = False
@@ -579,6 +593,7 @@ class ImageSession:
     user: User
     conversation_id: int
     sink: ImageSink
+    ent: Entitlements  # the turn's: the limits and the allowance window
     created: int = 0
     attempts: int = 0
     halted: bool = False  # a failed call ended image generation for this answer (I22)
@@ -658,10 +673,10 @@ class ImageSession:
         try:
             async with SessionLocal() as db:
                 model = await get_active_image_model(db)
-                user = await db.get(User, self.user.id)  # its limits now: the admin may have lowered them meanwhile
+                user = await db.get(User, self.user.id)
                 room = None
-                if model is not None and user is not None and not user.is_admin:
-                    room = await _no_image_room(db, user)
+                if model is not None and user is not None and not self.ent.is_admin:
+                    room = await _no_image_room(db, user, self.ent)
         except Exception:
             logger.exception("Checking the image model failed for user %s", self.user.id)
             failure = _SERVER_ERROR
@@ -688,7 +703,7 @@ class ImageSession:
             async for item in self._fail(call, announced, reservation):
                 yield item
             return
-        job = _Job(self.user.id, self.conversation_id, model, args, reservation.event_id, self.sink)
+        job = _Job(self.user.id, self.conversation_id, model, args, reservation.event_id, self.sink, self.ent)
         task = asyncio.create_task(_run_job(job))  # no await since the reservation: Stop can't strand it
         _jobs.add(task)
         task.add_done_callback(_jobs.discard)
@@ -729,13 +744,13 @@ class ImageSession:
     async def _reserve(self, model: LLMModel) -> Reservation | ImageFailure:
         """The reservation, in a task of its own awaited through a shield: if Stop lands meanwhile, whatever it
         reserved is released (nothing was sent)."""
-        task = asyncio.create_task(reserve(self.user, model))
+        task = asyncio.create_task(reserve(self.user, model, self.ent))
         try:
             return await asyncio.shield(task)
         except ImageLimitReached as exc:
             return ImageFailure(
-                f"The user has used all {exc.limit} images of their monthly allowance, so the image wasn't generated. "
-                "It resets on the 1st of next month (UTC); the admin can raise it."
+                f"The user has used all {exc.limit} images of this period's allowance, so the image wasn't generated. "
+                + allowance_ending(self.user, self.ent)
             )
         except asyncio.CancelledError:
             task.add_done_callback(_release_unclaimed)
@@ -954,13 +969,13 @@ def _call_failure(exc: llm.ImageCallError) -> ImageFailure:
         return ImageFailure(str(exc), "Tell the user to try again in a minute; don't retry in this answer.")
     if exc.billed and exc.usage is None:
         return ImageFailure(
-            f"{exc} The provider may still have charged for it, so it counts toward the user's monthly images.",
+            f"{exc} The provider may still have charged for it, so it counts toward the user's images this period.",
             _NO_RETRY,
         )
     if exc.billed:
         if str(exc) == llm.IMAGE_NO_DATA:
             return ImageFailure(
-                f"{exc} It may still have been charged, so it counts toward the user's monthly images.", _NO_RETRY
+                f"{exc} It may still have been charged, so it counts toward the user's images this period.", _NO_RETRY
             )
         return ImageFailure(f"{exc} {_COUNTED}", _NO_RETRY)
     return ImageFailure(str(exc), "Don't retry in this answer.")
@@ -1065,7 +1080,7 @@ async def _save(
                     height=height,
                 )
                 db.add(row)
-                over_quota = None if user.is_admin else await _over_quota(db, user)
+                over_quota = None if job.ent.is_admin else await _over_quota(db, user, job.ent)
                 await db.commit()
                 committed = True
             image = storage.image_item(row)
@@ -1116,15 +1131,15 @@ def _write_files(out_dir: Path, extension: str, stored_name: str, source: str) -
     return size, digest.hexdigest()
 
 
-async def _over_quota(db: AsyncSession, user: User) -> str | None:
-    limits = user_limits(user)
-    if not (limits["max_documents"] or limits["max_storage_mb"]):
+async def _over_quota(db: AsyncSession, user: User, ent: Entitlements) -> str | None:
+    limits = ent.limits
+    if not (limits.max_documents or limits.max_storage_mb):
         return None
     count, used = await storage.owned_totals(db, user.id)
-    if limits["max_documents"] and count > limits["max_documents"]:
-        over = f"their limit of {limits['max_documents']} documents"
-    elif limits["max_storage_mb"] and used > limits["max_storage_mb"] * _MIB:
-        over = f"their storage limit of {limits['max_storage_mb']} MB"
+    if limits.max_documents and count > limits.max_documents:
+        over = f"their limit of {limits.max_documents} documents"
+    elif limits.max_storage_mb and used > limits.max_storage_mb * _MIB:
+        over = f"their storage limit of {limits.max_storage_mb} MB"
     else:
         return None
     return f"The user's documents are now over {over}, so they must delete documents before they can add more."

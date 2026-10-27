@@ -5,11 +5,12 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
+from alembic import command
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from conftest import ApiClient, ingest, process_queue, txt_bytes
 from qdrant_client import models as qm
-from sqlalchemy import Connection, text, update
+from sqlalchemy import Connection, update
 
 from app import db
 from app.db import SchemaMismatchError
@@ -186,13 +187,12 @@ def revision(connection: Connection) -> str | None:
 
 
 async def test_the_command_migrates_the_database_before_it_reconciles(
-    user: ApiClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     """A restore with --migrate brings an older schema: the documents are read only once it is this release's."""
     head = ScriptDirectory(str(db.MIGRATIONS_DIR)).get_current_head()
-    await documents(user, "A note.")
-    async with db.engine.begin() as connection:
-        await connection.execute(text("UPDATE alembic_version SET version_num = '0001'"))
+    async with db.schema_transaction(db.engine) as connection:  # an older release's database (revision 0002)
+        await connection.run_sync(lambda sync: command.upgrade(db._alembic_config(sync), "0002"))
     seen: list[str | None] = []
     checked = reconcile.reconcile
 
@@ -206,7 +206,7 @@ async def test_the_command_migrates_the_database_before_it_reconciles(
         assert await reconcile.main() == 0
 
     assert seen == [head]
-    assert f"Database schema migrated from 0001 to revision {head}" in caplog.messages
+    assert f"Database schema migrated from 0002 to revision {head}" in caplog.messages
 
 
 async def test_a_schema_this_release_cannot_migrate_is_reported(

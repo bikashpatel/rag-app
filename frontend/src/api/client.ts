@@ -4,6 +4,10 @@ import type {
   AccountInfo,
   AdminPlugin,
   AdminPluginUpdate,
+  BillingProfile,
+  BillingStatus,
+  CheckoutRequest,
+  CheckoutStarted,
   ConversationsDeleted,
   GeneratedImageDetails,
   GmailImportRequest,
@@ -13,9 +17,13 @@ import type {
   GmailThreadSearch,
   Me,
   MyUsage,
+  OrderView,
+  PageSlug,
+  PaymentView,
   PendingSend,
   PendingSendConfirm,
   PendingSendRevision,
+  PlanCatalog,
   PluginActivityReport,
   PluginConnectionStatus,
   PluginConnectionUpdate,
@@ -24,16 +32,27 @@ import type {
   PluginInfo,
   Preferences,
   PreferencesUpdate,
+  PublicPlan,
+  PublicSite,
   RequestCheckTest,
   RequestCheckTestResult,
 } from "./types";
 
+/** The machine-readable part of an error body (SPEC 6, error codes): `plan_required`, `feature_not_in_plan`, … */
+export type ErrorDetails = { code?: string | null; feature?: string | null; plan?: string | null };
+
 export class ApiError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code: string | null;
+  feature: string | null;
+  plan: string | null;
+  constructor(status: number, message: string, details: ErrorDetails = {}) {
     super(message);
     this.name = "ApiError";
     this.status = status;
+    this.code = details.code ?? null;
+    this.feature = details.feature ?? null;
+    this.plan = details.plan ?? null;
   }
 }
 
@@ -52,7 +71,26 @@ export function notifyUnauthorized(): void {
   unauthorizedHandler?.();
 }
 
-type ErrorBody = { detail?: unknown };
+let planRequiredHandler: (() => void) | null = null;
+
+/** Called by AuthContext: invoked whenever an API call answers 402 because the caller has no plan (any longer). */
+export function setPlanRequiredHandler(handler: (() => void) | null): void {
+  planRequiredHandler = handler;
+}
+
+/** For callers that bypass `request` (e.g. XHR uploads) and see a 402 `plan_required` or `plan_expired`. */
+export function notifyPlanRequired(): void {
+  planRequiredHandler?.();
+}
+
+const PLAN_REQUIRED_CODES: ReadonlySet<string> = new Set(["plan_required", "plan_expired"]);
+
+/** A 402 that means "no plan" (`plan_required`, `plan_expired`), not a feature outside the plan. */
+export function isPlanRequired(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 402 && PLAN_REQUIRED_CODES.has(error.code ?? "");
+}
+
+type ErrorBody = { detail?: unknown; code?: unknown; feature?: unknown; plan?: unknown };
 
 /** Turn a FastAPI error body (`{detail: string}` or validation list) into a readable message. */
 export function errorMessageFromBody(status: number, body: unknown): string {
@@ -71,6 +109,19 @@ export function errorMessageFromBody(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
+const stringOrNull = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
+
+/** An ApiError from a parsed error body: the readable message plus `code`, `feature` and `plan` when present. */
+export function apiErrorFromBody(status: number, body: unknown): ApiError {
+  const fields = (body !== null && typeof body === "object" ? body : {}) as ErrorBody;
+  return new ApiError(status, errorMessageFromBody(status, body), {
+    code: stringOrNull(fields.code),
+    feature: stringOrNull(fields.feature),
+    plan: stringOrNull(fields.plan),
+  });
+}
+
+/** The ApiError of a failed response; a 402 without a plan also goes to the plan handler. */
 async function toApiError(res: Response): Promise<ApiError> {
   let body: unknown = null;
   try {
@@ -78,7 +129,9 @@ async function toApiError(res: Response): Promise<ApiError> {
   } catch {
     /* not JSON */
   }
-  return new ApiError(res.status, errorMessageFromBody(res.status, body));
+  const error = apiErrorFromBody(res.status, body);
+  if (isPlanRequired(error)) notifyPlanRequired();
+  return error;
 }
 
 export async function request<T>(
@@ -113,6 +166,7 @@ export const api = {
   post: <T>(path: string, body?: unknown, options?: { signal?: AbortSignal }) =>
     request<T>("POST", path, body ?? {}, options),
   patch: <T>(path: string, body: unknown) => request<T>("PATCH", path, body),
+  put: <T>(path: string, body: unknown) => request<T>("PUT", path, body),
   del: <T = void>(path: string) => request<T>("DELETE", path),
 };
 
@@ -262,6 +316,51 @@ export function saveBlob(blob: Blob, filename: string): void {
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_LIFETIME_MS);
 }
+
+// ---------------- Billing and public pages (SPEC section 6, "Billing"; docs/briefs/plans-billing.md 7.2) ----------------
+
+const orderPath = (id: string) => `/billing/orders/${encodeURIComponent(id)}`;
+
+export const billingApi = {
+  plans: (signal?: AbortSignal) => api.get<PlanCatalog>("/billing/plans", { signal }),
+  status: (signal?: AbortSignal) => api.get<BillingStatus>("/billing/status", { signal }),
+  checkout: (body: CheckoutRequest) => api.post<CheckoutStarted>("/billing/checkout", body),
+  /** `refresh`: the server checks with Razorpay first (the return page's polling). */
+  order: (id: string, refresh = false, signal?: AbortSignal) =>
+    api.get<OrderView>(`${orderPath(id)}${refresh ? "?refresh=true" : ""}`, { signal }),
+  cancel: (id: string) => api.post<OrderView>(`${orderPath(id)}/cancel`),
+  payments: (signal?: AbortSignal) => api.get<PaymentView[]>("/billing/payments", { signal }),
+  profile: (signal?: AbortSignal) => api.get<BillingProfile>("/billing/profile", { signal }),
+  saveProfile: (body: BillingProfile) => api.put<BillingProfile>("/billing/profile", body),
+};
+
+/** Same-origin link to a receipt PDF; the server sends it as an attachment. */
+export function receiptUrl(id: number): string {
+  return `/api/billing/receipts/${id}`;
+}
+
+/** GET a policy page's Markdown, a static file outside /api (frontend/public/legal/<slug>.md). */
+async function fetchPage(slug: PageSlug, signal?: AbortSignal): Promise<string> {
+  let res: Response;
+  try {
+    res = await fetch(`/legal/${slug}.md`, { credentials: "same-origin", signal });
+  } catch (err) {
+    if ((err as Error).name === "AbortError") throw err;
+    throw new ApiError(0, "Cannot reach the server. Check that the app is running.");
+  }
+  // A dev server answers a missing file with the app's index.html.
+  const missing = res.status === 404 || (res.ok && res.headers.get("Content-Type")?.includes("text/html"));
+  if (missing) throw new ApiError(404, "This page doesn't exist.");
+  if (!res.ok) throw new ApiError(res.status, errorMessageFromBody(res.status, null));
+  return res.text();
+}
+
+/** No session needed: the public pages. */
+export const publicApi = {
+  site: (signal?: AbortSignal) => api.get<PublicSite>("/public/site", { signal }),
+  plans: (signal?: AbortSignal) => api.get<PublicPlan[]>("/public/plans", { signal }),
+  page: fetchPage,
+};
 
 // ---------------- Plugins (SPEC section 6, "Plugins"; docs/briefs/plugins-gmail.md section 15) ----------------
 

@@ -1,8 +1,8 @@
 """The caller's data export, POST /me/export (docs/briefs/ui-shell-settings.md, section 4.6): a ZIP of their own
-account, the metadata of the documents they own and their conversations (a Markdown transcript and a JSON file each),
-newest first within EXPORT_MAX_MB of content and EXPORT_TIMEOUT_SECONDS from the request's start. It is built in a
-spooled temp file, then streamed with its length. One export per user at a time (held through the download), at most
-MAX_BUILDING building in the process. Nothing of the content is logged."""
+account, their plans and payments (billing.json), the metadata of the documents they own and their conversations (a
+Markdown transcript and a JSON file each), newest first within EXPORT_MAX_MB of content and EXPORT_TIMEOUT_SECONDS from
+the request's start. It is built in a spooled temp file, then streamed with its length. One export per user at a time
+(held through the download), at most MAX_BUILDING building in the process. Nothing of the content is logged."""
 
 import asyncio
 import contextlib
@@ -27,19 +27,26 @@ from starlette.types import Receive, Scope, Send
 
 from app.config import settings
 from app.models import (
+    BillingOrder,
+    BillingPayment,
+    BillingReceipt,
     Conversation,
     Document,
     GeneratedImage,
     Message,
     MessageFile,
     MessagePluginItem,
+    Plan,
+    PlanPeriod,
     PluginConnection,
     User,
+    UserBillingProfile,
     utcnow,
 )
 from app.plugins import registry
-from app.schemas import UsageSummary, UserLimits
 from app.services import account, storage, usage
+from app.services.billing import entitlements, periods
+from app.services.billing.entitlements import Entitlements
 
 FORMAT = "rag-assistant-export"
 VERSION = 1
@@ -99,7 +106,7 @@ class ExportResponse(StreamingResponse):
                 self._release()
 
 
-async def export_response(request: Request, db: AsyncSession, user: User) -> Response:
+async def export_response(request: Request, db: AsyncSession, user: User, ent: Entitlements) -> Response:
     """Build the user's export and return the response that streams it (409: one of theirs is being built or
     downloaded; 503: MAX_BUILDING are building)."""
     started = clock()
@@ -115,7 +122,7 @@ async def export_response(request: Request, db: AsyncSession, user: User) -> Res
         except TimeoutError:
             raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=BUSY_SERVER) from None
         try:
-            built = await _build(request, db, user, started)
+            built = await _build(request, db, user, ent, started)
         except ClientGone:
             return Response(status_code=CLIENT_GONE)
         finally:
@@ -191,13 +198,14 @@ class _Built:
         }
 
 
-async def _build(request: Request, db: AsyncSession, user: User, started: float) -> _Built:
+async def _build(request: Request, db: AsyncSession, user: User, ent: Entitlements, started: float) -> _Built:
     deadline = started + settings.export_timeout_seconds
     max_bytes = settings.export_max_mb * 1024 * 1024
     exported_at = utcnow()
     writer = _ArchiveWriter(exported_at)
     try:
-        profile = await _account(db, user, exported_at)
+        profile = await _account(db, user, ent, exported_at)
+        await writer.add("billing.json", _json(await _billing(db, user)))
         documents = await _documents(db, user)
         await writer.add("documents.json", _json(documents))
         ids = list(
@@ -270,11 +278,10 @@ def _json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8", errors="replace")
 
 
-async def _account(db: AsyncSession, user: User, exported_at: datetime) -> dict[str, Any]:
+async def _account(db: AsyncSession, user: User, ent: Entitlements, exported_at: datetime) -> dict[str, Any]:
     connections = await db.scalars(
         select(PluginConnection).where(PluginConnection.user_id == user.id).order_by(PluginConnection.plugin_id)
     )
-    limits = UserLimits(**usage.user_limits(user), monthly_image_limit=await usage.monthly_image_limit(db, user))
     return {
         "format": FORMAT,
         "version": VERSION,
@@ -283,9 +290,10 @@ async def _account(db: AsyncSession, user: User, exported_at: datetime) -> dict[
         "role": "admin" if user.is_admin else "member",
         "created_at": _time(user.created_at),
         "last_login_at": _time(user.last_login_at),
-        "preferences": (await account.read_preferences(db, user)).model_dump(mode="json"),
-        "limits": limits.model_dump(mode="json"),
-        "usage_this_month": UsageSummary(**await usage.usage_summary(db, user)).model_dump(mode="json"),
+        "preferences": (await account.read_preferences(db, user, ent)).model_dump(mode="json"),
+        "limits": entitlements.user_limits(ent).model_dump(mode="json"),
+        # The allowance window's (the key predates plans)
+        "usage_this_month": (await usage.usage_summary(db, user, ent)).model_dump(mode="json"),
         "plugin_connections": [
             {
                 "plugin_id": row.plugin_id,
@@ -300,6 +308,85 @@ async def _account(db: AsyncSession, user: User, exported_at: datetime) -> dict[
         "recent_logins": [
             event.model_dump(mode="json", exclude={"current"}) for event in await account.recent_logins(db, user, None)
         ],
+    }
+
+
+async def _billing(db: AsyncSession, user: User) -> dict[str, Any]:
+    """The user's periods (every mode), open-ended plan, orders and payments with their receipt numbers, and billing
+    profile: what they hold, never the admin's notes or Razorpay's fees."""
+    comp = await db.get(Plan, user.comp_plan_id) if user.comp_plan_id is not None else None
+    rows = await db.scalars(
+        select(PlanPeriod).where(PlanPeriod.user_id == user.id).order_by(PlanPeriod.starts_at, PlanPeriod.id)
+    )
+    orders = await db.scalars(
+        select(BillingOrder).where(BillingOrder.user_id == user.id).order_by(BillingOrder.created_at, BillingOrder.id)
+    )
+    payments = list(
+        await db.scalars(
+            select(BillingPayment)
+            .where(BillingPayment.user_id == user.id)
+            .order_by(BillingPayment.created_at, BillingPayment.id)
+        )
+    )
+    receipts = {
+        payment_id: number
+        for payment_id, number in await db.execute(
+            select(BillingReceipt.payment_id, BillingReceipt.number).where(
+                BillingReceipt.payment_id.in_([payment.id for payment in payments])
+            )
+        )
+    }
+    profile = await db.get(UserBillingProfile, user.id)
+    return {
+        "periods": [
+            {
+                "plan": periods.snapshot(row).name,
+                "starts_at": _time(row.starts_at),
+                "ends_at": _time(row.ends_at),
+                "valid_through": periods.valid_through(row.ends_at).isoformat(),
+                "source": row.source,
+                "mode": row.mode,
+                "reason": row.reason,
+                "revoked_at": _time(row.revoked_at),
+                "revoked_reason": row.revoked_reason,
+            }
+            for row in rows
+        ],
+        "complimentary": {
+            "plan": comp.name,
+            "reason": user.comp_reason,
+            "granted_at": _time(user.comp_granted_at),
+        }
+        if comp is not None
+        else None,
+        "orders": [
+            {
+                "id": order.public_id,
+                "kind": order.kind,
+                "plan": order.plan_snapshot.get("name"),
+                "amount_paise": order.amount_paise,
+                "credit_paise": order.credit_paise,
+                "status": order.status,
+                "mode": order.mode,
+                "created_at": _time(order.created_at),
+                "paid_at": _time(order.paid_at),
+            }
+            for order in orders
+        ],
+        "payments": [
+            {
+                "amount_paise": payment.amount_paise,
+                "currency": payment.currency,
+                "method": payment.method,
+                "status": payment.status,
+                "refunded_paise": payment.refunded_paise,
+                "mode": payment.mode,
+                "paid_at": _time(payment.captured_at or payment.created_at),
+                "receipt": receipts.get(payment.id),
+            }
+            for payment in payments
+        ],
+        "profile": {"name": profile.name, "email": profile.email} if profile is not None else None,
     }
 
 
@@ -564,8 +651,9 @@ def _readme(
         f"Exported {_time(exported_at)} (UTC) for {user.username}.",
         "",
         "What is inside:",
-        "- account.json: your profile, preferences, limits, this month's usage, plugin connections (without any",
-        "  tokens) and your recent sign-ins.",
+        "- account.json: your profile, preferences, limits, the usage of your current allowance period, plugin",
+        "  connections (without any tokens) and your recent sign-ins.",
+        "- billing.json: your plan periods, orders and payments with their receipt numbers.",
         f"- documents.json: the details of the {documents} document(s) you own. The files themselves aren't included:",
         "  download them from the documents panel.",
         "- conversations/index.json: the list of the exported conversations.",

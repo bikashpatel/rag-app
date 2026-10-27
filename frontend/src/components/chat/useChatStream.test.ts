@@ -16,7 +16,7 @@ import {
   makeMessage,
   makeSource,
 } from "../../test/fixtures";
-import { errorResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
+import { errorResponse, jsonResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
 import { subscribeToAnnouncements, subscribeToReloadRequests } from "../documents/documentEvents";
 import { isImageCard, pluginCardBusy, useChatStream, type FileCard, type SendRequest } from "./useChatStream";
 
@@ -133,10 +133,37 @@ describe("useChatStream: a new chat", () => {
     expect(await act(() => sent)).toBe(false);
     expect(result.current.messages).toEqual([]);
     expect(result.current.streaming).toBe(false);
-    expect(result.current.sendError).toBe("Monthly token budget reached. It resets on 1 November.");
+    expect(result.current.sendError).toEqual({
+      message: "Monthly token budget reached. It resets on 1 November.",
+      code: null,
+    });
     expect(callbacks.onTurnFinished).not.toHaveBeenCalled();
     act(() => result.current.dismissSendError());
     expect(result.current.sendError).toBeNull();
+  });
+
+  it("keeps the server's code of a refusal, and shows none for a plan that ended", async () => {
+    const allowance = setup(null, {
+      "POST /chat/stream": () =>
+        jsonResponse(
+          { detail: "You've used this period's chat allowance.", code: "allowance_used", feature: "chat_tokens" },
+          { status: 429 },
+        ),
+    });
+    expect(await act(() => start(allowance.result))).toBe(false);
+    expect(allowance.result.current.sendError).toEqual({
+      message: "You've used this period's chat allowance.",
+      code: "allowance_used",
+    });
+    allowance.unmount();
+
+    const ended = setup(null, {
+      "POST /chat/stream": () =>
+        jsonResponse({ detail: "Your Standard plan ended on 7 Oct 2026.", code: "plan_expired" }, { status: 402 }),
+      "GET /auth/me": () => errorResponse(401, "Not authenticated"),
+    });
+    expect(await act(() => start(ended.result))).toBe(false);
+    expect(ended.result.current.sendError).toBeNull();
   });
 
   it("keeps the partial text after Stop", async () => {
@@ -156,7 +183,7 @@ describe("useChatStream: a new chat", () => {
     act(() => result.current.stop());
     expect(await act(() => sent)).toBe(false);
     expect(result.current.messages).toEqual([]);
-    expect(result.current.sendError).toBe("Stopped before the answer started.");
+    expect(result.current.sendError).toEqual({ message: "Stopped before the answer started.", code: null });
     expect(callbacks.onTurnFinished).toHaveBeenCalledWith(null, false);
   });
 
@@ -181,7 +208,10 @@ describe("useChatStream: a new chat", () => {
     act(() => stream.end());
     expect(await act(() => sent)).toBe(false);
     expect(result.current.messages).toEqual([]);
-    expect(result.current.sendError).toBe("The connection was lost before the answer started.");
+    expect(result.current.sendError).toEqual({
+      message: "The connection was lost before the answer started.",
+      code: null,
+    });
   });
 
   it("replaces the sources each time they are sent", async () => {

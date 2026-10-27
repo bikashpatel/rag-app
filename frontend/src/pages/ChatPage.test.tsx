@@ -5,8 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationDetail, ConversationSummary, Me } from "../api/types";
 import { setMediaQueries } from "../test/browser";
 import { deltaEvent, doneEvent, liveStream, metaEvent } from "../test/chatStream";
-import { makeChatModel, makeDocumentConfig, makeMe, makeMessage, makeSource } from "../test/fixtures";
-import { errorResponse, stubFetch, type FetchCall, type Route as FetchRoute } from "../test/http";
+import { makeCatalog, makeOrder } from "../test/billing";
+import {
+  makeChatModel,
+  makeDocumentConfig,
+  makeLapsedPlanAccess,
+  makeMe,
+  makeMessage,
+  makePaidPlanAccess,
+  makeSource,
+} from "../test/fixtures";
+import { errorResponse, jsonResponse, stubFetch, type FetchCall, type Route as FetchRoute } from "../test/http";
 import { renderWithAuth } from "../test/render";
 import ChatPage from "./ChatPage";
 
@@ -373,5 +382,121 @@ describe("ChatPage", () => {
     await waitFor(() =>
       expect(composer()).toHaveAttribute("placeholder", "No chat models are available. Ask your administrator to enable one."),
     );
+  });
+});
+
+describe("ChatPage with plans", () => {
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(NOW));
+  });
+  afterEach(() => vi.useRealTimers());
+
+  const starter = () =>
+    makePaidPlanAccess({
+      plan: { id: 1, code: "starter", name: "Starter" },
+      features: { files: false, images: false, plugins: [] },
+    });
+
+  it("leaves features outside the plan out of the examples and the composer hint", async () => {
+    await setup({ me: makeMe({ plan: starter() }) });
+    const examples = within(screen.getByRole("list", { name: "Example questions" })).getAllByRole("button");
+    expect(examples).toHaveLength(3);
+    expect(screen.queryByText(/Ask for a PDF/)).not.toBeInTheDocument();
+  });
+
+  it("shows a payment in progress before the plan's end under the top bar", async () => {
+    const ending = makePaidPlanAccess({
+      expiring_soon: true,
+      period_end: "2026-10-24T18:30:00Z",
+      paid_through: "2026-10-24T18:30:00Z",
+      valid_through: "2026-10-24",
+    });
+    const first = await setup({ me: makeMe({ plan: ending }) });
+    expect(screen.getByText(/plan ends in 4 days/)).toHaveTextContent("Your Standard plan ends in 4 days, on 24 Oct.");
+    first.unmount();
+
+    await setup({ me: makeMe({ plan: { ...ending, pending_order: makeOrder() } }) });
+    expect(screen.getByText(/is in progress/)).toHaveTextContent("A payment for Standard is in progress.");
+    expect(screen.queryByText(/plan ends in/)).not.toBeInTheDocument();
+  });
+
+  it("offers a new period or an upgrade when the chat allowance is used up", async () => {
+    const { user } = await setup({
+      me: makeMe({ plan: { ...starter(), can_start_new_period: true } }),
+      routes: {
+        "POST /chat/stream": () =>
+          jsonResponse(
+            { detail: "You've used this period's chat allowance (500,214 of 500,000).", code: "allowance_used" },
+            { status: 429 },
+          ),
+      },
+    });
+    await user.type(composer(), "Summarize the contract{Enter}");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent("You've used this period's chat allowance (500,214 of 500,000).");
+    expect(within(alert).getByRole("link", { name: "Start a new period now" })).toHaveAttribute(
+      "href",
+      "/plans/checkout/starter?kind=now",
+    );
+    expect(within(alert).getByRole("link", { name: "Upgrade" })).toHaveAttribute("href", "/plans");
+    expect(composer()).toHaveValue("Summarize the contract");
+  });
+
+  it("points to the plans when a feature isn't in the plan", async () => {
+    const { user } = await setup({
+      routes: {
+        "POST /chat/stream": () =>
+          jsonResponse(
+            {
+              detail: "Your Starter plan doesn't include Claude Opus 5.5.",
+              code: "feature_not_in_plan",
+              feature: "model",
+            },
+            { status: 402 },
+          ),
+      },
+    });
+    await user.type(composer(), "Hello{Enter}");
+    const alert = await screen.findByRole("alert");
+    expect(within(alert).getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/plans");
+    expect(within(alert).queryByRole("link", { name: "Upgrade" })).not.toBeInTheDocument();
+  });
+
+  it("replaces the composer when the plan ends on the page, keeping the unsent message for the renewal", async () => {
+    let me = makeMe({ plan: makePaidPlanAccess() });
+    const { user, unmount } = await setup({
+      me,
+      routes: {
+        "GET /auth/me": () => me,
+        "GET /billing/plans": makeCatalog(),
+        "POST /chat/stream": () =>
+          jsonResponse({ detail: "Your Standard plan ended on 7 Oct 2026.", code: "plan_expired" }, { status: 402 }),
+      },
+    });
+    me = makeMe({ plan: makeLapsedPlanAccess() });
+    await user.type(composer(), "Draft the renewal letter{Enter}");
+    const heading = await screen.findByRole("heading", { name: "Your Standard plan ended on 7 Oct" });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(screen.queryByRole("textbox", { name: "Message" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(await screen.findByText("Your unsent message is saved and comes back when you renew.")).toBeInTheDocument();
+    expect(JSON.parse(sessionStorage.getItem("rag.planDraft") ?? "null")).toEqual({
+      conversation_id: null,
+      text: "Draft the renewal letter",
+    });
+    unmount();
+
+    me = makeMe({ plan: makePaidPlanAccess() });
+    await setup({ me });
+    await waitFor(() => expect(composer()).toHaveValue("Draft the renewal letter"));
+    expect(sessionStorage.getItem("rag.planDraft")).toBeNull();
+  });
+
+  it("keeps a draft for another conversation until that one opens", async () => {
+    sessionStorage.setItem("rag.planDraft", JSON.stringify({ conversation_id: 43, text: "Ask about the offer" }));
+    await setup({ route: "/c/42" });
+    expect(composer()).toHaveValue("");
+    expect(sessionStorage.getItem("rag.planDraft")).not.toBeNull();
   });
 });

@@ -3,7 +3,16 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { Me, Preferences } from "../../api/types";
 import { formatNumber } from "../../lib/format";
-import { makeAdminMe, makeLimits, makeMe, makePreferences } from "../../test/fixtures";
+import {
+  makeAdminMe,
+  makeLapsedPlanAccess,
+  makeLimits,
+  makeMe,
+  makePaidPlanAccess,
+  makePlanAccess,
+  makePreferences,
+  NOW,
+} from "../../test/fixtures";
 import { deferred, errorResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
 import { renderWithAuth } from "../../test/render";
 import AvatarMenu from "./AvatarMenu";
@@ -25,23 +34,94 @@ const openMenu = async (user: ReturnType<typeof userEvent.setup>, name: string |
 const themeItem = (name: string) => screen.getByRole("menuitemradio", { name });
 
 describe("AvatarMenu", () => {
-  it("names the account and role, and describes this month's usage", async () => {
+  it("names the account and role, and describes this period's chat allowance and images", async () => {
     const { user } = await setup();
     await openMenu(user, "Account: maya.chen");
     expect(screen.getByRole("menu", { name: "Account: maya.chen, Member" })).toBeInTheDocument();
+    expect(screen.getByText("Complimentary Professional")).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "View usage" })).toHaveAccessibleDescription(
-      `Tokens this month: ${formatNumber(120_000)} of ${formatNumber(2_000_000)}. Images this month: 3 of 50.`,
+      `Chat allowance this period: ${formatNumber(120_000)} of ${formatNumber(2_000_000)}. Images this period: 3 of 50.`,
     );
+    expect(screen.getByText("Chat allowance this period")).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "Admin" })).not.toBeInTheDocument();
   });
 
-  it("warns on the button and in the description when usage is almost at the limit", async () => {
+  it("counts the chat allowance in standard tokens, not plain tokens", async () => {
     const me = makeMe();
-    const { user } = await setup({ ...me, usage: { ...me.usage, chat_tokens: 1_900_000 } });
+    const { user } = await setup({ ...me, usage: { ...me.usage, chat_tokens: 1_900_000, chat_allowance_used: 1_900_000 } });
     await openMenu(user, "Account: maya.chen, usage almost at the limit");
     expect(screen.getByRole("menuitem", { name: "View usage" })).toHaveAccessibleDescription(
-      new RegExp(`^Tokens this month: ${formatNumber(1_900_000)} of ${formatNumber(2_000_000)}\\. Almost used up\\.`),
+      new RegExp(`^Chat allowance this period: ${formatNumber(1_900_000)} of ${formatNumber(2_000_000)}\\. Almost used up\\.`),
     );
+  });
+
+  it("puts the plan in the subtitle: until when, paid ahead, complimentary or none", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const paid = await setup(makeMe({ plan: makePaidPlanAccess() }));
+    await openMenu(paid.user);
+    expect(screen.getByText("Standard · until 7 Nov")).toBeInTheDocument();
+    paid.view.unmount();
+
+    const ahead = await setup(
+      makeMe({ plan: makePaidPlanAccess({ paid_through: "2026-12-07T18:30:00Z", valid_through: "2026-12-07" }) }),
+    );
+    await openMenu(ahead.user);
+    expect(screen.getByText("Standard · paid through 7 Dec")).toBeInTheDocument();
+    ahead.view.unmount();
+
+    const comp = await setup(
+      makeMe({
+        plan: makePaidPlanAccess({
+          complimentary: true,
+          period_end: "2026-11-25T18:30:00Z",
+          paid_through: "2026-11-25T18:30:00Z",
+          valid_through: "2026-11-25",
+        }),
+      }),
+    );
+    await openMenu(comp.user);
+    expect(screen.getByText("Complimentary Standard · until 25 Nov")).toBeInTheDocument();
+  });
+
+  it("marks Plan & billing with the days left while the plan ends soon, and opens that tab", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const ending = makePaidPlanAccess({
+      expiring_soon: true,
+      period_end: "2026-10-24T18:30:00Z",
+      paid_through: "2026-10-24T18:30:00Z",
+      valid_through: "2026-10-24",
+    });
+    const { user, onOpenSettings } = await setup(makeMe({ plan: ending }));
+    await openMenu(user);
+    const item = screen.getByRole("menuitem", { name: /^Plan & billing/ });
+    expect(item).toHaveTextContent("4 days left");
+    await user.click(item);
+    expect(onOpenSettings).toHaveBeenLastCalledWith("billing");
+  });
+
+  it("flags the avatar on the last day of a plan with nothing after it", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    const lastDay = makePaidPlanAccess({
+      expiring_soon: true,
+      period_end: "2026-10-20T18:30:00Z",
+      paid_through: "2026-10-20T18:30:00Z",
+      valid_through: "2026-10-20",
+    });
+    const { user } = await setup(makeMe({ plan: lastDay }));
+    await openMenu(user, "Account: maya.chen, your plan ends today");
+    expect(screen.getByRole("menuitem", { name: /^Plan & billing/ })).toHaveTextContent("Last day");
+  });
+
+  it("shows no usage for a user without a plan, and says so on Plan & billing", async () => {
+    const { user } = await setup(makeMe({ plan: makeLapsedPlanAccess("none") }));
+    await openMenu(user);
+    expect(screen.getByText("No active plan")).toBeInTheDocument();
+    expect(screen.queryByText(/Chat allowance/)).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: "View usage" })).not.toHaveAccessibleDescription();
+    expect(screen.getByRole("menuitem", { name: /^Plan & billing/ })).toHaveTextContent("No plan");
   });
 
   it("shows unlimited usage for the admin, without images when none are offered or made", async () => {
@@ -50,7 +130,7 @@ describe("AvatarMenu", () => {
     await openMenu(user, "Account: admin");
     expect(screen.getByRole("menu", { name: "Account: admin, Administrator" })).toBeInTheDocument();
     expect(screen.getByRole("menuitem", { name: "View usage" })).toHaveAccessibleDescription(
-      `Tokens this month: ${formatNumber(120_000)}, unlimited.`,
+      `Chat allowance this month: ${formatNumber(120_000)}, unlimited.`,
     );
     await user.click(screen.getByRole("menuitem", { name: "Admin" }));
     expect(view.location()).toBe("/admin");
@@ -118,7 +198,16 @@ describe("AvatarMenu", () => {
     const { user } = await setup({ ...me, usage: { ...me.usage, images: 0 } }, { imagesOffered: false });
     await openMenu(user);
     expect(screen.getByRole("menuitem", { name: "View usage" })).toHaveAccessibleDescription(
-      `Tokens this month: ${formatNumber(120_000)} of ${formatNumber(2_000_000)}.`,
+      `Chat allowance this period: ${formatNumber(120_000)} of ${formatNumber(2_000_000)}.`,
+    );
+  });
+
+  it("shows no images meter when the plan doesn't include images", async () => {
+    const me = makeMe({ plan: makePlanAccess({ features: { files: true, images: false, plugins: [] } }) });
+    const { user } = await setup(me);
+    await openMenu(user);
+    expect(screen.getByRole("menuitem", { name: "View usage" })).toHaveAccessibleDescription(
+      `Chat allowance this period: ${formatNumber(120_000)} of ${formatNumber(2_000_000)}.`,
     );
   });
 });

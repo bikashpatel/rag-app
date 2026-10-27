@@ -1,22 +1,27 @@
 // API shapes — must match SPEC.md section 6 and the backend schemas exactly.
 
+/** Per period for users with a plan (an open-ended plan and the admin: per UTC calendar month); 0 = unlimited. */
 export type UserLimits = {
-  monthly_token_limit: number; // 0 = unlimited
-  rate_limit_per_min: number; // 0 = unlimited
-  max_upload_mb: number;
-  max_documents: number; // 0 = unlimited
-  max_storage_mb: number; // 0 = unlimited
-  monthly_image_limit: number; // images per UTC calendar month; 0 = unlimited (the admin's is 0)
+  monthly_token_limit: number; // the chat allowance, in standard tokens (each model counts at its rate)
+  rate_limit_per_min: number;
+  max_upload_mb: number; // at least 1
+  max_documents: number;
+  max_storage_mb: number;
+  monthly_image_limit: number; // images (the admin's is 0)
+  vision_monthly_token_limit: number; // plain vision tokens (scanned PDF pages)
 };
 
 export type UsageSummary = {
-  month: string; // "YYYY-MM"
-  chat_tokens: number;
+  month: string; // "YYYY-MM" of the window's start
+  chat_tokens: number; // plain tokens of chat answers in the window
   embedding_tokens: number;
   vision_tokens: number;
-  images: number; // images generated this month
+  images: number; // images generated in the window
   cost_usd: number; // every kind
-  monthly_token_limit: number; // 0 = unlimited; counts chat_tokens only
+  monthly_token_limit: number; // 0 = unlimited; counts chat_allowance_used
+  chat_allowance_used: number; // standard tokens counted in the window
+  window_start: string; // the allowance window: the current period, or the UTC calendar month
+  window_end: string;
 };
 
 // The user's own settings (docs/briefs/ui-shell-settings.md, section 7). Adding a value is a contract change: SPEC.md,
@@ -43,6 +48,7 @@ export type Me = {
   limits: UserLimits;
   usage: UsageSummary;
   preferences: Preferences;
+  plan: PlanAccess;
 };
 
 export type ChatModel = {
@@ -56,6 +62,198 @@ export type ChatModel = {
   can_create_images: boolean;
   /** The model gets tools (function calling, not rejected since the backend started): plugin tools such as Gmail work. */
   supports_tools: boolean;
+  /** ×rate against the chat allowance ("×2", "×0.05"); null: no price, it counts plain tokens. */
+  allowance_rate: number | null;
+};
+
+// ---------------- Plans and billing (docs/briefs/plans-billing.md) ----------------
+// Amounts are integer paise; instants are ISO 8601 UTC; "IST date" fields are "YYYY-MM-DD" days in India time.
+
+export type PlanFeatures = { files: boolean; images: boolean; plugins: string[] /* plugin ids, e.g. "gmail" */ };
+export type PlanRef = { id: number; code: string; name: string };
+/** exempt: the admin; none: never had a plan; active: a current period or an open-ended plan; expired: had one. */
+export type PlanState = "exempt" | "none" | "active" | "expired";
+/** period: one more period of the plan (now, or when the paid time ends); now: a new period from now, for a credit. */
+export type CheckoutKind = "period" | "now";
+
+export type PendingOrder = {
+  public_id: string;
+  kind: CheckoutKind;
+  plan: PlanRef;
+  amount_paise: number;
+  created_at: string;
+  expires_at: string;
+  pay_url: string | null; // null once the link expired
+};
+
+/** Per locked feature, the name of the cheapest active plan that includes it (null when none does). */
+export type PlanUnlock = {
+  files: string | null;
+  images: string | null;
+  plugins: Record<string, string | null>;
+  models: string | null; // a higher plan with a chat model the user can't use now
+};
+
+/** Me.plan: everything the UI gates on. The server decides; the UI only mirrors it. */
+export type PlanAccess = {
+  state: PlanState;
+  access: boolean; // exempt or active
+  plan: PlanRef | null; // current (period or open-ended), or the last one when expired
+  complimentary: boolean;
+  open_ended: boolean;
+  test_mode: boolean;
+  period_start: string | null; // the current period; null for an open-ended plan
+  period_end: string | null;
+  paid_through: string | null; // by a period: the end of the chain from the current one; expired: when it ended
+  valid_through: string | null; // IST date of the last day with access; null: open-ended
+  next_plan: PlanRef | null;
+  expiring_soon: boolean;
+  ended_at: string | null; // expired: when access ended
+  features: PlanFeatures; // exempt: everything; without access: nothing
+  pending_order: PendingOrder | null;
+  can_start_new_period: boolean; // a current period with 90% or more of one of its allowances used
+  unlock: PlanUnlock;
+};
+
+export type PlanModel = {
+  id: number;
+  display_name: string;
+  allowance_rate: number | null; // ×rate against the chat allowance; null: no price (plain tokens)
+  answers: number | null; // about this many answers with the plan's allowance; null: unlimited or unpriced
+};
+
+export type PlanPlugin = { id: string; name: string; available: boolean /* set up and turned on by the admin */ };
+export type CreditLine = {
+  description: string; // "Credit for unused Starter, 26 Oct to 25 Nov"
+  amount_paise: number;
+};
+
+export type CheckoutOption = {
+  kind: CheckoutKind;
+  label: string; // "Choose Standard", "Renew", "Upgrade now · ₹1,700", "Switch on 26 Nov", …
+  starts_at: string;
+  ends_at: string;
+  valid_through: string; // IST date
+  amount_paise: number; // what is charged
+  plan_price_paise: number;
+  credit: CreditLine | null; // now only
+  changes: string[]; // what the switch removes; may be empty
+  notes: string[]; // e.g. "Your complimentary plan continues after it."
+  unavailable_reason: string | null; // set: show the option disabled with this text
+};
+
+export type PlanOffer = {
+  id: number;
+  code: string;
+  name: string;
+  description: string;
+  price_paise: number;
+  recommended: boolean;
+  features: PlanFeatures;
+  plugins: PlanPlugin[]; // every registered plugin, in registry order; the plan includes those in features.plugins
+  limits: UserLimits; // the plan's own
+  chat_models: PlanModel[]; // the plan's: every enabled chat model when unrestricted
+  all_chat_models: boolean;
+  default_chat_model: PlanModel | null; // the plan's default, else the server's default when the plan has it
+  answers_estimate: number | null; // with default_chat_model
+  status: "active" | "retired";
+  current: boolean; // the plan that applies now
+  options: CheckoutOption[]; // empty for the admin
+};
+
+export type PaymentsInfo = {
+  available: boolean; // for this caller: keys set, and a tester under test keys
+  mode: "test" | "live" | null; // null when not available to this caller
+  contact_email: string | null;
+  upi_limit_paise: number; // 0: no limit
+  email_reminders: boolean; // reminder emails can be sent: ask for an email only then
+};
+
+export type PlanCatalog = { plans: PlanOffer[]; payments: PaymentsInfo };
+
+export type OrderStatus = "pending" | "paid" | "expired" | "cancelled" | "review";
+export type ReceiptRef = { id: number; number: string };
+
+export type OrderView = {
+  public_id: string;
+  kind: CheckoutKind;
+  plan: PlanRef;
+  amount_paise: number;
+  credit_paise: number;
+  status: OrderStatus;
+  created_at: string;
+  expires_at: string;
+  paid_at: string | null;
+  pay_url: string | null; // pending and not expired
+  last_payment_error: string | null;
+  period_start: string | null; // what it bought
+  period_end: string | null;
+  valid_through: string | null;
+  receipt: ReceiptRef | null;
+  method: string | null; // upi | card | netbanking | wallet | emi | bank_transfer
+  test_mode: boolean;
+};
+
+/** POST /billing/checkout: accept_terms records the consent line under Pay with the order. */
+export type CheckoutRequest = { plan_id: number; kind: CheckoutKind; accept_terms: true };
+export type CheckoutStarted = { order: OrderView; pay_url: string };
+
+export type PaymentStatus = "captured" | "refunded" | "partially_refunded" | "disputed";
+
+export type PaymentView = {
+  id: number;
+  paid_at: string;
+  plan: PlanRef | null;
+  kind: CheckoutKind;
+  description: string;
+  amount_paise: number;
+  method: string | null;
+  status: PaymentStatus;
+  refunded_paise: number;
+  period_start: string | null; // null: a receipt-only offline payment
+  period_end: string | null;
+  receipt: ReceiptRef | null;
+  test_mode: boolean;
+};
+
+export type PeriodSource = "payment" | "comp";
+
+export type PeriodView = {
+  id: number;
+  plan: PlanRef | null;
+  plan_name: string;
+  starts_at: string;
+  ends_at: string;
+  valid_through: string; // IST date
+  source: PeriodSource;
+  current: boolean;
+  test_mode: boolean;
+  reason: string | null; // comps
+};
+
+/** The user's own, optional (GET and PUT /billing/profile); blank strings are saved as null. */
+export type BillingProfile = { name: string | null /* ≤ 100 */; email: string | null /* ≤ 254 */ };
+export type ComplimentaryView = { plan: PlanRef; reason: string; granted_by: string; granted_at: string };
+
+export type BillingStatus = {
+  plan: PlanAccess;
+  periods: PeriodView[]; // unexpired, in order
+  complimentary: ComplimentaryView | null; // the open-ended plan
+  open_order: OrderView | null;
+  profile: BillingProfile;
+  payments: PaymentsInfo;
+};
+
+// ---------------- Public (no session) ----------------
+
+export type PublicPlan = Omit<PlanOffer, "id" | "status" | "current" | "options">;
+/** The Markdown files frontend/public/legal/<slug>.md. */
+export type PageSlug = "pricing" | "terms" | "privacy" | "refunds" | "contact" | "about" | "shipping";
+export type PublicSite = {
+  business_name: string;
+  contact_email: string | null;
+  contact_phone: string | null;
+  address: string | null;
 };
 
 // ---------------- Account (GET /me/account, GET /me/usage) ----------------
@@ -90,19 +288,22 @@ export type AccountInfo = {
 export type UsageAmount = { used: number; limit: number }; // limit 0 = unlimited (always 0 for the admin)
 
 export type MyUsage = {
-  month: string; // "YYYY-MM" (UTC calendar month)
-  period_start: string; // the 1st, 00:00 UTC
-  resets_at: string; // the 1st of next month, 00:00 UTC
-  chat_tokens: UsageAmount; // the monthly token budget (the only budget)
-  images: UsageAmount; // the monthly image limit
-  vision_tokens: UsageAmount; // VISION_MONTHLY_TOKEN_LIMIT
+  month: string; // "YYYY-MM" of period_start
+  // The allowance window: the current period, or the UTC calendar month (an open-ended plan, the admin, no access).
+  period_start: string;
+  resets_at: string;
+  chat_allowance: UsageAmount; // standard tokens against monthly_token_limit, the chat allowance
+  chat_tokens: number; // plain tokens of chat answers; no limit
+  images: UsageAmount; // monthly_image_limit
+  vision_tokens: UsageAmount; // vision_monthly_token_limit
   embedding_tokens: number; // recorded, never limited
-  requests: number; // chat answers this month
+  requests: number; // chat answers in the window
   rate_limit_per_min: number; // 0 = unlimited
   cost_usd: { total: number; chat: number; embedding: number; vision: number; image: number }; // estimated
   documents: { count: number; max_documents: number; storage_bytes: number; max_storage_mb: number; max_upload_mb: number };
   daily: {
-    date: string; // "YYYY-MM-DD" (UTC); every day from the 1st through today, zeros included
+    date: string; // "YYYY-MM-DD" (UTC); every day of the window through today, zeros included
+    chat_allowance: number;
     chat_tokens: number;
     requests: number;
     images: number;
@@ -114,6 +315,7 @@ export type MyUsage = {
     model_name: string; // display name while the model exists, else its litellm id
     kind: "chat" | "embedding" | "vision" | "image";
     tokens: number;
+    allowance_tokens: number; // 0 for other kinds than chat
     requests: number; // chat: answers; image: images; embedding and vision: ingestion runs
     cost_usd: number;
   }[]; // cost descending
@@ -326,41 +528,72 @@ export type ChatStreamEvent =
 
 // ---------------- Admin ----------------
 
+/** Per-user overrides of the plan's limits: null = the plan's value; 0 = unlimited. */
+export type LimitOverrides = { [K in keyof UserLimits]: number | null };
+
+export type AdminUserPlan = {
+  state: PlanState;
+  plan: PlanRef | null; // current (period or open-ended), or the last one when expired
+  valid_through: string | null; // IST date; null: open-ended (or none)
+  paid_through: string | null;
+  complimentary: boolean;
+  open_ended: boolean;
+  test_mode: boolean;
+  expiring_soon: boolean;
+  ended_at: string | null; // expired: when access ended
+};
+
 export type AdminUser = {
   id: number;
   username: string;
   is_admin: boolean;
   is_active: boolean;
-  monthly_token_limit: number;
-  rate_limit_per_min: number;
-  max_upload_mb: number;
-  max_documents: number;
-  max_storage_mb: number;
-  monthly_image_limit: number; // effective: the user's own value, else DEFAULT_MONTHLY_IMAGE_LIMIT; 0 = unlimited
   restrict_models: boolean;
   allowed_model_ids: number[];
   created_at: string;
   last_login_at: string | null;
-  usage: { chat_tokens: number; embedding_tokens: number; vision_tokens: number; images: number; cost_usd: number };
+  /** In the user's allowance window (the current period, or the UTC calendar month). */
+  usage: {
+    chat_tokens: number;
+    chat_allowance_used: number; // standard tokens, against limits.monthly_token_limit
+    embedding_tokens: number;
+    vision_tokens: number;
+    images: number;
+    cost_usd: number;
+    window_start: string;
+    window_end: string;
+  };
   document_count: number;
   storage_bytes: number;
+  billing_tester: boolean; // may check out while test keys run
+  limits: UserLimits; // effective: the plan's merged with the overrides
+  overrides: LimitOverrides;
+  above_plan: (keyof UserLimits)[]; // overrides more generous than the plan's value
+  no_models: boolean; // the allowed list and the plan's models don't overlap
+  plan: AdminUserPlan;
 };
 
 export type AdminUserCreate = {
-  username: string;
-  password: string;
+  username: string; // 3-64, ^[a-zA-Z0-9_.-]+$, lowercased
+  password: string; // >= 8
   is_active?: boolean;
-  monthly_token_limit?: number;
-  rate_limit_per_min?: number;
-  max_upload_mb?: number;
-  max_documents?: number;
-  max_storage_mb?: number;
-  monthly_image_limit?: number; // 0 = unlimited; default AdminConfig.defaults.monthly_image_limit
   restrict_models?: boolean;
   allowed_model_ids?: number[];
+  billing_tester?: boolean;
+  overrides?: Partial<LimitOverrides>;
+  grant?: Omit<GrantRequest, "start">; // a complimentary plan from now
+  confirm_unlimited?: boolean; // required when an override sets monthly_token_limit to 0
 };
 
-export type AdminUserUpdate = Partial<Omit<AdminUserCreate, "username">>;
+export type AdminUserUpdate = {
+  password?: string; // = reset
+  is_active?: boolean;
+  restrict_models?: boolean;
+  allowed_model_ids?: number[];
+  billing_tester?: boolean;
+  overrides?: Partial<LimitOverrides>; // a key present sets it, null clears it; absent keys stay
+  confirm_unlimited?: boolean; // required when an override sets monthly_token_limit to 0
+};
 
 /**
  * "vision": reads PDF pages for ingestion; "image": generates images in chat (create_image). The active one of each is
@@ -465,6 +698,240 @@ export type UsageReport = {
   }[];
 };
 
+// ---------------- Admin: plans and billing ----------------
+
+export type PlanInput = {
+  name: string; // 1..60
+  description: string; // ≤ 300, one line
+  price_paise: number; // whole rupees (a multiple of 100), ₹1 to ₹1,00,000
+  rank: number; // unique; higher = a higher plan, which must cost more among active plans
+  status: "active" | "retired";
+  recommended: boolean; // at most one plan, which must be active
+  features: PlanFeatures;
+  limits: UserLimits; // all seven
+  chat_model_ids: number[] | null; // null: every enabled chat model
+  default_chat_model_id: number | null; // in chat_model_ids when that is a list
+};
+
+export type PlanCostEstimate = {
+  kept_paise: number; // the price after Razorpay's fee
+  worst_case_paise: number; // every allowance used up
+  worst_share: number; // of kept_paise, 0..n
+  typical_paise: number; // 40% of every allowance
+  typical_share: number;
+  unlimited: string[]; // limit names set to 0: no ceiling
+};
+
+export type AdminPlan = PlanInput & {
+  id: number;
+  code: string;
+  current_users: number;
+  scheduled_periods: number;
+  complimentary_users: number; // open-ended
+  used: boolean; // can't be deleted
+  cost: PlanCostEstimate;
+  created_at: string;
+  updated_at: string;
+};
+
+export type PlanCreate = PlanInput & { code: string /* ^[a-z][a-z0-9_-]{1,31}$, never changed */ };
+export type PlanUpdate = Partial<PlanInput> & {
+  apply_to_current?: boolean; // also the current and scheduled periods (default false)
+  confirm_reduction?: boolean; // required when that lowers what paid periods have (409 confirmation_required)
+};
+export type PlanSaved = { plan: AdminPlan; applied_periods: number };
+
+/** What the plan editor computes PlanCostEstimate from, as the server does. */
+export type CostInputs = {
+  usd_inr: number;
+  standard_usd_per_mtok: number; // 3.20
+  vision_usd_per_mtok: number;
+  image_usd: number;
+  fee_bp: number; // Razorpay's fee with GST on it, in basis points of the charge (236)
+};
+
+export type BillingSettings = {
+  business_name: string; // 1..100
+  address: string; // ≤ 500, several lines
+  contact_email: string | null;
+  contact_phone: string | null; // ≤ 20
+  receipt_prefix: string; // 1 to 4 of A-Z0-9, not "TEST"
+  upi_limit_paise: number; // 0: no limit
+};
+
+export type PaymentsSetup = {
+  configured: boolean;
+  mode: "test" | "live" | null;
+  key_id_hint: string | null; // "rzp_test_…AbCd"
+  webhook_secret_set: boolean;
+  previous_webhook_secret_set: boolean;
+  last_webhook_at: string | null;
+  webhook_url: string; // to register in Razorpay's Dashboard
+  webhook_events: string[];
+  test_links_created: number;
+  reconciler_last_run_at: string | null;
+  last_error: string | null; // e.g. the keys were rejected
+  paused_orders: number; // of the other mode
+  testers: number;
+  email_reminders: boolean;
+};
+
+export type BillingAdminConfig = { settings: BillingSettings; payments: PaymentsSetup; estimate: CostInputs };
+
+export type UserRef = { id: number | null /* null: deleted */; username: string };
+
+export type AdminOrder = OrderView & {
+  id: number;
+  user: UserRef;
+  mode: "test" | "live" | "offline";
+  razorpay_link_id: string | null;
+  razorpay_order_id: string | null;
+  review_reason: string | null;
+  review_note: string | null;
+  checks: number;
+  last_checked_at: string | null;
+  next_check_at: string | null;
+  last_error: string | null;
+  paused: boolean; // of the other mode than the server's keys
+};
+
+export type AdminOrderDetail = AdminOrder & {
+  events: { at: string; source: string; type: string; detail: Record<string, unknown>; error: string | null }[];
+};
+
+export type RefundView = {
+  id: number;
+  amount_paise: number;
+  status: "creating" | "pending" | "processed" | "failed";
+  initiated_by: "admin" | "razorpay";
+  admin_username: string | null;
+  reason: string | null;
+  end_access: boolean;
+  created_at: string;
+  processed_at: string | null;
+  last_error: string | null;
+};
+
+export type DisputeStatus = "open" | "under_review" | "action_required" | "won" | "lost" | "closed";
+
+export type DisputeView = {
+  id: number;
+  razorpay_dispute_id: string;
+  amount_paise: number;
+  status: DisputeStatus;
+  reason_code: string | null;
+  respond_by: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type AdminPayment = PaymentView & {
+  user: UserRef;
+  order_public_id: string | null;
+  razorpay_payment_id: string | null;
+  fee_paise: number | null;
+  fee_tax_paise: number | null;
+  refundable_paise: number;
+  credit_used_paise: number; // credit later upgrades took from its period
+  refunds: RefundView[];
+  disputes: DisputeView[];
+  offline_reference: string | null;
+  mode: "test" | "live" | "offline";
+};
+
+/** GET /admin/billing/orders and /admin/billing/payments: newest first, 50 per page. */
+export type Page<T> = { items: T[]; total: number };
+
+export type RefundRequest = {
+  amount_paise: number | null; // null: all that's refundable
+  reason: string; // 1..200
+  end_access: boolean; // a partial refund ends access only with this
+};
+
+export type OfflinePaymentRequest = {
+  user_id: number;
+  plan_id: number;
+  amount_paise: number; // ≥ 100
+  received_on: string; // YYYY-MM-DD
+  reference: string; // 1..64, the bank reference
+  note: string | null; // ≤ 500; required below the plan's price
+  apply: boolean; // false: a receipt only
+};
+
+export type GrantRequest = {
+  plan_id: number;
+  days: number | null; // 1..90; null: open-ended
+  reason: string; // 1..200
+  start: "now" | "after_current"; // ignored when open-ended
+};
+export type ChangePlanRequest = { plan_id: number; reason: string };
+export type RevokeRequest = { reason: string };
+export type EndComplimentaryRequest = { reason: string };
+export type ResolveRequest = { note: string /* 1..500 */ };
+export type ReconcileResult = { checked: number };
+
+export type AttentionKind =
+  | "review"
+  | "duplicate"
+  | "refund_failed"
+  | "refund_pending"
+  | "partial_refund"
+  | "dispute"
+  | "dispute_lost" // a dispute lost in the last 30 days
+  | "credit_reversed" // a refunded or charged-back payment's credit still runs in an upgrade
+  | "webhook_errors"
+  | "payments_not_configured"
+  | "test_mode"
+  | "test_keys_public"
+  | "live_without_webhook"
+  | "keys_rejected"
+  | "paused_orders";
+
+export type AttentionItem = {
+  kind: AttentionKind;
+  message: string;
+  detail: string | null;
+  order_public_id: string | null;
+  payment_id: number | null;
+  count: number | null;
+};
+
+export type UserPlanRow = {
+  user: UserRef;
+  plan: string | null;
+  date: string; // IST date: valid through, or the day it ended
+  last_payment_at: string | null;
+};
+
+export type BillingSummary = {
+  month: string; // "YYYY-MM", IST
+  gross_paise: number;
+  fee_paise: number;
+  refunded_paise: number;
+  disputed_paise: number;
+  net_paise: number; // gross − fees − refunds − disputes lost
+  payments: number;
+  refunds: number;
+  by_plan: { plan: string; payments: number; gross_paise: number }[];
+  current_users: { plan: string; paid: number; complimentary: number }[];
+  users_without_plan: number;
+  months: { month: string; gross_paise: number; net_paise: number }[]; // the 12 months up to this one
+  expiring: UserPlanRow[]; // valid through within 7 days, nothing after
+  lapsed: UserPlanRow[]; // ended within the last 30 days
+  attention: AttentionItem[];
+};
+
+export type UserBilling = {
+  plan: PlanAccess;
+  periods: PeriodView[]; // every one, newest first, at most 100
+  complimentary: ComplimentaryView | null;
+  orders: AdminOrder[];
+  payments: AdminPayment[];
+  profile: BillingProfile;
+  // newest 50
+  events: { at: string; source: string; type: string; actor: string | null; detail: Record<string, unknown> }[];
+};
+
 // ---------------- Plugins (docs/briefs/plugins-gmail.md) ----------------
 
 export type PluginCapabilityInfo = {
@@ -492,10 +959,10 @@ export type PluginConnectionStatus = {
 
 /**
  * GET /plugins: every registered plugin (the catalog), whatever its state. Status, in this order of precedence:
- * !configured → "Not set up"; !enabled → "Turned off by the admin"; connection reconnect_needed → "Reconnect needed";
- * connection → "Connected"; else "Not connected" (offer Connect). In the first two states a caller who still has a
- * connection can Disconnect it (DELETE …/connection works then too). Tools reach chat only when enabled and connected
- * with "Use in chat" on.
+ * !configured → "Not set up"; !enabled → "Turned off by the admin"; !in_plan → "Not in your plan" (offer Upgrade);
+ * connection reconnect_needed → "Reconnect needed"; connection → "Connected"; else "Not connected" (offer Connect). In
+ * the first three states a caller who still has a connection can Disconnect it (DELETE …/connection works then too).
+ * Tools reach chat only when enabled, in the plan and connected with "Use in chat" on.
  */
 export type PluginInfo = {
   id: string; // also the URL segment: /api/plugins/<id>/...
@@ -511,6 +978,7 @@ export type PluginInfo = {
   import_max_items: number | null; // GMAIL_IMPORT_MAX_ITEMS for plugins that import
   capabilities: PluginCapabilityInfo[];
   connection: PluginConnectionStatus | null;
+  in_plan: boolean; // the caller's plan includes it (always true for the admin); false: "Not in your plan"
 };
 
 export type PluginConnectRequest = { capabilities?: string[] }; // default: every capability the admin enabled
@@ -788,7 +1256,8 @@ export type CheckId =
   | "disk_uploads"
   | "disk_backups"
   | "proxy" // checked by the monitor service
-  | "monitor";
+  | "monitor"
+  | "billing"; // "Payments"
 export type AlertChannel = "webhook" | "ntfy" | "email";
 export type AlertKind = "problem" | "reminder" | "recovery" | "test";
 

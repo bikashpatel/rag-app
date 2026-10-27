@@ -1,6 +1,6 @@
-"""importing.store_import (docs/briefs/plugins-gmail.md, section 4.6): supported extensions, the user's upload limits
-(the admin exempt), duplicates linking the existing document, provenance ("Imported from …"), ingestion, and a
-cancelled caller still committing."""
+"""importing.store_import (docs/briefs/plugins-gmail.md, section 4.6): supported extensions, the upload limits of the
+user's plan (the admin exempt), duplicates linking the existing document, provenance ("Imported from …"), ingestion,
+and a cancelled caller still committing."""
 
 import asyncio
 import logging
@@ -20,6 +20,8 @@ from app.plugins import importing, registry, tasks
 from app.plugins.importing import ImportFile
 from app.redis_client import INGEST_QUEUE, get_redis
 from app.services import storage
+from app.services.billing import entitlements
+from app.services.billing.entitlements import Entitlements
 from app.services.ingestion import requeue_orphans
 
 USER = Callable[..., Awaitable[ApiClient]]
@@ -37,9 +39,18 @@ def _thread(data: str = THREAD, name: str = "Invoice 42 (Gmail 2026-10-12).md") 
     return ImportFile(filename=name, data=data.encode(), kind="email", external_ref="18c0a1b2c3d4e5f6")
 
 
+async def _entitlements(user_id: int) -> Entitlements:
+    async with SessionLocal() as db:
+        user = await db.get(User, user_id)
+        assert user is not None
+        return await entitlements.load(db, user)
+
+
 async def _store(user: ApiClient, plugin: FakePlugin, file: ImportFile) -> importing.ImportOutcome:
     assert user.user_id is not None
-    return await importing.store_import(user.user_id, plugin, "alice@example.test", file)
+    return await importing.store_import(
+        user.user_id, plugin, "alice@example.test", file, await _entitlements(user.user_id)
+    )
 
 
 async def _documents() -> int:
@@ -142,9 +153,10 @@ async def test_limits_apply_and_the_admin_is_exempt(
         admin.max_upload_mb, admin.max_documents = 1, 1
         await db.commit()
         admin_id = admin.id
+    ent = await _entitlements(admin_id)
     for number in range(2):
         file = ImportFile(f"{number}.txt", big.data + bytes([number]), "attachment", "x")
-        assert (await importing.store_import(admin_id, fake, "a@example.test", file)).status == "imported"
+        assert (await importing.store_import(admin_id, fake, "a@example.test", file, ent)).status == "imported"
 
 
 async def test_identical_bytes_link_the_existing_private_document(
@@ -246,9 +258,12 @@ async def test_an_import_while_redis_is_down_is_left_for_the_sweep(
 
 
 async def test_an_import_for_a_deleted_account_stores_nothing(
-    fake: FakePlugin, app: object, isolated_state: Path
+    fake: FakePlugin, create_user: USER, isolated_state: Path
 ) -> None:
-    outcome = await importing.store_import(10_000, fake, "alice@example.test", _thread())
+    alice = await create_user("alice")  # whose entitlements the import was given
+    assert alice.user_id is not None
+    ent = await _entitlements(alice.user_id)
+    outcome = await importing.store_import(10_000, fake, "alice@example.test", _thread(), ent)
 
     assert (outcome.status, outcome.reason) == ("failed", "The account no longer exists.")
     assert await _documents() == 0 and _stored_files(isolated_state / "uploads") == []

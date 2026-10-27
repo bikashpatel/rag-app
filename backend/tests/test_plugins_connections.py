@@ -7,6 +7,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import timedelta
+from types import SimpleNamespace
 
 import pytest
 from conftest import ApiClient, PluginHarness, oauth_result
@@ -20,6 +21,7 @@ from app.main import app as fastapi_app
 from app.models import PluginAuditEvent, PluginConnection, User, utcnow
 from app.plugins import connections, crypto, registry
 from app.plugins.base import AccountChanged, PluginDisabled, PluginError, PluginUnavailable, ReconnectNeeded
+from app.services.billing import entitlements
 
 USER = Callable[..., Awaitable[ApiClient]]
 ALICE, BOB = "alice@example.test", "bob@example.test"
@@ -398,8 +400,9 @@ async def test_require_maps_access_problems_to_403_and_409(
         async with SessionLocal() as db:
             user = await db.get(User, alice.user_id)
             assert user is not None
+            request = SimpleNamespace(state=SimpleNamespace(entitlements=await entitlements.load(db, user)))
             try:
-                found_user, access = await dependency(user=user, db=db)
+                found_user, access = await dependency(request=request, user=user, db=db)
             except HTTPException as exc:
                 return exc.status_code
             assert found_user.id == alice.user_id

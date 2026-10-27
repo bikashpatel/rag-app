@@ -58,6 +58,8 @@ test("the admin's avatar menu has Admin, which opens the admin page", async ({ a
   await expect(adminPage.getByRole("main")).toHaveCount(1);
   await expect(adminPage.getByRole("tablist", { name: "Admin sections" }).getByRole("tab")).toHaveText([
     "Users",
+    "Plans",
+    "Billing",
     "Models",
     "Usage",
     "Documents",
@@ -69,6 +71,8 @@ test("the admin's avatar menu has Admin, which opens the admin page", async ({ a
 test("the other admin tabs load (read only)", async ({ adminPage }) => {
   await openUsers(adminPage);
   const sections: [string, RegExp][] = [
+    ["Plans", /^Plans$/],
+    ["Billing", /./],
     ["Models", /^Chat models$/],
     ["Usage", /^Usage in /],
     ["Documents", /^Documents$/],
@@ -77,7 +81,7 @@ test("the other admin tabs load (read only)", async ({ adminPage }) => {
   ];
   for (const [tab, heading] of sections) {
     await adminPage.getByRole("tab", { name: tab }).click();
-    await expect(adminPage).toHaveURL(new RegExp(`#${tab.toLowerCase()}$`));
+    await expect(adminPage).toHaveURL(new RegExp(`#${tab.toLowerCase()}(/[a-z]+)?$`));
     await expect(adminPage.getByRole("tabpanel", { name: tab }).getByRole("heading", { level: 2, name: heading }).first()).toBeVisible();
   }
 });
@@ -112,7 +116,7 @@ test("creating a user through the form, after fixing its validation errors", asy
   await expect(flash(adminPage, `Created ${name}.`)).toBeVisible();
   await expect(userRow(adminPage, name)).toContainText("5 / min");
   const created = (await admin.listUsers()).find((user) => user.username === name);
-  expect(created).toMatchObject({ is_active: true, is_admin: false, rate_limit_per_min: 5 });
+  expect(created).toMatchObject({ is_active: true, is_admin: false, overrides: { rate_limit_per_min: 5 } });
 
   // The same name again: the server's 409 lands on the field.
   await adminPage.getByRole("button", { name: "New user" }).click();
@@ -131,12 +135,14 @@ test("editing a user's limits", async ({ adminPage, admin, makeUser }) => {
   const dialog = adminPage.getByRole("dialog", { name: `Edit ${user.username}` });
   await expect(dialog.getByLabel("Username")).toHaveCount(0);
 
-  await dialog.getByLabel("Monthly token limit").fill("lots");
+  // By role: once a limit is typed, its "Reset … to the plan's value" button carries the same words.
+  const allowance = dialog.getByRole("textbox", { name: "Chat allowance (standard tokens)", exact: true });
+  await allowance.fill("lots");
   await dialog.getByRole("button", { name: "Save changes" }).click();
-  await expect(dialog.getByLabel("Monthly token limit")).toHaveAccessibleDescription(/^Enter a whole number\./);
-  await dialog.getByLabel("Monthly token limit").fill("50000");
-  await dialog.getByLabel("Requests per minute").fill("7");
-  await dialog.getByLabel("Max file size (MB)").fill("3");
+  await expect(allowance).toHaveAccessibleDescription(/^Enter a whole number\./);
+  await allowance.fill("50000");
+  await dialog.getByRole("textbox", { name: "Requests per minute", exact: true }).fill("7");
+  await dialog.getByRole("textbox", { name: "Max file size (MB)", exact: true }).fill("3");
   await dialog.getByRole("button", { name: "Save changes" }).click();
 
   await expect(dialog).toBeHidden();
@@ -144,7 +150,11 @@ test("editing a user's limits", async ({ adminPage, admin, makeUser }) => {
   const row = userRow(adminPage, user.username);
   await expect(row).toContainText("7 / min");
   await expect(row).toContainText("3 MB per file");
-  expect(await admin.getUser(user.id)).toMatchObject({ monthly_token_limit: 50_000, rate_limit_per_min: 7, max_upload_mb: 3 });
+  expect((await admin.getUser(user.id))?.overrides).toMatchObject({
+    monthly_token_limit: 50_000,
+    rate_limit_per_min: 7,
+    max_upload_mb: 3,
+  });
 });
 
 test("deactivating a user ends their session and blocks sign-in", async ({ adminPage, page, context, makeUser }) => {

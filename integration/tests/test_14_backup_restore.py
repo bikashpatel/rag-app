@@ -452,6 +452,11 @@ def test_the_restore_drill(admin: httpx.Client, user_factory, fake) -> None:
     check(admin.patch("/api/admin/plugins/gmail", json={"enabled": True}))
     assert gmail_connect(alice) == "connected"
     digest = token_digest(alice.id)
+    # Billing rows: a bank transfer the admin records (an order, a payment, a receipt, a period and their events)
+    starter = next(plan["id"] for plan in check(admin.get("/api/admin/plans")).json() if plan["code"] == "starter")
+    transfer = {"user_id": bob.id, "plan_id": starter, "amount_paise": 50_000, "received_on": "2026-10-24"}
+    transfer |= {"reference": f"UTR-{marker}", "note": None, "apply": True}
+    check(admin.post("/api/admin/billing/offline-payments", json=transfer), 201)
 
     made = chat(alice.client, f'Please create a Markdown file titled "Notes {marker}" summarizing the {marker} notes.')
     created = [event for event in made.all("file") if event["status"] == "created"]
@@ -473,6 +478,7 @@ def test_the_restore_drill(admin: httpx.Client, user_factory, fake) -> None:
     points = qdrant_collections()
     counts = table_counts()
     assert counts["plugin_connections"] >= 1 and counts["message_files"] >= 1 and points
+    assert counts["billing_receipts"] >= 1 and counts["plan_periods"] >= 1
 
     # ---- Back up, then lose everything ----
     name = backup_now()
@@ -767,15 +773,37 @@ def stored_names_of(doc_ids: list[int]) -> dict[int, str]:
     return {int(doc_id): name for doc_id, name in sql(f"select id, stored_name from documents where id in ({ids})")}
 
 
-# The newest backup's dump at revision 0001 (the baseline; 0002 only aligns databases made before migrations), as an
-# older release would have made it.
+# Migration 0003 (plans and billing) undone, as the schema was at 0001 and 0002 (0002 only aligns databases made before
+# migrations): its tables and columns dropped, the limits back to NOT NULL and user_image_limits back.
+UNDO_0003 = (
+    "ALTER TABLE users DROP CONSTRAINT users_comp_plan_id_fkey; "
+    "DROP TABLE plan_chat_models, plan_periods, billing_receipts, billing_refunds, billing_disputes, billing_events, "
+    "user_billing_profiles, billing_payments, billing_orders, plans CASCADE; "
+    "ALTER TABLE users DROP COLUMN monthly_image_limit, DROP COLUMN vision_monthly_token_limit, "
+    "DROP COLUMN billing_tester, DROP COLUMN comp_plan_id, DROP COLUMN comp_reason, DROP COLUMN comp_granted_by, "
+    "DROP COLUMN comp_granted_at; "
+    "UPDATE users SET monthly_token_limit = coalesce(monthly_token_limit, 0), "
+    "rate_limit_per_min = coalesce(rate_limit_per_min, 0), max_upload_mb = coalesce(max_upload_mb, 25), "
+    "max_documents = coalesce(max_documents, 0), max_storage_mb = coalesce(max_storage_mb, 0); "
+    "ALTER TABLE users ALTER COLUMN monthly_token_limit SET NOT NULL, ALTER COLUMN rate_limit_per_min SET NOT NULL, "
+    "ALTER COLUMN max_upload_mb SET NOT NULL, ALTER COLUMN max_documents SET NOT NULL, "
+    "ALTER COLUMN max_storage_mb SET NOT NULL; "
+    "ALTER TABLE usage_events DROP COLUMN allowance_tokens; "
+    "CREATE TABLE user_image_limits (user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+    "monthly_image_limit integer NOT NULL, updated_at timestamp with time zone NOT NULL, PRIMARY KEY (user_id)); "
+    "DELETE FROM app_state WHERE key IN ('plans_seeded', 'plans_rollout', 'billing_settings') "
+    "OR key LIKE 'receipt_seq:%'; "
+    "UPDATE alembic_version SET version_num = '0001'"
+)
+# The newest backup's dump at revision 0001 (the baseline), as an older release would have made it.
 AT_REVISION_0001 = r"""
 psql -X -q -v ON_ERROR_STOP=1 -d postgres -c 'DROP DATABASE IF EXISTS scratch_old' -c 'CREATE DATABASE scratch_old' &&
 pg_restore --no-owner --no-privileges --exit-on-error -d scratch_old $d/postgres.dump &&
-psql -X -q -v ON_ERROR_STOP=1 -d scratch_old -c "UPDATE alembic_version SET version_num = '0001'" &&
+psql -X -q -v ON_ERROR_STOP=1 -d scratch_old -c "{undo}" &&
 pg_dump --format=custom --file=$d/postgres.dump scratch_old && psql -X -q -d postgres -c 'DROP DATABASE scratch_old' &&
+(. /opt/backup/lib.sh && count_rows $d/postgres.dump $d/postgres.rows) &&
 sed -i 's/^  "alembic_revision": .*,$/  "alembic_revision": "0001",/' $d/manifest.json && reseal $d
-"""
+""".replace("{undo}", UNDO_0003)
 
 
 @pytest.mark.deadline(600)

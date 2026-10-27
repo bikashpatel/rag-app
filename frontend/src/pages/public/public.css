@@ -1,0 +1,295 @@
+/* The public pages: pricing and the policy pages (plans-billing-visual.md 11). The frame copies the plan page's
+   top bar values (3.1); colours only from the global.css tokens. */
+
+.public-page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100dvh;
+  background: var(--bg);
+}
+
+/* ---------- Top bar ---------- */
+.public-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+.public-topbar-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 1240px;
+  height: 60px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+.public-brand {
+  min-width: 0;
+}
+.public-brand-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.public-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-right: 6px;
+}
+.public-nav a {
+  display: inline-flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 11px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 14.5px;
+  font-weight: 600;
+  transition:
+    background var(--dur-1),
+    color var(--dur-1);
+}
+.public-nav a:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.public-nav a[aria-current="page"] {
+  color: var(--text);
+}
+
+/* ---------- Draft band ---------- */
+.public-draft {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px 10px;
+  padding: 9px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 25%, transparent);
+  background: var(--warning-soft);
+  color: var(--text);
+  font-size: 14px;
+  text-align: center;
+}
+
+/* ---------- Page ---------- */
+.public-main {
+  flex: 1;
+  width: 100%;
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 56px 24px 72px;
+}
+.public-main-wide {
+  max-width: 1180px;
+}
+.public-intro {
+  max-width: 712px;
+  margin: 0 auto;
+  text-align: center;
+}
+.public-intro .public-prose {
+  margin-top: 18px;
+  padding-top: 0;
+  border-top: 0;
+}
+.public-title {
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 44px;
+  font-weight: 500;
+  line-height: 1.08;
+  letter-spacing: -0.024em;
+  text-wrap: balance;
+}
+.public-updated {
+  margin: 10px 0 0;
+  color: var(--text-3);
+  font-size: 14px;
+}
+.public-prose {
+  margin-top: 30px;
+  padding-top: 26px;
+  border-top: 1.5px solid var(--rule);
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 17.5px;
+  line-height: 1.7;
+  overflow-wrap: break-word;
+}
+.public-prose h2,
+.public-prose h3 {
+  margin: 1.6em 0 0.45em;
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.012em;
+}
+.public-prose h3 {
+  font-size: 20px;
+}
+.public-prose > :first-child {
+  margin-top: 0;
+}
+.public-prose p,
+.public-prose ul,
+.public-prose ol {
+  margin: 0 0 1em;
+}
+.public-prose ul,
+.public-prose ol {
+  padding-left: 1.3em;
+}
+.public-prose li::marker {
+  color: var(--accent);
+}
+.public-prose a {
+  color: var(--accent-ink);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in srgb, var(--accent-ink) 45%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+.public-prose table {
+  width: 100%;
+  margin: 0 0 1em;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: 15px;
+}
+.public-prose th,
+.public-prose td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+.public-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin: 40px 0 0;
+  color: var(--text-2);
+  font-size: 15px;
+  text-align: center;
+}
+.public-state p {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.public-facts {
+  display: grid;
+  gap: 12px;
+  margin: 8px 0 0;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  font-size: 15px;
+}
+.public-facts > div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 12px;
+}
+.public-facts dt {
+  color: var(--text-3);
+}
+.public-facts dd {
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.public-facts a {
+  color: var(--accent-ink);
+}
+.public-address {
+  white-space: pre-line;
+}
+
+/* ---------- Pricing ---------- */
+.public-pricing-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  margin-top: 48px;
+  color: var(--text-2);
+  font-size: 15px;
+  text-align: center;
+}
+.public-pricing-foot p {
+  max-width: 60ch;
+  margin: 0;
+}
+
+/* ---------- Footer ---------- */
+.public-footer {
+  border-top: 1px solid var(--border);
+  background: var(--sidebar);
+}
+.public-footer-inner {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 18px 40px;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 28px 24px 32px;
+  color: var(--text-3);
+  font-size: 13.5px;
+}
+.public-footer-inner b {
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 17px;
+  font-weight: 600;
+}
+.public-footer-contact {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+}
+.public-footer-links {
+  display: grid;
+  gap: 10px;
+}
+.public-footer-links p {
+  margin: 0;
+}
+
+/* ---------- Phones ---------- */
+@media (max-width: 799.98px) {
+  .public-topbar-inner {
+    gap: 6px;
+    height: 56px;
+    padding: 0 12px;
+  }
+  .public-brand-name,
+  .public-nav {
+    display: none;
+  }
+  .public-main {
+    padding: 34px 18px 48px;
+  }
+  .public-title {
+    font-size: 34px;
+  }
+  .public-prose {
+    font-size: 17px;
+  }
+  .public-facts > div {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .public-footer-inner {
+    padding: 24px 18px 28px;
+  }
+}

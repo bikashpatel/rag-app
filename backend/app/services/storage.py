@@ -220,15 +220,6 @@ async def serialized_uploads(db: AsyncSession, user_id: int) -> AsyncIterator[No
             del _upload_lock_users[user_id], _upload_locks[user_id]
 
 
-def check_document_count(limits: dict, document_count: int) -> None:
-    if limits["max_documents"] and document_count >= limits["max_documents"]:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"You've reached your limit of {limits['max_documents']} documents. "
-            "Delete a document to upload another.",
-        )
-
-
 async def owned_totals(db: AsyncSession, user_id: int) -> tuple[int, int]:
     """(document count, total bytes) of the documents the user owns."""
     row = (

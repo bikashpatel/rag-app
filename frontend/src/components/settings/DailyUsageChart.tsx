@@ -1,6 +1,6 @@
 import { useId, useLayoutEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { MyUsage } from "../../api/types";
-import { formatCompact, formatCost, formatMonthName, formatNumber, formatUtcDay } from "../../lib/format";
+import { formatCompact, formatCost, formatNumber, formatUtcDay } from "../../lib/format";
 import { ClockIcon, RefreshIcon } from "../ui/icons";
 import SegmentedControl from "../ui/SegmentedControl";
 
@@ -24,18 +24,33 @@ const BAR_SHARE = 0.62;
 /** Under this plot width the x axis shows only the 1st, today and the last day. */
 const NARROW = 420;
 const LOCALE = "en-GB";
+const DAY_MS = 86_400_000;
 
 type DailyUsageChartProps = {
-  month: string; // "YYYY-MM"
+  /** The allowance window: a period, or a UTC calendar month. */
+  start: string;
+  end: string;
   daily: MyUsage["daily"];
   rateLimitPerMin: number;
-  resetsAt: string;
+  /** For captions: "October 2026", "8 Oct to 7 Nov 2026". */
+  windowLabel: string;
+  /** "this period", or "this month" for the admin. */
+  windowWord: string;
+  /** The foot's last line: "Resets 1 Nov, 00:00 UTC", "Starts again 8 Nov". */
+  resetText: string;
 };
 
-function daysInMonth(month: string): number {
-  const [year, monthNumber] = month.split("-").map(Number);
-  const days = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
-  return Number.isFinite(days) && days >= 28 ? days : 31;
+/** The UTC day (00:00) of an instant. */
+function utcDay(instant: number): number {
+  return Math.floor(instant / DAY_MS) * DAY_MS;
+}
+
+/** UTC days from the window's first through its last (31 for October; 30 or 31 for a period). */
+function daysInWindow(start: string, end: string): number {
+  const first = Date.parse(start);
+  const last = Date.parse(end) - 1;
+  if (Number.isNaN(first) || Number.isNaN(last) || last < first) return 31;
+  return Math.round((utcDay(last) - utcDay(first)) / DAY_MS) + 1;
 }
 
 /** A round step for two intervals over `max` (0, step, 2 × step); whole numbers for counts. */
@@ -77,13 +92,11 @@ function readout(day: Day): { date: string; rest: string } {
   };
 }
 
-/** "Resets 1 Nov, 00:00 UTC". */
-function resetLabel(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "Resets on the 1st, 00:00 UTC";
-  const date = new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short", timeZone: "UTC" }).format(d);
-  const time = new Intl.DateTimeFormat(LOCALE, { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "UTC" }).format(d);
-  return `Resets ${date}, ${time} UTC`;
+/** "8 Oct": the day of the window `index` days after its start (UTC). */
+function dayLabel(startDay: number, index: number, withMonth: boolean): string {
+  const d = new Date(startDay + index * DAY_MS);
+  if (!withMonth && d.getUTCDate() !== 1) return String(d.getUTCDate());
+  return new Intl.DateTimeFormat(LOCALE, { day: "numeric", month: "short", timeZone: "UTC" }).format(d);
 }
 
 /** The rounded-top bar from the baseline. */
@@ -100,14 +113,14 @@ function labelWidth(text: string): number {
 
 type XLabel = { index: number; text: string; strong: boolean };
 
-/** The 1st (with the month), every 7th day, today and the last day; never two labels on top of each other. */
-function xLabels(days: number, today: number, slot: number, plotWidth: number, monthShort: string): XLabel[] {
+/** The first day (with the month), every 7th day, today and the last day; never two labels on top of each other. */
+function xLabels(days: number, today: number, slot: number, plotWidth: number, startDay: number): XLabel[] {
   const last = days - 1;
   const wanted: XLabel[] = [{ index: today, text: "Today", strong: true }];
   const others = plotWidth < NARROW ? [0, last] : [0, last, 7, 14, 21, 28];
   for (const index of others) {
     if (index > last || index === today) continue;
-    wanted.push({ index, text: index === 0 ? `1 ${monthShort}` : String(index + 1), strong: false });
+    wanted.push({ index, text: dayLabel(startDay, index, index === 0), strong: false });
   }
   const kept: XLabel[] = [];
   for (const label of wanted) {
@@ -120,10 +133,19 @@ function xLabels(days: number, today: number, slot: number, plotWidth: number, m
 }
 
 /**
- * Usage per day of the month as bars (inline SVG, no chart library), docs/briefs/ui-visual-design.md 6.23. The plot is
- * one tab stop (a labelled group): Left and Right move the day the readout shows; the table is the screen-reader path.
+ * Usage per day of the allowance window as bars (inline SVG, no chart library), docs/briefs/ui-visual-design.md 6.23.
+ * The plot is one tab stop (a labelled group): Left and Right move the day the readout shows; the table is the
+ * screen-reader path.
  */
-export default function DailyUsageChart({ month, daily, rateLimitPerMin, resetsAt }: DailyUsageChartProps) {
+export default function DailyUsageChart({
+  start,
+  end,
+  daily,
+  rateLimitPerMin,
+  windowLabel,
+  windowWord,
+  resetText,
+}: DailyUsageChartProps) {
   const id = useId();
   const plotRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState<number | null>(null);
@@ -154,9 +176,8 @@ export default function DailyUsageChart({ month, daily, rateLimitPerMin, resetsA
     return () => observer.disconnect();
   }, [empty]);
 
-  const days = daysInMonth(month);
-  const monthName = formatMonthName(month);
-  const monthShort = monthName.slice(0, 3);
+  const days = Math.max(daysInWindow(start, end), daily.length);
+  const startDay = utcDay(Date.parse(start));
   const metricLabel = METRICS.find((option) => option.value === metric)?.label ?? "";
   const values = daily.map((day) => day[metric]);
   const max = Math.max(0, ...values);
@@ -169,8 +190,8 @@ export default function DailyUsageChart({ month, daily, rateLimitPerMin, resetsA
 
   const summary =
     total > 0
-      ? `${metricLabel} per day, ${monthName}: ${valueText(metric, total)} in total, most on ${formatUtcDay(daily[peakIndex].date, "long").replace(/^\S+ /, "")} with ${valueText(metric, max)}.`
-      : `${metricLabel} per day, ${monthName}: none yet.`;
+      ? `${metricLabel} per day, ${windowLabel}: ${valueText(metric, total)} in total, most on ${formatUtcDay(daily[peakIndex].date, "long").replace(/^\S+ /, "")} with ${valueText(metric, max)}.`
+      : `${metricLabel} per day, ${windowLabel}: none yet.`;
 
   function select(index: number) {
     const next = Math.min(Math.max(index, 0), todayIndex);
@@ -212,7 +233,7 @@ export default function DailyUsageChart({ month, daily, rateLimitPerMin, resetsA
     const scale = yMax > 0 ? (BASE - TOP) / yMax : 0;
     const centre = (index: number) => LEFT + index * slot + slot / 2;
     const gridValues = yMax > 0 ? [0, step, yMax] : [0];
-    const labels = xLabels(days, todayIndex, slot, plotWidth, monthShort);
+    const labels = xLabels(days, todayIndex, slot, plotWidth, startDay);
     plot = (
       <svg viewBox={`0 0 ${width} ${HEIGHT}`} width={width} height={HEIGHT} aria-hidden="true" focusable="false">
         {gridValues.map((value) => {
@@ -256,7 +277,7 @@ export default function DailyUsageChart({ month, daily, rateLimitPerMin, resetsA
           </text>
         ) : (
           <text className="settings-chart-none" x={LEFT + plotWidth / 2} y={(TOP + BASE) / 2} textAnchor="middle">
-            No {metricLabel.toLowerCase()} this month
+            No {metricLabel.toLowerCase()} {windowWord}
           </text>
         )}
         <circle className="settings-chart-today" cx={centre(todayIndex)} cy={157} r={2} />
@@ -297,7 +318,7 @@ export default function DailyUsageChart({ month, daily, rateLimitPerMin, resetsA
         )}
       </div>
       {empty ? (
-        <p className="settings-chart-empty">No usage yet this month.</p>
+        <p className="settings-chart-empty">No usage yet {windowWord}.</p>
       ) : (
         <>
           <p className="settings-chart-readout" aria-hidden="true">
@@ -345,7 +366,7 @@ export default function DailyUsageChart({ month, daily, rateLimitPerMin, resetsA
         </span>
         <span>
           <RefreshIcon size={15} />
-          {resetLabel(resetsAt)}
+          {resetText}
         </span>
         {empty ? null : (
           <button
@@ -362,7 +383,7 @@ export default function DailyUsageChart({ month, daily, rateLimitPerMin, resetsA
       {table && !empty ? (
         <div className="table-wrap settings-chart-table" id={`${id}-table`}>
           <table className="table">
-            <caption className="sr-only">Usage per day, {monthName} (UTC days)</caption>
+            <caption className="sr-only">Usage per day, {windowLabel} (UTC days)</caption>
             <thead>
               <tr>
                 <th scope="col">Day</th>

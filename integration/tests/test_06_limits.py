@@ -1,5 +1,5 @@
 """Flow 6: the per-user usage controls, enforced by the real backend with Redis and Postgres: requests per minute,
-the monthly token budget, allowed models, and the upload limits (file size, document count, storage)."""
+the chat allowance, allowed models, and the upload limits (file size, document count, storage)."""
 
 import time
 
@@ -24,17 +24,21 @@ def test_requests_per_minute(make_user) -> None:
     assert 1 <= int(third.headers["retry-after"]) <= 60
 
 
-def test_monthly_token_budget(make_user, admin) -> None:
-    user = make_user("budget", monthly_token_limit=50)
+def test_chat_allowance(make_user, admin) -> None:
+    user = make_user("budget", monthly_token_limit=1)
     first = chat(user.client, "What is a budget?")
     assert first.status == 200 and first.names[-1] == "done"
-    assert first.done["usage"]["total_tokens"] > 50
     second = chat(user.client, "And a second question?")
-    assert second.status == 429
-    assert second.body["detail"].startswith("Monthly token budget used up")
-    usage = check(user.client.get("/api/me/usage")).json()["chat_tokens"]
-    assert usage == {"used": first.done["usage"]["total_tokens"], "limit": 50}
-    check(admin.patch(f"/api/admin/users/{user.id}", json={"monthly_token_limit": 0}))
+    assert second.status == 429 and second.body["code"] == "allowance_used"
+    assert second.body["detail"].startswith("You've used this period's chat allowance (")
+    usage = check(user.client.get("/api/me/usage")).json()
+    assert usage["chat_allowance"]["limit"] == 1 and usage["chat_allowance"]["used"] >= 1
+    assert usage["chat_tokens"] == first.done["usage"]["total_tokens"]
+    check(
+        admin.patch(
+            f"/api/admin/users/{user.id}", json={"overrides": {"monthly_token_limit": 0}, "confirm_unlimited": True}
+        )
+    )
     assert chat(user.client, "Can I ask again?").names[-1] == "done"
 
 

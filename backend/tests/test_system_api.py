@@ -195,6 +195,7 @@ async def test_system_status_reports_every_check(
         "backup",
         "disk_uploads",
         "disk_backups",
+        "billing",
         "proxy",
         "monitor",
     ]

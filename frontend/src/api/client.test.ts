@@ -1,19 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { deferred, errorResponse, streamResponse, stubFetch, type FetchCall } from "../test/http";
+import { makeBillingStatus, makeCatalog, makeOrder, makePaymentView, makePublicPlan, makePublicSite } from "../test/billing";
+import { deferred, errorResponse, jsonResponse, streamResponse, stubFetch, type FetchCall } from "../test/http";
 import { makeMe } from "../test/fixtures";
 import {
   api,
   ApiError,
+  apiErrorFromBody,
+  billingApi,
   changePassword,
   documentDownloadUrl,
   documentImageUrl,
   downloadMyData,
   errorMessageFromBody,
   getSessionUser,
+  isPlanRequired,
+  notifyPlanRequired,
   onPluginProblem,
   postSSE,
+  publicApi,
+  receiptUrl,
   saveBlob,
   searchGmailThreads,
+  setPlanRequiredHandler,
   setUnauthorizedHandler,
   updatePluginConnection,
   type SSEMessage,
@@ -21,14 +29,18 @@ import {
 import type { ChatStreamEvent, GmailThreadPage } from "./types";
 
 const onUnauthorized = vi.fn();
+const onPlanRequired = vi.fn();
 
 beforeEach(() => {
   setUnauthorizedHandler(onUnauthorized);
+  setPlanRequiredHandler(onPlanRequired);
 });
 
 afterEach(() => {
   setUnauthorizedHandler(null);
+  setPlanRequiredHandler(null);
   onUnauthorized.mockReset();
+  onPlanRequired.mockReset();
   vi.useRealTimers();
 });
 
@@ -137,6 +149,178 @@ describe("api requests", () => {
     expect(documentDownloadUrl(12)).toBe("/api/documents/12/download");
     expect(documentImageUrl(12)).toBe("/api/documents/12/image?size=full");
     expect(documentImageUrl(12, "thumb")).toBe("/api/documents/12/image?size=thumb");
+  });
+});
+
+describe("error codes and the plan handler", () => {
+  const planError = (code: string, extra: object = {}) =>
+    jsonResponse({ detail: "Choose a plan to start using the assistant.", code, ...extra }, { status: 402 });
+
+  it("reads code, feature and plan from the error body", async () => {
+    stubFetch({
+      "POST /plugins/gmail/connect": () =>
+        planError("feature_not_in_plan", {
+          detail: "Your Starter plan doesn't include Gmail.",
+          feature: "plugin:gmail",
+          plan: "Professional",
+        }),
+      "GET /models": () => errorResponse(403, "You are not allowed to use this model."),
+    });
+    expect(await rejection(api.post("/plugins/gmail/connect"))).toMatchObject({
+      status: 402,
+      message: "Your Starter plan doesn't include Gmail.",
+      code: "feature_not_in_plan",
+      feature: "plugin:gmail",
+      plan: "Professional",
+    });
+    expect(await rejection(api.get("/models"))).toMatchObject({ status: 403, code: null, feature: null, plan: null });
+  });
+
+  it("ignores fields that aren't strings", () => {
+    const error = apiErrorFromBody(429, { detail: "Slow down.", code: 7, feature: "", plan: null });
+    expect(error).toMatchObject({ status: 429, message: "Slow down.", code: null, feature: null, plan: null });
+    expect(apiErrorFromBody(500, "<html>")).toMatchObject({
+      code: null,
+      message: "The server ran into a problem. Please try again.",
+    });
+  });
+
+  it("calls the plan handler for a 402 without a plan, wherever it comes from", async () => {
+    stubFetch({
+      "GET /models": () => planError("plan_required"),
+      "POST /chat/stream": () => planError("plan_expired", { plan: "Standard" }),
+      "POST /me/export": () => planError("plan_expired"),
+    });
+    await expect(api.get("/models")).rejects.toMatchObject({ status: 402, code: "plan_required" });
+    await expect(postSSE("/chat/stream", {}, () => {})).rejects.toMatchObject({ code: "plan_expired", plan: "Standard" });
+    await expect(downloadMyData()).rejects.toMatchObject({ code: "plan_expired" });
+    expect(onPlanRequired).toHaveBeenCalledTimes(3);
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("leaves a feature outside the plan and other refusals to the caller", async () => {
+    stubFetch({
+      "POST /chat/stream": () => planError("feature_not_in_plan", { feature: "model" }),
+      "GET /models": () => jsonResponse({ detail: "Payment required" }, { status: 402 }),
+      "POST /billing/checkout": () => jsonResponse({ detail: "Too many.", code: "too_many_checkouts" }, { status: 429 }),
+    });
+    await expect(postSSE("/chat/stream", {}, () => {})).rejects.toMatchObject({ code: "feature_not_in_plan" });
+    await expect(api.get("/models")).rejects.toMatchObject({ status: 402, code: null });
+    await expect(api.post("/billing/checkout", {})).rejects.toMatchObject({ code: "too_many_checkouts" });
+    expect(onPlanRequired).not.toHaveBeenCalled();
+  });
+
+  it("tells a 402 without a plan apart, and lets callers outside `request` report one", () => {
+    expect(isPlanRequired(new ApiError(402, "x", { code: "plan_required" }))).toBe(true);
+    expect(isPlanRequired(new ApiError(402, "x", { code: "plan_expired" }))).toBe(true);
+    expect(isPlanRequired(new ApiError(402, "x", { code: "feature_not_in_plan" }))).toBe(false);
+    expect(isPlanRequired(new ApiError(403, "x", { code: "plan_required" }))).toBe(false);
+    expect(isPlanRequired(new ApiError(402, "x"))).toBe(false);
+    expect(isPlanRequired(new Error("x"))).toBe(false);
+    notifyPlanRequired();
+    expect(onPlanRequired).toHaveBeenCalledTimes(1);
+    setPlanRequiredHandler(null);
+    expect(() => notifyPlanRequired()).not.toThrow();
+  });
+});
+
+describe("billingApi", () => {
+  it("reads the catalog, status, payments and profile", async () => {
+    const catalog = makeCatalog();
+    const status = makeBillingStatus();
+    const calls = stubFetch({
+      "GET /billing/plans": catalog,
+      "GET /billing/status": status,
+      "GET /billing/payments": [makePaymentView()],
+      "GET /billing/profile": { name: "Maya Chen", email: null },
+    });
+    await expect(billingApi.plans()).resolves.toEqual(catalog);
+    await expect(billingApi.status()).resolves.toEqual(status);
+    await expect(billingApi.payments()).resolves.toEqual([makePaymentView()]);
+    await expect(billingApi.profile()).resolves.toEqual({ name: "Maya Chen", email: null });
+    expect(calls.map((call) => `${call.method} ${call.path}`)).toEqual([
+      "GET /billing/plans",
+      "GET /billing/status",
+      "GET /billing/payments",
+      "GET /billing/profile",
+    ]);
+  });
+
+  it("starts a checkout with the consent, and saves the profile with PUT", async () => {
+    const started = { order: makeOrder(), pay_url: "https://rzp.io/rzp/q3Zx8Lm" };
+    const calls = stubFetch({
+      "POST /billing/checkout": () => jsonResponse(started, { status: 201 }),
+      "PUT /billing/profile": ({ body }) => body as object,
+    });
+    await expect(billingApi.checkout({ plan_id: 2, kind: "period", accept_terms: true })).resolves.toEqual(started);
+    await expect(billingApi.saveProfile({ name: "Maya", email: "maya@example.com" })).resolves.toEqual({
+      name: "Maya",
+      email: "maya@example.com",
+    });
+    expect(calls).toMatchObject([
+      { method: "POST", path: "/billing/checkout", body: { plan_id: 2, kind: "period", accept_terms: true } },
+      { method: "PUT", path: "/billing/profile", body: { name: "Maya", email: "maya@example.com" } },
+    ]);
+  });
+
+  it("reads an order, asking Razorpay first on request, and cancels it", async () => {
+    const calls = stubFetch({
+      "GET /billing/orders/q3Zx8LmP0aB2cD4eF6gH": makeOrder(),
+      "GET /billing/orders/q3Zx8LmP0aB2cD4eF6gH?refresh=true": makeOrder({ status: "paid" }),
+      "POST /billing/orders/q3Zx8LmP0aB2cD4eF6gH/cancel": makeOrder({ status: "cancelled" }),
+      "GET /billing/orders/a%2Fb": makeOrder(),
+    });
+    await expect(billingApi.order("q3Zx8LmP0aB2cD4eF6gH")).resolves.toMatchObject({ status: "pending" });
+    await expect(billingApi.order("q3Zx8LmP0aB2cD4eF6gH", true)).resolves.toMatchObject({ status: "paid" });
+    await expect(billingApi.cancel("q3Zx8LmP0aB2cD4eF6gH")).resolves.toMatchObject({ status: "cancelled" });
+    await billingApi.order("a/b");
+    expect(calls.map((call) => call.path)).toEqual([
+      "/billing/orders/q3Zx8LmP0aB2cD4eF6gH",
+      "/billing/orders/q3Zx8LmP0aB2cD4eF6gH?refresh=true",
+      "/billing/orders/q3Zx8LmP0aB2cD4eF6gH/cancel",
+      "/billing/orders/a%2Fb",
+    ]);
+  });
+
+  it("links receipts", () => {
+    expect(receiptUrl(41)).toBe("/api/billing/receipts/41");
+  });
+});
+
+describe("publicApi", () => {
+  it("reads the site and the plans without a session", async () => {
+    stubFetch({ "GET /public/site": makePublicSite(), "GET /public/plans": [makePublicPlan()] });
+    await expect(publicApi.site()).resolves.toEqual(makePublicSite());
+    await expect(publicApi.plans()).resolves.toEqual([makePublicPlan()]);
+  });
+
+  it("fetches a policy page's Markdown from /legal", async () => {
+    const calls = stubFetch({
+      "GET /legal/terms.md": () => new Response("<!-- draft -->\n# Terms of service", { headers: { "Content-Type": "text/markdown" } }),
+    });
+    await expect(publicApi.page("terms")).resolves.toBe("<!-- draft -->\n# Terms of service");
+    expect(calls[0].path).toBe("/legal/terms.md");
+  });
+
+  it("treats a missing page, or the app's HTML in its place, as not found", async () => {
+    stubFetch({
+      "GET /legal/about.md": () => new Response("Not found", { status: 404 }),
+      "GET /legal/shipping.md": () => new Response("<!doctype html>", { headers: { "Content-Type": "text/html; charset=utf-8" } }),
+      "GET /legal/privacy.md": () => new Response("", { status: 503 }),
+    });
+    await expect(publicApi.page("about")).rejects.toMatchObject({ status: 404, message: "This page doesn't exist." });
+    await expect(publicApi.page("shipping")).rejects.toMatchObject({ status: 404 });
+    await expect(publicApi.page("privacy")).rejects.toMatchObject({
+      status: 503,
+      message: "The server ran into a problem. Please try again.",
+    });
+  });
+
+  it("explains a network failure and passes an abort through", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("Failed to fetch")));
+    await expect(publicApi.page("terms")).rejects.toMatchObject({ status: 0 });
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("Aborted", "AbortError")));
+    await expect(publicApi.page("terms")).rejects.toMatchObject({ name: "AbortError" });
   });
 });
 

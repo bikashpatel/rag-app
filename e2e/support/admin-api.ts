@@ -1,4 +1,13 @@
-import type { AdminModel, AdminUser, AdminUserCreate, Me } from "../../frontend/src/api/types";
+import type {
+  AdminModel,
+  AdminPlan,
+  AdminUser,
+  AdminUserCreate,
+  GrantRequest,
+  Me,
+  RevokeRequest,
+  UserBilling,
+} from "../../frontend/src/api/types";
 import { ADMIN_SESSION_ENV, BASE_URL, RUN_ID_ENV, SESSION_COOKIE } from "./env";
 
 /** Every user the suite creates starts with this; nothing else is ever changed or deleted. */
@@ -26,10 +35,11 @@ export class AdminApiError extends Error {
 /**
  * The admin API, signed in with the admin's session cookie. It uses Node's fetch, not a Playwright request context,
  * so no trace, step or report ever records the admin's cookie (Playwright traces every request context a test can see).
- * It only creates and deletes users named e2e-…, and reads users and models.
+ * It only creates, grants or revokes plans of, and deletes users named e2e-…, and reads users, models and plans.
  */
 export class AdminApi {
   private readonly cookie: string;
+  private plans: Promise<AdminPlan[]> | null = null;
 
   constructor(session: string) {
     this.cookie = `${SESSION_COOKIE}=${session}`;
@@ -108,6 +118,36 @@ export class AdminApi {
 
   listModels(): Promise<AdminModel[]> {
     return this.call<AdminModel[]>("GET", "/admin/models");
+  }
+
+  /** Gives a test user a complimentary plan: dated (`days`) or open-ended (null), starting now. */
+  async grantPlan(userId: number, code: string, days: number | null = null): Promise<UserBilling> {
+    await this.requireTestUser(userId);
+    const body: GrantRequest = { plan_id: await this.planId(code), days, reason: "End-to-end test", start: "now" };
+    return this.call<UserBilling>("POST", `/admin/billing/users/${userId}/grants`, body);
+  }
+
+  /** Revokes a test user's current period: access ends now, and their plan reads as ended ("expired"). */
+  async revokeCurrentPeriod(userId: number): Promise<UserBilling> {
+    await this.requireTestUser(userId);
+    const billing = await this.call<UserBilling>("GET", `/admin/billing/users/${userId}`);
+    const period = billing.periods.find((item) => item.current);
+    if (!period) throw new Error(`User ${userId} has no current period to revoke`);
+    const body: RevokeRequest = { reason: "End-to-end test" };
+    return this.call<UserBilling>("POST", `/admin/billing/periods/${period.id}/revoke`, body);
+  }
+
+  private async requireTestUser(userId: number): Promise<void> {
+    const user = await this.getUser(userId);
+    if (!user || !isTestUser(user)) throw new Error(`Refusing to change the plan of user ${userId}: not a test user`);
+  }
+
+  /** The id of the plan with this code (the seeded starter, standard or professional). */
+  async planId(code: string): Promise<number> {
+    this.plans ??= this.call<AdminPlan[]>("GET", "/admin/plans");
+    const plan = (await this.plans).find((item) => item.code === code);
+    if (!plan) throw new Error(`No plan "${code}": the seeded plans are starter, standard and professional`);
+    return plan.id;
   }
 }
 

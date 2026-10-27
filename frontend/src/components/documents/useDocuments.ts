@@ -45,9 +45,10 @@ function upsert(list: DocumentItem[] | null, doc: DocumentItem): DocumentItem[] 
  * Loads GET /documents and GET /documents/config, and reloads both when the tab becomes visible again. The list is
  * polled while any document is pending or processing, or while `uploading` is true. A response is ignored when a
  * newer request for the same resource has started. The list is published to `documentEvents`, and documents
- * announced there (files the assistant created) are inserted at once.
+ * announced there (files the assistant created) are inserted at once. Without `active` (the plan ended on the page,
+ * plans-billing.md 8.7) it stops polling and reloading by itself.
  */
-export function useDocuments(uploading: boolean): DocumentsState {
+export function useDocuments(uploading: boolean, active = true): DocumentsState {
   const [documents, setDocuments] = useState<DocumentItem[] | null>(null);
   const [config, setConfig] = useState<DocumentConfig | null>(null);
   const [documentsError, setDocumentsError] = useState<string | null>(null);
@@ -97,6 +98,7 @@ export function useDocuments(uploading: boolean): DocumentsState {
   }, [reloadDocuments, reloadConfig]);
 
   useEffect(() => {
+    if (!active) return;
     const onVisibilityChange = () => {
       if (document.hidden) return;
       void reloadDocuments();
@@ -104,10 +106,10 @@ export function useDocuments(uploading: boolean): DocumentsState {
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [reloadDocuments, reloadConfig]);
+  }, [active, reloadDocuments, reloadConfig]);
 
   const processing = documents?.some((doc) => doc.status === "pending" || doc.status === "processing") ?? false;
-  const shouldPoll = processing || uploading;
+  const shouldPoll = active && (processing || uploading);
   useEffect(() => {
     if (!shouldPoll) return;
     const timer = window.setInterval(() => {

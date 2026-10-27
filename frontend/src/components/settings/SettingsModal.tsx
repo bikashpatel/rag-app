@@ -2,10 +2,11 @@ import { useEffect, useId, useRef, useSyncExternalStore, type KeyboardEvent, typ
 import type { Me, PluginInfo } from "../../api/types";
 import { SETTINGS_TABS, type SettingsTab } from "../../lib/settingsLink";
 import Avatar from "../ui/Avatar";
-import { ChartIcon, CloseIcon, PlugIcon, SlidersIcon, UserIcon } from "../ui/icons";
+import { CardIcon, ChartIcon, CloseIcon, PlugIcon, SlidersIcon, UserIcon } from "../ui/icons";
 import Modal from "../ui/Modal";
 import AccountTab from "./AccountTab";
 import GeneralTab from "./GeneralTab";
+import PlanBillingTab from "./PlanBillingTab";
 import PluginsDataTab, { type PluginsIntent } from "./PluginsDataTab";
 import "./settings.css";
 import UsageTab from "./UsageTab";
@@ -13,6 +14,7 @@ import UsageTab from "./UsageTab";
 const TAB_ICON: Record<SettingsTab, ReactNode> = {
   general: <SlidersIcon />,
   account: <UserIcon />,
+  billing: <CardIcon />,
   usage: <ChartIcon />,
   plugins: <PlugIcon />,
 };
@@ -106,12 +108,16 @@ export default function SettingsModal({
     case "account":
       panel = <AccountTab onClose={onClose} />;
       break;
+    case "billing":
+      panel = <PlanBillingTab user={user} onClose={onClose} />;
+      break;
     case "usage":
       panel = <UsageTab user={user} onClose={onClose} />;
       break;
     case "plugins":
       panel = (
         <PluginsDataTab
+          user={user}
           intent={pluginsIntent}
           intentKey={pluginsIntentKey}
           onBrowse={onBrowse}

@@ -31,7 +31,18 @@ from app import db
 from app.config import settings
 from app.db import SessionLocal
 from app.main import app as fastapi_app
-from app.models import Conversation, Document, LLMModel, Message, UsageEvent, User, UserImageLimit, user_allowed_models
+from app.models import (
+    BillingEvent,
+    Conversation,
+    Document,
+    LLMModel,
+    Message,
+    Plan,
+    PlanPeriod,
+    UsageEvent,
+    User,
+    user_allowed_models,
+)
 from app.redis_client import INGEST_QUEUE, get_redis
 from app.routers import admin as admin_router
 from app.schemas import MAX_INT
@@ -61,12 +72,6 @@ ADMIN_USER_KEYS = {
     "username",
     "is_admin",
     "is_active",
-    "monthly_token_limit",
-    "rate_limit_per_min",
-    "max_upload_mb",
-    "max_documents",
-    "max_storage_mb",
-    "monthly_image_limit",
     "restrict_models",
     "allowed_model_ids",
     "created_at",
@@ -74,6 +79,51 @@ ADMIN_USER_KEYS = {
     "usage",
     "document_count",
     "storage_bytes",
+    "billing_tester",
+    "limits",
+    "overrides",
+    "above_plan",
+    "no_models",
+    "plan",
+}
+LIMIT_NAMES = (
+    "monthly_token_limit",
+    "rate_limit_per_min",
+    "max_upload_mb",
+    "max_documents",
+    "max_storage_mb",
+    "monthly_image_limit",
+    "vision_monthly_token_limit",
+)
+NO_OVERRIDES = dict.fromkeys(LIMIT_NAMES)
+STARTER = {
+    "monthly_token_limit": 500_000,
+    "rate_limit_per_min": 10,
+    "max_upload_mb": 10,
+    "max_documents": 50,
+    "max_storage_mb": 200,
+    "monthly_image_limit": 30,
+    "vision_monthly_token_limit": 150_000,
+}
+PROFESSIONAL = {
+    "monthly_token_limit": 5_000_000,
+    "rate_limit_per_min": 30,
+    "max_upload_mb": 50,
+    "max_documents": 500,
+    "max_storage_mb": 3000,
+    "monthly_image_limit": 60,
+    "vision_monthly_token_limit": 1_000_000,
+}
+NO_PLAN = {
+    "state": "none",
+    "plan": None,
+    "valid_through": None,
+    "paid_through": None,
+    "complimentary": False,
+    "open_ended": False,
+    "test_mode": False,
+    "expiring_soon": False,
+    "ended_at": None,
 }
 DOCUMENT_ITEM_KEYS = {
     "id",
@@ -103,7 +153,11 @@ ADMIN_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("GET", "/api/admin/stats", None),
     ("GET", "/api/admin/users", None),
     ("POST", "/api/admin/users", {"username": "intruder", "password": USER_PASSWORD}),
-    ("PATCH", "/api/admin/users/{user_id}", {"monthly_token_limit": 0, "rate_limit_per_min": 0}),
+    (
+        "PATCH",
+        "/api/admin/users/{user_id}",
+        {"overrides": {"monthly_token_limit": 0, "rate_limit_per_min": 0}, "confirm_unlimited": True},
+    ),
     ("DELETE", "/api/admin/users/{user_id}", None),
     ("GET", "/api/admin/models", None),
     ("POST", "/api/admin/models", {"display_name": "Rogue", "litellm_model": "openai/rogue", "kind": "chat"}),
@@ -121,6 +175,29 @@ ADMIN_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", "/api/admin/plugins/request-check/test", {"model_id": 1}),
     ("GET", "/api/admin/system", None),
     ("POST", "/api/admin/system/test-alert", None),
+    ("GET", "/api/admin/plans", None),
+    ("POST", "/api/admin/plans", {"code": "rogue", "name": "Rogue", "price_paise": 100}),
+    ("PATCH", "/api/admin/plans/{plan_id}", {"price_paise": 100}),
+    ("DELETE", "/api/admin/plans/{plan_id}", None),
+    ("GET", "/api/admin/billing/config", None),
+    ("PUT", "/api/admin/billing/settings", {"business_name": "Rogue"}),
+    ("GET", "/api/admin/billing/summary", None),
+    ("GET", "/api/admin/billing/export.csv", None),
+    ("GET", "/api/admin/billing/orders", None),
+    ("GET", "/api/admin/billing/orders/{public_id}", None),
+    ("POST", "/api/admin/billing/orders/{public_id}/check", None),
+    ("POST", "/api/admin/billing/orders/{public_id}/resolve", {"note": "Resolved"}),
+    ("POST", "/api/admin/billing/reconcile", None),
+    ("GET", "/api/admin/billing/payments", None),
+    ("GET", "/api/admin/billing/payments/{payment_id}", None),
+    ("POST", "/api/admin/billing/payments/{payment_id}/refund", {"amount_paise": None, "reason": "R", "end_access": 1}),
+    ("POST", "/api/admin/billing/offline-payments", {"user_id": 1, "plan_id": 1, "amount_paise": 100, "apply": True}),
+    ("GET", "/api/admin/billing/receipts/{receipt_id}", None),
+    ("GET", "/api/admin/billing/users/{user_id}", None),
+    ("POST", "/api/admin/billing/users/{user_id}/grants", {"plan_id": 1, "days": None, "reason": "R", "start": "now"}),
+    ("POST", "/api/admin/billing/users/{user_id}/end-complimentary", {"reason": "R"}),
+    ("POST", "/api/admin/billing/users/{user_id}/change-plan", {"plan_id": 1, "reason": "R"}),
+    ("POST", "/api/admin/billing/periods/{period_id}/revoke", {"reason": "R"}),
 ]
 
 
@@ -132,6 +209,37 @@ async def model_ids(app: FastAPI) -> dict[str, int]:
     """display_name -> id of every seeded model."""
     async with SessionLocal() as session:
         return {name: model_id for name, model_id in await session.execute(select(LLMModel.display_name, LLMModel.id))}
+
+
+def month_window() -> dict[str, str]:
+    """The usage window of a user with an open-ended plan or none (and of the admin): this UTC calendar month."""
+    start = month_start()
+    end = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+    iso = {"window_start": start.isoformat(), "window_end": end.isoformat()}
+    return {key: value.replace("+00:00", "Z") for key, value in iso.items()}
+
+
+def zero_usage() -> dict[str, Any]:
+    return {
+        "chat_tokens": 0,
+        "chat_allowance_used": 0,
+        "embedding_tokens": 0,
+        "vision_tokens": 0,
+        "images": 0,
+        "cost_usd": 0.0,
+        **month_window(),
+    }
+
+
+async def billing_events(user_id: int, kind: str) -> list[BillingEvent]:
+    async with SessionLocal() as session:
+        return list(
+            await session.scalars(
+                select(BillingEvent).where(BillingEvent.user_id == user_id, BillingEvent.type == kind).order_by(
+                    BillingEvent.id
+                )
+            )
+        )
 
 
 def with_changes(base: dict[str, Any], field: str, value: object) -> dict[str, Any]:
@@ -179,8 +287,12 @@ async def snapshot() -> tuple[list[Any], ...]:
                 User.token_version,
                 User.monthly_token_limit,
                 User.rate_limit_per_min,
+                User.billing_tester,
+                User.comp_plan_id,
             ).order_by(User.id)
         )
+        plans = await session.execute(select(Plan.id, Plan.price_paise, Plan.status).order_by(Plan.id))
+        plan_periods = await session.execute(select(PlanPeriod.id, PlanPeriod.revoked_at).order_by(PlanPeriod.id))
         models = await session.execute(
             select(
                 LLMModel.id, LLMModel.display_name, LLMModel.enabled, LLMModel.is_default, LLMModel.embedding_dim
@@ -191,6 +303,8 @@ async def snapshot() -> tuple[list[Any], ...]:
             [tuple(row) for row in users],
             [tuple(row) for row in models],
             [tuple(row) for row in documents],
+            [tuple(row) for row in plans],
+            [tuple(row) for row in plan_periods],
             await queue(),
         )
 
@@ -268,7 +382,8 @@ async def _route_targets(create_user: CreateUser, model_ids: dict[str, int]) -> 
     assert document.status_code == 201, document.text
     assert user.user_id is not None
     targets = {"user_id": user.user_id, "model_id": model_ids[OPUS], "document_id": document.json()["id"]}
-    return user, {**targets, "plugin_id": "gmail"}
+    billing = {"plan_id": 1, "public_id": "ord_none", "payment_id": 1, "receipt_id": 1, "period_id": 1}
+    return user, {**targets, "plugin_id": "gmail", **billing}
 
 
 @pytest.mark.parametrize(("method", "path", "body"), ADMIN_ROUTES, ids=[f"{m} {p}" for m, p, _ in ADMIN_ROUTES])
@@ -313,22 +428,21 @@ async def test_admin_routes_require_a_session(
 # ---------------- Config ----------------
 
 
-async def test_config_reports_the_defaults_and_the_admin(admin_client: ApiClient) -> None:
+async def test_config_reports_the_cheapest_active_plans_limits_and_the_admin(admin_client: ApiClient) -> None:
     response = await admin_client.get("/api/admin/config")
 
     assert response.status_code == 200
     assert response.json() == {
-        "defaults": {
-            "monthly_token_limit": 1_000_000,
-            "rate_limit_per_min": 20,
-            "max_upload_mb": 25,
-            "max_documents": 100,
-            "max_storage_mb": 500,
-            "monthly_image_limit": 30,
-        },
+        "defaults": STARTER,
         "max_upload_mb_hard": settings.max_upload_mb_hard,
         "admin_username": ADMIN_USERNAME,
     }
+
+    async with SessionLocal() as session:
+        await session.execute(update(Plan).values(status="retired"))
+        await session.commit()
+    retired = await admin_client.get("/api/admin/config")
+    assert retired.json()["defaults"] == dict.fromkeys(LIMIT_NAMES, 0)
 
 
 # ---------------- Users ----------------
@@ -365,18 +479,18 @@ async def test_create_user_applies_the_defaults(admin_client: ApiClient, new_cli
         "username": "alice.smith",
         "is_admin": False,
         "is_active": True,
-        "monthly_token_limit": settings.default_monthly_token_limit,
-        "rate_limit_per_min": settings.default_rate_limit_per_min,
-        "max_upload_mb": settings.default_max_upload_mb,
-        "max_documents": settings.default_max_documents,
-        "max_storage_mb": settings.default_max_storage_mb,
-        "monthly_image_limit": settings.default_monthly_image_limit,
         "restrict_models": False,
         "allowed_model_ids": [],
         "last_login_at": None,
-        "usage": {"chat_tokens": 0, "embedding_tokens": 0, "vision_tokens": 0, "images": 0, "cost_usd": 0.0},
+        "usage": zero_usage(),
         "document_count": 0,
         "storage_bytes": 0,
+        "billing_tester": False,
+        "limits": STARTER,  # no plan: the cheapest active plan's, for information
+        "overrides": NO_OVERRIDES,
+        "above_plan": [],
+        "no_models": False,
+        "plan": NO_PLAN,
     }
     assert created["created_at"].endswith("Z")
     assert await admin_user(admin_client, created["id"]) == created
@@ -391,25 +505,65 @@ async def test_create_user_applies_the_defaults(admin_client: ApiClient, new_cli
 
 
 async def test_create_user_with_every_field(admin_client: ApiClient, model_ids: dict[str, int]) -> None:
-    body = {
-        "username": "carol",
-        "password": USER_PASSWORD,
-        "is_active": False,
+    overrides = {
         "monthly_token_limit": 0,
         "rate_limit_per_min": 5,
         "max_upload_mb": settings.max_upload_mb_hard,
         "max_documents": 0,
         "max_storage_mb": 1,
+        "monthly_image_limit": 7,
+        "vision_monthly_token_limit": 9000,
+    }
+    async with SessionLocal() as session:
+        standard = await session.scalar(select(Plan.id).where(Plan.code == "standard"))
+    body = {
+        "username": "carol",
+        "password": USER_PASSWORD,
+        "is_active": False,
         "restrict_models": True,
         "allowed_model_ids": [model_ids[SONNET], model_ids[HAIKU], model_ids[SONNET]],
+        "billing_tester": True,
+        "overrides": overrides,
+        "grant": {"plan_id": standard, "days": 45, "reason": "Trial"},
+        "confirm_unlimited": True,
     }
 
     response = await admin_client.post("/api/admin/users", json=body)
 
     assert response.status_code == 201, response.text
     created = response.json()
-    expected = {key: value for key, value in body.items() if key != "password"}
-    assert created == {**created, **expected, "allowed_model_ids": sorted([model_ids[SONNET], model_ids[HAIKU]])}
+    assert created == {
+        **created,
+        "is_active": False,
+        "restrict_models": True,
+        "allowed_model_ids": sorted([model_ids[SONNET], model_ids[HAIKU]]),
+        "billing_tester": True,
+        "overrides": overrides,
+        "limits": overrides,
+        # Unlimited against Standard's 2,000,000 and 200 documents; the hard limit against its 25 MB per file
+        "above_plan": ["monthly_token_limit", "max_upload_mb", "max_documents"],
+        "no_models": False,
+    }
+    plan = created["plan"]
+    assert (plan["state"], plan["plan"]["code"], plan["complimentary"], plan["open_ended"]) == (
+        "active",
+        "standard",
+        True,
+        False,
+    )
+    async with SessionLocal() as session:
+        rows = list(await session.scalars(select(PlanPeriod).where(PlanPeriod.user_id == created["id"])))
+        assert sorted(row.days for row in rows) == [15, 30]  # 45 days: a 30-day row and a scaled 15-day one
+        assert {row.reason for row in rows} == {"Trial"} and {row.granted_by for row in rows} == {ADMIN_USERNAME}
+    [event] = await billing_events(created["id"], "user.created")
+    assert (event.source, event.actor) == ("admin", ADMIN_USERNAME)
+    assert event.detail == {
+        "overrides": overrides,
+        "restrict_models": True,
+        "allowed_model_ids": sorted([model_ids[SONNET], model_ids[HAIKU]]),
+        "billing_tester": True,
+    }
+    assert len(await billing_events(created["id"], "period.granted")) == 1
     async with SessionLocal() as session:
         grants = set(
             await session.scalars(
@@ -446,7 +600,7 @@ async def test_concurrent_creates_of_one_username_make_one_user_and_a_409(
         return await hashing(password)
 
     monkeypatch.setattr(admin_router, "hash_password_async", hash_after_both_checks)
-    body = {"username": "twin", "password": USER_PASSWORD, "monthly_image_limit": 3}
+    body = {"username": "twin", "password": USER_PASSWORD, "overrides": {"monthly_image_limit": 3}}
 
     responses = await asyncio.wait_for(
         asyncio.gather(*(admin_client.post("/api/admin/users", json=body) for _ in range(2))), 30
@@ -456,9 +610,8 @@ async def test_concurrent_creates_of_one_username_make_one_user_and_a_409(
     [refused] = [response for response in responses if response.status_code == 409]
     assert refused.json() == {"detail": "This username is already taken"}
     async with SessionLocal() as session:
-        [user_id] = await session.scalars(select(User.id).where(User.username == "twin"))
-        limits = list(await session.scalars(select(UserImageLimit.user_id)))
-    assert limits == [user_id]
+        limits = list(await session.scalars(select(User.monthly_image_limit).where(User.username == "twin")))
+    assert limits == [3]
     listed = (await admin_client.get("/api/admin/users")).json()
     assert [user["username"] for user in listed] == [ADMIN_USERNAME, "twin"]
 
@@ -477,17 +630,16 @@ async def test_concurrent_creates_of_one_username_make_one_user_and_a_409(
         ("password", "seven77"),
         ("password", "x" * 257),
         ("is_active", "sometimes"),
-        ("monthly_token_limit", -1),
-        ("monthly_token_limit", "lots"),
-        ("rate_limit_per_min", -1),
-        ("rate_limit_per_min", MAX_INT + 1),
-        ("max_upload_mb", 0),
-        ("max_upload_mb", settings.max_upload_mb_hard + 1),
-        ("max_documents", -1),
-        ("max_storage_mb", -1),
         ("restrict_models", "maybe"),
         ("allowed_model_ids", [0]),
         ("allowed_model_ids", "1,2"),
+        ("billing_tester", "sometimes"),
+        ("confirm_unlimited", "true"),
+        ("grant", {"plan_id": 1, "days": 91, "reason": "Too long"}),
+        ("grant", {"plan_id": 1, "days": 30, "reason": ""}),
+        ("grant", {"plan_id": 1, "reason": "No days"}),
+        ("overrides", {"chat_allowance": 5}),
+        ("monthly_token_limit", 1000),  # limits are overrides now
     ],
 )
 async def test_create_user_validates_the_body(field: str, value: object, admin_client: ApiClient) -> None:
@@ -499,6 +651,62 @@ async def test_create_user_validates_the_body(field: str, value: object, admin_c
     assert response.status_code == 422
     assert any(field in error["loc"] for error in response.json()["detail"])
     assert await snapshot() == before
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("monthly_token_limit", -1),
+        ("monthly_token_limit", "lots"),
+        ("rate_limit_per_min", -1),
+        ("rate_limit_per_min", MAX_INT + 1),
+        ("max_upload_mb", 0),
+        ("max_upload_mb", settings.max_upload_mb_hard + 1),
+        ("max_documents", -1),
+        ("max_storage_mb", -1),
+        ("monthly_image_limit", -1),
+        ("vision_monthly_token_limit", -1),
+    ],
+)
+async def test_overrides_are_validated(
+    field: str, value: object, admin_client: ApiClient, create_user: CreateUser
+) -> None:
+    user = await create_user("ivy", login=False)
+    before = await snapshot()
+
+    created = await admin_client.post(
+        "/api/admin/users", json={"username": "valid.user", "password": USER_PASSWORD, "overrides": {field: value}}
+    )
+    updated = await admin_client.patch(f"/api/admin/users/{user.user_id}", json={"overrides": {field: value}})
+
+    for response in (created, updated):
+        assert response.status_code == 422
+        assert any(error["loc"][-2:] == ["overrides", field] for error in response.json()["detail"])
+    assert await snapshot() == before
+
+
+async def test_an_unlimited_chat_allowance_needs_a_confirmation(
+    admin_client: ApiClient, create_user: CreateUser
+) -> None:
+    user = await create_user("una", login=False)
+    url = f"/api/admin/users/{user.user_id}"
+    before = await snapshot()
+
+    created = await admin_client.post(
+        "/api/admin/users",
+        json={"username": "valid.user", "password": USER_PASSWORD, "overrides": {"monthly_token_limit": 0}},
+    )
+    updated = await admin_client.patch(url, json={"overrides": {"monthly_token_limit": 0}})
+
+    for response in (created, updated):
+        assert (response.status_code, response.json()) == (422, {"detail": "Confirm an unlimited chat allowance."})
+    assert await snapshot() == before
+    confirmed = await admin_client.patch(url, json={"overrides": {"monthly_token_limit": 0}, "confirm_unlimited": True})
+    assert confirmed.status_code == 200, confirmed.text
+    assert confirmed.json()["limits"]["monthly_token_limit"] == 0
+    assert confirmed.json()["above_plan"] == ["monthly_token_limit"]
+    other = await admin_client.patch(url, json={"overrides": {"max_documents": 0}})  # only the chat allowance asks
+    assert other.status_code == 200
 
 
 @pytest.mark.parametrize("model", [SMALL, "unknown"])
@@ -525,31 +733,32 @@ async def test_allowed_models_must_be_existing_chat_models(
     assert (await admin_user(admin_client, user.user_id))["allowed_model_ids"] == [model_ids[HAIKU]]
 
 
-async def test_update_user_changes_limits_and_keeps_sessions(
+async def test_update_user_changes_overrides_and_keeps_sessions(
     admin_client: ApiClient, create_user: CreateUser, model_ids: dict[str, int]
 ) -> None:
     user = await create_user("frank")
-    changes = {
+    overrides = {
         "monthly_token_limit": 5000,
         "rate_limit_per_min": 0,
         "max_upload_mb": 2,
         "max_documents": 3,
         "max_storage_mb": 0,
         "monthly_image_limit": 9,
-        "restrict_models": True,
-        "allowed_model_ids": [model_ids[GPT], model_ids[HAIKU]],
     }
+    changes = {"restrict_models": True, "allowed_model_ids": [model_ids[GPT], model_ids[HAIKU]], "billing_tester": True}
 
-    response = await admin_client.patch(
-        f"/api/admin/users/{user.user_id}", json={**changes, "username": "renamed", "is_admin": True}
-    )
+    response = await admin_client.patch(f"/api/admin/users/{user.user_id}", json={**changes, "overrides": overrides})
 
     assert response.status_code == 200, response.text
     updated = response.json()
+    limits = {**PROFESSIONAL, **overrides}
     assert updated == {
         **updated,
         **changes,
         "allowed_model_ids": sorted(changes["allowed_model_ids"]),
+        "overrides": {**NO_OVERRIDES, **overrides},
+        "limits": limits,
+        "above_plan": ["rate_limit_per_min", "max_storage_mb"],  # unlimited against Professional's 30 and 3,000 MB
         "username": "frank",
         "is_admin": False,
         "is_active": True,
@@ -559,7 +768,47 @@ async def test_update_user_changes_limits_and_keeps_sessions(
     assert (await load(User, user.user_id)).token_version == 0
     me = await user.get("/api/auth/me")
     assert me.status_code == 200
-    assert me.json()["limits"] == {key: changes[key] for key in me.json()["limits"]}
+    assert me.json()["limits"] == limits
+    [event] = await billing_events(user.user_id, "user.updated")
+    assert (event.source, event.actor) == ("admin", ADMIN_USERNAME)
+    assert event.detail == {
+        "overrides": {"before": NO_OVERRIDES, "after": {**NO_OVERRIDES, **overrides}},
+        "restrict_models": {"before": False, "after": True},
+        "allowed_model_ids": {"before": [], "after": sorted(changes["allowed_model_ids"])},
+        "billing_tester": {"before": False, "after": True},
+    }
+
+    cleared = await admin_client.patch(
+        f"/api/admin/users/{user.user_id}", json={"overrides": {"max_documents": None}, "billing_tester": False}
+    )
+
+    assert cleared.json()["overrides"]["max_documents"] is None
+    assert cleared.json()["limits"]["max_documents"] == PROFESSIONAL["max_documents"]
+    assert cleared.json()["overrides"]["monthly_token_limit"] == 5000  # absent keys stay
+    events = await billing_events(user.user_id, "user.updated")
+    assert set(events[-1].detail) == {"overrides", "billing_tester"}
+
+
+async def test_unknown_fields_are_refused(admin_client: ApiClient, create_user: CreateUser) -> None:
+    user = await create_user("fred", login=False)
+    before = await snapshot()
+
+    response = await admin_client.patch(f"/api/admin/users/{user.user_id}", json={"username": "renamed"})
+
+    assert response.status_code == 422
+    assert await snapshot() == before
+
+
+async def test_changes_without_value_write_no_event(admin_client: ApiClient, create_user: CreateUser) -> None:
+    user = await create_user("glen", login=False, monthly_token_limit=777)
+
+    response = await admin_client.patch(
+        f"/api/admin/users/{user.user_id}",
+        json={"is_active": True, "password": "another-password", "overrides": {"monthly_token_limit": 777}},
+    )
+
+    assert response.status_code == 200
+    assert user.user_id is not None and await billing_events(user.user_id, "user.updated") == []
 
 
 async def test_update_user_leaves_omitted_and_null_fields_unchanged(
@@ -571,7 +820,13 @@ async def test_update_user_leaves_omitted_and_null_fields_unchanged(
 
     response = await admin_client.patch(
         f"/api/admin/users/{user.user_id}",
-        json={"monthly_token_limit": None, "allowed_model_ids": None, "restrict_models": None, "is_active": None},
+        json={
+            "overrides": {},
+            "allowed_model_ids": None,
+            "restrict_models": None,
+            "is_active": None,
+            "billing_tester": None,
+        },
     )
 
     assert response.status_code == 200
@@ -606,13 +861,9 @@ async def test_update_user_replaces_and_clears_allowed_models(
         ("password", "short"),
         ("password", "x" * 257),
         ("is_active", "nope"),
-        ("monthly_token_limit", -5),
-        ("rate_limit_per_min", -1),
-        ("max_upload_mb", 0),
-        ("max_upload_mb", settings.max_upload_mb_hard + 1),
-        ("max_documents", MAX_INT + 1),
-        ("max_storage_mb", -1),
+        ("billing_tester", "nope"),
         ("allowed_model_ids", [-1]),
+        ("overrides", [5000]),
     ],
 )
 async def test_update_user_validates_the_body(
@@ -706,7 +957,8 @@ async def test_deactivating_a_user_ends_their_sessions_and_blocks_login(
     [
         {"is_active": False},
         {"password": "another-admin-password"},
-        {"monthly_token_limit": 10},
+        {"overrides": {"monthly_token_limit": 10}},
+        {"billing_tester": True},
         {"restrict_models": True, "allowed_model_ids": []},
         {},
     ],
@@ -738,7 +990,7 @@ async def test_env_admin_cannot_be_deleted(admin_client: ApiClient) -> None:
 
 @pytest.mark.parametrize("method", ["PATCH", "DELETE"])
 async def test_unknown_user_is_not_found(method: str, admin_client: ApiClient) -> None:
-    body = {"monthly_token_limit": 1} if method == "PATCH" else None
+    body = {"overrides": {"monthly_token_limit": 1}} if method == "PATCH" else None
 
     response = await admin_client.request(method, "/api/admin/users/999999", json=body)
 
@@ -935,37 +1187,19 @@ async def test_list_users_reports_this_months_usage_and_documents(
     users = {user["username"]: user for user in listing.json()}
     chat_cost = (42 * 4.0 + 5 * 20.0) / 1_000_000
     assert users["alice"]["usage"] == {
+        **zero_usage(),
         "chat_tokens": 47 + 1200,
+        "chat_allowance_used": 84,  # the chat answer's cost in standard tokens ($0.000268); the added rows have none
         "embedding_tokens": alice_embedding_tokens,
-        "vision_tokens": 0,
-        "images": 0,
         "cost_usd": pytest.approx(0.5 + chat_cost + alice_embedding_tokens / 1_000_000, abs=1e-6),
     }
     assert users["alice"]["document_count"] == 2
     assert users["alice"]["storage_bytes"] == sum(len(data) for data in files.values())
-    assert users["bob"]["usage"] == {
-        "chat_tokens": 0,
-        "embedding_tokens": 70,
-        "vision_tokens": 0,
-        "images": 0,
-        "cost_usd": 0.25,
-    }
+    assert users["bob"]["usage"] == {**zero_usage(), "embedding_tokens": 70, "cost_usd": 0.25}
     assert (users["bob"]["document_count"], users["bob"]["storage_bytes"]) == (0, 0)
-    assert users["carol"]["usage"] == {
-        "chat_tokens": 0,
-        "embedding_tokens": 0,
-        "vision_tokens": 3000,
-        "images": 0,
-        "cost_usd": 0.01,
-    }
+    assert users["carol"]["usage"] == {**zero_usage(), "vision_tokens": 3000, "cost_usd": 0.01}
     assert (users["carol"]["document_count"], users["carol"]["storage_bytes"]) == (0, 0)
-    assert users[ADMIN_USERNAME]["usage"] == {
-        "chat_tokens": 0,
-        "embedding_tokens": 0,
-        "vision_tokens": 0,
-        "images": 0,
-        "cost_usd": 0.0,
-    }
+    assert users[ADMIN_USERNAME]["usage"] == zero_usage()
     assert {user["id"] for user in users.values()} == {
         admin_client.user_id,
         alice.user_id,
@@ -1271,6 +1505,7 @@ async def test_making_a_model_the_default_clears_the_previous_default(
         "can_create_files": False,  # LiteLLM doesn't know the model
         "can_create_images": False,
         "supports_tools": False,
+        "allowance_rate": None,  # nor its price
     }
 
 

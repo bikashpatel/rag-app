@@ -21,7 +21,8 @@ import sys
 import tempfile
 import zlib
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
 from html import escape
 from pathlib import Path
 from types import SimpleNamespace
@@ -61,6 +62,7 @@ import pytest  # noqa: E402
 from cryptography.fernet import Fernet  # noqa: E402
 from docx import Document as new_docx  # noqa: E402
 from fake_google import CLIENT_ID, CLIENT_SECRET, FakeGoogle, fake_google_app  # noqa: E402
+from fake_razorpay import API_HOST, FakeRazorpay, fake_razorpay_app  # noqa: E402
 from fakeredis import FakeServer  # noqa: E402
 from fakeredis.aioredis import FakeRedis  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
@@ -69,18 +71,19 @@ from openpyxl import Workbook  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 from pptx import Presentation  # noqa: E402
 from pptx.util import Inches  # noqa: E402
-from sqlalchemy import make_url  # noqa: E402
+from sqlalchemy import make_url, select  # noqa: E402
 from sqlalchemy import text as sql  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncEngine  # noqa: E402
 
 from app import db  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
-from app.models import Document  # noqa: E402
+from app.models import Document, Plan, PlanPeriod, User, utcnow  # noqa: E402
 from app.plugins import connections, intent, registry  # noqa: E402
 from app.plugins import http as plugin_http  # noqa: E402
 from app.redis_client import INGEST_QUEUE, close_redis, get_redis, set_redis  # noqa: E402
 from app.services import document_tool, image_tool, ingestion, llm, pdf_images, vision  # noqa: E402
+from app.services.billing import entitlements, periods  # noqa: E402
 from app.services.ingestion import process_document  # noqa: E402
 from app.services.vectorstore import close_qdrant  # noqa: E402
 
@@ -150,6 +153,7 @@ async def isolated_state(monkeypatch: pytest.MonkeyPatch, request: pytest.Fixtur
         engine = db.make_engine(f"sqlite+aiosqlite:///{workdir / 'app.db'}")
     monkeypatch.setattr(db, "engine", engine)
     db.SessionLocal.configure(bind=engine)
+    entitlements.invalidate_unlock()  # the plans cached from another test's database
     monkeypatch.setattr(settings, "upload_dir", str(workdir / "uploads"))
     set_redis(FakeRedis(server=FakeServer(), decode_responses=True))
     await close_qdrant()
@@ -609,6 +613,30 @@ def plugin_registry(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     plugin_http.set_transport(None)
 
 
+@pytest.fixture(autouse=True)
+def fake_plugin_in_plans(monkeypatch: pytest.MonkeyPatch) -> None:
+    """While the framework's test plugin (fake_plugin.py, id "fake") is registered, it is in every plan that includes
+    Gmail, which it stands in for: the plugin tests written before plans keep a user who may use it. Plan gating is
+    tested with Gmail itself."""
+    load, load_many = entitlements.load, entitlements.load_many
+
+    def widened(ent: entitlements.Entitlements) -> entitlements.Entitlements:
+        if "gmail" in ent.plugins and registry.get_plugin("fake") is not None:
+            return replace(ent, plugins=ent.plugins | {"fake"})
+        return ent
+
+    async def load_widened(db: Any, user: User, *, now: datetime | None = None) -> entitlements.Entitlements:
+        return widened(await load(db, user, now=now))
+
+    async def load_many_widened(
+        db: Any, users: Sequence[User], *, now: datetime | None = None
+    ) -> dict[int, entitlements.Entitlements]:
+        return {user_id: widened(ent) for user_id, ent in (await load_many(db, users, now=now)).items()}
+
+    monkeypatch.setattr(entitlements, "load", load_widened)
+    monkeypatch.setattr(entitlements, "load_many", load_many_widened)
+
+
 TEST_TOKEN_KEY = Fernet.generate_key().decode()
 TEST_ORIGIN = "http://testserver"
 
@@ -918,22 +946,35 @@ def create_user(admin_client: ApiClient, new_client: Callable[[], ApiClient]) ->
     """Factory: `await create_user("alice", **fields)` creates a user through POST /api/admin/users and
     returns a client logged in as them.
 
-    `fields` are any AdminUserCreate fields (limits, restrict_models, allowed_model_ids, is_active, ...);
-    omitted ones get the server defaults (e.g. 20 chat requests per minute). The name defaults to
-    user1, user2, ... and the password to USER_PASSWORD. With `login=False` the client stays anonymous
-    (needed for `is_active=False`); its `user_id`/`username`/`password` are set either way. Asserts the
-    user was created.
+    `fields` are any AdminUserCreate fields (restrict_models, allowed_model_ids, is_active, ...) or limits, sent as
+    overrides (an unlimited chat allowance confirmed); omitted limits are the plan's. The user gets an open-ended
+    complimentary plan, `plan` ("professional" unless given; None: no plan), so its allowance window is the
+    calendar month and limits passed here are overrides of the plan's. The name defaults to user1, user2,
+    ... and the password to USER_PASSWORD. With `login=False` the client stays anonymous (needed for
+    `is_active=False`); its `user_id`/`username`/`password` are set either way. Asserts the user was created.
     """
     created = 0
 
     async def factory(
-        username: str | None = None, password: str = USER_PASSWORD, *, login: bool = True, **fields: Any
+        username: str | None = None,
+        password: str = USER_PASSWORD,
+        *,
+        login: bool = True,
+        plan: str | None = "professional",
+        **fields: Any,
     ) -> ApiClient:
         nonlocal created
         created += 1
         name = username or f"user{created}"
+        overrides = {key: fields.pop(key) for key in list(fields) if key in periods.LIMIT_NAMES}
+        if overrides:
+            fields["overrides"] = overrides
+        if overrides.get("monthly_token_limit") == 0:
+            fields.setdefault("confirm_unlimited", True)
         response = await admin_client.post("/api/admin/users", json={"username": name, "password": password, **fields})
         assert response.status_code == 201, response.text
+        if plan is not None:
+            await grant_plan(response.json()["id"], plan, days=None)
         user = new_client()
         if login:
             login_response = await user.login(name, password)
@@ -943,6 +984,66 @@ def create_user(admin_client: ApiClient, new_client: Callable[[], ApiClient]) ->
         return user
 
     return factory
+
+
+# ---------------- Plans ----------------
+
+
+async def grant_plan(
+    user_id: int, code: str = "professional", days: int | None = 30, start: Literal["now", "after_current"] = "now"
+) -> None:
+    """A complimentary plan, as the admin grants it: dated (`days`, in rows of at most 30 days) or open-ended (None)."""
+    async with db.SessionLocal() as session:
+        user = await session.get(User, user_id)
+        plan = await session.scalar(select(Plan).where(Plan.code == code))
+        assert user is not None and plan is not None, (user_id, code)
+        await periods.grant(session, user, plan, days=days, reason="Test grant", actor=ADMIN_USERNAME, start=start)
+        await session.commit()
+
+
+async def end_plan(user_id: int) -> None:
+    """The user's plan has ended: their periods move into the past (the last ending a minute ago) and the open-ended
+    plan ends. Expired with periods, else no plan at all."""
+    async with db.SessionLocal() as session:
+        user = await session.get(User, user_id)
+        assert user is not None, user_id
+        rows = list(await session.scalars(select(PlanPeriod).where(PlanPeriod.user_id == user_id)))
+        if rows:
+            shift = max(row.ends_at for row in rows) - utcnow() + timedelta(minutes=1)
+            for row in rows:
+                row.starts_at, row.ends_at = row.starts_at - shift, row.ends_at - shift
+        user.comp_plan_id = user.comp_reason = user.comp_granted_by = user.comp_granted_at = None
+        await session.commit()
+
+
+async def make_tester(user_id: int) -> None:
+    """The user may check out while test keys run (Admin → Users, "Tester")."""
+    async with db.SessionLocal() as session:
+        user = await session.get(User, user_id)
+        assert user is not None, user_id
+        user.billing_tester = True
+        await session.commit()
+
+
+@pytest.fixture
+def fake_razorpay(monkeypatch: pytest.MonkeyPatch) -> FakeRazorpay:
+    """Razorpay test keys and a webhook secret in the settings, and every HTTPS request to api.razorpay.com (the
+    default RAZORPAY_API_BASE) answered by the fake (tests/fake_razorpay.py) through a monkeypatched httpx transport;
+    other hosts are untouched. Drive the payer and the Dashboard through the returned FakeRazorpay."""
+    fake = FakeRazorpay()
+    monkeypatch.setattr(settings, "razorpay_key_id", fake.key_id)
+    monkeypatch.setattr(settings, "razorpay_key_secret", fake.key_secret)
+    monkeypatch.setattr(settings, "razorpay_webhook_secret", fake.webhook_secret)
+    asgi = httpx.ASGITransport(app=fake_razorpay_app(fake))
+    network = httpx.AsyncHTTPTransport.handle_async_request
+
+    async def handle(transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        if request.url.host != API_HOST:
+            return await network(transport, request)
+        return fake.injected(request) or await asgi.handle_async_request(request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
+    return fake
 
 
 # ---------------- Documents and ingestion ----------------

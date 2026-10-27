@@ -25,10 +25,11 @@ from app.db import SessionLocal
 from app.models import Document, LLMModel, User, VisionPage, utcnow
 from app.redis_client import INGEST_QUEUE, forget_ingest_attempts, get_redis, ingest_attempts_key
 from app.services import llm, storage, vectorstore, vision
+from app.services.billing import entitlements
 from app.services.chunking import Chunk, chunk_segments
 from app.services.model_registry import get_active_embedding_model, get_active_vision_model
 from app.services.parsing import DocumentParseError, ParsedDocument, Segment, VisionRequest, parse_file
-from app.services.usage import record_usage, vision_tokens_this_month
+from app.services.usage import allowance_ending, record_usage, vision_tokens_in_window
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,19 @@ class _ModelChanged(Exception):
 
 
 @dataclass(frozen=True)
+class _VisionAllowance:
+    used: int  # vision tokens used in the window when the run started
+    limit: int
+    ending: str  # when it starts again (usage.allowance_ending)
+
+    def used_up(self, used: int) -> str:
+        return (
+            f"This PDF has scanned pages, but this period's allowance for the vision model is used up ({used:,} of "
+            f"{self.limit:,} tokens). {self.ending}"
+        )
+
+
+@dataclass(frozen=True)
 class _Job:
     doc_id: int
     owner_id: int
@@ -94,6 +108,7 @@ class _Job:
     vision_model: LLMModel | None = None  # the active vision model when the run started (detached)
     vision_target: tuple[str, str | None] | None = None  # its (litellm_model, api_base)
     vision_blocked: str | None = None  # the owner's vision allowance is used up: the error for a scanned page
+    vision_allowance: _VisionAllowance | None = None  # the owner's limited vision allowance when the run started
 
 
 @dataclass
@@ -380,7 +395,7 @@ async def _claim(doc_id: int) -> tuple[_Job, LLMModel] | None:
             await _update_document(db, doc_id, _RUNNABLE, status="failed", error=NO_EMBEDDING_MODEL)
             return None
         vision_model = await get_active_vision_model(db) if _is_pdf(doc.stored_name) else None
-        vision_blocked = await _vision_allowance(db, doc) if vision_model is not None else None
+        vision_blocked, allowance = await _vision_allowance(db, doc) if vision_model is not None else (None, None)
         if not await _update_document(db, doc_id, _RUNNABLE, status="processing", error=None):
             return None
         job = _Job(
@@ -394,6 +409,7 @@ async def _claim(doc_id: int) -> tuple[_Job, LLMModel] | None:
             vision_model=vision_model,
             vision_target=(vision_model.litellm_model, vision_model.api_base) if vision_model is not None else None,
             vision_blocked=vision_blocked,
+            vision_allowance=allowance,
         )
     await _count_attempt(doc_id)
     return job, model
@@ -403,19 +419,26 @@ def _is_pdf(stored_name: str) -> bool:
     return stored_name.lower().endswith(".pdf")
 
 
-async def _vision_allowance(db: AsyncSession, doc: Document) -> str | None:
-    """The error for scanned pages when the owner has used up VISION_MONTHLY_TOKEN_LIMIT this month, else None.
-    Checked when the run starts, like the chat budget; the admin (and so the shared documents) is exempt."""
-    limit = settings.vision_monthly_token_limit
-    if limit <= 0 or doc.owner.is_admin:
-        return None
-    used = await vision_tokens_this_month(db, doc.owner_id)
-    if used < limit:
-        return None
-    return (
-        f"This PDF has scanned pages, but your monthly allowance for the vision model is used up ({used:,} of "
-        f"{limit:,} tokens). Ask the admin to raise VISION_MONTHLY_TOKEN_LIMIT, or try again next month."
+async def _vision_allowance(db: AsyncSession, doc: Document) -> tuple[str | None, _VisionAllowance | None]:
+    """The error for scanned pages when the owner has no access or has used up their plan's vision allowance in the
+    allowance window (else None), and their limited allowance as it is when the run starts: the run stops calling the
+    model once it has used what is left (the calls in flight finish). The admin (and so the shared documents) is
+    exempt."""
+    if doc.owner.is_admin:
+        return None, None
+    ent = await entitlements.load(db, doc.owner)
+    if not ent.access:
+        return (
+            "This PDF has scanned pages, but your plan has ended, so they weren't read. Renew your plan and reprocess "
+            "the document."
+        ), None
+    limit = ent.limits.vision_monthly_token_limit
+    if limit <= 0:
+        return None, None
+    allowance = _VisionAllowance(
+        await vision_tokens_in_window(db, doc.owner_id, ent), limit, allowance_ending(doc.owner, ent)
     )
+    return (allowance.used_up(allowance.used) if allowance.used >= limit else None), allowance
 
 
 async def _count_attempt(doc_id: int) -> None:
@@ -545,6 +568,7 @@ async def _read_with_vision(
     used: set[tuple[int, str]],
 ) -> list[Segment]:
     assert job.vision_model is not None
+    allowance = job.vision_allowance
     async with _vision_phase():
         run = vision.VisionRun(
             doc_id=job.doc_id,
@@ -555,8 +579,13 @@ async def _read_with_vision(
             checkpoint=lambda: _vision_checkpoint(job),
             deadline=time.monotonic() + settings.vision_timeout_seconds,
             used=used,
+            budget=allowance.limit - allowance.used if allowance else None,
         )
-        return await vision.read_pages(run, parsed, job.filename)
+        try:
+            return await vision.read_pages(run, parsed, job.filename)
+        except vision.AllowanceUsed:
+            assert allowance is not None
+            raise DocumentParseError(allowance.used_up(allowance.used + usage.vision.total_tokens)) from None
 
 
 @asynccontextmanager

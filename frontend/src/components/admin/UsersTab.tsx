@@ -1,55 +1,104 @@
-import { useMemo, useState } from "react";
-import type { AdminConfig, AdminModel, AdminUser, UserLimits } from "../../api/types";
+import { useEffect, useMemo, useState } from "react";
+import type { AdminConfig, AdminModel, AdminPlan, AdminUser, BillingAdminConfig } from "../../api/types";
+import { formatIstDate } from "../../lib/billing";
 import {
   formatBytes,
   formatCompact,
   formatCost,
   formatDateTime,
+  formatMegabytes,
   formatNumber,
   formatRelativeTime,
 } from "../../lib/format";
-import { deleteResource } from "./adminApi";
+import Avatar from "../ui/Avatar";
+import SegmentedControl from "../ui/SegmentedControl";
+import { AlertCircleIcon, AlertIcon, ArrowDownIcon, ArrowUpIcon, PlusIcon } from "../ui/icons";
+import { meterState } from "../ui/Meter";
+import { BILLING_CONFIG_PATH, deleteResource } from "./adminApi";
+import { PlanLine } from "./billingUi";
 import ConfirmAction from "./ConfirmAction";
 import FlashMessage from "./FlashMessage";
 import { useFlash, useResource } from "./hooks";
-import Avatar from "../ui/Avatar";
-import { AlertCircleIcon, AlertIcon, PlusIcon } from "../ui/icons";
-import { meterState } from "../ui/Meter";
-import { RefreshError, ResourceGate } from "./StateViews";
+import { EmptyState, RefreshError, ResourceGate } from "./StateViews";
 import UserFormModal from "./UserFormModal";
 
-const MB = 1024 * 1024;
 const ENV_MANAGED = "Managed in .env";
+
+type Filter = "all" | "active" | "expiring" | "lapsed" | "complimentary" | "none";
+
+const FILTERS: { value: Filter; label: string; test: (user: AdminUser) => boolean }[] = [
+  { value: "all", label: "All", test: () => true },
+  { value: "active", label: "Active", test: (user) => !user.is_admin && user.plan.state === "active" },
+  { value: "expiring", label: "Expiring", test: (user) => !user.is_admin && user.plan.expiring_soon },
+  { value: "lapsed", label: "Lapsed", test: (user) => !user.is_admin && user.plan.state === "expired" },
+  { value: "complimentary", label: "Complimentary", test: (user) => !user.is_admin && user.plan.complimentary },
+  { value: "none", label: "No plan", test: (user) => !user.is_admin && user.plan.state === "none" },
+];
 
 function sortUsers(users: AdminUser[]): AdminUser[] {
   return [...users].sort((a, b) => Number(b.is_admin) - Number(a.is_admin) || a.username.localeCompare(b.username));
 }
 
-/** The admin bypasses every usage check, so its stored limits don't apply. */
-function effectiveLimits(user: AdminUser, hardCap: number | undefined): UserLimits {
-  if (!user.is_admin) return user;
-  return {
-    monthly_token_limit: 0,
-    rate_limit_per_min: 0,
-    max_upload_mb: hardCap ?? user.max_upload_mb,
-    max_documents: 0,
-    max_storage_mb: 0,
-    monthly_image_limit: 0,
+const STATE_ORDER = { exempt: 0, active: 1, expired: 2, none: 3 } as const;
+
+/** By plan: the admin, then users with access by plan rank and end date, then lapsed, then those without a plan. */
+function byPlan(users: AdminUser[], ranks: Map<number, number>, direction: 1 | -1): AdminUser[] {
+  const key = (user: AdminUser) => {
+    const state = user.is_admin ? 0 : STATE_ORDER[user.plan.state];
+    const rank = user.plan.plan ? (ranks.get(user.plan.plan.id) ?? 0) : 0;
+    return { state, rank, end: user.plan.valid_through ?? "9999" };
   };
+  return [...users].sort((a, b) => {
+    const [x, y] = [key(a), key(b)];
+    return (
+      direction * (x.state - y.state || y.rank - x.rank || x.end.localeCompare(y.end)) ||
+      a.username.localeCompare(b.username)
+    );
+  });
 }
 
-export default function UsersTab({ onChanged }: { onChanged: () => void }) {
+/** Paid time is left: the delete confirmation warns that no refund is made. */
+function paidUntil(user: AdminUser): string | null {
+  const { plan } = user;
+  return plan.state === "active" && !plan.complimentary && plan.valid_through ? plan.valid_through : null;
+}
+
+type UsersTabProps = {
+  onChanged: () => void;
+  /** From the hash: "user" opens that user's form, "grant" with it opens the grant form. */
+  params: URLSearchParams;
+  onNavigate: (hash: string) => void;
+};
+
+type Editing = { user: AdminUser | null; startGrant: boolean };
+
+export default function UsersTab({ onChanged, params, onNavigate }: UsersTabProps) {
   const users = useResource<AdminUser[]>("/admin/users", "Couldn't load users.");
   const config = useResource<AdminConfig>("/admin/config", "Couldn't load the default user limits.");
   const models = useResource<AdminModel[]>("/admin/models", "Couldn't load the model list.");
+  const plans = useResource<AdminPlan[]>("/admin/plans", "Couldn't load the plans.");
+  const billing = useResource<BillingAdminConfig>(BILLING_CONFIG_PATH, "Couldn't load the payments setup.");
   const flash = useFlash();
-  const [editing, setEditing] = useState<AdminUser | "new" | null>(null);
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
+  const [sort, setSort] = useState<1 | -1 | null>(null);
+  const userParam = params.get("user");
+  const grantParam = params.has("grant");
 
   const chatModels = useMemo(() => models.data?.filter((model) => model.kind === "chat") ?? null, [models.data]);
   const modelNames = useMemo(
     () => new Map((models.data ?? []).map((model) => [model.id, model.display_name])),
     [models.data],
   );
+  const ranks = useMemo(() => new Map((plans.data ?? []).map((plan) => [plan.id, plan.rank])), [plans.data]);
+  const paymentsOpen = billing.data?.payments.mode === "live";
+
+  useEffect(() => {
+    if (userParam === null || users.data === null || config.data === null) return;
+    const target = users.data.find((user) => String(user.id) === userParam && !user.is_admin);
+    if (target) setEditing({ user: target, startGrant: grantParam });
+    onNavigate("users");
+  }, [userParam, grantParam, users.data, config.data, onNavigate]);
 
   async function deleteUser(user: AdminUser) {
     await deleteResource(`/admin/users/${user.id}`);
@@ -65,6 +114,7 @@ export default function UsersTab({ onChanged }: { onChanged: () => void }) {
     if (created) onChanged();
   }
 
+  const setupError = [config, plans].find((resource) => resource.error && !resource.data);
   return (
     <section className="card admin-card" aria-labelledby="admin-users-title">
       <div className="admin-card-header">
@@ -73,68 +123,113 @@ export default function UsersTab({ onChanged }: { onChanged: () => void }) {
             Users
           </h2>
           <p className="admin-card-subtitle">
-            Accounts, monthly token budgets and image limits, rate limits and upload quotas.
+            Accounts and their plans, this period's use, and limits that override the plan's.
           </p>
         </div>
         <span className="spacer" />
-        <button type="button" className="btn btn-primary" disabled={!config.data} onClick={() => setEditing("new")}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          disabled={!config.data}
+          onClick={() => setEditing({ user: null, startGrant: false })}
+        >
           <PlusIcon size={16} />
           New user
         </button>
       </div>
-      {config.error && !config.data ? <RefreshError message={config.error} onRetry={() => void config.reload()} /> : null}
+      {setupError?.error ? <RefreshError message={setupError.error} onRetry={() => void setupError.reload()} /> : null}
       <FlashMessage flash={flash} />
       <ResourceGate resource={users} loadingLabel="Loading users">
-        {(list) => (
-          <>
-            <div className="table-wrap">
-              <table className="table admin-table">
-                <thead>
-                  <tr>
-                    <th scope="col">User</th>
-                    <th scope="col">Tokens this month</th>
-                    <th scope="col">Images this month</th>
-                    <th scope="col" className="num">
-                      Cost
-                    </th>
-                    <th scope="col">Rate limit</th>
-                    <th scope="col">Uploads</th>
-                    <th scope="col">Models</th>
-                    <th scope="col">Last login</th>
-                    <th scope="col" className="admin-actions-cell">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {list.map((user) => (
-                    <UserRow
-                      key={user.id}
-                      user={user}
-                      limits={effectiveLimits(user, config.data?.max_upload_mb_hard)}
-                      modelNames={modelNames}
-                      canEdit={config.data !== null}
-                      onEdit={() => setEditing(user)}
-                      onDelete={() => deleteUser(user)}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            {list.length <= 1 ? (
-              <p className="admin-card-footnote">No other users yet. Use “New user” to create the first account.</p>
-            ) : null}
-          </>
-        )}
+        {(list) => {
+          const counts = new Map(FILTERS.map(({ value, test }) => [value, list.filter(test).length]));
+          const test = FILTERS.find((option) => option.value === filter)?.test ?? (() => true);
+          const shown = list.filter(test);
+          const ordered = sort === null ? shown : byPlan(shown, ranks, sort);
+          return (
+            <>
+              <div className="admin-toolbar">
+                <SegmentedControl
+                  label="Show"
+                  size="sm"
+                  value={filter}
+                  options={FILTERS.map(({ value, label }) => ({
+                    value,
+                    label: `${label} ${formatNumber(counts.get(value) ?? 0)}`,
+                  }))}
+                  onChange={setFilter}
+                  className="admin-user-filters"
+                />
+              </div>
+              {shown.length === 0 ? (
+                <EmptyState title="Nobody here">
+                  <p>No user matches this filter.</p>
+                </EmptyState>
+              ) : (
+                <div className="table-wrap">
+                  <table className="table admin-table">
+                    <thead>
+                      <tr>
+                        <th scope="col">User</th>
+                        <th scope="col" aria-sort={sort === null ? undefined : sort === 1 ? "ascending" : "descending"}>
+                          <button
+                            type="button"
+                            className="admin-sort"
+                            onClick={() => setSort((current) => (current === 1 ? -1 : 1))}
+                          >
+                            Plan
+                            {sort === -1 ? <ArrowUpIcon size={13} /> : <ArrowDownIcon size={13} />}
+                            <span className="sr-only">, sort</span>
+                          </button>
+                        </th>
+                        <th scope="col">Chat this period</th>
+                        <th scope="col">Images this period</th>
+                        <th scope="col" className="num">
+                          Cost
+                        </th>
+                        <th scope="col">Rate limit</th>
+                        <th scope="col">Uploads</th>
+                        <th scope="col">Models</th>
+                        <th scope="col">Last login</th>
+                        <th scope="col" className="admin-actions-cell">
+                          <span className="sr-only">Actions</span>
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ordered.map((user) => (
+                        <UserRow
+                          key={user.id}
+                          user={user}
+                          modelNames={modelNames}
+                          canEdit={config.data !== null}
+                          onEdit={() => setEditing({ user, startGrant: false })}
+                          onDelete={() => deleteUser(user)}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              {list.length <= 1 ? (
+                <p className="admin-card-footnote">No other users yet. Use “New user” to create the first account.</p>
+              ) : null}
+            </>
+          );
+        }}
       </ResourceGate>
       {editing && config.data ? (
         <UserFormModal
-          user={editing === "new" ? null : editing}
+          user={editing.user}
           config={config.data}
           chatModels={chatModels}
           modelsError={models.error}
+          plans={plans.data}
+          paymentsOpen={paymentsOpen}
+          startGrant={editing.startGrant}
           onClose={() => setEditing(null)}
           onSaved={handleSaved}
+          onPlanChanged={() => void users.reload()}
+          onNavigate={onNavigate}
         />
       ) : null}
     </section>
@@ -143,14 +238,15 @@ export default function UsersTab({ onChanged }: { onChanged: () => void }) {
 
 type UserRowProps = {
   user: AdminUser;
-  limits: UserLimits;
   modelNames: Map<number, string>;
   canEdit: boolean;
   onEdit: () => void;
   onDelete: () => Promise<void>;
 };
 
-function UserRow({ user, limits, modelNames, canEdit, onEdit, onDelete }: UserRowProps) {
+function UserRow({ user, modelNames, canEdit, onEdit, onDelete }: UserRowProps) {
+  const { limits } = user;
+  const paid = paidUntil(user);
   return (
     <tr>
       <td>
@@ -161,10 +257,19 @@ function UserRow({ user, limits, modelNames, canEdit, onEdit, onDelete }: UserRo
           </span>
           {user.is_admin ? <span className="badge badge-accent">admin</span> : null}
           {user.is_active ? null : <span className="badge badge-neutral">inactive</span>}
+          {user.billing_tester ? <span className="badge badge-neutral">tester</span> : null}
         </div>
       </td>
       <td>
-        <LimitMeter used={user.usage.chat_tokens} limit={limits.monthly_token_limit} noun="tokens" format={formatCompact} />
+        <PlanLine plan={user.plan} isAdmin={user.is_admin} />
+      </td>
+      <td>
+        <LimitMeter
+          used={user.usage.chat_allowance_used}
+          limit={limits.monthly_token_limit}
+          noun="standard tokens"
+          format={formatCompact}
+        />
       </td>
       <td>
         <LimitMeter used={user.usage.images} limit={limits.monthly_image_limit} noun="images" format={formatNumber} />
@@ -176,7 +281,7 @@ function UserRow({ user, limits, modelNames, canEdit, onEdit, onDelete }: UserRo
         {limits.rate_limit_per_min ? `${formatNumber(limits.rate_limit_per_min)} / min` : "Unlimited"}
       </td>
       <td>
-        <UploadsSummary user={user} limits={limits} />
+        <UploadsSummary user={user} />
       </td>
       <td className="admin-nowrap">
         <ModelAccess user={user} modelNames={modelNames} />
@@ -209,6 +314,12 @@ function UserRow({ user, limits, modelNames, canEdit, onEdit, onDelete }: UserRo
               message={
                 <>
                   Delete <strong>{user.username}</strong> and all of their documents?
+                  {paid ? (
+                    <span className="admin-confirm-warning">
+                      {" "}
+                      {user.username} has a paid plan until {formatIstDate(paid)}. No refund is made automatically.
+                    </span>
+                  ) : null}
                 </>
               }
               confirmLabel="Delete user"
@@ -231,7 +342,7 @@ function UserRow({ user, limits, modelNames, canEdit, onEdit, onDelete }: UserRo
   );
 }
 
-/** What this month's cost is made of (only chat tokens count toward the budget; images toward the image limit). */
+/** What this period's cost is made of (the chat allowance counts each answer at its model's rate). */
 function tokenBreakdown(usage: AdminUser["usage"]): string {
   const { chat_tokens, embedding_tokens, vision_tokens, images } = usage;
   return `Chat ${formatNumber(chat_tokens)} · Embedding ${formatNumber(embedding_tokens)} · Vision ${formatNumber(vision_tokens)} tokens · Images ${formatNumber(images)}`;
@@ -240,8 +351,8 @@ function tokenBreakdown(usage: AdminUser["usage"]): string {
 type LimitMeterProps = { used: number; limit: number; noun: string; format: (n: number) => string };
 
 /**
- * This month's use against a monthly limit (0 = unlimited): the numbers over a 5 px bar. From 90% the value starts with
- * a warning icon, at 100% an alert icon (with the words for screen readers and in the tooltip), never colour alone.
+ * This period's use against a limit (0 = unlimited): the numbers over a 5 px bar. From 90% the value starts with a
+ * warning icon, at 100% an alert icon (with the words for screen readers and in the tooltip), never colour alone.
  */
 function LimitMeter({ used, limit, noun, format }: LimitMeterProps) {
   if (limit === 0) {
@@ -266,16 +377,20 @@ function LimitMeter({ used, limit, noun, format }: LimitMeterProps) {
           {noun}, {Math.round(ratio * 100)}% used{state ? `. ${state.words}` : ""}
         </span>
       </span>
-      <span className={state ? `ui-meter admin-meter ui-meter-${state.tone}` : "ui-meter admin-meter"} aria-hidden="true">
+      <span
+        className={state ? `ui-meter admin-meter ui-meter-${state.tone}` : "ui-meter admin-meter"}
+        aria-hidden="true"
+      >
         <span style={{ width: `${Math.min(100, ratio * 100)}%` }} />
       </span>
     </div>
   );
 }
 
-function UploadsSummary({ user, limits }: { user: AdminUser; limits: UserLimits }) {
+function UploadsSummary({ user }: { user: AdminUser }) {
+  const { limits } = user;
   const docsMax = limits.max_documents ? formatNumber(limits.max_documents) : "∞";
-  const storageMax = limits.max_storage_mb ? formatBytes(limits.max_storage_mb * MB) : "∞";
+  const storageMax = limits.max_storage_mb ? formatMegabytes(limits.max_storage_mb) : "∞";
   const docs = `${formatNumber(user.document_count)} of ${limits.max_documents ? docsMax : "unlimited"} documents`;
   const storage = `${formatBytes(user.storage_bytes)} of ${limits.max_storage_mb ? storageMax : "unlimited"} storage`;
   return (
@@ -292,7 +407,9 @@ function UploadsSummary({ user, limits }: { user: AdminUser; limits: UserLimits 
 }
 
 function ModelAccess({ user, modelNames }: { user: AdminUser; modelNames: Map<number, string> }) {
-  if (user.is_admin || !user.restrict_models) return <>All models</>;
+  if (user.is_admin) return <>All models</>;
+  if (user.no_models) return <span className="badge badge-warning">No model left</span>;
+  if (!user.restrict_models) return <>Plan's models</>;
   const count = user.allowed_model_ids.length;
   if (count === 0) return <span className="badge badge-warning">No models</span>;
   const names = user.allowed_model_ids.map((id) => modelNames.get(id)).filter(Boolean);

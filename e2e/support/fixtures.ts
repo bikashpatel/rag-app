@@ -8,7 +8,13 @@ import { CHAT_STREAM, SseStub } from "./sse";
 export { expect };
 
 export type TestUser = { id: number; username: string; password: string };
-export type UserOptions = Omit<AdminUserCreate, "username" | "password">;
+export type UserOptions = Omit<AdminUserCreate, "username" | "password" | "grant"> & {
+  /** The plan's code for an open-ended complimentary plan (the existing specs need access); null: no plan. */
+  plan?: string | null;
+};
+
+/** Every test user has a plan unless the test asks for none, so the chat opens instead of the plans. */
+const DEFAULT_PLAN = "professional";
 
 /** A new name in this run's namespace: e2e-<run id>-<random>. */
 export function randomUsername(): string {
@@ -82,7 +88,7 @@ export async function guardAdminContext(context: BrowserContext, admin: AdminApi
 type TestFixtures = {
   /** Lets chat requests through to the backend (the @live test only). */
   allowModelCalls: boolean;
-  /** Limits for the test's `user` (the server's defaults otherwise). */
+  /** Overrides, models and plan for the test's `user` (an open-ended Professional plan otherwise). */
   userOptions: UserOptions;
   /** Requests the guards blocked, page errors and CSP violations in this test; it fails when there are any. */
   violations: string[];
@@ -130,9 +136,10 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
 
   makeUser: async ({ admin }, use) => {
     const created: number[] = [];
-    await use(async (options = {}) => {
+    await use(async ({ plan = DEFAULT_PLAN, ...options } = {}) => {
       const password = randomPassword();
-      const user = await admin.createUser({ ...options, username: randomUsername(), password });
+      const grant = plan === null ? undefined : { plan_id: await admin.planId(plan), days: null, reason: "E2E test" };
+      const user = await admin.createUser({ ...options, grant, username: randomUsername(), password });
       created.push(user.id);
       return { id: user.id, username: user.username, password };
     });

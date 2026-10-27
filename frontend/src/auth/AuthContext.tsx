@@ -9,7 +9,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, ApiError, getSessionUser, patchPreferences, setUnauthorizedHandler } from "../api/client";
+import {
+  api,
+  ApiError,
+  getSessionUser,
+  patchPreferences,
+  setPlanRequiredHandler,
+  setUnauthorizedHandler,
+} from "../api/client";
 import type { Me, Preferences, PreferencesUpdate } from "../api/types";
 import { announceUserChanged } from "../lib/appEvents";
 import {
@@ -35,7 +42,7 @@ type AuthContextValue = {
   login: (username: string, password: string) => Promise<void>;
   /** Rejects (and keeps the user signed in) when the server couldn't clear the session cookie. */
   logout: () => Promise<void>;
-  /** Re-fetch /auth/me (e.g. to update the usage meter after a chat). */
+  /** Re-fetch /auth/me (e.g. to update the usage meter after a chat, or when a plan ends). */
   refresh: () => Promise<void>;
   /** The signed-in user's preferences (optimistic while a save is pending); the cached ones while signed out. */
   preferences: Preferences;
@@ -64,6 +71,22 @@ export function handleExternalPreferences(preferences: Preferences): void {
 
 function droppedError(): ApiError {
   return new ApiError(401, "You were signed out before this setting was saved.");
+}
+
+/** setTimeout's delay must fit in 32 bits (about 24.8 days): a later end is checked again from a refresh at 24 days. */
+const MAX_TIMER_MS = 24 * 86_400_000;
+/** After the paid time ends, so the server already agrees. */
+const PLAN_END_SLACK_MS = 1_000;
+/** When this browser's clock is ahead of the server's: Me still has access after its paid time; ask again later. */
+const PLAN_END_RECHECK_MS = 60_000;
+
+/** Milliseconds until Me should be fetched again because the paid time ends; null when access doesn't end by time. */
+function planRefreshDelay(user: Me | null): number | null {
+  const paidThrough = user?.plan.access ? user.plan.paid_through : null;
+  const end = paidThrough ? Date.parse(paidThrough) : Number.NaN;
+  if (Number.isNaN(end)) return null;
+  const delay = end + PLAN_END_SLACK_MS - Date.now();
+  return delay > 0 ? Math.min(delay, MAX_TIMER_MS) : PLAN_END_RECHECK_MS;
 }
 
 /** The update without keys set to undefined (they mean "unchanged", like omitted ones). */
@@ -191,6 +214,32 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     boot();
     return () => setUnauthorizedHandler(null);
   }, [boot, receiveMe, signOutLocally]);
+
+  useEffect(() => {
+    // A 402 plan_required or plan_expired: the plan ended (or was revoked). Concurrent ones share one refresh of Me,
+    // which the pages then mirror (8.7); errors are left to the request that failed.
+    let refreshing = false;
+    setPlanRequiredHandler(() => {
+      if (refreshing || userRef.current === null) return;
+      refreshing = true;
+      refresh()
+        .catch(() => undefined)
+        .finally(() => {
+          refreshing = false;
+        });
+    });
+    return () => setPlanRequiredHandler(null);
+  }, [refresh]);
+
+  // An open tab learns that the paid time ended (8.1): re-armed by every Me.
+  useEffect(() => {
+    const delay = planRefreshDelay(user);
+    if (delay === null) return;
+    const timer = window.setTimeout(() => {
+      refresh().catch(() => undefined);
+    }, delay);
+    return () => window.clearTimeout(timer);
+  }, [user, refresh]);
 
   useEffect(() => {
     externalPreferencesHandler = (external) => {

@@ -39,7 +39,7 @@ from docx.shared import Inches
 from litellm.types.utils import ImageUsage, ImageUsageInputTokensDetails
 from PIL import Image, PngImagePlugin
 from pypdf import PdfReader
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import select, update
 
 from app.bootstrap import bootstrap
 from app.config import settings
@@ -54,12 +54,19 @@ from app.models import (
     MessageFile,
     UsageEvent,
     User,
-    UserImageLimit,
 )
 from app.routers import chat as chat_router
 from app.routers.chat import _Turn
 from app.services import image_tool, llm, storage, usage
-from app.services.usage import month_start
+from app.services.billing import entitlements
+from app.services.billing.money import format_ist_date, ist_date
+from app.services.usage import month_start, next_month
+
+
+def restarts() -> str:
+    """When an open-ended plan's allowances start again: the first day of the next UTC month (an IST date)."""
+    return f"It starts again on {format_ist_date(ist_date(next_month(month_start())))}."
+
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
@@ -71,7 +78,7 @@ GPT_IMAGE_COST = 50 * 5e-6 + 272 * 3e-5  # LiteLLM's gpt-image-2 prices for Fake
 SAVED_NOTE = "The image is shown to the user in the chat, below your reply, and saved to their private documents."
 REFUSED = "The image model's safety system declined this request, so no image was generated."
 HALTED = "Image generation stopped for this answer after the error above, so this image wasn't generated."
-COUNTED = "It counts toward the user's monthly images."
+COUNTED = "It counts toward the user's images this period."
 NOT_AN_IMAGE = "The image model returned data that isn't a PNG, JPEG or WebP image."
 NO_IMAGE_MODEL = (
     "Image generation isn't available in this app right now (no image model is active). If the user asks for an "
@@ -370,7 +377,7 @@ async def test_both_tools_are_offered_identically_on_every_call_with_the_injecti
     prompt = system_prompt(first)
     assert IMAGE_PROMPT_START in prompt and INJECTION_RULE in prompt
     assert "only when the user's latest message asks for an image" in prompt
-    assert "at most 3 per answer" in prompt and "The user can generate 30 more images this month." in prompt
+    assert "at most 3 per answer" in prompt and "The user can generate 60 more images this period." in prompt
     assert prompt.count('Notes in parentheses that start with "App note:"') == 1
     spec = first["tools"][1]["function"]
     assert spec["parameters"]["required"] == ["prompt", "title", "alt_text"]
@@ -564,7 +571,7 @@ async def test_one_image_in_either_stream_shape(create_user: CreateUser, image_t
         "medium",
     )
     assert (
-        result["note"].startswith(SAVED_NOTE) and "The user can generate 29 more images this month." in result["note"]
+        result["note"].startswith(SAVED_NOTE) and "The user can generate 59 more images this period." in result["note"]
     )
     # usage: done sums the chat calls only
     done = next(data for name, data in events if name == "done")
@@ -847,31 +854,28 @@ async def test_the_per_answer_cap_with_both_tools_and_the_call_limit(
     assert len(image_tools.image_calls) == 1
 
 
-# ---------------- The monthly image count ----------------
+# ---------------- The image allowance ----------------
 
 
-async def test_the_default_limit_comes_from_the_settings(
-    create_user: CreateUser, admin_client: ApiClient, image_tools: FakeLLM, monkeypatch: pytest.MonkeyPatch
+async def test_the_limit_is_the_plans_unless_the_user_has_an_override(
+    create_user: CreateUser, admin_client: ApiClient, image_tools: FakeLLM
 ) -> None:
     alice = await create_user("alice")
-    [row] = await rows(UserImageLimit, UserImageLimit.user_id == alice.user_id)
-    assert row.monthly_image_limit == settings.default_monthly_image_limit == 30
-    assert (await alice.get("/api/auth/me")).json()["limits"]["monthly_image_limit"] == 30
-    config = (await admin_client.get("/api/admin/config")).json()
-    assert config["defaults"]["monthly_image_limit"] == 30
+    [row] = await rows(User, User.id == alice.user_id)
+    assert row.monthly_image_limit is None
+    assert (await alice.get("/api/auth/me")).json()["limits"]["monthly_image_limit"] == 60  # Professional's
 
-    # without a row (a failed backfill), the setting in force applies
-    async with SessionLocal() as db:
-        await db.execute(delete(UserImageLimit).where(UserImageLimit.user_id == alice.user_id))
-        await db.commit()
-    monkeypatch.setattr(settings, "default_monthly_image_limit", 4)
+    override = await admin_client.patch(
+        f"/api/admin/users/{alice.user_id}", json={"overrides": {"monthly_image_limit": 4}}
+    )
+    assert override.status_code == 200, override.text
     assert (await alice.get("/api/auth/me")).json()["limits"]["monthly_image_limit"] == 4
     users = {user["username"]: user for user in (await admin_client.get("/api/admin/users")).json()}
-    assert users["alice"]["monthly_image_limit"] == 4 and users["admin"]["monthly_image_limit"] == 0
+    assert users["alice"]["limits"]["monthly_image_limit"] == 4 and users["admin"]["limits"]["monthly_image_limit"] == 0
     await add_image_events(alice.user_id, 3)
-    assert "The user can generate 1 more image this month." in system_prompt(await offered(alice, image_tools))
+    assert "The user can generate 1 more image this period." in system_prompt(await offered(alice, image_tools))
     await add_image_events(alice.user_id, 1)
-    assert "The user has used all 4 images of their monthly image allowance." in system_prompt(
+    assert "The user has used all 4 images of this period's image allowance." in system_prompt(
         await offered(alice, image_tools)
     )
 
@@ -880,13 +884,15 @@ async def test_a_per_user_limit_is_enforced_and_shown(
     create_user: CreateUser, admin_client: ApiClient, image_tools: FakeLLM
 ) -> None:
     alice = await create_user("alice", monthly_image_limit=1)
-    patched = await admin_client.patch(f"/api/admin/users/{alice.user_id}", json={"monthly_image_limit": 2})
-    assert patched.status_code == 200 and patched.json()["monthly_image_limit"] == 2
+    patched = await admin_client.patch(
+        f"/api/admin/users/{alice.user_id}", json={"overrides": {"monthly_image_limit": 2}}
+    )
+    assert patched.status_code == 200 and patched.json()["limits"]["monthly_image_limit"] == 2
     await add_image_events(alice.user_id, 1)
     _, created = await generate(alice, image_tools, image_call())
     assert created is not None
     result = tool_results(image_tools.chat_calls[-1])[-1]
-    assert "The user can generate 0 more images this month." in result["note"]
+    assert "The user can generate 0 more images this period." in result["note"]
     me = (await alice.get("/api/auth/me")).json()
     assert me["usage"]["images"] == 2 and me["limits"]["monthly_image_limit"] == 2
     users = {user["username"]: user for user in (await admin_client.get("/api/admin/users")).json()}
@@ -899,8 +905,8 @@ async def test_a_per_user_limit_is_enforced_and_shown(
     call = image_tools.chat_calls[-2]
     assert tool_names(call) == ["create_document"]
     assert (
-        "The user has used all 2 images of their monthly image allowance. If they ask for an image, tell them so: it "
-        "resets on the 1st of next month (UTC), and the admin can raise it."
+        "The user has used all 2 images of this period's image allowance. If they ask for an image, tell them so. "
+        + restarts()
     ) in system_prompt(call)
     assert tool_results(image_tools.chat_calls[-1]) == [
         {"ok": False, "error": "Unknown tool: create_image. The only tool is create_document."}
@@ -927,7 +933,8 @@ async def test_zero_means_unlimited(create_user: CreateUser, admin_client: ApiCl
 async def test_the_admin_is_exempt(admin_client: ApiClient, image_tools: FakeLLM) -> None:
     async with SessionLocal() as db:
         admin_id = await db.scalar(select(User.id).where(User.is_admin.is_(True)))
-        db.add(UserImageLimit(user_id=admin_id, monthly_image_limit=1))  # even a stray row doesn't limit the admin
+        # even a value of the admin's own doesn't limit the admin
+        await db.execute(update(User).where(User.id == admin_id).values(monthly_image_limit=1))
         await db.commit()
     await add_image_events(admin_id, 5)
     _, created = await generate(admin_client, image_tools, image_call())
@@ -951,8 +958,7 @@ async def test_the_limit_is_checked_again_before_the_image_model_is_called(
 
     failed = by_status(events, "failed")
     assert failed[0]["error"] == (
-        "The user has used all 1 images of their monthly allowance, so the image wasn't generated. It resets on the "
-        "1st of next month (UTC); the admin can raise it."
+        "The user has used all 1 images of this period's allowance, so the image wasn't generated. " + restarts()
     )
     assert failed[1]["error"] == HALTED  # it halts the answer
     assert image_tools.image_calls == []
@@ -971,14 +977,14 @@ async def test_concurrent_answers_cant_exceed_the_limit(
     alice = await create_user("alice", monthly_image_limit=1)
     first, second = await start_turn(alice), await start_turn(alice)
     assert first.image_plan.tools and second.image_plan.tools
-    counting = usage.images_this_month
+    counting = usage.images_in_window
 
-    async def slow_count(db: Any, user_id: int) -> int:
-        count = await counting(db, user_id)
+    async def slow_count(db: Any, user_id: int, ent: Any) -> int:
+        count = await counting(db, user_id, ent)
         await asyncio.sleep(0.1)
         return count
 
-    monkeypatch.setattr(image_tool, "images_this_month", slow_count)
+    monkeypatch.setattr(image_tool, "images_in_window", slow_count)
     image_tools.image_gate = asyncio.Event()
     image_tools.script = [ScriptedCall([image_call()]), ScriptedCall([image_call()]), text(), text()]
 
@@ -994,7 +1000,7 @@ async def test_concurrent_answers_cant_exceed_the_limit(
     created = [data for events in results for data in by_status(events, "created")]
     failed = [data for events in results for data in by_status(events, "failed")]
     assert len(created) == 1 and len(failed) == 1
-    assert failed[0]["error"].startswith("The user has used all 1 images of their monthly allowance")
+    assert failed[0]["error"].startswith("The user has used all 1 images of this period's allowance")
     assert len(image_tools.image_calls) == 1 and len(await image_events(alice.user_id)) == 1
 
 
@@ -1003,17 +1009,19 @@ async def test_reservations_are_race_safe(
 ) -> None:
     alice = await create_user("alice", monthly_image_limit=3)
     await add_image_events(alice.user_id, 1)
-    counting = usage.images_this_month
+    counting = usage.images_in_window
 
-    async def slow_count(db: Any, user_id: int) -> int:
-        count = await counting(db, user_id)
+    async def slow_count(db: Any, user_id: int, ent: Any) -> int:
+        count = await counting(db, user_id, ent)
         await asyncio.sleep(0.02)
         return count
 
-    monkeypatch.setattr(image_tool, "images_this_month", slow_count)
+    monkeypatch.setattr(image_tool, "images_in_window", slow_count)
     [user] = await rows(User, User.id == alice.user_id)
     model = await image_model()
-    outcomes = await asyncio.gather(*(image_tool.reserve(user, model) for _ in range(6)), return_exceptions=True)
+    async with SessionLocal() as db:
+        ent = await entitlements.load(db, user)
+    outcomes = await asyncio.gather(*(image_tool.reserve(user, model, ent) for _ in range(6)), return_exceptions=True)
     reserved = [outcome for outcome in outcomes if isinstance(outcome, image_tool.Reservation)]
     refused = [outcome for outcome in outcomes if isinstance(outcome, image_tool.ImageLimitReached)]
     assert len(reserved) == 2 and len(refused) == 4
@@ -1023,20 +1031,24 @@ async def test_reservations_are_race_safe(
     assert len(events) == 3 and all(event.cost_usd == 0 and event.total_tokens == 0 for event in events)
 
 
-async def test_images_of_last_month_dont_count(create_user: CreateUser, image_tools: FakeLLM) -> None:
+async def test_images_of_last_month_dont_count_for_an_open_ended_plan(
+    create_user: CreateUser, image_tools: FakeLLM
+) -> None:
     alice = await create_user("alice", monthly_image_limit=2)
     start = month_start()
     await add_image_events(alice.user_id, 5, when=start - timedelta(seconds=1))
     await add_image_events(alice.user_id, 1, when=start)
-    assert await _images_this_month(alice.user_id) == 1
+    assert await _images_in_window(alice.user_id) == 1
     prompt = system_prompt(await offered(alice, image_tools))
-    assert "The user can generate 1 more image this month." in prompt
+    assert "The user can generate 1 more image this period." in prompt
     assert (await alice.get("/api/auth/me")).json()["usage"]["images"] == 1
 
 
-async def _images_this_month(user_id: int) -> int:
+async def _images_in_window(user_id: int) -> int:
     async with SessionLocal() as db:
-        return await usage.images_this_month(db, user_id)
+        user = await db.get(User, user_id)
+        assert user is not None
+        return await usage.images_in_window(db, user_id, await entitlements.load(db, user))
 
 
 # ---------------- Usage and cost ----------------
@@ -1045,7 +1057,7 @@ async def _images_this_month(user_id: int) -> int:
 async def test_one_usage_event_per_image_and_none_in_the_chat_budget(
     create_user: CreateUser, admin_client: ApiClient, image_tools: FakeLLM
 ) -> None:
-    alice = await create_user("alice", monthly_token_limit=500)
+    alice = await create_user("alice", monthly_token_limit=1000)  # a chat call counts 250 (Opus: ×2 of 125 tokens)
     events, _ = await generate(alice, image_tools, image_call(title="One"), image_call(title="Two"))
     assert len(by_status(events, "created")) == 2
     image_rows = await image_events(alice.user_id)
@@ -1055,7 +1067,8 @@ async def test_one_usage_event_per_image_and_none_in_the_chat_budget(
     me = (await alice.get("/api/auth/me")).json()
     assert me["usage"]["chat_tokens"] == 360 and me["usage"]["images"] == 2
     assert me["usage"]["cost_usd"] == pytest.approx(2 * GPT_IMAGE_COST + chat_event.cost_usd, abs=1e-6)
-    # 140 chat tokens are left of the budget, so another answer is allowed although images used 644 tokens
+    assert me["usage"]["chat_allowance_used"] == chat_event.allowance_tokens == 750
+    # 250 are left of the chat allowance, so another answer is allowed although images used 644 tokens
     image_tools.script = [text("Still within budget.")]
     response, events = await chat(alice, "Thanks", document_ids=[])
     assert response.status_code == 200 and check_stream(events) == {}
@@ -1226,7 +1239,7 @@ async def test_a_url_is_never_fetched_or_logged(
     assert created is None
     assert by_status(events, "failed")[0]["error"] == (
         "The image model returned no image data. It may still have been charged, so it counts toward the user's "
-        "monthly images."
+        "images this period."
     )
     assert "images.example.invalid" not in caplog.text and PROMPT not in caplog.text
     assert len(await image_events(alice.user_id)) == 1
@@ -1296,7 +1309,7 @@ async def test_a_timeout_is_kept_with_an_estimated_cost_and_halts(
     failed = by_status(events, "failed")
     assert failed[0]["error"] == (
         "Generating the image took longer than 1 seconds, so it was abandoned. The provider may still have charged for "
-        "it, so it counts toward the user's monthly images."
+        "it, so it counts toward the user's images this period."
     )
     assert failed[1]["error"] == HALTED and len(image_tools.image_calls) == 1
     [event] = await image_events(alice.user_id)
@@ -1314,13 +1327,12 @@ async def test_room_is_checked_again_before_the_image_is_reserved(
     assert (await upload(alice, "a.md", md_bytes("first note"))).status_code == 201
     turn = await start_turn(alice)
     assert turn.image_plan.tools
-    patched = await admin_client.patch(f"/api/admin/users/{alice.user_id}", json={"max_documents": 1})
-    assert patched.status_code == 200
+    assert (await upload(alice, "b.md", md_bytes("second note"))).status_code == 201  # the last slot, meanwhile
     image_tools.script = [ScriptedCall([image_call()]), text()]
     events = await run_turn(turn)
     [failed] = by_status(events, "failed")
     assert failed["error"] == (
-        "The user can't get new images because they have reached their limit of 1 documents, so the image wasn't "
+        "The user can't get new images because they have reached their limit of 2 documents, so the image wasn't "
         "generated. They can delete documents to make room."
     )
     assert image_tools.image_calls == [] and await image_events() == []
@@ -1668,7 +1680,7 @@ async def test_deleting_the_conversation_keeps_the_image_and_deleting_the_user_r
     assert (
         upload_names() == []
         and await rows(GeneratedImage) == []
-        and await rows(UserImageLimit, UserImageLimit.user_id == alice.user_id) == []
+        and await rows(User, User.id == alice.user_id) == []
     )
     assert await image_events() == []
 
@@ -1837,30 +1849,6 @@ async def test_the_image_model_is_seeded_once(app: Any, admin_client: ApiClient,
     async with SessionLocal() as db:
         await bootstrap(db)
     assert await rows(LLMModel, LLMModel.kind == "image") == []
-
-
-async def test_the_backfill_gives_existing_users_the_default_once(
-    app: Any, create_user: CreateUser, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    alice = await create_user("alice", monthly_image_limit=7)
-    bob = await create_user("bob")
-    async with SessionLocal() as db:
-        await db.execute(delete(UserImageLimit).where(UserImageLimit.user_id == bob.user_id))
-        await db.execute(delete(AppState).where(AppState.key == "image_limits_backfilled"))
-        await db.commit()
-    monkeypatch.setattr(settings, "default_monthly_image_limit", 12)
-    async with SessionLocal() as db:
-        await bootstrap(db)
-    limits = {row.user_id: row.monthly_image_limit for row in await rows(UserImageLimit)}
-    assert limits == {alice.user_id: 7, bob.user_id: 12}  # the admin gets none
-    [state] = await rows(AppState, AppState.key == "image_limits_backfilled")
-    assert state.value == "1"
-    monkeypatch.setattr(settings, "default_monthly_image_limit", 99)
-    async with SessionLocal() as db:
-        await bootstrap(db)
-    assert {row.user_id: row.monthly_image_limit for row in await rows(UserImageLimit)} == limits
-    async with SessionLocal() as db:
-        assert await db.scalar(select(func.count()).select_from(UserImageLimit)) == 2
 
 
 # ---------------- More edges of the loop ----------------
@@ -2161,25 +2149,29 @@ async def test_a_missing_key_fails_without_a_call(
 
 async def test_the_users_image_limit_is_validated(admin_client: ApiClient, create_user: CreateUser) -> None:
     alice = await create_user("alice")
+    url = f"/api/admin/users/{alice.user_id}"
     for value in (-1, 2_147_483_648, "many"):
-        response = await admin_client.patch(f"/api/admin/users/{alice.user_id}", json={"monthly_image_limit": value})
+        response = await admin_client.patch(url, json={"overrides": {"monthly_image_limit": value}})
         assert response.status_code == 422, value
         created = await admin_client.post(
-            "/api/admin/users", json={"username": "bob", "password": "password-123", "monthly_image_limit": value}
+            "/api/admin/users",
+            json={"username": "bob", "password": "password-123", "overrides": {"monthly_image_limit": value}},
         )
         assert created.status_code == 422, value
     async with SessionLocal() as db:
         admin_id = await db.scalar(select(User.id).where(User.is_admin.is_(True)))
-    response = await admin_client.patch(f"/api/admin/users/{admin_id}", json={"monthly_image_limit": 5})
-    assert response.status_code == 400
-    assert (await admin_client.patch("/api/admin/users/99999", json={"monthly_image_limit": 5})).status_code == 404
-    # a PATCH without the field keeps it; null keeps it too
-    assert (await admin_client.patch(f"/api/admin/users/{alice.user_id}", json={"monthly_image_limit": 9})).json()[
-        "monthly_image_limit"
-    ] == 9
-    kept = await admin_client.patch(
-        f"/api/admin/users/{alice.user_id}", json={"max_documents": 3, "monthly_image_limit": None}
-    )
-    assert kept.json()["monthly_image_limit"] == 9
-    [row] = await rows(UserImageLimit, UserImageLimit.user_id == alice.user_id)
+    image_limit = {"overrides": {"monthly_image_limit": 5}}
+    assert (await admin_client.patch(f"/api/admin/users/{admin_id}", json=image_limit)).status_code == 400
+    assert (await admin_client.patch("/api/admin/users/99999", json=image_limit)).status_code == 404
+    # a PATCH without the key keeps it; null clears it (the plan's value)
+    nine = await admin_client.patch(url, json={"overrides": {"monthly_image_limit": 9}})
+    assert nine.json()["limits"]["monthly_image_limit"] == 9
+    kept = await admin_client.patch(url, json={"overrides": {"max_documents": 3}})
+    assert kept.json()["overrides"]["monthly_image_limit"] == 9
+    [row] = await rows(User, User.id == alice.user_id)
     assert row.monthly_image_limit == 9
+    cleared = await admin_client.patch(url, json={"overrides": {"monthly_image_limit": None}})
+    assert (cleared.json()["overrides"]["monthly_image_limit"], cleared.json()["limits"]["monthly_image_limit"]) == (
+        None,
+        60,
+    )

@@ -133,7 +133,7 @@ MINI = "GPT-5.4 mini"
 NOT_FOUND = {"detail": "Document not found"}
 STOPPED = "Stopped before completion"
 BUDGET_SPENT = (
-    "Your monthly token budget ran out while this answer was being written, so it stops here. Files created above "
+    "This period's chat allowance ran out while this answer was being written, so it stops here. Files created above "
     "are in your documents."
 )
 NOT_JSON = "The arguments weren't valid JSON."
@@ -1516,11 +1516,12 @@ async def test_one_usage_event_per_answer_sums_every_model_call(
 async def test_follow_up_calls_stop_at_the_budget_left_and_the_next_answer_is_refused(
     create_user: CreateUser, fake_llm: FakeLLM, tool_mode: str
 ) -> None:
-    alice = await create_user("alice", monthly_token_limit=10_000)
+    # Claude Opus 5.5 at $4 / $20 per 1M: 5,000 + 1,000 tokens cost $0.04, 12,500 standard tokens
+    alice = await create_user("alice", monthly_token_limit=22_500)
     fake_llm.usage = (5000, 1000)
     response, events = await chat(alice, "Hello", document_ids=[])
     assert events[-1][0] == "done"
-    # 4,000 tokens are left; the first call uses 4,500, so no follow-up call starts.
+    # 10,000 are left; the first call counts 13,125 ($0.042), so no follow-up call starts.
     fake_llm.script = [
         ScriptedCall([create("md", "Report", "# Report")], usage=(3000, 1500)),
         ScriptedCall([("text", "Never sent.")]),
@@ -1537,7 +1538,7 @@ async def test_follow_up_calls_stop_at_the_budget_left_and_the_next_answer_is_re
     assert [file["filename"] for file in await card_files(alice, events)] == ["Report.md"]
     refused = await alice.post("/api/chat/stream", json={"message": "More", "document_ids": []})
     assert refused.status_code == 429
-    assert refused.json()["detail"].startswith("Monthly token budget used up (10,500 of 10,000 tokens).")
+    assert refused.json()["detail"].startswith("You've used this period's chat allowance (25,625 of 22,500).")
 
 
 async def test_the_rate_limit_counts_answers_not_model_calls(

@@ -45,6 +45,13 @@ describe("Composer", () => {
     expect(input).toHaveValue("");
   });
 
+  it("reports the unsent text after each change", async () => {
+    const onDraftChange = vi.fn();
+    const { user, input } = setup({ onDraftChange });
+    await user.type(input, "Hi{Enter}");
+    expect(onDraftChange.mock.calls.map(([text]) => text)).toEqual(["", "H", "Hi", ""]);
+  });
+
   it("adds a line on Shift+Enter when Enter sends", async () => {
     const { user, props, input } = setup();
     await user.type(input, "First line{Shift>}{Enter}{/Shift}Second line");

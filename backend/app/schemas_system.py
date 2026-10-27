@@ -9,7 +9,17 @@ from app.ops.settings import AlertChannelName
 
 CheckStatus = Literal["ok", "warning", "critical", "unknown"]
 CheckId = Literal[
-    "postgres", "redis", "qdrant", "worker", "queue", "backup", "disk_uploads", "disk_backups", "proxy", "monitor"
+    "postgres",
+    "redis",
+    "qdrant",
+    "worker",
+    "queue",
+    "backup",
+    "disk_uploads",
+    "disk_backups",
+    "proxy",
+    "monitor",
+    "billing",
 ]
 AlertKind = Literal["problem", "reminder", "recovery", "test"]
 

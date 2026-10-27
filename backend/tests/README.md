@@ -22,7 +22,7 @@ uv venv --python 3.13 .venv && uv pip sync requirements-dev.txt
 # or with a python3.13 on PATH:
 python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
 
-.venv/bin/python -m pytest -q                    # everything: about 2,450 tests, 6 to 9 minutes
+.venv/bin/python -m pytest -q                    # everything: about 3,060 tests, 8 to 12 minutes
 .venv/bin/python -m pytest tests/test_smoke.py   # one file
 .venv/bin/python -m pytest -k chat -x            # by name, stop at the first failure
 ```
@@ -78,7 +78,7 @@ docker run -d --rm --name "$name" -e POSTGRES_USER=rag -e POSTGRES_PASSWORD="$pa
   postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24  # docker-compose.yml's
 until docker exec "$name" pg_isready -q -h 127.0.0.1 -U rag; do sleep 1; done
 export TEST_POSTGRES_URL="postgresql+asyncpg://rag:$password@127.0.0.1:$(docker port "$name" 5432 | head -1 | cut -d: -f2)/scratch"
-.venv/bin/python -m pytest -q -m postgres                      # 35 tests, seconds
+.venv/bin/python -m pytest -q -m postgres                      # 47 tests, seconds
 TEST_DATABASE=postgres .venv/bin/python -m pytest -q           # everything on Postgres, about 17 minutes
 docker stop "$name"
 ```
@@ -244,6 +244,15 @@ Read `conftest.py` before adding tests. It provides:
   `registry.use_plugins([...])`. `gmail` (in `gmail_support.py`) also installs `GmailPlugin`, enabled with every
   capability, and the default fake mailbox; `gmail.connect(client)` connects a user, and helpers read pending sends,
   audit rows and the calls the fake received.
+- **Plans and payments** (docs/briefs/plans-billing.md): `create_user(..., plan="professional")` gives the new user an
+  open-ended complimentary plan of that code (`plan=None`: no plan) and sends limit keyword arguments as overrides.
+  `grant_plan(user_id, code, days=30, start="now")` grants as the admin does (`days=None`: open-ended), `end_plan`
+  moves every period into the past and ends the open-ended plan, and `make_tester` lets the user check out while test
+  keys run. The `fake_razorpay` fixture sets test keys and a webhook secret and answers every request to
+  https://api.razorpay.com with the in-process fake of `fake_razorpay.py` (Payment Links, payments, refunds, disputes,
+  signed callbacks and webhooks; `fail_next` and `timeout_next` inject failures). `billing_support.py` has the payment
+  tests' helpers (checking out, paying and coming back, webhooks, the worker's processing, reading billing rows); the
+  `fake_plugin_in_plans` autouse fixture puts the framework's fake plugin in every plan that includes Gmail.
 - **Helpers:** `upload`, `process`, `process_queue`, `ingest`, `chat`, `sse_events` (it ignores SSE comment
   lines such as `: keepalive`).
 - **File builders:** `pdf_bytes`, `docx_bytes`, `pptx_bytes`, `xlsx_bytes`, `html_bytes`, `md_bytes`,

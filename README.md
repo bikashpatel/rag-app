@@ -1,7 +1,7 @@
 # RAG Assistant
 
-A self-hosted, single-tenant Retrieval-Augmented-Generation app: upload documents,
-chat with them, and manage users, models and usage from an admin page.
+A self-hosted, single-tenant Retrieval-Augmented-Generation app: upload documents and
+chat with them on a prepaid plan, and manage users, plans, payments, models and usage from an admin page.
 
 This application is designed, developed & maintained by ELARXSYS.COM.
 
@@ -25,17 +25,19 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
                                │           ├──> Redis     ingest queue, login/rate limits, answer slots
                                │           ├──> Qdrant    one vector collection per embedding model
                                │           ├──> Google    OAuth 2.0 + Gmail REST API (Gmail plugin, httpx)
+                               │           ├──> Razorpay  Payment Links, payments, refunds, disputes (REST, httpx)
                                │           └──> LiteLLM ─> OpenAI / Anthropic / Ollama / …
                                │           └──> file render child (create_document: PDF/DOCX/XLSX/MD;
                                │                                   create_image: validate and re-encode images)
                                └── uploads volume (shared)
               worker (same image) <── Redis list rag:ingest_queue
                  parse ─> [PDF pages: render (child process) ─> vision model (LiteLLM)] ─> chunk ─> embed (LiteLLM) ─> Qdrant
+                 billing loop: open checkouts, refunds and webhook events ─> Razorpay; plan reminder emails
               monitor (same image)  checks every service, the app through nginx, backups and disks ─> alert channels
               backup (postgres image)  daily: pg_dump + uploads + Qdrant snapshots ─> ./backups (BACKUP_DIR)
 ```
 
-- **Upload:** nginx checks the session, then streams the file to the backend, which validates it,
+- **Upload:** nginx checks the session and the plan, then streams the file to the backend, which validates it,
   stores it in the `uploads` volume, creates the document row (`pending`) and pushes its id onto
   the Redis queue. The worker parses it (in a thread), chunks it, embeds it with the active
   embedding model, writes the vectors to Qdrant and marks the document `ready` (or `failed` with
@@ -43,62 +45,70 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
   rendered to JPEG in a memory- and time-limited child process and read by the active vision model,
   which transcribes scans and describes charts, diagrams and photos; that text is indexed and cited by
   page like the rest.
-- **Chat:** `POST /api/chat/stream` checks the rate limit, budget and model access, saves the
+- **Chat:** `POST /api/chat/stream` checks the plan, the rate limit, the chat allowance and model access, saves the
   user message, retrieves passages from the user's private documents plus the shared knowledge
   base (every Qdrant search carries this access filter), and streams the answer as Server-Sent
   Events (`meta`, `sources`, `warning`, `delta`, `file`, `done` or `error`, plus `: keepalive` comments
   during silences). The answer and its token usage are saved at the end, including partial answers after
   Stop or an error.
-- **Files from chat:** chat models with function calling get a `create_document` tool. When the user
+- **Files from chat:** chat models with function calling get a `create_document` tool when the user's plan includes
+  files. When the user
   asks for a PDF, Word, Excel or Markdown file, the backend validates the tool call, renders the file in a
   time- and memory-limited child process (fpdf2 with bundled Noto fonts for PDFs, python-docx, openpyxl),
   stores it as one of the user's private documents (quotas apply), queues it for indexing like an upload,
   and calls the model again with the result. The answer shows a file card with a Download button.
 - **Images from chat:** in the same loop, chat models with function calling get a `create_image` tool while an image
-  model is active. When the user asks for an image, the backend counts it against the user's monthly image limit,
+  model is active and the user's plan includes images. When the user asks for an image, the backend counts it against
+  the user's images per period,
   generates it with the active image model (an OpenAI GPT image model through LiteLLM), validates and re-encodes the
   bytes in the same child process, stores the image as one of the user's private documents (indexed by its prompt
   and description), and calls the model again with the result. The answer shows the image; `create_document` can
   embed it in PDF and Word files.
 - **Plugins (Gmail):** a small plugin framework (`app/plugins/`) with Gmail as the first plugin. The admin turns a
   plugin on, and each user connects their own account with OAuth 2.0. Tokens are stored encrypted, and nobody sees or
-  uses another user's connection. Connected users get Gmail tools in the same chat loop: search and read with emails
-  cited as sources, import into their documents, drafts, and proposed emails that are sent only when the user clicks
-  **Send**. A separate model call (the "request check") confirms that the user asked for each draft, proposal or
-  import in their own words. Setup: [`docs/gmail-setup.md`](docs/gmail-setup.md).
+  uses another user's connection. Connected users whose plan includes Gmail get Gmail tools in the same chat loop:
+  search and read with emails cited as sources, import into their documents, drafts, and proposed emails that are sent
+  only when the user clicks **Send**. A separate model call (the "request check") confirms that the user asked for each
+  draft, proposal or import in their own words. Setup: [`docs/gmail-setup.md`](docs/gmail-setup.md).
 - **Admin:** one admin account, defined in `.env`. Users exist only if the admin creates them.
+- **Plans and payments:** a user's access, features and limits come from their plan (seeded: Starter, Standard,
+  Professional; edited in Admin → Plans), held as prepaid 30-day periods paid through Razorpay Payment Links, granted
+  free by the admin, or paid by a bank transfer the admin records. The backend enforces it on every route
+  (`billing.entitlements`); the admin needs no plan (section 9).
 - **Operations:** the backend migrates the database with Alembic when it starts, the `backup` service backs up daily
   with a verified, tested restore, and the `monitor` service alerts when something breaks (section 8).
 - **Account and Settings:** each user's preferences (theme, accent, chat font size, default model, Enter to send) are
   saved in their account (`/api/me/preferences`). A small script, `theme-boot.js`, applies the cached theme before the
-  first paint, within the strict CSP. The app also keeps a short sign-in history per user and offers this month's
+  first paint, within the strict CSP. The app also keeps a short sign-in history per user and offers this period's
   usage, a ZIP export of the user's own data and "delete all my chats" (`/api/me/*`, `DELETE /api/conversations`).
 - **Interface:** a top bar over the chat (model, Plugins, Documents and avatar menus), a "+" menu in the composer, a
-  Settings dialog and the admin page, in a warm editorial design ("Paper & Clay": serif answers, light and dark, five
-  accent colours). The fonts are Latin subsets of Source Serif 4 and Source Sans 3, bundled with their licences in
-  `frontend/src/assets/fonts/`; nothing is loaded from a CDN.
+  Settings dialog, the plan, checkout and public pages, and the admin page, in a warm editorial design ("Paper & Clay":
+  serif answers, light and dark, five accent colours). The fonts are Latin subsets of Source Serif 4 and Source Sans 3,
+  bundled with their licences in `frontend/src/assets/fonts/`; nothing is loaded from a CDN.
 
 Code layout:
 
 | Path | What |
 |---|---|
-| `backend/app/main.py`, `config.py`, `db.py`, `models.py` | app factory, settings, async SQLAlchemy (and the migrations run at start-up), ORM |
+| `backend/app/main.py`, `config.py`, `db.py`, `models.py`, `errors.py` | app factory, settings, async SQLAlchemy (and the migrations run at start-up), ORM, errors with a machine-readable `code` |
 | `backend/migrations/`, `backend/alembic.ini` | Alembic migrations ([README](backend/migrations/README.md)) |
-| `backend/app/routers/` | `auth`, `me` (the caller's preferences, account, usage and export), `models`, `documents`, `conversations`, `chat`, `admin`, `plugins`, `admin_plugins`, `system` (readiness and Admin → System) (all under `/api`) |
+| `backend/app/routers/` | `auth`, `me` (the caller's preferences, account, usage and export), `models`, `documents`, `conversations`, `chat`, `admin`, `plugins`, `admin_plugins`, `billing` (plans, checkout, orders, payments, receipts, the Razorpay return and webhook), `admin_billing` (Admin → Plans and Billing), `public` (the public pricing and site details), `system` (readiness and Admin → System) (all under `/api`) |
+| `backend/app/services/billing/` | plans and payments: `entitlements` (what a user may do), `periods`, `plans`, `checkout`, `payments` (the exactly-once apply), `razorpay` (the REST client), `webhooks`, `reconcile` (the worker's billing loop), `refunds`, `disputes`, `receipts` (PDF), `reminders`, `summary`, `csv_export`, `business` (billing settings), `money`, `locks`, `audit` |
 | `backend/app/ops/` | operations: `checks` (every health check), `monitor` (the monitor service), `alerts` + `channels` (alert states, webhook, ntfy, email), `heartbeat` (the worker's), `backup_status`, `reconcile` (after a restore), `settings` |
-| `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `document_tool` (the chat's `create_document` tool) + `filegen/` (PDF, DOCX, XLSX and MD rendering and image validation, run by `filegen/child.py`), `image_tool` (the chat's `create_image` tool and the monthly image count), `account` (preferences, sign-in history, the user's usage report), `export` (the data export ZIP), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
+| `backend/app/services/` | `llm` (LiteLLM), `rag`, `parsing`, `pdf_images` + `pdf_render_child` (PDF image measuring and rendering), `vision` (vision model reading), `document_tool` (the chat's `create_document` tool) + `filegen/` (PDF, DOCX, XLSX and MD rendering and image validation, run by `filegen/child.py`), `image_tool` (the chat's `create_image` tool and the image count per period), `account` (preferences, sign-in history, the user's usage report), `export` (the data export ZIP), `chunking`, `ingestion`, `vectorstore`, `usage`, `storage` |
 | `backend/app/plugins/` | plugin framework: `base` (the `Plugin` interface), `registry`, `oauth` + `connections` + `crypto` (OAuth, token refresh, encryption), `intent` (the request check), `answer`, `importing`, `audit`, `tasks`, `http`; `gmail/` is the Gmail plugin (`plugin`, `client`, `mime`, `tools`, `sends`, `importer`, `render`, `router`) |
 | `backend/app/fonts/` | Noto Sans fonts for generated PDFs (SIL Open Font License, `OFL.txt`) |
 | `backend/app/worker.py` | ingestion worker (`python -m app.worker`) |
 | `backend/tests/` | in-process API tests, no Docker needed ([README](backend/tests/README.md)) |
-| `frontend/src/pages/` | `LoginPage` (+ `login.css`), `ChatPage`, `AdminPage` |
-| `frontend/src/components/` | `chat/` (top bar, model, Plugins, avatar and "+" menus, thread, composer; `chat/plugins/`: Gmail cards), `documents/` (right-hand panel), `settings/` (the Settings dialog and its tabs), `connections/` (plugin cards, Gmail browser), `admin/`, `ui/` (shared primitives: Modal, Menu, Meter, Switch, SegmentedControl, PasswordInput, icons, …) |
+| `frontend/src/pages/` | `LoginPage` (+ `login.css`), `ChatPage`, `AdminPage`, `PlansPage`, `CheckoutPage`, `BillingReturnPage` (+ `plans.css`), `public/` (the pricing and policy pages) |
+| `frontend/src/components/` | `chat/` (top bar, model, Plugins, avatar and "+" menus, thread, composer; `chat/plugins/`: Gmail cards), `documents/` (right-hand panel), `settings/` (the Settings dialog and its tabs), `connections/` (plugin cards, Gmail browser), `billing/` (plan cards, compare table, banners, locked items, the plan-ended panel), `admin/`, `ui/` (shared primitives: Modal, Menu, Meter, Switch, SegmentedControl, PasswordInput, icons, …) |
+| `frontend/public/legal/` | the public policy pages' text as Markdown (drafts to replace before going live, section 9) |
 | `frontend/src/styles/`, `src/assets/fonts/` | the design system: `global.css` (tokens for light, dark, five accents and three chat font sizes, plus shared primitives), `fonts.css` and the bundled fonts with their licences |
 | `frontend/public/theme-boot.js`, `src/theme/appearance.ts` | the theme engine: applies the cached appearance before the first paint, then follows the account's preferences and the OS (System) |
 | `frontend/nginx.conf`, `upload-limit.envsh` | nginx template (security headers, body limits, upload auth check) |
 | `frontend/src/**/*.test.ts(x)`, `src/test/` | Vitest tests next to the code, and their shared helpers ([README](frontend/src/test/README.md)) |
 | `e2e/` | Playwright browser tests against the running stack ([README](e2e/README.md)) |
-| `integration/` | full-stack tests on an isolated Compose project with fake model and Google servers ([README](integration/README.md)) |
+| `integration/` | full-stack tests on an isolated Compose project with fake model, Google and Razorpay servers ([README](integration/README.md)) |
 | `.github/workflows/ci.yml` | CI: every suite on GitHub Actions (section 7) |
 | `scripts/` | `backup.sh`, `restore.sh`, the backup service's steps (`backup/`) and the optional host watchdog (`watchdog/`) ([README](scripts/README.md)) |
 
@@ -135,8 +145,16 @@ Notes:
   (`ADMIN_PASSWORD='my$ecret'`); double quotes don't help.
 - `POSTGRES_*` are applied only when the database volume is first created. To change them later,
   change them inside Postgres too, or reset all data with `docker compose down -v`.
-- Every other setting (upload limits, retrieval tuning, login throttle, parsing limits, …) is
+- Every other setting (the upload cap, retrieval tuning, login throttle, parsing limits, …) is
   listed with its default in `.env.example`, in the "Advanced" section.
+- **Usage limits come from plans** (Admin → Plans, with per-user overrides in Admin → Users; section 9). The old
+  settings `DEFAULT_MONTHLY_TOKEN_LIMIT`, `DEFAULT_RATE_LIMIT_PER_MIN`, `DEFAULT_MAX_UPLOAD_MB`,
+  `DEFAULT_MAX_DOCUMENTS`, `DEFAULT_MAX_STORAGE_MB`, `DEFAULT_MONTHLY_IMAGE_LIMIT` and `VISION_MONTHLY_TOKEN_LIMIT` are
+  gone: a value still in `.env` is ignored, with one warning per setting at start-up. `MAX_UPLOAD_MB_HARD` (100) stays
+  and caps every plan and override.
+- **Payments** (`RAZORPAY_*` and `BILLING_*`, the "Payments" block of `.env.example`) are optional. Without Razorpay
+  keys users see "Online payment isn't set up yet." and get access only from a plan the admin grants or a bank
+  transfer the admin records. Section 9 has the setup and the settings.
 - Compose passes the whole `.env` to the backend and worker. The frontend (nginx) gets only
   `MAX_UPLOAD_MB_HARD`.
 - Anthropic has no embeddings API, so embedding needs the OpenAI key unless you switch to a local
@@ -146,14 +164,14 @@ Notes:
   exceptions are the vision and image models. An existing database gets "Claude Sonnet 5.5 (vision)" (or "GPT-5.4
   mini (vision)" when only the OpenAI key is set) once, on its next start, enabled and active if the key is set,
   so from then on PDF page images go to that provider without any admin action. In the same way it gets the image
-  model "GPT Image 2" (`openai/gpt-image-2`) once, enabled and active if `OPENAI_API_KEY` is set, and every existing
-  user gets the default monthly image limit once. A vision or image model you delete isn't added again.
+  model "GPT Image 2" (`openai/gpt-image-2`) once, enabled and active if `OPENAI_API_KEY` is set. A vision or image
+  model you delete isn't added again. The three plans are seeded once too, when there are none (section 9).
 - **Vision model for PDFs** (`VISION_*` in `.env.example`): at most `VISION_MAX_PAGES` (50, at most 200)
   pages per document are read with the vision model, full-page scans first (a PDF with more of them fails
   with a message; other pages over the cap keep only their text layer), with `VISION_CONCURRENCY` (3) calls
   at a time per document and `VISION_MAX_IN_FLIGHT` (4) in the worker, and no new call after
-  `VISION_TIMEOUT_SECONDS` (1800). Each user may use `VISION_MONTHLY_TOKEN_LIMIT` (2,000,000) vision tokens a
-  month (0 = unlimited; the admin is exempt). Pages are rendered with a long edge of `VISION_MAX_IMAGE_PX`
+  `VISION_TIMEOUT_SECONDS` (1800). Each user's plan sets their vision tokens per period (section 9; the admin is
+  exempt). Pages are rendered with a long edge of `VISION_MAX_IMAGE_PX`
   (1568, at most 2576) pixels, and `VISION_MAX_OUTPUT_TOKENS` (8192) caps each page's output when the model's
   "Max output tokens" is blank. `VISION_MIN_TEXT_CHARS` (40) and `VISION_MIN_IMAGE_RATIO` (0.1) decide which
   pages count as scanned and which images are large enough to describe.
@@ -166,13 +184,14 @@ Notes:
   - Offering the tool adds about 1,550 input tokens to every model call of a capable chat model, whether or not
     a file is requested (measured: about $0.006 per Claude Opus 5.5 call).
   - Generated files count toward the user's document, storage and per-file limits (the admin is exempt). A user
-    with no room isn't offered the tool, and the assistant says so.
-- **Images from chat** (`CHAT_IMAGE_TOOLS`, `GENERATED_IMAGES_PER_ANSWER`, `DEFAULT_MONTHLY_IMAGE_LIMIT` and `IMAGE_*`
-  in `.env.example`): `CHAT_IMAGE_TOOLS=false` turns image generation off and keeps existing images (disabling the
-  active image model in the admin page does the same).
+    with no room isn't offered the tool, and the assistant says so. Neither is a user whose plan doesn't include files
+    from chat (Starter, as seeded).
+- **Images from chat** (`CHAT_IMAGE_TOOLS`, `GENERATED_IMAGES_PER_ANSWER` and `IMAGE_*` in `.env.example`):
+  `CHAT_IMAGE_TOOLS=false` turns image generation off and keeps existing images (disabling the active image model in
+  the admin page does the same).
   - One answer may generate `GENERATED_IMAGES_PER_ANSWER` (3) images.
-  - `DEFAULT_MONTHLY_IMAGE_LIMIT` (30, `0` = unlimited) is the user form's default for the monthly image count.
-    Changing it later doesn't change existing users, who each have their own value.
+  - The images a user may generate per period come from their plan (as seeded, only Professional includes images: 60
+    per period), with an optional per-user override.
   - `IMAGE_MAX_QUALITY` (medium) caps the quality, and with it the cost.
   - `IMAGE_OUTPUT_FORMAT` (png) is the format asked of the image model and stored. A PNG measured about 0.7 MB for a
     square low-quality image and 2.7 MB for a landscape medium one; `jpeg` and `webp` are much smaller.
@@ -183,7 +202,8 @@ Notes:
     an image is requested.
 - **Gmail** (the Plugins block in `.env.example`; step by step in [`docs/gmail-setup.md`](docs/gmail-setup.md)): Gmail
   stays "not configured" until `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` (a Google "Web application" OAuth
-  client) and `TOKEN_ENCRYPTION_KEY` are set, and stays off until the admin turns it on in Admin → Plugins.
+  client) and `TOKEN_ENCRYPTION_KEY` are set, and stays off until the admin turns it on in Admin → Plugins. Only users
+  whose plan includes Gmail (Professional, as seeded) can use it.
   - `PUBLIC_BASE_URLS` (`http://localhost:8080`) lists the addresses users connect from. Each one also needs
     `<address>/api/plugins/gmail/oauth/callback` registered in Google.
   - `GOOGLE_OAUTH_TESTING_MODE` (true) matches the Google app's "Testing" status, where Google ends connections after
@@ -232,6 +252,9 @@ docker compose down -v             # stop AND delete all data (backups in ./back
 
 ## 4. Using it
 
+**Plans:** every user except the admin needs a current plan. After sign-in, a user without one lands on the plan page
+(`/plans`) to choose and pay; section 9 has what users see and what the admin does.
+
 **Chat page:** conversations on the left, the streaming chat in the middle, and documents on the
 right (under 1100 px the conversation list becomes a drawer; under 800 px the document panel
 becomes a slide-over). Upload PDF, Word (`.docx`), PowerPoint (`.pptx`), Excel (`.xlsx`), HTML,
@@ -246,14 +269,15 @@ documents", "3 documents") and opens the panel. **Stop** keeps the partial answe
   conversation title, **Plugins** (every plugin with its status: Connected, Not connected, Reconnect needed, Turned off
   by the admin or Not set up; each row opens the plugin's card in Settings), **Documents** (opens the panel on narrow
   screens; on wider ones it hides or shows the right-hand column, remembered per browser) and your **avatar menu**:
-  this month's tokens and images against your limits, **View usage**, **Settings**, a System / Light / Dark switch,
-  **Admin** (admins only) and **Log out**.
+  your plan ("Starter · until 31 Oct"), this period's chat allowance and images against your limits, **View usage**,
+  **Settings**, **Plan & billing**, a System / Light / Dark switch, **Admin** (admins only) and **Log out**.
 - **"+" menu** in the composer: **Attach files…** uploads to your private documents; chips above the input show the
   upload and indexing, and Send waits until the files are indexed (remove a chip to send without it). **Create an
   image** and **Create a document** (PDF, Word, Excel, Markdown), and once Gmail is connected **Search my email** and
   **Draft an email**, put a starter such as "Create a PDF document: " in front of your message; nothing is sent until
   you send it. **Import from Gmail…** opens the Gmail browser (before you connect, **Connect Gmail…** opens its
-  card). Features you don't have are left out; items you can't use right now are disabled with the reason.
+  card). Features the server doesn't offer are left out; features your plan doesn't include show a lock and "Included
+  in <plan>" and open the plan page; items you can't use right now are disabled with the reason.
 - **Keys:** Enter sends and Shift+Enter adds a line. With "Enter to send" off in Settings, Ctrl+Enter (⌘+Enter on a
   Mac) sends and Enter adds a line.
 
@@ -266,19 +290,23 @@ browsers.
 - **Account:** username, role, when the account was created, the last 20 sign-ins (approximate address, browser, OS
   and device; "This device" marks yours), **Change password…** (not for the admin, whose password lives in `.env`) and
   **Log out of all other sessions**, which signs out every other browser and API token and keeps this one.
-- **Usage:** this month's chat tokens, images and vision tokens against your limits, the estimated cost, documents and
-  storage, the requests-per-minute limit, when the month resets (the 1st, UTC), a daily chart with a table, and totals
-  per model.
+- **Plan & billing:** your plan and its dates, what comes next, receipt details and your payments with their receipts
+  (section 9).
+- **Usage:** this period's chat allowance (counted at each model's rate), images and vision tokens against your plan's
+  limits, the estimated cost, documents and storage, the requests-per-minute limit, when the period ends (an
+  open-ended complimentary plan counts per UTC calendar month), a daily chart with a table, and totals per model.
 - **Plugins & data:** the plugin cards (see Gmail below), **Export my data** (a ZIP with your account, the details of
-  your documents and your conversations as Markdown and JSON, newest first within the limits in section 2; document
-  files aren't included, use Download in the panel) and **Delete all chats** (type `DELETE` to confirm; your
-  documents, the files and images created in chat and your usage history stay).
+  your documents, your conversations as Markdown and JSON, newest first within the limits in section 2, and your billing
+  records; document files aren't included, use Download in the panel) and **Delete all chats** (type `DELETE` to
+  confirm; your documents, the files and images created in chat and your usage history stay). Without a plan, "Your
+  data" lists your documents (Download, Delete) and your chats (Delete).
 
 **Files from chat:** ask for a file in your own words, for example "make a PDF report of the Q3 figures from
 my documents", "put these numbers in a spreadsheet", "draft a Word letter" or "export this as markdown". The
-assistant creates PDF, Word (`.docx`), Excel (`.xlsx`) and Markdown (`.md`) files (with chat models that
-support function calling; the hint under the composer says when the selected model can). A card under the answer
-shows the file being written, then its name, type, size and indexing status, with a **Download** button.
+assistant creates PDF, Word (`.docx`), Excel (`.xlsx`) and Markdown (`.md`) files (on a plan that includes files from
+chat, with chat models that support function calling; the hint under the composer says when the selected model can). A
+card under the answer shows the file being written, then its name, type, size and indexing status, with a **Download**
+button.
 Every file is saved to your private documents ("Created in chat" in the document panel), counts toward your
 document and storage limits, and is indexed, so later chats can search it; passages from such files are
 marked as earlier answers rather than sources. When the content uses your documents, the file ends with a
@@ -297,10 +325,10 @@ Sources section. Every document in the panel, uploads included, has a Download b
   your documents.
 
 **Images from chat:** ask for an image in your own words, for example "generate an image of a fox in the snow",
-"draw a watercolor illustration of a lighthouse at dawn" or "make a logo concept for a bakery". This works with chat
-models that support function calling while the admin has an image model active; the composer hint mentions images
-when the selected model can. The assistant writes a full prompt for the image model and picks square,
-landscape or portrait.
+"draw a watercolor illustration of a lighthouse at dawn" or "make a logo concept for a bakery". This works on a plan
+that includes images, with chat models that support function calling, while the admin has an image model active; the
+composer hint mentions images when the selected model can. The assistant writes a full prompt for the image model and
+picks square, landscape or portrait.
 
 - **In the answer:** while the image is made (10 to 40 s in the live tests), a placeholder with the image's shape
   counts the seconds. Then the image appears under the answer with its name, type, size and Download. Click it for a
@@ -313,9 +341,9 @@ landscape or portrait.
 - **In files:** ask for a PDF or Word file "with the logo" and the image is placed in it, scaled to the page width,
   with a caption. This works for images generated earlier in the same conversation. Excel and Markdown files get a
   text reference instead.
-- **Limits (defaults):** up to 3 images per answer, and a monthly image count per user (30) that the avatar menu shows
-  as "Images this month" (also in Settings → Usage). The admin sets each user's count; the admin has no limit. Failed
-  attempts that the provider may have charged for count too.
+- **Limits (defaults):** up to 3 images per answer, and the plan's images per period (Professional: 60) that the avatar
+  menu shows as "Images this period" (also in Settings → Usage). The admin may override a user's count; the admin has
+  no limit. Failed attempts that the provider may have charged for count too.
 - **When it fails:** a refused prompt (the provider's safety system), a busy provider or a timeout shows a card with
   the reason, and the assistant explains it. After any failure other than a refusal, that answer makes no more
   images; ask again in a new message.
@@ -323,7 +351,8 @@ landscape or portrait.
   text stops: the image is still finished, saved to your documents and counted, and it appears on the answer after
   a reload.
 
-**Gmail** (once the admin has set it up and turned it on; see [`docs/gmail-setup.md`](docs/gmail-setup.md)): open
+**Gmail** (once the admin has set it up and turned it on, on a plan that includes Gmail; see
+[`docs/gmail-setup.md`](docs/gmail-setup.md)): open
 **Plugins** in the top bar and pick Gmail (or go to Settings → **Plugins & data**), click **Connect Gmail** and sign
 in at Google. Each user connects their own account; nobody else can see or use it. Then:
 
@@ -349,15 +378,22 @@ in at Google. Each user connects their own account; nobody else can see or use i
 **Admin page** (`/admin`, admin only; **Admin** in the avatar menu, and its header has Settings and Sign out). An
 overview at the top shows users, documents, failed and stale documents, the ingestion queue and the active embedding,
 vision and image models ("Off" when no vision or image model is active), and offers a re-index when documents are
-stale or failed.
+stale or failed. The tabs are Users, Plans, Billing, Models, Usage, Documents, Plugins and System (section 8).
 
-- **Users:** create users (the only way to get an account), reset passwords, deactivate, delete.
-  Per-user limits (`0` = unlimited, except for the max file size):
-  - monthly token budget (chat tokens only; embedding and vision tokens are shown but don't count)
+- **Users:** create users (the only way to get an account, optionally with a complimentary plan), reset passwords,
+  deactivate, delete. The list shows each user's plan ("Standard · until 25 Nov", "Complimentary Professional", "No
+  plan") with filters (All, Active, Expiring, Lapsed, Complimentary, No plan), and this period's chat allowance and
+  images. A user's form has a **Plan** section (grants, plan changes, revokes, payments, billing events; section 9) and
+  the switch **Can make test payments**. Limits come from the user's plan; each can be overridden for one user (blank =
+  the plan's value, `0` = unlimited, except for the max file size), and "Above plan" flags an override over the plan's:
+  - chat allowance per period (standard tokens; embedding and vision tokens are shown but don't count); `0` asks to
+    confirm, since the user then has no cost ceiling
   - chat requests per minute
-  - which chat models they may use
+  - which chat models they may use (this only narrows the plan's models)
   - max file size, max number of documents, max total storage
-  - monthly image limit (images per UTC calendar month; the Users table shows "Images this month")
+  - images per period and vision tokens per period
+- **Plans** and **Billing:** the plan editor, payments, refunds, orders, bank transfers and the business details
+  (section 9).
 - **Models:** four sections, Chat, Embedding, Vision and Image. Add, edit, enable/disable, choose the default
   chat model and the active embedding, vision and image models, and **Test** the connection (for a vision model,
   it sends a small generated image and checks the model reads it; for an image model, it generates one small
@@ -377,23 +413,23 @@ stale or failed.
     already made stay. If the model returns unusable data (no image data, or not a PNG, JPEG or WebP image), image
     generation pauses until the model is edited or its **Test** succeeds.
 - **Usage:** chat, embedding and vision tokens, generated images and the estimated cost per user, per model and
-  per day, for any month. Only chat tokens count toward user budgets; vision tokens have their own monthly allowance
-  (`VISION_MONTHLY_TOKEN_LIMIT`) and images their monthly count.
-- **Plugins:** each plugin with its configuration status (the `.env` settings still missing), an **Enabled** switch,
-  capability switches (Gmail: Search and read, Drafts, Send), the scopes it requests and the redirect URIs to register
-  at Google (with Copy), connection counts (connected, reconnect needed, still on an older encryption key), this month's
-  activity per action and per user (counts only: no subjects, addresses or account emails), and **Disconnect all
-  users**. **Request check → Test** checks that a chat model can run the request check (one short model call).
+  per day, for any calendar month. Only chat answers count toward a user's chat allowance (at each model's rate);
+  vision tokens and images have their own allowances per period, from the plan.
 - **Documents:** every document (uploads, and files and images created in chat), with re-index and delete actions,
   and **Re-index all documents**. Users' generated images show only their type tag here; their prompts and the
   images themselves stay private to their owner.
   Documents read with the vision model show how many pages it read ("pages read by vision"). PDFs that
   failed as scanned before the vision model was enabled can be retried (Retry in the document panel, or
   "Retry failed" in the admin overview).
+- **Plugins:** each plugin with its configuration status (the `.env` settings still missing), an **Enabled** switch,
+  capability switches (Gmail: Search and read, Drafts, Send), the scopes it requests and the redirect URIs to register
+  at Google (with Copy), connection counts (connected, reconnect needed, still on an older encryption key), this month's
+  activity per action and per user (counts only: no subjects, addresses or account emails), and **Disconnect all
+  users**. **Request check → Test** checks that a chat model can run the request check (one short model call).
 
 The admin can upload to the **shared knowledge base** (toggle in the document panel). Shared
 documents are searched in every user's chats. Users' own uploads stay private to them. The
-admin bypasses all usage limits.
+admin bypasses all usage limits and needs no plan.
 
 ## 5. Switching or adding models (LiteLLM)
 
@@ -504,15 +540,15 @@ Back to the full stack: stop the local processes, then `docker compose up -d` fr
 
 ## 7. Testing
 
-Five suites. **None of them calls a real model provider or Google** in its default run, so they cost nothing:
+Five suites. **None of them calls a real model provider, Google or Razorpay** in its default run, so they cost nothing:
 
 | Suite | Where | What it covers | Needs | Size |
 |---|---|---|---|---|
-| Backend | `backend/tests/` ([README](backend/tests/README.md)) | the whole API in-process: SQLite, fakeredis, in-memory Qdrant, LiteLLM mocked, a fake Google, the real PDF and file render children; route guards and deletion checks that cover new routes and tables without being edited; the migrations, the monitor, alerts and channels, readiness and Admin → System, and the restore's reconcile step | Python 3.13 | about 2,540 tests (35 skipped without Postgres); coverage 95.4 % (statements and branches) |
-| Backend on Postgres | the `postgres`-marked tests in `backend/tests/` (with `TEST_DATABASE=postgres`, all of them) | the migrations (adopting a database made before them, repairs and refusals, the advisory lock across two processes), row locks under parallel uploads, UTC sessions, the image reservation race, the account tests | a throwaway Postgres 17 (e.g. in Docker) | 35 tests |
-| Frontend | `frontend/src/**/*.test.ts(x)` ([README](frontend/src/test/README.md)) | components, hooks, stores and the API client (the SSE parser included) with Vitest, Testing Library and jsdom; `fetch` is stubbed | Node 22+ | 719 tests in 53 files; coverage 92.8 % of statements, 88.2 % of branches |
-| End-to-end | `e2e/` ([README](e2e/README.md)) | a real Chromium (desktop and a phone) against the running stack: sign-in, top bar, chat streaming and Stop, the composer, documents, Settings, the admin page, phone layout, accessibility | the Docker stack up | 48 tests in 10 files (1 `@live`, skipped) |
-| Integration | `integration/` ([README](integration/README.md)) | an isolated copy of the whole stack (nginx, backend, worker, Postgres, Redis, Qdrant, the monitor and the backup service) with a fake OpenAI-compatible model server, the fake Google and a fake alert receiver: ingestion, chat, access, files and images from chat, limits, sessions, the worker, re-indexing, user deletion, export, Gmail, vision, backups and the restore drill, monitoring and alerts, the host watchdog | Docker | 148 tests in 17 files |
+| Backend | `backend/tests/` ([README](backend/tests/README.md)) | the whole API in-process: SQLite, fakeredis, in-memory Qdrant, LiteLLM mocked, a fake Google and a fake Razorpay, the real PDF and file render children; route guards and deletion checks that cover new routes and tables without being edited; the migrations, the monitor, alerts and channels, readiness and Admin → System, and the restore's reconcile step; plans, entitlements on every route, checkout, payments, refunds, disputes, receipts and reminders | Python 3.13 | about 3,060 tests (the 47 `postgres`-marked ones skipped without Postgres); coverage 95.6 % (statements and branches) |
+| Backend on Postgres | the `postgres`-marked tests in `backend/tests/` (with `TEST_DATABASE=postgres`, all of them) | the migrations (adopting a database made before them, repairs and refusals, the advisory lock across two processes), row locks under parallel uploads, UTC sessions, the image reservation race, the account tests, payments applied and checkouts started at once, receipt numbering, the plans migration | a throwaway Postgres 17 (e.g. in Docker) | 47 tests |
+| Frontend | `frontend/src/**/*.test.ts(x)` ([README](frontend/src/test/README.md)) | components, hooks, stores and the API client (the SSE parser included) with Vitest, Testing Library and jsdom; `fetch` is stubbed | Node 22+ | 1,040 tests in 78 files; coverage 94.2 % of statements, 89.4 % of branches |
+| End-to-end | `e2e/` ([README](e2e/README.md)) | a real Chromium (desktop and a phone) against the running stack: sign-in, top bar, chat streaming and Stop, the composer, documents, Settings, the admin page, plans, checkout and the return page (the payment side intercepted), phone layout, accessibility | the Docker stack up | 53 tests in 11 files (1 `@live`, skipped) |
+| Integration | `integration/` ([README](integration/README.md)) | an isolated copy of the whole stack (nginx, backend, worker, Postgres, Redis, Qdrant, the monitor and the backup service) with a fake OpenAI-compatible model server, the fake Google and a fake alert receiver: ingestion, chat, access, files and images from chat, limits, sessions, the worker, re-indexing, user deletion, export, Gmail, vision, backups and the restore drill, monitoring and alerts, the host watchdog, payments against a fake Razorpay | Docker | 160 tests in 18 files |
 
 ```bash
 # Backend (from the repo root)
@@ -520,7 +556,7 @@ cd backend
 uv venv --python 3.13 .venv            # once (uv downloads Python 3.13 if needed)
 uv pip sync requirements-dev.txt       # again whenever the locks change
 #   or, with python3.13 on PATH: python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q                              # 6 to 9 minutes (35 skipped without TEST_POSTGRES_URL)
+.venv/bin/python -m pytest -q                              # 8 to 12 minutes (47 skipped without TEST_POSTGRES_URL)
 .venv/bin/python -m pytest -q --cov --cov-fail-under=94    # with coverage (.coveragerc); fails under 94 %
 uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests migrations
 uvx mypy@1.18.2 --python-executable .venv/bin/python --ignore-missing-imports app migrations
@@ -547,20 +583,23 @@ cd ..
 integration/run.sh                      # about 4 minutes of tests once the images are built (the restore drill included)
 ```
 
-- **No real calls.** The backend tests mock LiteLLM and serve a fake Google in-process. The e2e suite answers every
-  chat with canned SSE events and blocks requests to other hosts, uploads, plugin connects, the admin's model Test and
-  re-indexing; its one real call, the `@live` test, runs only with `E2E_LIVE=1`. The integration stack has fake
-  provider keys, points every model at its fake server and Google at the fake Google, and its backend and worker sit
-  on an internal network with no route to the internet.
+- **No real calls.** The backend tests mock LiteLLM and serve a fake Google and a fake Razorpay in-process. The e2e
+  suite answers every chat with canned SSE events, intercepts the plan catalog, the checkout and the order, and blocks
+  requests to other hosts, uploads, plugin connects, the admin's model Test and re-indexing; its one real call, the
+  `@live` test, runs only with `E2E_LIVE=1`. The integration stack has fake provider keys and Razorpay test keys,
+  points every model at its fake server, Google at the fake Google and `RAZORPAY_API_BASE` at the fake Razorpay, and
+  its backend and worker sit on an internal network with no route to the internet.
 - **Docker.** The backend and frontend suites need none. The Postgres tests need a throwaway database: its name must
   contain `test` or `scratch`, and never point `TEST_POSTGRES_URL` at the app's `rag` database. The e2e suite needs
   the stack running. The integration suite runs its own Compose project, `rag-it` (own volumes, a generated throwaway
-  env file; it never reads `.env` and never touches `rag-app`), on 127.0.0.1 ports 18090 to 18092 (`IT_APP_PORT`,
-  `IT_FAKE_LLM_PORT`, `IT_FAKE_GOOGLE_PORT`), and checks afterwards that nothing of it is left.
+  env file; it never reads `.env` and never touches `rag-app`), on 127.0.0.1 ports 18090 to 18093 (`IT_APP_PORT`,
+  `IT_FAKE_LLM_PORT`, `IT_FAKE_GOOGLE_PORT`, `IT_FAKE_RAZORPAY_PORT`), and checks afterwards that nothing of it is left.
 - **The e2e suite on a stack with real data.** It signs in as the env admin (`E2E_ADMIN_USERNAME` and
   `E2E_ADMIN_PASSWORD`, else `ADMIN_USERNAME` and `ADMIN_PASSWORD` from `.env`) only to create and delete its own
-  `e2e-<run id>-<random>` users; the admin's browser context blocks every other write, so models, plugins, the shared
-  knowledge base and other users never change. Each run adds one sign-in to the admin's history.
+  `e2e-<run id>-<random>` users and to grant or end their plans; the admin's browser context blocks every other write,
+  so models, plans, plugins, the shared knowledge base and other users never change. Each run adds one sign-in to the
+  admin's history. The grants write billing events for the test users, which go with them when they are deleted
+  because they never place an order.
 - The frontend tests pin `TZ=UTC` and the `en_US` locale (`vite.config.ts`), so dates and numbers format the same
   everywhere.
 
@@ -690,6 +729,7 @@ The `monitor` service runs these checks every `MONITOR_INTERVAL_SECONDS` (60):
 | `backup` | the last backup failed (critical), or there is no backup yet, the last one is older than `BACKUP_MAX_AGE_HOURS` (26), or the scheduler went silent (warning); not while a backup runs or a start-up backup is due |
 | `disk_uploads`, `disk_backups` | less than `ALERT_DISK_MIN_FREE_PERCENT` (10 %) free (warning; under half of it critical) |
 | `proxy` | the app doesn't answer through nginx (`MONITOR_APP_URL`) (critical) |
+| `billing` | with Razorpay keys only: payments to review, a dispute to answer within 3 days, stalled payment checks, rejected keys, a refund stuck over 7 days or failed, 20 or more bad webhook or return signatures in an hour, a webhook event failed 3 times, captured payments no webhook reported, live keys without `RAZORPAY_WEBHOOK_SECRET`, test keys on a public `https` address (warning) |
 
 An alert goes out when a check has shown a problem `ALERT_CONFIRM_CHECKS` (2) times in a row, so a blip sends
 nothing; again every `ALERT_REPEAT_HOURS` (6) while it lasts; and when it recovers. Alerts never hold secrets,
@@ -739,7 +779,161 @@ Every one is optional; the defaults are in `.env.example`. After a change, run `
 | `WORKER_HEARTBEAT_SECONDS` (15), `WORKER_HEARTBEAT_MAX_AGE_SECONDS` (60) | the worker's heartbeat, and the age that makes the app "unready" |
 | `ALERT_WEBHOOK_URL`, `ALERT_NTFY_URL`, `ALERT_NTFY_TOKEN`, `ALERT_SMTP_*` (empty) | the alert channels (above) |
 
-## 9. Security notes
+## 9. Plans and billing
+
+Every user except the admin needs a current plan to use the app. A plan is bought as a prepaid 30-day period through
+Razorpay (UPI, cards, netbanking, wallets), granted free by the admin, or paid by a bank transfer the admin records.
+Nothing renews by itself. The design is in [`docs/briefs/plans-billing.md`](docs/briefs/plans-billing.md) (looks:
+`plans-billing-visual.md`; Razorpay facts: `payments-razorpay-research.md`); the contract is `SPEC.md`.
+
+### What users see
+
+- **After sign-in** a user without a plan (none yet, or ended) lands on the plan page, `/plans`: the plan cards with
+  their features and limits, a compare table, and the options they have now (choose, renew, upgrade, switch at
+  renewal). Without a plan only the plan page, checkout, Settings and the public pages open; chats and documents are
+  kept.
+- **Checkout** (`/plans/checkout/<plan>`) shows the dates, the amount, what a switch to a smaller plan removes, and
+  **Pay**. Pay opens Razorpay's own page in the same tab, which offers UPI, cards, netbanking and wallets. No Razorpay
+  script runs on the app's pages.
+- **The return page** (`/billing/return`) checks with the server until the payment is confirmed, then shows the plan,
+  its dates and the receipt number, with **Start chatting** and **Download receipt**. A failed or abandoned payment
+  says the plan hasn't changed; a payment the app has to check says "Please don't pay again."
+- **Settings → Plan & billing:** the current plan with its dates, the next period, receipt details (a name, and an
+  email for reminders when reminder emails are set up), and the payment history with a PDF receipt per payment
+  (`RA/26-27/000001`, numbered per Indian financial year; test payments `TEST/…`).
+- **Locked features:** a feature the plan lacks stays visible in the "+" menu, the model menu and the Plugins menu
+  with a lock and "Included in <plan>", and leads to the plan page. The server refuses it anyway (402). When the chat
+  allowance runs out (429), the user can upgrade, or start a new period of the same plan at once after using 90 % of
+  an allowance.
+- **Reminders:** a banner from `BILLING_REMINDER_DAYS` (5) days before the paid time ends, and emails 5 days before,
+  the day before and when it ends, only when reminder emails are set up and the user gave an address. None when
+  another period or an open-ended complimentary plan follows.
+- **When a plan ends:** the next request answers 402. An open chat shows a "plan ended" panel with **Renew** and keeps
+  the unsent message; the next page load goes to the plan page. Nothing is deleted: Settings → Plugins & data → "Your
+  data" lists the user's documents (Download, Delete) and chats (Delete), and the data export still works. A Gmail
+  connection is kept but unused, and works again after an upgrade.
+- **Public pages** (no sign-in): `/pricing` (the plan cards, from the plans), `/terms`, `/privacy`, `/refunds`,
+  `/contact`, `/about` and `/shipping`. Razorpay's website review reads them.
+
+### The plans
+
+Seeded on the first start with this feature (the values below), then edited in Admin → Plans. `0` means unlimited.
+Allowances count per period, from the start of the user's current period; an open-ended complimentary plan counts per
+UTC calendar month.
+
+| | Starter | Standard | Professional |
+|---|---|---|---|
+| Price per 30 days | ₹500 | ₹2,000 (recommended) | ₹5,000 |
+| Files from chat / images from chat / Gmail | no / no / no | yes / no / no | yes / yes / yes |
+| Chat models | Claude Haiku 5.5, GPT-5.4 mini | those and Claude Sonnet 5.5 | every enabled chat model |
+| New chats start with | Claude Haiku 5.5 | Claude Sonnet 5.5 | the default model (Claude Opus 5.5) |
+| Chat allowance (standard tokens) | 500,000: about 1,600 Haiku answers | 2,000,000: about 260 Sonnet answers | 5,000,000: about 290 Opus answers |
+| Requests per minute | 10 | 20 | 30 |
+| Max file size, documents, storage | 10 MB, 50, 200 MB | 25 MB, 200, 1,000 MB | 50 MB, 500, 3,000 MB |
+| Images per period | – | – | 60 |
+| Vision tokens per period (scanned PDF pages) | 150,000 (about 50 pages) | 500,000 (about 170) | 1,000,000 (about 340) |
+
+- **The chat allowance counts each answer's cost** in standard tokens: one standard token is $3.20 per million (Claude
+  Sonnet 5.5's blended price), so an answer counts `ceil(cost in USD ÷ 0.0000032)`, or its plain tokens when the model
+  has no price. A Claude Haiku 5.5 answer counts about 1/20 of its tokens, a Claude Opus 5.5 one about twice; the model
+  menu shows each model's rate ("×0.05", "×2"). The answer counts assume 6,000 tokens per answer, plus the file and
+  image tools' prompts when the plan has them.
+- Model lists are matched by LiteLLM model string when the plans are seeded; a model that doesn't exist is left out.
+  A user's own allowed-models list only narrows the plan's.
+- **Periods:** a paid period starts when the payment is confirmed (or, for a renewal, when the paid time ends) and ends
+  at the first midnight IST at least 30 days later ("valid through 25 Nov 2026" is the whole of that day). Renewing, or
+  switching to another plan, adds one period after the paid time (at most one paid ahead); a switch to a smaller plan
+  refunds nothing. **Upgrade now** starts a
+  30-day period of the higher plan at once, for its price minus a credit for the current period: what that period was
+  paid (less refunds) × the smaller of its time left and its allowance left, in whole rupees (no credit for a
+  complimentary period); at least ₹1 is charged.
+- **Editing a plan** changes new periods only, unless the admin also applies it to the current and scheduled ones
+  (lowering what users paid for asks again). A price change never touches a paid period. A plan that was ever used
+  can only be retired, not deleted.
+- **The rollout:** on the first start with plans, every active non-admin user got an open-ended complimentary
+  Professional plan, and every per-user limit was cleared to the plan's value (the old values are kept in the billing
+  events).
+
+### What the admin does
+
+- **Admin → Plans:** the plans with their users (now, next, free), key limits and the worst-case AI cost per period
+  against what is kept after Razorpay's fee (2 % plus GST on it); **New plan**, **Edit** (features, limits, models, the
+  recommended plan, active or retired) and **Delete** (unused plans only).
+- **Admin → Billing:** **Overview** (a month in IST: gross, Razorpay fees, refunds, disputes lost, net; **Needs
+  attention**; users by plan; expiring in 7 days; lapsed in the last 30 days; **Export CSV** of the month's payments,
+  refunds and lost disputes), **Payments** (each payment with **Refund** and **Download receipt**), **Orders**
+  (checkouts by status; **Check now**; a payment in review gets **Mark resolved** or **Grant instead**), and **Business
+  & payments** (the business name, address, contact email and phone and the receipt prefix, shown on receipts and the
+  public pages; the UPI limit; the payments setup with the webhook URL and the 14 events to subscribe; **Check pending
+  payments now**; the going-live checklist).
+- **Admin → Users:** in a user's **Plan** section, **Grant a complimentary plan…** (1 to 90 days, or no end date),
+  **Change plan…** (no charge), **Revoke…** a period, **End plan** for an open-ended one, and **View payments**; the
+  switch **Can make test payments** marks testers. Every grant, plan change, revoke, limit override and tester flag is
+  recorded in the billing events (grants, changes and revokes with the admin's reason).
+- **Refunds** start in Admin → Billing → Payments (Razorpay's refund API). A full refund ends the period it paid for; a
+  partial one does only with **End access** ticked. Refund from the app rather than Razorpay's Dashboard: a Dashboard
+  refund reaches the app only through a webhook.
+- **Disputes** (chargebacks) arrive by webhook and show under Needs attention with the date to respond by, in
+  Razorpay's Dashboard. A lost dispute ends access like a full refund.
+- **Bank transfers** (NEFT, RTGS, IMPS to your account): **Record bank transfer** (Overview or Payments) gives the user
+  a period and a receipt (at least ₹1; a note is required when the amount is below the plan's price).
+- **Deleting a user** keeps their billing records (orders, payments, refunds, disputes, receipts and their events) with
+  the username, for the accounts. A user who never had an order leaves no billing events behind. Their periods and
+  billing profile go with them, and their open payment links are cancelled.
+
+### Setting up Razorpay
+
+1. **Test mode.** Put the test keys from Razorpay's Dashboard (Account & Settings → API Keys) in `.env` as
+   `RAZORPAY_KEY_ID` (`rzp_test_…`) and `RAZORPAY_KEY_SECRET`, then run `docker compose up -d backend worker` and
+   `docker compose up -d --force-recreate frontend`. Mark a tester (Admin → Users → **Can make test payments**): with
+   test keys only testers can pay, and they see Razorpay's test card (4100 2800 0000 1007, any future expiry and any
+   CVV). Test periods last 1 day and stop counting once live keys run. Test mode allows about 30 payment links per
+   business (Admin → Billing shows how many were used), so test sparingly.
+2. **Until webhooks are set up**, the return page and the worker confirm payments by polling Razorpay: every
+   `BILLING_RECONCILE_SECONDS` (30) while a link is open, then less often for `BILLING_LATE_CAPTURE_DAYS` (5) days, so
+   a late payment is still applied. If the machine sleeps, payments are confirmed when it wakes. List every address
+   users open the app at in `PUBLIC_BASE_URLS`: Razorpay sends the browser back to the one the checkout started from
+   (or to the first).
+3. **Webhooks**, once the app has its public HTTPS domain: in Razorpay's Dashboard → Webhooks, add
+   `https://<domain>/api/billing/razorpay/webhook` (Admin → Billing → Business & payments shows the URL, from the first
+   `PUBLIC_BASE_URLS` entry, and the 14 events), choose a secret there, and put the same value in `.env` as
+   `RAZORPAY_WEBHOOK_SECRET`. Never register a webhook on the quick tunnel: its URL changes on every restart.
+4. **Live.** After KYC and Razorpay's website review (fill in the policy pages and the business details first), put the
+   live keys (`rzp_live_…`) in `.env`; the webhook is required before live keys. Work through the going-live checklist
+   in Admin → Billing → Business & payments: keep Customer Fee Bearer and Offers off in Razorpay's Dashboard (amounts
+   must match exactly), and set the UPI limit per payment that Razorpay confirms for the account (₹2,000 until then;
+   above it the checkout suggests netbanking or a card).
+
+**Policy pages.** `frontend/public/legal/*.md` (`terms`, `privacy`, `refunds`, `shipping`, `contact`, `about`, and the
+pricing page's intro) are drafts with bracketed prompts: each starts with `<!-- draft -->` and shows a "Draft" band.
+Replace each with your own text (the first `# ` heading is the page title; remove the marker line), then rebuild the
+frontend (`docker compose up -d --build frontend`). The going-live checklist flags pages still in draft.
+
+**GST.** Not implemented: the app is built for a seller without a GSTIN. The price is the whole charge, receipts are
+titled "Receipt" with no tax line, and there is no GST setting. Registering for GST needs tax invoices, a separate
+feature to build before charging GST.
+
+**Settings** (the "Payments" block of `.env.example`; a value outside its range stops the backend at start-up; apply a
+change with `docker compose up -d backend worker`, then recreate the frontend):
+
+| Setting (default) | What it does |
+|---|---|
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` (empty) | both set: online payment is on; `rzp_test_…` is test mode, `rzp_live_…` live, any other prefix leaves payments off and logs an error at start-up. The secret is never logged or shown |
+| `RAZORPAY_WEBHOOK_SECRET` (empty) | webhooks are accepted only when it is set; required before live keys |
+| `RAZORPAY_WEBHOOK_SECRET_PREVIOUS` (empty) | also accepted, for the day after a rotation; remove it then |
+| `RAZORPAY_API_BASE` (`https://api.razorpay.com`) | another origin only for a fake in tests; with a live key the backend refuses to start on any other value |
+| `BILLING_CHECKOUT_MINUTES` (20; 16 to 120) | a payment link's lifetime |
+| `BILLING_LATE_CAPTURE_DAYS` (5; 1 to 10) | how long an unpaid checkout is still watched for a late payment |
+| `BILLING_REMINDER_DAYS` (5; 1 to 14) | the "ends soon" banner and the first reminder email |
+| `BILLING_RECONCILE_SECONDS` (30; 2 to 300) | the tick of the worker's billing loop (open checkouts, refunds, webhook events) |
+| `BILLING_USD_INR` (88; 1 to 1000) | rupees per dollar, for the cost estimates in Admin → Plans only |
+| `BILLING_EMAIL_FROM` (empty) | with the `ALERT_SMTP_*` server settings (section 8): plan reminder emails come from this address |
+
+Removed, now per plan: `DEFAULT_MONTHLY_TOKEN_LIMIT`, `DEFAULT_RATE_LIMIT_PER_MIN`, `DEFAULT_MAX_UPLOAD_MB`,
+`DEFAULT_MAX_DOCUMENTS`, `DEFAULT_MAX_STORAGE_MB`, `DEFAULT_MONTHLY_IMAGE_LIMIT` and `VISION_MONTHLY_TOKEN_LIMIT`
+(ignored with a warning when still set).
+
+## 10. Security notes
 
 - The UI is bound to `127.0.0.1` only. Before exposing it on a network, put it behind HTTPS and
   set `COOKIE_SECURE=true` (see `docs/HANDOFF.md`, next steps).
@@ -813,13 +1007,27 @@ Every one is optional; the defaults are in `.env.example`. After a change, run `
     text.
   - The admin sees counts, never mail content or account emails. Disconnecting revokes the grant at Google unless
     another app user shares the same Google account.
+- **Plans and payments:**
+  - Access is decided by the backend on every route (`billing.entitlements`, `deps.get_entitled_user`); the UI only
+    mirrors it. nginx asks the backend before accepting an upload body from a user without a plan.
+  - No Razorpay script runs on the app's pages, so the CSP is unchanged: the browser goes to Razorpay's page and back.
+  - A plan starts only on a captured payment fetched from Razorpay's API, after the return's signature check, a
+    webhook's HMAC over the raw body, or the worker's polling, and only when its amount, currency, order and mode match
+    the stored order. Each Razorpay payment is applied once. A webhook's body never changes anything by itself; events
+    are deduplicated by id and by body.
+  - Amounts are computed on the server only, in integer paise. Every per-user money or access change takes the user's
+    row lock first, and no Razorpay call runs inside a database transaction.
+  - The key secret and webhook secrets are never logged or shown (Admin → Billing shows a key hint). The return path is
+    logged without its query, and nginx rate-limits the return and webhook paths.
+  - Razorpay gets the amount and the user's numeric id, no name, email or phone. The app stores the payment's method,
+    never the payer's email, phone, UPI id, card or bank.
 - Secrets are never logged; provider errors are turned into user-facing messages (`llm.friendly_error`).
 
-## 10. Known limitations
+## 11. Known limitations
 
 - Scanned PDF pages are read by the vision model, which costs tokens: with Claude Sonnet 5.5 about $0.007 for
   a simple page (measured) and up to about $0.03 for a dense one, up to `VISION_MAX_PAGES` pages per document
-  and `VISION_MONTHLY_TOKEN_LIMIT` tokens per user and month. The allowance is checked when a document starts
+  and the plan's vision tokens per user and period. The allowance is checked when a document starts
   processing, so documents already in progress can take a user past it. There's no local OCR engine.
 - Charts drawn as vector graphics (most Office, LaTeX and matplotlib exports) aren't detected; only raster
   images are. Pages whose content is over 2 MiB aren't checked for images.
@@ -834,8 +1042,8 @@ Every one is optional; the defaults are in `.env.example`. After a change, run `
   content again from the documents, which costs another file's tokens.
   Citations of a generated PDF have no page number, because it is indexed from its Markdown source.
 - One answer that writes files or images makes up to `GENERATED_FILES_PER_ANSWER` + `GENERATED_IMAGES_PER_ANSWER` +
-  2 model calls, each re-sending the context; with a monthly budget, no further call starts once the answer has used
-  what was left, but up to two answers running at once can still go past the budget.
+  2 model calls, each re-sending the context; with a limited chat allowance, no further call starts once the answer has
+  used what was left, but up to two answers running at once can still go past the allowance.
 - The file tool costs tokens even when no file is asked for: about 1,550 input tokens per model call with a
   capable model. Its calls may also use up to 48,000 output tokens instead of 16,000. Set `CHAT_FILE_TOOLS=false`
   if you don't need files.
@@ -858,8 +1066,18 @@ Every one is optional; the defaults are in `.env.example`. After a change, run `
     click are what remains.
   - The plugin locks are per process, so run one backend process.
 - Deleting a user deletes their usage history too (chat, embedding, vision and images), so their costs leave the
-  usage report.
-- Settings → Usage shows only the current month (the admin's Usage tab has history). The export has no document files
+  usage report. Their billing records (orders, payments, refunds, disputes, receipts and their events) stay, with the
+  username, for the accounts; a user who never had an order leaves no billing events behind.
+- **Plans and billing:**
+  - Razorpay hasn't been used with real keys yet, not even in test mode: every suite uses a fake. The checks to run
+    in test mode are in `docs/briefs/plans-billing.md` (14.2).
+  - Webhooks need the public HTTPS domain. Until then payments are confirmed by the return page and the worker's
+    polling, and refunds made in Razorpay's Dashboard and disputes don't reach the app.
+  - The policy pages are drafts, and they are rendered in the browser: a website check that doesn't run JavaScript
+    sees an empty page.
+  - No GST and no tax invoices; no automatic renewal (each period is paid again); no coupons, annual plans or
+    self sign-up. A new Razorpay account may cap UPI at ₹2,000 per payment, and test mode allows about 30 payment links.
+- Settings → Usage shows only the current period (the admin's Usage tab has history). The export has no document files
   (each document has Download). There is no session list with per-session sign-out, only "Log out of all other
   sessions", and users can't delete their own account. Accents are the five presets. Code blocks have no syntax
   colours. The bundled fonts cover Latin only; other scripts use the system fonts.
@@ -871,7 +1089,8 @@ Every one is optional; the defaults are in `.env.example`. After a change, run `
   deploy with `scripts/restore.sh`, which refuses a backup whose schema revision that release doesn't know or would
   migrate. Releases up to `c1da1d0` predate migrations: they ignore the schema's revision and start on any schema
   without a warning, so go back to one only with a backup at revision 0002 or from before migrations
-  (`backend/migrations/README.md`, "Rolling back"). Rolling the code back to a release before images needs the SQL in
+  (`backend/migrations/README.md`, "Rolling back"). A release before plans needs the backup taken before migration
+  0003. Rolling the code back to a release before images needs the SQL in
   `docs/HANDOFF.md` ("Images from chat") first, and back to a release before plugins the SQL in
   `docs/briefs/plugins-gmail.md` (section 3.3).
 - Run exactly one worker container. Scale with `WORKER_CONCURRENCY` instead.

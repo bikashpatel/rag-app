@@ -123,8 +123,8 @@ export type ConnectionsPanelProps = {
 
 /**
  * The user's own connections to plugins: every plugin of the catalog with its status (Not set up, Turned off by the
- * admin, Reconnect needed, Connected, Not connected), connect, Use in chat, disconnect. No dialog of its own: Settings →
- * Plugins & data holds it. Cards are sections headed by an h3.
+ * admin, Not in your plan, Reconnect needed, Connected, Not connected), connect, Use in chat, disconnect, Upgrade. No
+ * dialog of its own: Settings → Plugins & data holds it. Cards are sections headed by an h3.
  */
 export default function ConnectionsPanel({
   oauthReturn,
@@ -257,6 +257,7 @@ export default function ConnectionsPanel({
 const STATUS_TONE: Record<PluginStatus, string> = {
   not_configured: "ui-status ui-status-unset",
   disabled: "ui-status ui-status-off",
+  not_in_plan: "ui-status ui-status-off",
   reconnect_needed: "ui-status ui-status-attention",
   connected: "ui-status ui-status-connected",
   available: "ui-status",
@@ -269,7 +270,7 @@ const STATUS_TONE: Record<PluginStatus, string> = {
 function StatusLine({ status, email }: { status: PluginStatus; email: string | null }) {
   return (
     <span className={`${STATUS_TONE[status]} conn-status`}>
-      {status === "disabled" ? (
+      {status === "disabled" || status === "not_in_plan" ? (
         <LockIcon size={13} />
       ) : status === "not_configured" ? (
         <span className="ui-dashed" aria-hidden="true" />
@@ -311,8 +312,10 @@ function PluginConnectionCard({ plugin, headingId, onBrowse, onDisconnected }: P
   const focusCancelDisconnect = useRef(false);
   const { connection, name } = plugin;
   const status = pluginStatus(plugin);
-  /** Set up and turned on: it can be connected and used. Otherwise only an existing connection can be removed. */
-  const usable = status !== "not_configured" && status !== "disabled";
+  /** Set up, turned on and in the plan: it can be connected and used. Otherwise only a connection can be removed. */
+  const usable = status !== "not_configured" && status !== "disabled" && status !== "not_in_plan";
+  const outsidePlan = status === "not_in_plan";
+  const unlockPlan = user?.plan.unlock.plugins[plugin.id] ?? null;
   const connected = connection?.status === "connected";
   const reconnectNeeded = connection?.status === "reconnect_needed";
   const endsAt = connection?.refresh_expires_at ? Date.parse(connection.refresh_expires_at) : null;
@@ -479,6 +482,10 @@ function PluginConnectionCard({ plugin, headingId, onBrowse, onDisconnected }: P
         {connection ? " You can still disconnect your account." : null}
       </p>
     );
+  } else if (outsidePlan) {
+    intro = connection ? null : (
+      <p className="conn-card-text">{unlockPlan ? `Included in ${unlockPlan}.` : `Your plan doesn't include ${name}.`}</p>
+    );
   } else if (!connection) {
     intro = <p className="conn-card-text">{plugin.description}</p>;
   }
@@ -499,6 +506,11 @@ function PluginConnectionCard({ plugin, headingId, onBrowse, onDisconnected }: P
         </div>
         {!asking && !confirming ? (
           <div ref={actionsRef} className="conn-actions">
+            {outsidePlan ? (
+              <Link className="btn btn-primary btn-sm" to="/plans">
+                Upgrade
+              </Link>
+            ) : null}
             {usable && !connection ? (
               <button
                 type="button"
@@ -603,6 +615,15 @@ function PluginConnectionCard({ plugin, headingId, onBrowse, onDisconnected }: P
         </div>
       ) : null}
 
+      {outsidePlan && connection ? (
+        <div className="conn-note" role="status">
+          <InfoIcon size={15} />
+          <p>
+            Your plan doesn't include {name}.{" "}
+            {unlockPlan ? `Upgrade to ${unlockPlan} to use it again; you won't need to reconnect.` : "You stay connected."}
+          </p>
+        </div>
+      ) : null}
       {usable && reconnectNeeded ? (
         <div className="conn-note conn-note-warning" role="status">
           <AlertIcon size={15} />

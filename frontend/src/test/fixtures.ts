@@ -16,6 +16,7 @@ import type {
   Me,
   MyUsage,
   PendingSend,
+  PlanAccess,
   PluginCapabilityInfo,
   PluginConnectionStatus,
   PluginInfo,
@@ -34,8 +35,73 @@ export function makeLimits(overrides: Partial<UserLimits> = {}): UserLimits {
     max_documents: 100,
     max_storage_mb: 500,
     monthly_image_limit: 50,
+    vision_monthly_token_limit: 1_000_000,
     ...overrides,
   };
+}
+
+const PROFESSIONAL = { id: 3, code: "professional", name: "Professional" };
+
+/** Me.plan of a user with an open-ended complimentary Professional plan (every feature; the window is the month),
+ * like the backend tests' default user. */
+export function makePlanAccess(overrides: Partial<PlanAccess> = {}): PlanAccess {
+  return {
+    state: "active",
+    access: true,
+    plan: PROFESSIONAL,
+    complimentary: true,
+    open_ended: true,
+    test_mode: false,
+    period_start: null,
+    period_end: null,
+    paid_through: null,
+    valid_through: null,
+    next_plan: null,
+    expiring_soon: false,
+    ended_at: null,
+    features: { files: true, images: true, plugins: ["gmail"] },
+    pending_order: null,
+    can_start_new_period: false,
+    unlock: { files: "Standard", images: "Professional", plugins: { gmail: "Professional" }, models: null },
+    ...overrides,
+  };
+}
+
+/** A paid Standard period, valid through 7 Nov 2026 (NOW is 20 Oct). */
+export function makePaidPlanAccess(overrides: Partial<PlanAccess> = {}): PlanAccess {
+  return makePlanAccess({
+    plan: { id: 2, code: "standard", name: "Standard" },
+    complimentary: false,
+    open_ended: false,
+    period_start: "2026-10-08T05:12:00Z",
+    period_end: "2026-11-07T18:30:00Z",
+    paid_through: "2026-11-07T18:30:00Z",
+    valid_through: "2026-11-07",
+    features: { files: true, images: false, plugins: [] },
+    unlock: { files: "Standard", images: "Professional", plugins: { gmail: "Professional" }, models: "Professional" },
+    ...overrides,
+  });
+}
+
+/** No access: `none` (never had a plan) or `expired` (a Standard period that ended on 7 Oct 2026). */
+export function makeLapsedPlanAccess(
+  state: "none" | "expired" = "expired",
+  overrides: Partial<PlanAccess> = {},
+): PlanAccess {
+  const expired = state === "expired";
+  return makePlanAccess({
+    state,
+    access: false,
+    plan: expired ? { id: 2, code: "standard", name: "Standard" } : null,
+    complimentary: false,
+    open_ended: false,
+    paid_through: expired ? "2026-10-07T18:30:00Z" : null,
+    valid_through: expired ? "2026-10-07" : null,
+    ended_at: expired ? "2026-10-07T18:30:00Z" : null,
+    features: { files: false, images: false, plugins: [] },
+    unlock: { files: "Standard", images: "Professional", plugins: { gmail: "Professional" }, models: "Professional" },
+    ...overrides,
+  });
 }
 
 export function makePreferences(overrides: Partial<Preferences> = {}): Preferences {
@@ -56,8 +122,12 @@ export function makeMe(overrides: Partial<Me> = {}): Me {
       images: 3,
       cost_usd: 1.42,
       monthly_token_limit: 2_000_000,
+      chat_allowance_used: 120_000,
+      window_start: "2026-10-01T00:00:00Z",
+      window_end: "2026-11-01T00:00:00Z",
     },
     preferences: makePreferences(),
+    plan: makePlanAccess(),
     ...overrides,
   };
 }
@@ -73,7 +143,9 @@ export function makeAdminMe(overrides: Partial<Me> = {}): Me {
       max_documents: 0,
       max_storage_mb: 0,
       monthly_image_limit: 0,
+      vision_monthly_token_limit: 0,
     }),
+    plan: makePlanAccess({ state: "exempt", plan: null, complimentary: false, open_ended: false }),
     ...overrides,
   });
 }
@@ -87,6 +159,7 @@ export function makeChatModel(overrides: Partial<ChatModel> = {}): ChatModel {
     can_create_files: true,
     can_create_images: true,
     supports_tools: true,
+    allowance_rate: 2,
     ...overrides,
   };
 }
@@ -223,6 +296,7 @@ export function makeGmailPlugin(overrides: Partial<PluginInfo> = {}): PluginInfo
       makeCapability({ id: "send", name: "Send email", description: "Send email after you confirm it." }),
     ],
     connection: makeConnection(),
+    in_plan: true,
     ...overrides,
   };
 }
@@ -260,19 +334,46 @@ export function makeAdminUser(overrides: Partial<AdminUser> = {}): AdminUser {
     username: "maya.chen",
     is_admin: false,
     is_active: true,
-    monthly_token_limit: 2_000_000,
-    rate_limit_per_min: 20,
-    max_upload_mb: 25,
-    max_documents: 100,
-    max_storage_mb: 500,
-    monthly_image_limit: 50,
     restrict_models: false,
     allowed_model_ids: [],
     created_at: "2026-09-02T11:00:00Z",
     last_login_at: "2026-10-19T08:45:00Z",
-    usage: { chat_tokens: 120_000, embedding_tokens: 40_000, vision_tokens: 0, images: 3, cost_usd: 1.42 },
+    usage: {
+      chat_tokens: 120_000,
+      chat_allowance_used: 120_000,
+      embedding_tokens: 40_000,
+      vision_tokens: 0,
+      images: 3,
+      cost_usd: 1.42,
+      window_start: "2026-10-01T00:00:00Z",
+      window_end: "2026-11-01T00:00:00Z",
+    },
     document_count: 4,
     storage_bytes: 3_250_000,
+    billing_tester: false,
+    limits: makeLimits(),
+    overrides: {
+      monthly_token_limit: null,
+      rate_limit_per_min: null,
+      max_upload_mb: null,
+      max_documents: null,
+      max_storage_mb: null,
+      monthly_image_limit: null,
+      vision_monthly_token_limit: null,
+    },
+    above_plan: [],
+    no_models: false,
+    plan: {
+      state: "active",
+      plan: PROFESSIONAL,
+      valid_through: null,
+      paid_through: null,
+      complimentary: true,
+      open_ended: true,
+      test_mode: false,
+      expiring_soon: false,
+      ended_at: null,
+    },
     ...overrides,
   };
 }
@@ -344,7 +445,8 @@ export function makeMyUsage(overrides: Partial<MyUsage> = {}): MyUsage {
     month: "2026-10",
     period_start: "2026-10-01T00:00:00Z",
     resets_at: "2026-11-01T00:00:00Z",
-    chat_tokens: { used: 120_000, limit: 2_000_000 },
+    chat_allowance: { used: 120_000, limit: 2_000_000 },
+    chat_tokens: 120_000,
     images: { used: 3, limit: 50 },
     vision_tokens: { used: 0, limit: 500_000 },
     embedding_tokens: 40_000,
@@ -354,6 +456,7 @@ export function makeMyUsage(overrides: Partial<MyUsage> = {}): MyUsage {
     documents: { count: 4, max_documents: 100, storage_bytes: 3_250_000, max_storage_mb: 500, max_upload_mb: 25 },
     daily: days.map((date, i) => ({
       date,
+      chat_allowance: 40_000 * (i + 1),
       chat_tokens: 40_000 * (i + 1),
       requests: 10 + i,
       images: i,
@@ -362,8 +465,8 @@ export function makeMyUsage(overrides: Partial<MyUsage> = {}): MyUsage {
       cost_usd: 0.4 + i * 0.1,
     })),
     by_model: [
-      { model_name: "Claude Opus 5.5", kind: "chat", tokens: 120_000, requests: 37, cost_usd: 1.2 },
-      { model_name: "GPT Image", kind: "image", tokens: 0, requests: 3, cost_usd: 0.2 },
+      { model_name: "Claude Opus 5.5", kind: "chat", tokens: 120_000, allowance_tokens: 120_000, requests: 37, cost_usd: 1.2 },
+      { model_name: "GPT Image", kind: "image", tokens: 0, allowance_tokens: 0, requests: 3, cost_usd: 0.2 },
     ],
     ...overrides,
   };

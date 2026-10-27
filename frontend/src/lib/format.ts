@@ -12,6 +12,11 @@ export function formatNumber(n: number): string {
   return new Intl.NumberFormat().format(n);
 }
 
+/** A limit set in megabytes, written as the plans write it: "3,000 MB". Amounts used go through formatBytes. */
+export function formatMegabytes(mb: number): string {
+  return `${formatNumber(mb)} MB`;
+}
+
 /** 1234 -> "1.2K", 3_400_000 -> "3.4M" */
 export function formatCompact(n: number): string {
   return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(n);
@@ -106,10 +111,4 @@ export function formatMonthName(month: string): string {
 export function daysUntil(iso: string, now: number = Date.now()): number {
   const d = parseDate(iso);
   return d ? Math.max(0, Math.ceil((d.getTime() - now) / DAY_MS)) : 0;
-}
-
-/** "YYYY-MM" → ISO time of the next month's 1st, 00:00 UTC (when that month's usage limits start again). */
-export function nextUsageReset(month: string): string {
-  const d = parseUtcDay(`${month}-01`);
-  return d ? new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString() : "";
 }

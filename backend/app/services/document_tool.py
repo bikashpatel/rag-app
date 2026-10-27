@@ -29,9 +29,10 @@ from app.db import SessionLocal
 from app.models import Document, GeneratedDocument, LLMModel, User
 from app.schemas import AnswerSource, DocumentItem, EmailSource, GeneratedFile
 from app.services import filegen, llm, rag, storage
+from app.services.billing import entitlements
+from app.services.billing.entitlements import Entitlements
 from app.services.ingestion import enqueue_document
 from app.services.model_registry import get_active_embedding_model, provider_of
-from app.services.usage import user_limits
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,12 @@ _FILE_LIMIT_NOTE = """\
 The user can't get new files right now because {reason}. If they ask for a file, tell them so and that they can \
 delete documents to make room; never claim to have created a file. Notes in parentheses that start with \
 "App note:" in earlier answers were added by the app."""
+
+NOT_IN_PLAN_NOTE = """\
+The user's plan doesn't include creating files. If the user asks for a file (PDF, Word, Excel or Markdown), tell \
+them their plan doesn't include files from chat and that {unlock} does, which they can choose in Settings → Plan \
+& billing; never claim to have created a file. Notes in parentheses that start with "App note:" in earlier answers \
+were added by the app."""
 
 
 class ToolInputError(Exception):
@@ -229,13 +236,21 @@ def tool_spec(model: LLMModel) -> dict[str, Any]:
     return spec
 
 
-async def plan(db: AsyncSession, user: User, model: LLMModel) -> FilePlan:
-    """Whether this turn offers the tool, and what the system prompt says about files."""
+def unlock_phrase(plan: str | None) -> str:
+    """Which plan includes a locked feature, for a system prompt note: "the Standard plan", or "a higher plan"."""
+    return f"the {plan} plan" if plan else "a higher plan"
+
+
+async def plan(db: AsyncSession, user: User, model: LLMModel, ent: Entitlements) -> FilePlan:
+    """Whether this turn offers the tool, and what the system prompt says about files (the plan must include them)."""
     if not settings.chat_file_tools:
         return FilePlan([], None, None)
     if not await llm.supports_tools(model):
         return FilePlan([], NO_FILE_TOOLS_NOTE, None)
-    if not user.is_admin and (reason := await _no_room(db, user)):
+    if not ent.files:
+        unlock = (await entitlements.unlock(db)).files
+        return FilePlan([], NOT_IN_PLAN_NOTE.format(unlock=unlock_phrase(unlock)), None)
+    if not ent.is_admin and (reason := await _no_room(db, user, ent)):
         return FilePlan([], _FILE_LIMIT_NOTE.format(reason=reason), None)
     max_tokens = llm.resolve_max_tokens(model, settings.generated_file_max_output_tokens)
     return FilePlan([tool_spec(model)], file_instructions(max_tokens, settings.chat_image_tools), max_tokens)
@@ -252,18 +267,18 @@ def file_instructions(max_tokens: int, images: bool = False) -> str:
     )
 
 
-async def _no_room(db: AsyncSession, user: User, room_bytes: int | None = None) -> str | None:
+async def _no_room(db: AsyncSession, user: User, ent: Entitlements, room_bytes: int | None = None) -> str | None:
     """Why the user can't get another document with less than `room_bytes` (default _ROOM_BYTES) of storage left (for
     files, checked again, authoritatively, when one is stored)."""
     room_bytes = _ROOM_BYTES if room_bytes is None else room_bytes
-    limits = user_limits(user)
-    if not (limits["max_documents"] or limits["max_storage_mb"]):
+    limits = ent.limits
+    if not (limits.max_documents or limits.max_storage_mb):
         return None
     count, used = await storage.owned_totals(db, user.id)
-    if limits["max_documents"] and count >= limits["max_documents"]:
-        return f"they have reached their limit of {limits['max_documents']} documents"
-    if limits["max_storage_mb"] and limits["max_storage_mb"] * _MIB - used < room_bytes:
-        return f"their storage is almost full ({used / _MIB:.1f} of {limits['max_storage_mb']} MB used)"
+    if limits.max_documents and count >= limits.max_documents:
+        return f"they have reached their limit of {limits.max_documents} documents"
+    if limits.max_storage_mb and limits.max_storage_mb * _MIB - used < room_bytes:
+        return f"their storage is almost full ({used / _MIB:.1f} of {limits.max_storage_mb} MB used)"
     return None
 
 
@@ -454,13 +469,14 @@ class _Call:
 @dataclass
 class FileSession:
     """The files of one answer: limits, call ids ("f1", "f2", ...), progress, and running the tool calls.
-    `conversation_id`: images generated in it can be embedded."""
+    `conversation_id`: images generated in it can be embedded; `ent`: the turn's entitlements (the limits)."""
 
     user: User
     sources: Sequence[AnswerSource]  # the answer's live list: plugins may add emails while it runs
     sink: FileSink
     max_tokens: int | None = None
     conversation_id: int | None = None
+    ent: Entitlements = field(kw_only=True)
     created: int = 0
     attempts: int = 0
     _calls: dict[int, _Call] = field(default_factory=dict)  # the current model call's announced tool calls
@@ -629,7 +645,7 @@ class FileSession:
     async def _store(self, request: filegen.RenderRequest, rendered: filegen.Rendered) -> "_Stored":
         """Stored in a task of its own and awaited through a shield, so Stop can't split it: the task links the
         document itself (sink.files) before `created` can be sent."""
-        task = asyncio.create_task(_save(self.user.id, request, rendered, self.sink))
+        task = asyncio.create_task(_save(self.user.id, request, rendered, self.sink, self.ent))
         self.sink.storing = task
         try:
             return await asyncio.shield(task)
@@ -821,7 +837,9 @@ class _Stored:
     already_existed: bool
 
 
-async def _save(user_id: int, request: filegen.RenderRequest, rendered: filegen.Rendered, sink: FileSink) -> _Stored:
+async def _save(
+    user_id: int, request: filegen.RenderRequest, rendered: filegen.Rendered, sink: FileSink, ent: Entitlements
+) -> _Stored:
     """Write the file (and a PDF's Markdown source), then the document and its provenance row in one commit, under
     the user's upload lock with the duplicate and quota checks. Links the file to the answer before returning."""
     extension = filegen.EXTENSIONS[request.format]
@@ -844,8 +862,8 @@ async def _save(user_id: int, request: filegen.RenderRequest, rendered: filegen.
                     .limit(1)
                 )
                 if duplicate is None:
-                    if not user.is_admin:
-                        await _check_quota(db, user, len(data))
+                    if not ent.is_admin:
+                        await _check_quota(db, user, len(data), ent)
                     doc = Document(
                         owner=user,
                         scope="private",
@@ -906,23 +924,23 @@ def _write_files(stored_name: str, data: bytes, source_markdown: str | None) -> 
             target.write(source_markdown)
 
 
-async def _check_quota(db: AsyncSession, user: User, size: int) -> None:
-    limits = user_limits(user)
-    if size > limits["max_upload_mb"] * _MIB:
+async def _check_quota(db: AsyncSession, user: User, size: int, ent: Entitlements) -> None:
+    limits = ent.limits
+    if size > limits.max_upload_mb * _MIB:
         raise ToolInputError(
-            f"The file is {size / _MIB:.1f} MB, over the user's limit of {limits['max_upload_mb']} MB per file; it "
+            f"The file is {size / _MIB:.1f} MB, over the user's limit of {limits.max_upload_mb} MB per file; it "
             "wasn't created. Make it shorter."
         )
-    if not (limits["max_documents"] or limits["max_storage_mb"]):
+    if not (limits.max_documents or limits.max_storage_mb):
         return
     count, used = await storage.owned_totals(db, user.id)
-    if limits["max_documents"] and count >= limits["max_documents"]:
+    if limits.max_documents and count >= limits.max_documents:
         raise ToolInputError(
-            f"The user has reached their limit of {limits['max_documents']} documents; the file wasn't created. They "
+            f"The user has reached their limit of {limits.max_documents} documents; the file wasn't created. They "
             "can delete documents to make room."
         )
-    if limits["max_storage_mb"] and used + size > limits["max_storage_mb"] * _MIB:
+    if limits.max_storage_mb and used + size > limits.max_storage_mb * _MIB:
         raise ToolInputError(
-            f"This file would exceed the user's storage limit of {limits['max_storage_mb']} MB; it wasn't created. "
+            f"This file would exceed the user's storage limit of {limits.max_storage_mb} MB; it wasn't created. "
             "They can delete documents to free up space."
         )

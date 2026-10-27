@@ -9,6 +9,7 @@ import pytest
 from fake_google import CLIENT_ID
 
 from app.config import settings
+from app.plugins import registry
 from app.plugins.base import ConnectionInfo, PluginAccess, PluginError, TokenResponse
 from app.plugins.gmail import tools
 from app.plugins.gmail.plugin import GmailPlugin
@@ -99,7 +100,9 @@ def test_instructions() -> None:
 
 
 def _access(*, connection: ConnectionInfo | None, usable: frozenset[str] = frozenset({"read"})) -> PluginAccess:
-    return PluginAccess(PLUGIN, None, True, frozenset({"read", "draft", "send"}), connection, usable)  # type: ignore[arg-type]
+    """As registry.access_for gives it (no user or entitlements needed here)."""
+    capabilities = frozenset({"read", "draft", "send"})
+    return registry.PlanPluginAccess(PLUGIN, None, True, capabilities, connection, usable, None)  # type: ignore[arg-type]
 
 
 def _connection(**changes) -> ConnectionInfo:

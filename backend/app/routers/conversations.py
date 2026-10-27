@@ -1,4 +1,5 @@
-"""The caller's conversations. Other users' conversations are reported as not found."""
+"""The caller's conversations. Other users' conversations are reported as not found. Without a plan, the list and the
+deletes stay open; reading or renaming one needs access (402)."""
 
 import logging
 from collections import defaultdict
@@ -12,7 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
-from app.deps import get_current_user
+from app.deps import get_current_user, get_entitled_user
 from app.models import Conversation, Document, GeneratedImage, Message, MessageFile, MessagePluginItem, User
 from app.plugins import registry
 from app.schemas import MAX_INT, AnswerSource, GeneratedFile
@@ -181,7 +182,7 @@ async def list_conversations(
 
 @router.get("/{conversation_id}")
 async def get_conversation(
-    conversation_id: ConversationId, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    conversation_id: ConversationId, user: User = Depends(get_entitled_user), db: AsyncSession = Depends(get_db)
 ) -> ConversationDetail:
     conversation = await get_owned_conversation(db, user, conversation_id)
     result = await db.execute(select(Message).where(Message.conversation_id == conversation.id).order_by(Message.id))
@@ -204,7 +205,7 @@ async def get_conversation(
 async def rename_conversation(
     conversation_id: ConversationId,
     body: ConversationUpdate,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_entitled_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConversationSummary:
     conversation = await get_owned_conversation(db, user, conversation_id)

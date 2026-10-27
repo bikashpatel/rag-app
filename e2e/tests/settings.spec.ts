@@ -148,47 +148,56 @@ test.describe("Account", () => {
 });
 
 test.describe("Usage", () => {
-  test.use({ userOptions: { monthly_token_limit: 123_456, rate_limit_per_min: 7, monthly_image_limit: 5, max_documents: 9 } });
+  test.use({
+    userOptions: { overrides: { monthly_token_limit: 123_456, rate_limit_per_min: 7, monthly_image_limit: 5, max_documents: 9 } },
+  });
 
-  test("shows this month's usage against the user's limits", async ({ page, context, user }) => {
+  test("shows this period's usage against the user's limits", async ({ page, context, user }) => {
     await signIn(context, user);
     await openChat(page);
     const dialog = await openSettings(page, "Usage");
     await expect(dialog.getByRole("heading", { name: "Usage", level: 2 })).toBeVisible();
-    await expect(dialog.getByRole("meter", { name: "Chat tokens" })).toHaveAttribute("aria-valuetext", "0 of 123,456 chat tokens");
+    await expect(dialog.getByRole("meter", { name: "Chat allowance" })).toHaveAttribute(
+      "aria-valuetext",
+      "0 of 123,456 standard tokens",
+    );
     await expect(dialog.getByRole("meter", { name: "Images" })).toHaveAttribute("aria-valuetext", "0 of 5 images");
     const fact = (term: string) => dialog.getByRole("term").filter({ hasText: term }).locator("xpath=following-sibling::dd[1]");
     await expect(fact("Requests per minute")).toHaveText("7 per minute");
     await expect(fact("Chat answers")).toHaveText("0");
     await expect(fact("Documents")).toHaveText("0 of 9");
     const perDay = dialog.getByRole("figure", { name: "Per day" });
-    await expect(perDay).toContainText("No usage yet this month.");
+    await expect(perDay).toContainText("No usage yet this period.");
     await expect(perDay).toContainText("Up to 7 requests a minute");
     await expect(dialog.getByText("Nothing used yet.")).toBeVisible();
   });
 
-  test("a month with usage shows the meters, the daily chart and its table", async ({ page, context, user }) => {
+  test("a period with usage shows the meters, the daily chart and its table", async ({ page, context, user }) => {
     // The numbers are intercepted: real ones would need model calls.
     await page.route("**/api/me/usage", async (route) => {
       const response = await route.fetch();
       const usage = (await response.json()) as MyUsage;
       const today = usage.daily[usage.daily.length - 1];
-      Object.assign(today, { chat_tokens: 61_728, requests: 3, cost_usd: 0.42 });
+      Object.assign(today, { chat_allowance: 61_728, chat_tokens: 61_728, requests: 3, cost_usd: 0.42 });
       await route.fulfill({
         response,
         json: {
           ...usage,
-          chat_tokens: { ...usage.chat_tokens, used: 61_728 },
+          chat_allowance: { ...usage.chat_allowance, used: 61_728 },
+          chat_tokens: 61_728,
           requests: 3,
           cost_usd: { ...usage.cost_usd, total: 0.42, chat: 0.42 },
-          by_model: [{ model_name: "Canned Model", kind: "chat", tokens: 61_728, requests: 3, cost_usd: 0.42 }],
+          by_model: [{ model_name: "Canned Model", kind: "chat", tokens: 61_728, allowance_tokens: 61_728, requests: 3, cost_usd: 0.42 }],
         } satisfies MyUsage,
       });
     });
     await signIn(context, user);
     await openChat(page);
     const dialog = await openSettings(page, "Usage");
-    await expect(dialog.getByRole("meter", { name: "Chat tokens" })).toHaveAttribute("aria-valuetext", "61,728 of 123,456 chat tokens");
+    await expect(dialog.getByRole("meter", { name: "Chat allowance" })).toHaveAttribute(
+      "aria-valuetext",
+      "61,728 of 123,456 standard tokens",
+    );
     await expect(dialog.getByText("$0.42").first()).toBeVisible();
     const perDay = dialog.getByRole("figure", { name: "Per day" });
     await expect(perDay.getByRole("group", { name: /chat tokens/i })).toBeVisible();

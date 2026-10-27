@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import App from "../App";
@@ -48,6 +48,19 @@ describe("LoginPage", () => {
 
     await user.clear(password);
     expect(submit).toBeDisabled();
+  });
+
+  it("links the public pages Razorpay's review reads under the card", async () => {
+    stubFetch(signedOut);
+    await renderLoginPage();
+    const policies = screen.getByRole("navigation", { name: "Policies" });
+    expect(within(policies).getAllByRole("link").map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
+      ["Pricing", "/pricing"],
+      ["Terms", "/terms"],
+      ["Privacy", "/privacy"],
+      ["Cancellation and refunds", "/refunds"],
+      ["Contact", "/contact"],
+    ]);
   });
 
   it("toggles the password's visibility", async () => {

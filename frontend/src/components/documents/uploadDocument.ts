@@ -1,4 +1,4 @@
-import { ApiError, errorMessageFromBody, notifyUnauthorized } from "../../api/client";
+import { ApiError, apiErrorFromBody, isPlanRequired, notifyPlanRequired, notifyUnauthorized } from "../../api/client";
 import type { DocumentItem, DocumentScope } from "../../api/types";
 
 type UploadOptions = {
@@ -56,7 +56,10 @@ export function uploadDocument(
       if (xhr.status === 401) notifyUnauthorized();
       const body = parseJson(xhr.responseText);
       if (xhr.status < 200 || xhr.status >= 300) {
-        reject(new ApiError(xhr.status, errorMessageFromBody(xhr.status, body)));
+        // The server's message as it is (a 402 when the plan ended or doesn't include it, a 409 over a limit).
+        const error = apiErrorFromBody(xhr.status, body);
+        if (isPlanRequired(error)) notifyPlanRequired();
+        reject(error);
       } else if (isDocumentItem(body)) {
         resolve(body);
       } else {

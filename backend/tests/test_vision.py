@@ -48,8 +48,10 @@ from app.db import SessionLocal
 from app.models import AppState, Document, LLMModel, UsageEvent, User, VisionPage
 from app.redis_client import INGEST_QUEUE, get_redis, ingest_attempts_key
 from app.services import ingestion, llm, pdf_images, vectorstore, vision
+from app.services.billing.money import format_ist_date, ist_date
 from app.services.model_registry import get_active_embedding_model
 from app.services.parsing import DocumentParseError, PageImage, ParsedDocument, Segment, VisionRequest, parse_file
+from app.services.usage import month_start, next_month
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
@@ -67,6 +69,18 @@ GUARD_SECONDS = 15
 @pytest.fixture
 async def alice(create_user: CreateUser) -> ApiClient:
     return await create_user("alice")
+
+
+async def vision_allowance(user_id: int, tokens: int) -> None:
+    """The user's override of their plan's vision allowance (0 = unlimited)."""
+    async with SessionLocal() as session:
+        await session.execute(update(User).where(User.id == user_id).values(vision_monthly_token_limit=tokens))
+        await session.commit()
+
+
+def restarts() -> str:
+    """When an open-ended plan's allowances start again: the first day of the next UTC month (an IST date)."""
+    return f"It starts again on {format_ist_date(ist_date(next_month(month_start())))}."
 
 
 @pytest.fixture
@@ -1183,7 +1197,7 @@ async def test_cancelling_during_the_parse_still_counts_the_attempt(
     assert await get_redis().get(ingest_attempts_key(doc_id)) == "1"
 
 
-# ---------------- The monthly allowance ----------------
+# ---------------- The vision allowance (per period; an open-ended plan: per UTC month) ----------------
 
 
 async def add_vision_usage(user_id: int, tokens: int) -> None:
@@ -1197,7 +1211,7 @@ async def add_vision_usage(user_id: int, tokens: int) -> None:
 async def test_a_used_up_allowance_fails_uncached_scans_without_any_call(
     alice: ApiClient, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch, child_starts: list[int]
 ) -> None:
-    monkeypatch.setattr(settings, "vision_monthly_token_limit", 5000)
+    await vision_allowance(alice.user_id, 5000)  # type: ignore[arg-type]
     await add_vision_usage(alice.user_id, 5000)  # type: ignore[arg-type]
 
     scan = await ingest(alice, "scan.pdf", scanned_pdf_bytes("Invoice"))
@@ -1205,8 +1219,8 @@ async def test_a_used_up_allowance_fails_uncached_scans_without_any_call(
 
     assert (scan["status"], scan["error"]) == (
         "failed",
-        "This PDF has scanned pages, but your monthly allowance for the vision model is used up (5,000 of 5,000 "
-        "tokens). Ask the admin to raise VISION_MONTHLY_TOKEN_LIMIT, or try again next month.",
+        "This PDF has scanned pages, but this period's allowance for the vision model is used up (5,000 of 5,000 "
+        "tokens). " + restarts(),
     )
     assert (figure["status"], await page_texts(figure["id"])) == ("ready", {1: TEXT})
     assert (fake_llm.vision_calls, child_starts) == ([], [])
@@ -1216,7 +1230,7 @@ async def test_cached_pages_are_used_over_the_allowance(
     alice: ApiClient, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     result = await ingest(alice, "scan.pdf", scanned_pdf_bytes("Invoice"))
-    monkeypatch.setattr(settings, "vision_monthly_token_limit", 1700)
+    await vision_allowance(alice.user_id, 1700)  # type: ignore[arg-type]
 
     await alice.post(f"/api/documents/{result['id']}/reprocess")
     await process(result["id"])
@@ -1228,10 +1242,10 @@ async def test_cached_pages_are_used_over_the_allowance(
 async def test_the_admin_is_exempt_and_zero_means_unlimited(
     admin_client: ApiClient, alice: ApiClient, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(settings, "vision_monthly_token_limit", 100)
+    await vision_allowance(alice.user_id, 100)  # type: ignore[arg-type]
     await add_vision_usage(admin_client.user_id, 10_000)  # type: ignore[arg-type]
     shared = await ingest(admin_client, "shared-scan.pdf", scanned_pdf_bytes("Shared"), "shared")
-    monkeypatch.setattr(settings, "vision_monthly_token_limit", 0)
+    await vision_allowance(alice.user_id, 0)  # type: ignore[arg-type]
     await add_vision_usage(alice.user_id, 10_000_000)  # type: ignore[arg-type]
     private = await ingest(alice, "scan.pdf", scanned_pdf_bytes("Private"))
 
@@ -1617,7 +1631,6 @@ async def test_two_backends_seeding_at_once_add_one_vision_model(app: object, mo
         ("vision_concurrency", 17),
         ("vision_max_in_flight", 65),
         ("vision_timeout_seconds", 59),
-        ("vision_monthly_token_limit", -1),
         ("vision_min_text_chars", 10_001),
         ("vision_min_image_ratio", 0),
         ("vision_min_image_ratio", 1.5),
@@ -1639,12 +1652,11 @@ def test_vision_settings_defaults() -> None:
         defaults.vision_concurrency,
         defaults.vision_max_in_flight,
         defaults.vision_timeout_seconds,
-        defaults.vision_monthly_token_limit,
         defaults.vision_min_text_chars,
         defaults.vision_min_image_ratio,
         defaults.vision_max_image_px,
         defaults.vision_max_output_tokens,
-    ) == (50, 3, 4, 1800, 2_000_000, 40, 0.1, 1568, 8192)
+    ) == (50, 3, 4, 1800, 40, 0.1, 1568, 8192)
 
 
 # ---------------- read_pages directly ----------------

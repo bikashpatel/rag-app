@@ -36,6 +36,8 @@ describe("plugin status", () => {
   it.each<[string, PluginInfo, string]>([
     ["not configured", makeGmailPlugin({ configured: false, enabled: false }), "Not set up"],
     ["turned off", makeGmailPlugin({ enabled: false }), "Turned off by the admin"],
+    ["outside the plan", makeGmailPlugin({ in_plan: false }), "Not in your plan"],
+    ["turned off and outside the plan", makeGmailPlugin({ enabled: false, in_plan: false }), "Turned off by the admin"],
     [
       "needing a reconnect",
       makeGmailPlugin({ connection: makeConnection({ status: "reconnect_needed", status_reason: "revoked" }) }),
@@ -69,6 +71,7 @@ describe("plugin status", () => {
     expect(gmailReady([disabledPlugin, gmail])).toBe(gmail);
     expect(gmailReady(null)).toBeNull();
     expect(gmailReady([makeGmailPlugin({ enabled: false })])).toBeNull();
+    expect(gmailReady([makeGmailPlugin({ in_plan: false })])).toBeNull();
     expect(gmailReady([makeGmailPlugin({ connection: makeConnection({ status: "reconnect_needed" }) })])).toBeNull();
     expect(gmailReady([makeGmailPlugin({ capabilities: [makeCapability({ granted: false })] })])).toBeNull();
   });
@@ -80,6 +83,7 @@ describe("plugin status", () => {
     expect(reason(makeGmailPlugin({ configured: false }))).toBe("Gmail isn't set up yet.");
     expect(reason(undefined)).toBe("The admin turned Gmail off.");
     expect(reason(makeGmailPlugin({ enabled: false }))).toBe("The admin turned Gmail off.");
+    expect(reason(makeGmailPlugin({ in_plan: false }))).toBe("Your plan doesn't include Gmail.");
     expect(reason(makeGmailPlugin({ connection: null }))).toBe("Gmail is no longer connected.");
     expect(reason(makeGmailPlugin({ connection: makeConnection({ status: "reconnect_needed" }) }))).toBe(
       "Gmail needs to be reconnected.",

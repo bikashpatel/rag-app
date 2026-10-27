@@ -7,13 +7,13 @@ from typing import Any
 
 import pytest
 from conftest import ADMIN_PASSWORD, ADMIN_USERNAME, USER_PASSWORD, ApiClient
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bootstrap import bootstrap
 from app.config import Settings, settings
 from app.db import SessionLocal, init_db
-from app.models import AppState, LLMModel, User, UserImageLimit
+from app.models import AppState, LLMModel, User
 from app.security import verify_password
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
@@ -380,20 +380,11 @@ async def image_rows() -> list[tuple[str, str, bool, bool]]:
         return list(rows.tuples())
 
 
-async def image_limits() -> dict[str, int]:
-    async with SessionLocal() as session:
-        rows = await session.execute(
-            select(User.username, UserImageLimit.monthly_image_limit).join(User, User.id == UserImageLimit.user_id)
-        )
-        return {username: limit for username, limit in rows.tuples()}
-
-
 async def forget_image_state() -> None:
-    """The database as the release before images left it: no image model, no limits, no image flags."""
+    """The database as the release before images left it: no image model and no image flag."""
     async with SessionLocal() as session:
         await session.execute(delete(LLMModel).where(LLMModel.kind == "image"))
-        await session.execute(delete(UserImageLimit))
-        await session.execute(delete(AppState).where(AppState.key.in_(["image_seeded", "image_limits_backfilled"])))
+        await session.execute(delete(AppState).where(AppState.key == "image_seeded"))
         await session.commit()
 
 
@@ -455,65 +446,3 @@ async def test_two_backends_seeding_at_once_add_one_image_model(app: object, mon
 
     assert raced == [True]
     assert [row[0] for row in await image_rows()] == ["Other"]
-    assert await vision_marker("image_limits_backfilled") == "0"  # the backfill still ran (only the admin exists)
-
-
-async def test_existing_users_get_the_default_image_limit_once(
-    create_user: CreateUser, admin_client: ApiClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    await create_user("alice", monthly_image_limit=7)
-    await create_user("bob")
-    await create_user("carol")
-    await forget_image_state()
-    async with SessionLocal() as session:  # carol already had her own value
-        carol = await session.scalar(select(User.id).where(User.username == "carol"))
-        session.add(UserImageLimit(user_id=carol, monthly_image_limit=3))
-        await session.commit()
-    monkeypatch.setattr(settings, "default_monthly_image_limit", 12)
-
-    with caplog.at_level(logging.INFO, logger="app.bootstrap"):
-        await run_bootstrap()
-
-    assert await image_limits() == {"alice": 12, "bob": 12, "carol": 3}  # the admin gets no row
-    assert await vision_marker("image_limits_backfilled") == "2"
-    assert "Gave 2 existing user(s) the default monthly image limit of 12" in caplog.text
-
-    monkeypatch.setattr(settings, "default_monthly_image_limit", 50)
-    async with SessionLocal() as session:
-        await session.execute(delete(UserImageLimit).where(UserImageLimit.user_id == carol))
-        await session.commit()
-
-    await run_bootstrap()
-
-    assert await image_limits() == {"alice": 12, "bob": 12}  # once only; a later env change moves nobody
-    users = {user["username"]: user for user in (await admin_client.get("/api/admin/users")).json()}
-    assert [users[name]["monthly_image_limit"] for name in ("admin", "alice", "bob", "carol")] == [0, 12, 12, 50]
-
-
-async def test_a_backfill_racing_another_backend_rolls_back(app: object, monkeypatch: pytest.MonkeyPatch) -> None:
-    await forget_image_state()
-    async with SessionLocal() as session:
-        session.add(User(username="dave", password_hash="x"))
-        await session.commit()
-    execute = AsyncSession.execute
-    raced: list[bool] = []
-
-    async def racing_execute(self: AsyncSession, statement: Any, *args: Any, **kwargs: Any) -> Any:
-        if not raced and "INSERT INTO user_image_limits" in str(statement):
-            raced.append(True)
-            async with SessionLocal() as other:  # the other backend backfilled first
-                dave = await other.scalar(select(User.id).where(User.username == "dave"))
-                other.add(UserImageLimit(user_id=dave, monthly_image_limit=30))
-                other.add(AppState(key="image_limits_backfilled", value="1"))
-                await other.commit()
-        return await execute(self, statement, *args, **kwargs)
-
-    monkeypatch.setattr(AsyncSession, "execute", racing_execute)
-
-    await run_bootstrap()
-
-    assert raced == [True]
-    assert await image_limits() == {"dave": 30}
-    assert await vision_marker("image_limits_backfilled") == "1"  # this start's own marker was rolled back
-    async with SessionLocal() as session:
-        assert await session.scalar(select(func.count()).select_from(AppState)) == 3

@@ -9,6 +9,7 @@ starts: you never run a migration by hand on a deploy.
 | `env.py` | the environment: the models' metadata, the app's engine (`app.db.make_engine`: asyncpg on Postgres, UTC sessions), the same transaction as start-up (`app.db.schema_transaction`), batch operations for SQLite, the comparison options (`app.db.COMPARE_OPTIONS`) |
 | `versions/0001_baseline.py` | every table and index as `create_all` made them from the models before migrations |
 | `versions/0002_align_legacy_schema.py` | repairs what a database made before migrations may lack (see below); does nothing on a new database |
+| `versions/0003_plans_billing.py` | plans and billing (`docs/briefs/plans-billing.md` 11.1): the billing tables, the users' limits as nullable overrides, `usage_events.allowance_tokens`, one `rollout.limits_cleared` event per user before their limits are cleared, and on Postgres the exclusion constraint `ex_plan_periods_no_overlap`. It can't be downgraded |
 | `script.py.mako` | the template for new revisions |
 
 ## At start-up
@@ -29,8 +30,8 @@ throughout.)
 
 | The database | What happens |
 |---|---|
-| empty | `upgrade head`: 0001 creates every table, 0002 has nothing to do. Log: `Database schema migrated from an empty database to revision 0002` |
-| has an `alembic_version` table | `upgrade head` (nothing when it is at head: `Database schema up to date (revision 0002)`) |
+| empty | `upgrade head`: 0001 creates every table, 0002 has nothing to do, 0003 adds the billing tables. Log: `Database schema migrated from an empty database to revision 0003` |
+| has an `alembic_version` table | `upgrade head` (nothing when it is at head: `Database schema up to date (revision 0003)`) |
 | has tables but no `alembic_version` (made before migrations) | compared with the baseline, then stamped and aligned, or refused (next section) |
 
 ## Databases made before migrations
@@ -116,7 +117,7 @@ when it is reviewed and tested like the upgrade, and still prefer the backup for
    export DATABASE_URL="postgresql+asyncpg://rag:$password@127.0.0.1:$port/scratch" \
      SECRET_KEY=$(openssl rand -hex 32) ADMIN_USERNAME=admin ADMIN_PASSWORD=placeholder-password LITELLM_MODE=PRODUCTION
    .venv/bin/alembic upgrade head
-   .venv/bin/alembic revision --autogenerate --rev-id 0003 -m "add users.nickname"
+   .venv/bin/alembic revision --autogenerate --rev-id 0004 -m "add users.nickname"
    ```
 
 3. Review it by hand. Autogenerate writes batch operations (`render_as_batch`), which SQLite runs as a table copy and

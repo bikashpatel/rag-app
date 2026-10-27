@@ -1,6 +1,6 @@
 """The built-in plugins and what each user may do with them (brief 4.3): the admin's switches (plugin_settings, read on
-every request), configuration, access, the chat plan of a turn, history notes and taint, and the FastAPI dependency of
-plugin routes."""
+every request), configuration, access (which the user's plan bounds, plans-billing 5.6), the chat plan of a turn,
+history notes and taint, and the FastAPI dependencies of plugin routes."""
 
 import importlib
 import logging
@@ -10,12 +10,13 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import SessionLocal, get_db
-from app.deps import get_current_user
+from app.deps import current_entitlements, get_entitled_user
+from app.errors import AppError
 from app.models import (
     ImportedDocument,
     LLMModel,
@@ -30,6 +31,9 @@ from app.plugins import connections, crypto, oauth
 from app.plugins.base import ChatToolSet, NotConnected, Plugin, PluginAccess, reconnect_message
 from app.schemas_plugins import PluginCard
 from app.services import llm, rag
+from app.services.billing import entitlements
+from app.services.billing.entitlements import Entitlements
+from app.services.document_tool import unlock_phrase
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +48,12 @@ _SCOPE_ALIASES = {
 
 _builtins: list[Plugin] | None = None
 _override: list[Plugin] | None = None
+# plugin id -> its system prompt note for a connected user whose plan doesn't include it ({unlock}: which plan does)
+_plan_notes: dict[str, str] = {}
+_PLAN_NOTE = (
+    "The user's plan doesn't include the {name} plugin. If the user asks for something that needs {name}, tell them "
+    "their plan doesn't include it and that {unlock} does; you can't use {name} in this conversation."
+)
 
 
 def builtin_plugins() -> list[Plugin]:
@@ -164,9 +174,25 @@ async def set_state(
 # ---------------- Access ----------------
 
 
-async def access_for(db: AsyncSession, user: User, plugin: Plugin) -> PluginAccess:
-    """The user's access now. A connection in Google's testing mode that is 7 days old turns reconnect needed
-    (expired_testing) here, without a provider call, so the user sees it before a chat fails."""
+@dataclass(frozen=True)
+class PlanPluginAccess(PluginAccess):
+    """PluginAccess with the entitlements it was decided by: `entitled` when the user's plan includes the plugin
+    (always for the admin); `usable` is empty otherwise, and the connection is left untouched."""
+
+    ent: Entitlements
+
+    @property
+    def entitled(self) -> bool:
+        return entitlements.allows_plugin(self.ent, self.plugin.id)
+
+
+async def access_for(
+    db: AsyncSession, user: User, plugin: Plugin, ent: Entitlements | None = None
+) -> PlanPluginAccess:
+    """The user's access now (`ent`: their entitlements, loaded when not given). A connection in Google's testing mode
+    that is 7 days old turns reconnect needed (expired_testing) here, without a provider call, so the user sees it
+    before a chat fails."""
+    ent = ent if ent is not None else await entitlements.load(db, user)
     current = await state(db, plugin)
     enabled = current.enabled and not configured(plugin)
     row = await db.scalar(
@@ -179,40 +205,66 @@ async def access_for(db: AsyncSession, user: User, plugin: Plugin) -> PluginAcce
         await db.refresh(row)
     info = connections.connection_info(row) if row is not None else None
     usable: frozenset[str] = frozenset()
-    if enabled and info is not None and info.status == "connected":
+    if enabled and info is not None and info.status == "connected" and entitlements.allows_plugin(ent, plugin.id):
         usable = current.enabled_capabilities & granted_capabilities(plugin, info.scopes)
-    return PluginAccess(
+    return PlanPluginAccess(
         plugin=plugin,
         user=user,
         enabled=enabled,
         enabled_capabilities=current.enabled_capabilities,
         connection=info,
         usable=usable,
+        ent=ent,
     )
 
 
-async def live_access(user_id: int, plugin: Plugin) -> PluginAccess:
-    """access_for in a session of its own: what a plugin action re-checks just before it runs (P26)."""
+async def live_access(user_id: int, plugin: Plugin, ent: Entitlements | None = None) -> PlanPluginAccess:
+    """access_for in a session of its own: what a plugin action re-checks just before it runs (P26). A chat action
+    passes its turn's entitlements, which hold for the whole answer."""
     async with SessionLocal() as db:
         user = await db.get(User, user_id)
         if user is None:
             raise NotConnected("The account no longer exists.")
-        return await access_for(db, user, plugin)
+        return await access_for(db, user, plugin, ent)
+
+
+async def not_in_plan(db: AsyncSession, ent: Entitlements, plugin: Plugin) -> AppError:
+    """402 feature_not_in_plan (feature "plugin:<id>"), naming the cheapest active plan that includes the plugin."""
+    return await entitlements.feature_error(db, ent, f"plugin:{plugin.id}", plugin.name)
+
+
+def in_plan(plugin_id: str) -> Callable[..., Awaitable[User]]:
+    """FastAPI dependency of a plugin route that works while the plugin is turned off (a pending send's state): the
+    user needs access, and their plan must include the plugin (402)."""
+
+    async def dependency(
+        request: Request, user: User = Depends(get_entitled_user), db: AsyncSession = Depends(get_db)
+    ) -> User:
+        plugin = get_plugin(plugin_id)
+        if plugin is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown plugin")
+        ent = current_entitlements(request)
+        if not entitlements.allows_plugin(ent, plugin.id):
+            raise await not_in_plan(db, ent, plugin)
+        return user
+
+    return dependency
 
 
 def require(
     plugin_id: str, capability: str | None = None
-) -> Callable[..., Awaitable[tuple[User, PluginAccess]]]:
-    """FastAPI dependency of a plugin route: the session user and their access. The plugin or `capability` turned off:
-    403; no connection, a reconnect needed or `capability` not granted: 409 (never 401, which signs the client out)."""
+) -> Callable[..., Awaitable[tuple[User, PlanPluginAccess]]]:
+    """FastAPI dependency of a plugin route: the session user, who needs access (402), and their access to the
+    plugin. The plugin or `capability` turned off: 403; outside the user's plan: 402 feature_not_in_plan; no
+    connection, a reconnect needed or `capability` not granted: 409 (never 401, which signs the client out)."""
 
     async def dependency(
-        user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
-    ) -> tuple[User, PluginAccess]:
+        request: Request, user: User = Depends(get_entitled_user), db: AsyncSession = Depends(get_db)
+    ) -> tuple[User, PlanPluginAccess]:
         plugin = get_plugin(plugin_id)
         if plugin is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown plugin")
-        access = await access_for(db, user, plugin)
+        access = await access_for(db, user, plugin, current_entitlements(request))
         await db.commit()  # end the read transaction; the route may call the provider next
         if not access.enabled:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=f"{plugin.name} is turned off.")
@@ -222,6 +274,8 @@ def require(
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail=f"{plugin.name}: {label} is turned off by the admin."
             )
+        if not access.entitled:
+            raise await not_in_plan(db, access.ent, plugin)
         connection = access.connection
         if connection is None:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=f"{plugin.name} isn't connected.")
@@ -270,8 +324,20 @@ class PluginChatPlan:
         return "\n\n".join([toolset.no_tools_note for toolset in self.toolsets] + self.notes) or None
 
 
-async def plan_chat(db: AsyncSession, user: User, chat_model: LLMModel) -> PluginChatPlan:
-    """The tool sets and notes this turn gets. A plugin that fails is logged and contributes nothing."""
+def register_plan_note(plugin_id: str, note: str) -> None:
+    """A plugin's own wording of the note for a connected user whose plan doesn't include it ({unlock}: the plan that
+    does, e.g. "the Professional plan")."""
+    _plan_notes[plugin_id] = note
+
+
+async def _plan_note(db: AsyncSession, plugin: Plugin) -> str:
+    unlock = unlock_phrase((await entitlements.unlock(db)).plugins.get(plugin.id))
+    return _plan_notes.get(plugin.id, _PLAN_NOTE).format(name=plugin.name, unlock=unlock)
+
+
+async def plan_chat(db: AsyncSession, user: User, chat_model: LLMModel, ent: Entitlements) -> PluginChatPlan:
+    """The tool sets and notes this turn gets. A plugin outside the user's plan offers no tools; a connected user gets
+    a note saying which plan includes it. A plugin that fails is logged and contributes nothing."""
     plugins = all_plugins()
     if not plugins:
         return PluginChatPlan()
@@ -280,8 +346,12 @@ async def plan_chat(db: AsyncSession, user: User, chat_model: LLMModel) -> Plugi
     tools_supported: bool | None = None
     for plugin in plugins:
         try:
-            access = await access_for(db, user, plugin)
+            access = await access_for(db, user, plugin, ent)
             if not access.enabled:
+                continue
+            if not access.entitled:
+                if access.connection is not None:
+                    notes.append(await _plan_note(db, plugin))
                 continue
             if tools_supported is None:
                 tools_supported = await llm.supports_tools(chat_model)

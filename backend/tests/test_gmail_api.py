@@ -18,6 +18,7 @@ from app.plugins import connections, registry
 from app.plugins.base import AccountChanged
 from app.plugins.gmail import importer
 from app.plugins.gmail.plugin import COMPOSE, FULL_ACCESS, MODIFY, READONLY, SEND, GmailPlugin
+from app.services.billing import entitlements
 
 
 @pytest.fixture
@@ -156,8 +157,9 @@ async def test_import_stops_between_items(gmail, alice) -> None:  # noqa: F811
     assert connection is not None
     async with SessionLocal() as db:
         user = await db.get(User, alice.user_id)
+        ent = await entitlements.load(db, user)
     items = await importer.chat_import(
-        connection, user, [gmail.message("plain").thread_id], False, max_items=5,
+        connection, user, [gmail.message("plain").thread_id], False, ent, max_items=5,
         deadline=asyncio.get_running_loop().time() + 60, stopping=stopping,
     )
     assert [(item.status, item.reason) for item in items] == [("skipped", importer.STOPPED)]

@@ -40,10 +40,11 @@ from sqlalchemy import (
 from app import db
 from app.db import Base, SchemaMismatchError
 from app.main import app as fastapi_app
-from app.models import Conversation, Document, LLMModel, Message, UsageEvent, User
 
 BACKEND = Path(__file__).resolve().parent.parent
 HEAD = ScriptDirectory(str(db.MIGRATIONS_DIR)).get_current_head()
+assert HEAD is not None
+LATER = f"{int(HEAD) + 1:04d}"  # the later migration a test writes
 both = pytest.mark.usefixtures("on_both")
 
 
@@ -72,15 +73,16 @@ async def run(function: Callable[[Connection], Any]) -> Any:
         return await connection.run_sync(function)
 
 
-def copy_of_models() -> MetaData:
-    """The models' tables (indexes and constraints included), to change before create_all makes an old database."""
+def copy_of_baseline() -> MetaData:
+    """The baseline's tables (indexes and constraints included): the schema create_all made before migrations, to
+    change before making an old database."""
     metadata = MetaData()
-    for table in Base.metadata.sorted_tables:
+    for table in db.baseline_metadata().sorted_tables:
         table.to_metadata(metadata)
     return metadata
 
 
-async def create_all(metadata: MetaData = Base.metadata, *statements: str) -> None:
+async def create_all(metadata: MetaData, *statements: str) -> None:
     """A database as create_all made it before migrations, then changed by `statements`."""
     async with db.engine.begin() as connection:
         await connection.run_sync(metadata.create_all)
@@ -97,25 +99,76 @@ def drop_index(metadata: MetaData, table: str, name: str) -> None:
 
 
 async def add_rows() -> dict[str, int]:
-    """A user with a document, a chat with an answer and its usage: rows to find again after start-up."""
+    """A user with a document, a chat with an answer and its usage: rows to find again after start-up. Written into
+    the baseline's columns, which every later schema keeps."""
     now = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    tables = db.baseline_metadata().tables
+    rows: dict[str, dict[str, Any]] = {
+        "users": {
+            "id": 7,
+            "username": "smoke-legacy",
+            "password_hash": "x",
+            "is_admin": False,
+            "is_active": True,
+            "token_version": 0,
+            "monthly_token_limit": 1_000_000,
+            "rate_limit_per_min": 20,
+            "max_upload_mb": 25,
+            "max_documents": 100,
+            "max_storage_mb": 500,
+            "restrict_models": False,
+            "created_at": now,
+            "updated_at": now,
+        },
+        "llm_models": {
+            "id": 3,
+            "display_name": "Chat",
+            "litellm_model": "openai/gpt-5.5",
+            "kind": "chat",
+            "enabled": True,
+            "is_default": False,
+            "created_at": now,
+            "updated_at": now,
+        },
+        "documents": {
+            "id": 11,
+            "owner_id": 7,
+            "scope": "private",
+            "filename": "notes.txt",
+            "stored_name": "n1",
+            "content_type": "text/plain",
+            "size_bytes": 0,
+            "sha256": "0" * 64,
+            "status": "ready",
+            "num_chunks": 0,
+            "created_at": now,
+            "updated_at": now,
+        },
+        "conversations": {"id": 5, "user_id": 7, "title": "New chat", "created_at": now, "updated_at": now},
+        "messages": {
+            "conversation_id": 5,
+            "role": "assistant",
+            "content": "Hi",
+            "model_id": 3,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "created_at": now,
+        },
+        "usage_events": {
+            "user_id": 7,
+            "model_id": 3,
+            "model_name": "openai/gpt-5.5",
+            "kind": "chat",
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost_usd": 0.0,
+            "created_at": now,
+        },
+    }
     async with db.engine.begin() as connection:
-        await connection.execute(insert(User.__table__).values(id=7, username="smoke-legacy", password_hash="x"))
-        await connection.execute(
-            insert(LLMModel.__table__).values(id=3, display_name="Chat", litellm_model="openai/gpt-5.5", kind="chat")
-        )
-        await connection.execute(
-            insert(Document.__table__).values(
-                id=11, owner_id=7, scope="private", filename="notes.txt", stored_name="n1", sha256="0" * 64
-            )
-        )
-        await connection.execute(insert(Conversation.__table__).values(id=5, user_id=7, updated_at=now))
-        await connection.execute(
-            insert(Message.__table__).values(conversation_id=5, role="assistant", content="Hi", model_id=3)
-        )
-        await connection.execute(
-            insert(UsageEvent.__table__).values(user_id=7, model_id=3, model_name="openai/gpt-5.5", kind="chat")
-        )
+        for name, values in rows.items():
+            await connection.execute(insert(tables[name]).values(**values))
     return await run(row_counts)
 
 
@@ -124,16 +177,29 @@ def row_counts(connection: Connection) -> dict[str, int]:
     return {name: connection.scalar(text(f'SELECT count(*) FROM "{name}"')) for name in sorted(names)}
 
 
+def without_image_limits(counts: dict[str, int]) -> dict[str, int]:
+    """Row counts without user_image_limits, which revision 0003 folds into users and drops."""
+    return {name: count for name, count in counts.items() if name != "user_image_limits"}
+
+
+async def kept_counts(before: dict[str, int]) -> dict[str, int]:
+    """The row counts now of the tables in `before` that the migrations keep."""
+    counts = await run(row_counts)
+    return {name: counts[name] for name in without_image_limits(before)}
+
+
 def snapshot(connection: Connection) -> dict[str, Any]:
-    """Every table's reflected shape and row count, to show that a refused start-up changed nothing."""
+    """Every table's reflected shape and row count, to show that a refused start-up changed nothing. Without the
+    exclusion constraints of revision 0003 (Postgres only; reflected as indexes), which the models don't declare."""
     inspector = inspect(connection)
     shape: dict[str, Any] = {}
     for name in sorted(inspector.get_table_names()):
         columns = [(c["name"], str(c["type"]), c["nullable"], c.get("default")) for c in inspector.get_columns(name)]
+        indexes = [index for index in inspector.get_indexes(name) if not (index["name"] or "").startswith("ex_")]
         shape[name] = (
             columns,
             inspector.get_pk_constraint(name),
-            sorted(map(repr, inspector.get_indexes(name))),
+            sorted(map(repr, indexes)),
             sorted(map(repr, inspector.get_foreign_keys(name))),
             sorted(map(repr, inspector.get_unique_constraints(name))),
             sorted(map(repr, inspector.get_check_constraints(name))),
@@ -153,7 +219,6 @@ async def test_an_empty_database_gets_every_migration_and_matches_the_models(
 
     assert await run(revision) == HEAD
     assert await run(model_differences) == []
-    assert await run(db.legacy_differences) == []  # 0001 is still the models' schema
     assert f"Database schema migrated from an empty database to revision {HEAD}" in migration_logs.text
     assert "stamping" not in migration_logs.text
 
@@ -169,7 +234,7 @@ async def test_the_migrations_make_exactly_what_create_all_makes() -> None:
     async with db.engine.begin() as connection:
         await connection.run_sync(Base.metadata.drop_all)
         await connection.execute(text("DROP TABLE alembic_version"))
-    await create_all()
+    await create_all(Base.metadata)
 
     created = await run(snapshot)
     assert set(migrated) - set(created) == {"alembic_version"}
@@ -185,7 +250,9 @@ async def test_the_models_and_the_migrations_agree() -> None:
         "The models differ from the migrations: write one with `alembic revision --autogenerate` "
         "(backend/migrations/README.md)"
     )
-    changed = copy_of_models()
+    changed = MetaData()
+    for table in Base.metadata.sorted_tables:
+        table.to_metadata(changed)
     changed.tables["users"].append_column(Column("nickname", String(40), nullable=True))
     differences = await run(lambda connection: model_differences(connection, changed))
     assert [(diff[0], diff[2], diff[3].name) for diff in differences] == [("add_column", "users", "nickname")]
@@ -211,14 +278,14 @@ def test_the_baseline_cannot_be_downgraded() -> None:
 
 @both
 async def test_a_database_made_by_create_all_is_stamped_and_kept(migration_logs: pytest.LogCaptureFixture) -> None:
-    await create_all()
+    await create_all(copy_of_baseline())
     rows = await add_rows()
 
     await db.init_db()
 
     assert await run(revision) == HEAD
     assert await run(model_differences) == []
-    assert await run(row_counts) == rows
+    assert await kept_counts(rows) == without_image_limits(rows)
     assert rows["users"] == rows["documents"] == rows["messages"] == rows["usage_events"] == 1
     assert "stamping revision 0001, 0 difference(s) for the align migration" in migration_logs.text
     assert f"Database schema migrated from 0001 to revision {HEAD}" in migration_logs.text
@@ -227,7 +294,7 @@ async def test_a_database_made_by_create_all_is_stamped_and_kept(migration_logs:
 
 @both
 async def test_missing_tables_and_indexes_are_created(migration_logs: pytest.LogCaptureFixture) -> None:
-    old = copy_of_models()
+    old = copy_of_baseline()
     drop_index(old, "documents", "ix_documents_sha256")
     drop_index(old, "conversations", "ix_conversations_updated_at")
     old.remove(old.tables["login_events"])  # a table newer than the database, e.g. an old copy restored
@@ -237,7 +304,8 @@ async def test_missing_tables_and_indexes_are_created(migration_logs: pytest.Log
     await db.init_db()
 
     assert await run(model_differences) == []
-    assert await run(row_counts) == {**rows, "login_events": 0}
+    expected = without_image_limits({**rows, "login_events": 0})
+    assert await kept_counts(expected) == expected
     for line in (
         "stamping revision 0001, 4 difference(s)",
         "Align: creating the missing table login_events",
@@ -251,7 +319,7 @@ async def test_missing_tables_and_indexes_are_created(migration_logs: pytest.Log
 @both
 async def test_foreign_keys_with_other_delete_rules_get_the_baselines(migration_logs: pytest.LogCaptureFixture) -> None:
     """Postgres repairs them, keeping the constraint names; SQLite can't alter a key in place, so it refuses."""
-    old = copy_of_models()
+    old = copy_of_baseline()
     foreign_key(old, "documents", "owner_id").ondelete = None
     foreign_key(old, "messages", "model_id").ondelete = "CASCADE"
     await create_all(old)
@@ -269,7 +337,7 @@ async def test_foreign_keys_with_other_delete_rules_get_the_baselines(migration_
     await db.init_db()
 
     assert await run(model_differences) == []
-    assert await run(row_counts) == rows
+    assert await kept_counts(rows) == without_image_limits(rows)
     keys = {fk["name"]: fk["options"] for name in ("documents", "messages") for fk in await run(foreign_keys(name))}
     assert keys["documents_owner_id_fkey"] == {"ondelete": "CASCADE"}
     assert keys["messages_model_id_fkey"] == {"ondelete": "SET NULL"}
@@ -357,7 +425,7 @@ async def test_any_other_difference_refuses_start_up_and_changes_nothing(
     listed: str,
     migration_logs: pytest.LogCaptureFixture,
 ) -> None:
-    old = copy_of_models()
+    old = copy_of_baseline()
     change(old)
     drop_index(old, "documents", "ix_documents_sha256")  # repairable, but not on its own: nothing may change
     await create_all(old, *statements)
@@ -378,7 +446,7 @@ async def test_any_other_difference_refuses_start_up_and_changes_nothing(
 
 @both
 async def test_the_align_migration_refuses_a_hand_stamped_database_that_differs() -> None:
-    old = copy_of_models()
+    old = copy_of_baseline()
     _extra_column(old)
     await create_all(old)
     async with db.engine.begin() as connection:
@@ -400,7 +468,7 @@ def test_unknown_kinds_of_difference_are_still_listed() -> None:
 
 @both
 async def test_the_app_starts_on_a_database_made_before_migrations() -> None:
-    await create_all()
+    await create_all(copy_of_baseline())
     rows = await add_rows()
 
     async with fastapi_app.router.lifespan_context(fastapi_app):
@@ -413,7 +481,7 @@ async def test_the_app_starts_on_a_database_made_before_migrations() -> None:
 
 @both
 async def test_the_app_does_not_start_on_a_database_that_differs() -> None:
-    old = copy_of_models()
+    old = copy_of_baseline()
     _extra_column(old)
     await create_all(old)
 
@@ -484,7 +552,7 @@ LATER_REVISION = '''"""A later migration, written by the test."""
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0003"
+revision = "{later}"
 down_revision = "{head}"
 branch_labels = None
 depends_on = None
@@ -500,7 +568,7 @@ WIDEN_USERNAME = """    with op.batch_alter_table("users") as batch:
 
 @pytest.fixture
 def later_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable[[str], Path]:
-    """A copy of the migrations, used by start-up, plus a revision 0003 with the given upgrade body. Returns an
+    """A copy of the migrations, used by start-up, plus a revision LATER with the given upgrade body. Returns an
     alembic.ini for the command line on the same copy."""
     directory = tmp_path / "migrations"
     shutil.copytree(db.MIGRATIONS_DIR, directory, ignore=shutil.ignore_patterns("__pycache__"))
@@ -514,7 +582,9 @@ def later_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Callable
     )
 
     def add(body: str) -> Path:
-        (directory / "versions" / "0003_later.py").write_text(LATER_REVISION.format(head=HEAD, body=body))
+        (directory / "versions" / f"{LATER}_later.py").write_text(
+            LATER_REVISION.format(later=LATER, head=HEAD, body=body)
+        )
         return ini
 
     return add
@@ -545,7 +615,7 @@ async def test_a_migration_that_copies_a_table_keeps_the_rows_referring_to_it(
         code, output = await alembic_command("-c", str(ini), "upgrade", "head")
         assert code == 0, output
 
-    assert await run(revision) == "0003"
+    assert await run(revision) == LATER
     assert await run(row_counts) == rows
     assert (await run(username_column))["type"].length == 80
     async with db.engine.begin() as connection:
@@ -610,7 +680,7 @@ async def test_the_command_line_migrates_and_finds_no_drift() -> None:
 async def test_the_command_line_leaves_a_database_made_before_migrations_unchanged() -> None:
     """Only the app's start-up adopts such a database; `alembic upgrade` fails on the first existing table and rolls
     back, its alembic_version table included (on SQLite too)."""
-    await create_all()
+    await create_all(copy_of_baseline())
     await add_rows()
     before = await run(snapshot)
 

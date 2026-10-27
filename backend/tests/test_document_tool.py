@@ -36,6 +36,7 @@ from app.routers import chat as chat_router
 from app.routers.chat import _stream_answer, _Turn
 from app.services import document_tool, image_tool, llm, rag, storage
 from app.services import usage as usage_service
+from app.services.billing import entitlements
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 StartTurn = Callable[..., Awaitable[_Turn]]
@@ -45,7 +46,7 @@ DECLINED = "The model declined to continue, so the file wasn't created."
 INCOMPLETE = "The model's response ended before the file was complete, so it wasn't created."
 CALL_FAILED = "The model call failed before the file was finished."
 BUDGET_SPENT = (
-    "Your monthly token budget ran out while this answer was being written, so it stops here. Files created above "
+    "This period's chat allowance ran out while this answer was being written, so it stops here. Files created above "
     "are in your documents."
 )
 STOPPED = "Stopped before completion"
@@ -941,9 +942,10 @@ async def test_refreshing_a_slot_never_recreates_a_released_one(create_user: Cre
         from app.models import User
 
         user = await session.get(User, alice.user_id)
-    assert user is not None
+        assert user is not None
+        ent = await entitlements.load(session, user)
     redis = get_redis()
-    slot = await usage_service.acquire_chat_slot(user)
+    slot = await usage_service.acquire_chat_slot(user, ent)
     assert slot is not None
     key = f"chat:inflight:{user.id}"
     await redis.zadd(key, {slot: 1.0})
@@ -1007,7 +1009,7 @@ async def test_keepalives_while_the_model_is_silent(
 
 
 def test_the_title_in_progress_appears_once_its_quote_closed() -> None:
-    session = document_tool.FileSession(None, [], None)  # type: ignore[arg-type]
+    session = document_tool.FileSession(None, [], None, ent=None)  # type: ignore[arg-type]
     session.started(0)
     step = llm.ChatStep(tool_calls=[llm.ToolCall(0, "t", "create_document", "")])
     for arguments, title, file_format in [

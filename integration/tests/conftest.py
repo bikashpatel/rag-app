@@ -22,8 +22,18 @@ from harness import (
 )
 
 DEFAULT_DEADLINE = 180
-# Users get no limits unless a test sets them, so tests don't trip over the defaults (20 chats a minute).
+# Users get an open-ended complimentary Professional plan (every model, files, images and Gmail) and no limits unless a
+# test sets them, as overrides of the plan's, so tests don't trip over the plan's (30 chats a minute).
 NO_LIMITS = {"monthly_token_limit": 0, "rate_limit_per_min": 0, "monthly_image_limit": 0}
+LIMIT_NAMES = (
+    "monthly_token_limit",
+    "rate_limit_per_min",
+    "max_upload_mb",
+    "max_documents",
+    "max_storage_mb",
+    "monthly_image_limit",
+    "vision_monthly_token_limit",
+)
 FAKE_MODELS = {
     "chat": {"display_name": "IT Fake Chat", "litellm_model": "openai/gpt-4o-mini", "kind": "chat", "is_default": True},
     "chat2": {"display_name": "IT Fake Chat Two", "litellm_model": "openai/gpt-4.1-mini", "kind": "chat"},
@@ -139,12 +149,23 @@ def models(admin: httpx.Client) -> dict[str, dict]:
 
 @pytest.fixture(scope="session")
 def user_factory(admin: httpx.Client, models: dict[str, dict]) -> Callable[..., User]:
-    """user_factory("name", **limits) -> a new user, logged in (no limits unless given)."""
+    """user_factory("name", **fields) -> a new user with an open-ended Professional plan, logged in; limits among the
+    fields are overrides (none unless given), the rest go into the create request."""
+    plans = check(admin.get("/api/admin/plans")).json()
+    professional = next(plan["id"] for plan in plans if plan["code"] == "professional")
 
-    def create(name: str = "user", **limits: Any) -> User:
+    def create(name: str = "user", **fields: Any) -> User:
         username = unique(f"it-{name}-")
         password = f"pw-{unique('')}-secret"
-        body = {"username": username, "password": password, **NO_LIMITS, **limits}
+        overrides = {**NO_LIMITS, **{key: value for key, value in fields.items() if key in LIMIT_NAMES}}
+        body = {
+            "username": username,
+            "password": password,
+            "overrides": overrides,
+            "confirm_unlimited": True,
+            "grant": {"plan_id": professional, "days": None, "reason": "Integration test user"},
+            **{key: value for key, value in fields.items() if key not in LIMIT_NAMES},
+        }
         created = check(admin.post("/api/admin/users", json=body), 201).json()
         return User(created["id"], username, password, login(username, password))
 

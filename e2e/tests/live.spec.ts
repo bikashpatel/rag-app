@@ -14,7 +14,11 @@ test("a real short answer streams from Claude Haiku 5.5 and is saved", { tag: "@
   );
   test.skip(!haiku, "no enabled Claude Haiku chat model");
   if (!haiku) return;
-  const user = await makeUser({ restrict_models: true, allowed_model_ids: [haiku.id], monthly_token_limit: 20_000, rate_limit_per_min: 2 });
+  const user = await makeUser({
+    restrict_models: true,
+    allowed_model_ids: [haiku.id],
+    overrides: { monthly_token_limit: 20_000, rate_limit_per_min: 2 },
+  });
   await signIn(context, user);
   await openChat(page);
   await expect(page.getByRole("button", { name: `Model: ${haiku.display_name}` })).toBeVisible();

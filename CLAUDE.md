@@ -26,7 +26,9 @@ Decisions the user made when asked:
 - Documents are **private per user, plus a shared knowledge base** the admin uploads to.
   Retrieval searches both.
 - Usage controls, all four: **monthly token budget, requests per minute, allowed models per
-  user, upload limits** (max file size, max documents, max total storage).
+  user, upload limits** (max file size, max documents, max total storage). Since plans (2026-10-27) these
+  come from the user's plan, per period, with optional per-user overrides set by the admin (the allowed-models
+  list only narrows the plan's models).
 
 ## Key design decisions (keep unless there's a strong reason)
 
@@ -38,7 +40,15 @@ Decisions the user made when asked:
   (`RPUSH`/`BLPOP` on `rag:ingest_queue`); no Celery.
 - One Qdrant collection per embedding model; switching the active embedding model marks
   documents stale and offers re-indexing. Every search carries the access filter.
-- The monthly budget counts chat tokens only. Embedding tokens are tracked but don't count.
+- The chat allowance (`monthly_token_limit`, per plan period) counts chat answers only, at each model's price in
+  standard tokens ($3.20 per million). Embedding tokens are tracked but don't count.
+- Plans (`docs/briefs/plans-billing.md`): access, features and limits come from the user's plan period (or
+  open-ended complimentary plan) through `billing.entitlements.load`, never from `users` columns or settings
+  directly; every route that needs a plan uses `deps.get_entitled_user` (402 with a `code`); the admin is exempt.
+  Payments go through Razorpay Payment Links (no Razorpay script on our origin). A plan starts only on a payment
+  fetched from Razorpay's API (after the return's signature check, a webhook's HMAC or the reconciler's poll) whose
+  amount, currency, order and mode match the stored order; `payments.apply_payment` applies each payment exactly once,
+  under the user's row lock.
 - Schema changes go through Alembic (`backend/migrations/`, README there): `init_db` runs `upgrade head` at
   start-up in one transaction under the advisory lock. Every change, a new table included, needs a reviewed
   revision; migrations only go forward, and a rollback means restoring the backup taken before the deploy.

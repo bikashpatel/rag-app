@@ -49,6 +49,7 @@ LABELS: dict[CheckId, str] = {
     "disk_backups": "Disk space for backups",
     "proxy": "Web server (nginx)",
     "monitor": "Monitor and alerts",
+    "billing": "Payments",
 }
 # The backup service refreshes its status every 5 minutes while it waits; a backup in progress may take longer.
 SCHEDULER_STALE_SECONDS = 30 * 60
@@ -273,6 +274,21 @@ async def gmail_reconnect_needed(timeout: float = CHECK_TIMEOUT_SECONDS) -> int 
     return result
 
 
+async def check_billing(timeout: float = CHECK_TIMEOUT_SECONDS) -> SystemCheck:
+    """Payments: orders to review, disputes near their deadline, a stalled reconciler, rejected keys, stuck or failed
+    refunds, bad signatures, failing or silent webhooks and risky key setups (counts only)."""
+    from app.services.billing import summary  # it imports the plugin registry, which imports app.deps
+
+    if settings.razorpay_mode is None:
+        return check("billing", "ok", "Payments not set up")
+    problems, error = await _guard(summary.problems(), timeout)
+    if error or problems is None:
+        return check("billing", "unknown", f"The billing records can't be read: {error}")
+    if problems:
+        return check("billing", "warning", "; ".join(problems))
+    return check("billing", "ok", f"Payments in {settings.razorpay_mode} mode; nothing needs attention")
+
+
 # ---------------- Disks and backups ----------------
 
 
@@ -435,12 +451,21 @@ class Snapshot:
 async def collect(proxy_url: str | None = None) -> Snapshot:
     """Every check (the proxy's only with a URL), run at once."""
     now = time.time()
-    (postgres, size), redis, qdrant, (worker, worker_info), (queue, queue_info, failed), gmail = await asyncio.gather(
-        check_postgres(), check_redis(), check_qdrant(), check_worker(now), check_queue(now), gmail_reconnect_needed()
+    services, billing = await asyncio.gather(
+        asyncio.gather(
+            check_postgres(),
+            check_redis(),
+            check_qdrant(),
+            check_worker(now),
+            check_queue(now),
+            gmail_reconnect_needed(),
+        ),
+        check_billing(),
     )
+    (postgres, size), redis, qdrant, (worker, worker_info), (queue, queue_info, failed), gmail = services
     backup, backup_disk, backup_info, backup_disk_info = check_backup(now)
     uploads_disk, uploads_disk_info = check_uploads_disk(now)
-    checks = [postgres, redis, qdrant, worker, queue, backup, uploads_disk, backup_disk]
+    checks = [postgres, redis, qdrant, worker, queue, backup, uploads_disk, backup_disk, billing]
     if proxy_url:
         checks.append(await check_proxy(proxy_url))
     return Snapshot(

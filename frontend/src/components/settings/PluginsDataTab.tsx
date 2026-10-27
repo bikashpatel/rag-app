@@ -1,12 +1,13 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { ApiError, deleteAllConversations, downloadMyData, getAccount, saveBlob } from "../../api/client";
-import type { PluginInfo } from "../../api/types";
+import type { Me, PluginInfo } from "../../api/types";
 import { announceConversationsDeleted } from "../../lib/appEvents";
 import { formatBytes } from "../../lib/format";
 import ConnectionsPanel, { type OAuthReturn } from "../connections/ConnectionsPanel";
 import { AlertIcon, CheckCircleIcon, DownloadIcon, TrashIcon } from "../ui/icons";
 import { PanelHead, plural } from "./PanelParts";
 import { useLoad } from "./useLoad";
+import YourDataSection from "./YourDataSection";
 
 /** What opened the tab with a purpose: a banner to show and a card to focus (navigation state, consumed once). */
 export type PluginsIntent = {
@@ -40,7 +41,8 @@ function ErrorLine({ children }: { children: ReactNode }) {
   );
 }
 
-function ExportRow() {
+/** `lapsed`: no plan, so no documents panel; the files are in "Your documents" at the top of this tab. */
+function ExportRow({ lapsed }: { lapsed: boolean }) {
   const [working, setWorking] = useState(false);
   const [saved, setSaved] = useState<{ text: string; omitted: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -77,7 +79,8 @@ function ExportRow() {
         <h3 className="settings-label-title">Export my data</h3>
         <p className="settings-desc">
           A ZIP with your conversations (Markdown and JSON), the list of your documents, your settings and your sign-in
-          history. Document files aren't included: download them from the documents panel.
+          history. Document files aren't included: download them from{" "}
+          {lapsed ? "Your documents above" : "the documents panel"}.
         </p>
         {working ? (
           <p className="settings-progress" role="status">
@@ -241,6 +244,7 @@ function DeleteAllRow({ count, onDeleted }: DeleteRowProps) {
 }
 
 type PluginsDataTabProps = {
+  user: Me;
   intent: PluginsIntent;
   /** A new key remounts the connection cards, which read the banner and the focus target when they mount. */
   intentKey: string;
@@ -250,17 +254,22 @@ type PluginsDataTabProps = {
   onClose: () => void;
 };
 
-/** Settings → Plugins & data: the plugin connection cards, the data export and "Delete all chats". */
-export default function PluginsDataTab({ intent, intentKey, onBrowse, onAllChatsDeleted, onClose }: PluginsDataTabProps) {
+/**
+ * Settings → Plugins & data: "Your data" for a user without access (their documents and chats), the plugin connection
+ * cards, the data export and "Delete all chats".
+ */
+export default function PluginsDataTab({ user, intent, intentKey, onBrowse, onAllChatsDeleted, onClose }: PluginsDataTabProps) {
   const id = useId();
   const account = useLoad((signal) => getAccount(signal), "Couldn't load your conversation count.");
   const [deleted, setDeleted] = useState<number | null>(null);
   const count = account.data ? (deleted === null ? account.data.conversation_count : 0) : null;
+  const lapsed = !user.is_admin && !user.plan.access;
 
   return (
     <>
       <PanelHead title="Plugins & data" onClose={onClose} />
       <div className="settings-body">
+        {lapsed ? <YourDataSection /> : null}
         <div role="group" aria-labelledby={`${id}-plugins`}>
           <p className="settings-sub" id={`${id}-plugins`}>
             Plugins
@@ -277,7 +286,7 @@ export default function PluginsDataTab({ intent, intentKey, onBrowse, onAllChats
           <p className="settings-sub" id={`${id}-data`}>
             Your data
           </p>
-          <ExportRow />
+          <ExportRow lapsed={lapsed} />
           <DeleteAllRow
             count={count}
             onDeleted={(n) => {

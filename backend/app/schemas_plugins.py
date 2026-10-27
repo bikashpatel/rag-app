@@ -76,6 +76,7 @@ class PluginInfo(BaseModel):
     import_max_items: int | None  # GMAIL_IMPORT_MAX_ITEMS for plugins that import, else None
     capabilities: list[PluginCapabilityInfo]
     connection: PluginConnectionStatus | None
+    in_plan: bool  # the caller's plan includes it (always true for the admin)
 
 
 class PluginConnectRequest(BaseModel):

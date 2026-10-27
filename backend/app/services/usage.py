@@ -1,4 +1,5 @@
-"""Usage controls: rate limiting, monthly budgets and usage accounting."""
+"""Usage controls and accounting (docs/briefs/plans-billing.md 5.3): the rate limit, the chat allowance in standard
+tokens, the image and vision counts, all in the entitlements' allowance window, and recording usage."""
 
 import logging
 import secrets
@@ -7,20 +8,24 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import ColumnElement, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.compiler import SQLCompiler
 from sqlalchemy.sql.functions import FunctionElement
 
 from app.config import settings
-from app.models import LLMModel, UsageEvent, User, UserImageLimit
+from app.errors import AppError
+from app.models import LLMModel, UsageEvent, User
 from app.redis_client import get_redis
+from app.schemas import UsageSummary
+from app.services.billing.entitlements import Entitlements
+from app.services.billing.money import allowance_tokens, format_ist_date, ist_date
 from app.services.llm import Usage
 
 logger = logging.getLogger(__name__)
 
-# Answers a user with a monthly budget may have generating at once. The budget is checked before an answer and
+# Answers a user with a chat allowance may have generating at once. The allowance is checked before an answer and
 # charged after it, so without this every request started in parallel would pass the check.
 MAX_CHATS_IN_FLIGHT = 2
 _CHAT_IN_FLIGHT = "Another answer is still being generated. Wait for it to finish, then try again."
@@ -68,28 +73,21 @@ def _utc_day_sqlite(element: utc_day, compiler: SQLCompiler, **kw: Any) -> str:
     return f"substr({compiler.process(element.clauses, **kw)}, 1, 10)"
 
 
-def user_limits(user: User) -> dict:
-    """UserLimits shape. The admin bypasses limits, so it is reported as unlimited."""
-    if user.is_admin:
-        return {
-            "monthly_token_limit": 0,
-            "rate_limit_per_min": 0,
-            "max_upload_mb": settings.max_upload_mb_hard,
-            "max_documents": 0,
-            "max_storage_mb": 0,
-        }
-    return {
-        "monthly_token_limit": user.monthly_token_limit,
-        "rate_limit_per_min": user.rate_limit_per_min,
-        "max_upload_mb": min(user.max_upload_mb, settings.max_upload_mb_hard),
-        "max_documents": user.max_documents,
-        "max_storage_mb": user.max_storage_mb,
-    }
+def allowance_ending(user: User, ent: Entitlements) -> str:
+    """When a used-up allowance starts again (IST dates, plans-billing 5.3): with the next period, on the 1st of next
+    month (an open-ended plan, also one that follows this period), or the plan's last day when nothing follows."""
+    restarts = format_ist_date(ist_date(ent.window_end))
+    if ent.period_id is not None and ent.paid_through is not None and ent.paid_through > ent.window_end:
+        return f"It starts again with your next period on {restarts}."
+    if ent.valid_through is None or user.comp_plan_id is not None:
+        return f"It starts again on {restarts}."
+    return f"Your {ent.plan_name} plan is valid through {format_ist_date(ent.valid_through)}."
 
 
-async def check_rate_limit(user: User) -> None:
+async def check_rate_limit(user: User, ent: Entitlements) -> None:
     """Fixed one-minute window per user, in Redis. Raises 429 with Retry-After."""
-    if user.is_admin or user.rate_limit_per_min <= 0:
+    limit = ent.limits.rate_limit_per_min
+    if ent.is_admin or limit <= 0:
         return
     redis = get_redis()
     now = time.time()
@@ -97,76 +95,62 @@ async def check_rate_limit(user: User) -> None:
     count = await redis.incr(key)
     if count == 1:
         await redis.expire(key, 120)
-    if count > user.rate_limit_per_min:
+    if count > limit:
         retry_after = max(1, 60 - int(now % 60))
         raise HTTPException(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(
-                f"Rate limit reached ({user.rate_limit_per_min} requests per minute). Try again in {retry_after}s."
-            ),
+            detail=f"Rate limit reached ({limit} requests per minute). Try again in {retry_after}s.",
             headers={"Retry-After": str(retry_after)},
         )
 
 
-async def _tokens_this_month(db: AsyncSession, user_id: int, kind: str) -> int:
-    result = await db.execute(
-        select(func.coalesce(func.sum(UsageEvent.total_tokens), 0)).where(
-            UsageEvent.user_id == user_id,
-            UsageEvent.kind == kind,
-            UsageEvent.created_at >= month_start(),
-        )
+def _in_window(user_id: int, ent: Entitlements, kind: str) -> ColumnElement[bool]:
+    return and_(
+        UsageEvent.user_id == user_id,
+        UsageEvent.kind == kind,
+        UsageEvent.created_at >= ent.window_start,
+        UsageEvent.created_at < ent.window_end,
     )
-    return int(result.scalar_one() or 0)
 
 
-async def chat_tokens_this_month(db: AsyncSession, user_id: int) -> int:
-    return await _tokens_this_month(db, user_id, "chat")
+async def chat_allowance_used(db: AsyncSession, user_id: int, ent: Entitlements) -> int:
+    """The standard tokens of the user's chat answers in the allowance window."""
+    total = func.coalesce(func.sum(UsageEvent.allowance_tokens), 0)
+    return int(await db.scalar(select(total).where(_in_window(user_id, ent, "chat"))) or 0)
 
 
-async def vision_tokens_this_month(db: AsyncSession, user_id: int) -> int:
-    """Checked against VISION_MONTHLY_TOKEN_LIMIT when an ingestion run starts."""
-    return await _tokens_this_month(db, user_id, "vision")
+async def vision_tokens_in_window(db: AsyncSession, user_id: int, ent: Entitlements) -> int:
+    """Checked against the vision allowance when an ingestion run starts."""
+    total = func.coalesce(func.sum(UsageEvent.total_tokens), 0)
+    return int(await db.scalar(select(total).where(_in_window(user_id, ent, "vision"))) or 0)
 
 
-async def images_this_month(db: AsyncSession, user_id: int) -> int:
-    """The user's image usage events since the start of this UTC month: reservations and kept failures count."""
-    result = await db.execute(
-        select(func.count(UsageEvent.id)).where(
-            UsageEvent.user_id == user_id, UsageEvent.kind == "image", UsageEvent.created_at >= month_start()
-        )
-    )
-    return int(result.scalar_one() or 0)
+async def images_in_window(db: AsyncSession, user_id: int, ent: Entitlements) -> int:
+    """The user's image usage events in the allowance window: reservations and kept failures count."""
+    return int(await db.scalar(select(func.count(UsageEvent.id)).where(_in_window(user_id, ent, "image"))) or 0)
 
 
-async def monthly_image_limit(db: AsyncSession, user: User) -> int:
-    """Images the user may generate per UTC month (0 = unlimited): 0 for the admin; else their user_image_limits row,
-    or DEFAULT_MONTHLY_IMAGE_LIMIT when they have none."""
-    if user.is_admin:
-        return 0
-    limit = await db.scalar(select(UserImageLimit.monthly_image_limit).where(UserImageLimit.user_id == user.id))
-    return settings.default_monthly_image_limit if limit is None else limit
-
-
-async def check_budget(db: AsyncSession, user: User) -> int | None:
-    """The chat tokens left this month (None: no budget, or the admin). Raises 429 when none are left."""
-    if user.is_admin or user.monthly_token_limit <= 0:
+async def check_budget(db: AsyncSession, user: User, ent: Entitlements) -> int | None:
+    """The chat allowance left in the window, in standard tokens (None: unlimited, or the admin). Raises 429
+    allowance_used when none is left."""
+    limit = ent.limits.monthly_token_limit
+    if ent.is_admin or limit <= 0:
         return None
-    used = await chat_tokens_this_month(db, user.id)
-    if used >= user.monthly_token_limit:
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail=(
-                f"Monthly token budget used up ({used:,} of {user.monthly_token_limit:,} tokens). "
-                "Ask the admin to raise your limit."
-            ),
+    used = await chat_allowance_used(db, user.id, ent)
+    if used >= limit:
+        raise AppError(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"You've used this period's chat allowance ({used:,} of {limit:,}). {allowance_ending(user, ent)}",
+            "allowance_used",
+            feature="chat_tokens",
         )
-    return user.monthly_token_limit - used
+    return limit - used
 
 
-async def acquire_chat_slot(user: User) -> str | None:
+async def acquire_chat_slot(user: User, ent: Entitlements) -> str | None:
     """Take one of the user's MAX_CHATS_IN_FLIGHT answer slots (429 when all are taken). Returns the slot to pass
-    to release_chat_slot, or None for users without a monthly budget."""
-    if user.is_admin or user.monthly_token_limit <= 0:
+    to release_chat_slot, or None for users without a chat allowance."""
+    if ent.is_admin or ent.limits.monthly_token_limit <= 0:
         return None
     redis = get_redis()
     key, slot, now = _slots_key(user.id), secrets.token_hex(8), time.time()
@@ -227,7 +211,9 @@ async def record_usage(
     commit: bool = True,
     model_name: str | None = None,
 ) -> None:
-    """`model_name` names a model that was deleted meanwhile (`model` None: a new row can't reference it)."""
+    """`model_name` names a model that was deleted meanwhile (`model` None: a new row can't reference it). A chat
+    event also records what it counts against the chat allowance (money.allowance_tokens), fixed from now on."""
+    cost = float(usage.cost_usd or 0.0)
     db.add(
         UsageEvent(
             user_id=user_id,
@@ -237,38 +223,55 @@ async def record_usage(
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
             total_tokens=usage.total_tokens,
-            cost_usd=float(usage.cost_usd or 0.0),
+            cost_usd=cost,
+            allowance_tokens=allowance_tokens(cost, usage.total_tokens) if kind == "chat" else 0,
         )
     )
     if commit:
         await db.commit()
 
 
-async def usage_summary(db: AsyncSession, user: User) -> dict:
-    """UsageSummary shape for the current month."""
-    start = month_start()
+def usage_window(ent: Entitlements, now: datetime | None = None) -> tuple[datetime, datetime]:
+    """The window usage is reported in: the current period; else (an open-ended plan, the admin, a user without
+    access) the UTC calendar month of `now`."""
+    if ent.access and ent.period_id is not None:
+        return ent.window_start, ent.window_end
+    start = month_start(now)
+    return start, next_month(start)
+
+
+async def usage_summary(db: AsyncSession, user: User, ent: Entitlements) -> UsageSummary:
+    """The user's usage in the window (usage_window): what Me.usage and the export report."""
+    start, end = usage_window(ent)
     rows = await db.execute(
         select(
             UsageEvent.kind,
             func.coalesce(func.sum(UsageEvent.total_tokens), 0),
+            func.coalesce(func.sum(UsageEvent.allowance_tokens), 0),
             func.coalesce(func.sum(UsageEvent.cost_usd), 0.0),
             func.count(UsageEvent.id),
         )
-        .where(UsageEvent.user_id == user.id, UsageEvent.created_at >= start)
+        .where(UsageEvent.user_id == user.id, UsageEvent.created_at >= start, UsageEvent.created_at < end)
         .group_by(UsageEvent.kind)
     )
-    totals = {"chat": (0, 0.0), "embedding": (0, 0.0), "vision": (0, 0.0)}
-    images = 0
-    for kind, tokens, cost, events in rows.all():
-        totals[kind] = (int(tokens or 0), float(cost or 0.0))
-        if kind == "image":
-            images = int(events)
-    return {
-        "month": start.strftime("%Y-%m"),
-        "chat_tokens": totals["chat"][0],
-        "embedding_tokens": totals["embedding"][0],
-        "vision_tokens": totals["vision"][0],
-        "images": images,
-        "cost_usd": round(sum(cost for _, cost in totals.values()), 6),
-        "monthly_token_limit": 0 if user.is_admin else user.monthly_token_limit,
-    }
+    tokens: dict[str, int] = {}
+    events: dict[str, int] = {}
+    allowance = 0
+    cost = 0.0
+    for kind, total, counted, spent, count in rows.tuples():
+        tokens[kind], events[kind] = int(total or 0), int(count or 0)
+        cost += float(spent or 0.0)
+        if kind == "chat":
+            allowance = int(counted or 0)
+    return UsageSummary(
+        month=start.strftime("%Y-%m"),
+        chat_tokens=tokens.get("chat", 0),
+        embedding_tokens=tokens.get("embedding", 0),
+        vision_tokens=tokens.get("vision", 0),
+        images=events.get("image", 0),
+        cost_usd=round(cost, 6),
+        monthly_token_limit=ent.limits.monthly_token_limit,
+        chat_allowance_used=allowance,
+        window_start=start,
+        window_end=end,
+    )

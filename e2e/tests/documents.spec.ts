@@ -7,7 +7,7 @@ import { cannedChat, events } from "../support/sse";
 // A successful upload would be embedded (a model call), so uploads here are refused: by the client's checks against
 // the user's limits, or by an intercepted response. The guards fail the test if any upload reaches the backend.
 
-test.use({ userOptions: { max_upload_mb: 1 } });
+test.use({ userOptions: { overrides: { max_upload_mb: 1 } } });
 
 test.beforeEach(async ({ context, user, page }) => {
   await signIn(context, user);

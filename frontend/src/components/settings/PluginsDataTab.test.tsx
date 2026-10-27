@@ -1,9 +1,17 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { PluginInfo } from "../../api/types";
+import type { Me, PluginInfo } from "../../api/types";
 import { onConversationsDeleted } from "../../lib/appEvents";
-import { makeAccount, makeConnection, makeGmailPlugin, makeMe } from "../../test/fixtures";
+import {
+  makeAccount,
+  makeAdminMe,
+  makeConnection,
+  makeDocument,
+  makeGmailPlugin,
+  makeLapsedPlanAccess,
+  makeMe,
+} from "../../test/fixtures";
 import { deferred, errorResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
 import { renderWithAuth } from "../../test/render";
 import PluginsDataTab, { type PluginsIntent } from "./PluginsDataTab";
@@ -14,19 +22,26 @@ function exportResponse(headers: Record<string, string>): Response {
   return new Response("PK\u0003\u0004zip", { status: 200, headers: { "Content-Type": "application/zip", ...headers } });
 }
 
-async function renderTab(overrides: Record<string, Route> = {}) {
+async function renderTab(overrides: Record<string, Route> = {}, me: Me = makeMe()) {
   const onBrowse = vi.fn();
   const onAllChatsDeleted = vi.fn();
   const calls = stubFetch({
-    "GET /auth/me": makeMe(),
+    "GET /auth/me": me,
     "GET /me/account": makeAccount({ conversation_count: 12 }),
     "GET /plugins": [makeGmailPlugin()],
     ...overrides,
   });
-  await renderWithAuth(
-    <PluginsDataTab intent={NO_INTENT} intentKey="" onBrowse={onBrowse} onAllChatsDeleted={onAllChatsDeleted} onClose={() => {}} />,
+  const view = await renderWithAuth(
+    <PluginsDataTab
+      user={me}
+      intent={NO_INTENT}
+      intentKey=""
+      onBrowse={onBrowse}
+      onAllChatsDeleted={onAllChatsDeleted}
+      onClose={() => {}}
+    />,
   );
-  return { calls, onBrowse, onAllChatsDeleted };
+  return { calls, onBrowse, onAllChatsDeleted, view };
 }
 
 function sent(calls: FetchCall[], method: string, path: string): unknown[] {
@@ -34,6 +49,42 @@ function sent(calls: FetchCall[], method: string, path: string): unknown[] {
 }
 
 describe("PluginsDataTab", () => {
+  describe("Your data", () => {
+    it("lists a lapsed user's own documents and chats above the plugins", async () => {
+      await renderTab(
+        {
+          "GET /documents": [makeDocument({ filename: "Q3 report.pdf" })],
+          "GET /conversations": [{ id: 4, title: "Notice period", created_at: "2026-10-01T09:00:00Z", updated_at: "2026-10-02T09:00:00Z" }],
+        },
+        makeMe({ plan: makeLapsedPlanAccess() }),
+      );
+      expect(await screen.findByText("Q3 report.pdf")).toBeInTheDocument();
+      expect(await screen.findByText("Notice period")).toBeInTheDocument();
+      expect(screen.getByRole("group", { name: "Your documents" })).toBeInTheDocument();
+      expect(screen.getByRole("group", { name: "Your chats" })).toBeInTheDocument();
+      // No documents panel without a plan: the export points at the list above.
+      expect(screen.getByText(/^A ZIP with your conversations/)).toHaveTextContent(
+        "Document files aren't included: download them from Your documents above.",
+      );
+    });
+
+    it("isn't shown to a user with a plan", async () => {
+      const { calls } = await renderTab();
+      expect(await screen.findByRole("heading", { name: "Gmail" })).toBeInTheDocument();
+      expect(screen.queryByRole("group", { name: "Your documents" })).not.toBeInTheDocument();
+      expect(screen.getByText(/^A ZIP with your conversations/)).toHaveTextContent(
+        "Document files aren't included: download them from the documents panel.",
+      );
+      expect(calls.some((call) => call.path === "/documents")).toBe(false);
+    });
+
+    it("isn't shown to the admin", async () => {
+      await renderTab({}, makeAdminMe({ plan: makeLapsedPlanAccess("none") }));
+      expect(await screen.findByRole("heading", { name: "Gmail" })).toBeInTheDocument();
+      expect(screen.queryByRole("group", { name: "Your chats" })).not.toBeInTheDocument();
+    });
+  });
+
   describe("Export my data", () => {
     let downloads: string[];
 
@@ -178,6 +229,30 @@ describe("PluginsDataTab", () => {
       expect(within(card).getByRole("switch", { name: "Use in chat" })).toBeChecked();
       await user.click(within(card).getByRole("button", { name: "Browse Gmail" }));
       expect(onBrowse).toHaveBeenCalledWith(gmail);
+    });
+
+    it("keeps a connection outside the plan, with Upgrade and Disconnect but nothing that uses it", async () => {
+      const { view } = await renderTab({ "GET /plugins": [makeGmailPlugin({ in_plan: false })] });
+      const card = await screen.findByRole("region", { name: "Gmail" });
+      expect(within(card).getByText("Not in your plan")).toBeInTheDocument();
+      expect(card).toHaveTextContent("maya@example.com is still connected.");
+      expect(card).toHaveTextContent(
+        "Your plan doesn't include Gmail. Upgrade to Professional to use it again; you won't need to reconnect.",
+      );
+      expect(within(card).getByRole("button", { name: "Disconnect" })).toBeInTheDocument();
+      expect(within(card).queryByRole("switch", { name: "Use in chat" })).not.toBeInTheDocument();
+      expect(within(card).queryByRole("button", { name: "Browse Gmail" })).not.toBeInTheDocument();
+      expect(within(card).queryByRole("list", { name: "What Gmail can be used for" })).not.toBeInTheDocument();
+      await userEvent.setup().click(within(card).getByRole("link", { name: "Upgrade" }));
+      expect(view.location()).toBe("/plans");
+    });
+
+    it("offers Upgrade instead of Connect for a plugin outside the plan", async () => {
+      await renderTab({ "GET /plugins": [makeGmailPlugin({ in_plan: false, connection: null })] });
+      const card = await screen.findByRole("region", { name: "Gmail" });
+      expect(card).toHaveTextContent("Included in Professional.");
+      expect(within(card).getByRole("link", { name: "Upgrade" })).toHaveAttribute("href", "/plans");
+      expect(within(card).queryByRole("button", { name: "Connect Gmail" })).not.toBeInTheDocument();
     });
 
     it.each<[string, Partial<PluginInfo>, string]>([

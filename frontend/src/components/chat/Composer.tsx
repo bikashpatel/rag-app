@@ -1,4 +1,5 @@
 import {
+  useEffect,
   useId,
   useImperativeHandle,
   useLayoutEffect,
@@ -39,9 +40,9 @@ type ComposerProps = {
   /** The thread has messages: the placeholder says "Reply…". */
   replying: boolean;
   selection: DocumentSelection;
-  /** The selected model can create files: the hint says so. */
+  /** The selected model can create files and the plan includes them: the hint says so. */
   canCreateFiles: boolean;
-  /** The selected model can generate images: the hint says so. */
+  /** The selected model can generate images and the plan includes them: the hint says so. */
   canCreateImages: boolean;
   /** Preferences.enter_to_send: Enter sends (else Ctrl/Cmd+Enter does, and Enter adds a line). */
   enterToSend: boolean;
@@ -57,6 +58,8 @@ type ComposerProps = {
   onStop: () => void;
   /** When given, the document-scope chip becomes a button (opens or expands the documents panel). */
   onScopeClick?: () => void;
+  /** The unsent text after each change (kept when a plan ends on the page, 8.7). */
+  onDraftChange?: (text: string) => void;
 };
 
 /** What the assistant can make with the selected model, or null. */
@@ -102,8 +105,11 @@ export default function Composer({
   onSend,
   onStop,
   onScopeClick,
+  onDraftChange,
 }: ComposerProps) {
   const [text, setText] = useState("");
+  const draftRef = useRef(onDraftChange);
+  draftRef.current = onDraftChange;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const caretToEnd = useRef(false);
   const inputId = useId();
@@ -147,6 +153,8 @@ export default function Composer({
       textarea.scrollTop = textarea.scrollHeight;
     }
   }, [text]);
+
+  useEffect(() => draftRef.current?.(text), [text]);
 
   const dropEnabled = onDropFiles !== undefined && disabledReason === null;
   const { dragActive, dropHandlers } = useFileDrop((files, folders) => onDropFiles?.(files, folders), dropEnabled);

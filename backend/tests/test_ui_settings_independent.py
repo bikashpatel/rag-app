@@ -56,7 +56,6 @@ from app.models import (
     PluginSetting,
     UsageEvent,
     User,
-    UserImageLimit,
     UserPreference,
     utcnow,
 )
@@ -1116,7 +1115,7 @@ async def test_usage_counts_only_this_utc_months_events_of_the_caller(
         "2026-10-01T00:00:00Z",
         "2026-11-01T00:00:00Z",
     )
-    assert usage["chat_tokens"]["used"] == 120 + 60 + 7
+    assert usage["chat_tokens"] == 120 + 60 + 7
     assert usage["requests"] == 3
     assert usage["images"]["used"] == 1
     assert usage["vision_tokens"]["used"] == 1700
@@ -1136,6 +1135,7 @@ async def test_usage_counts_only_this_utc_months_events_of_the_caller(
     assert days["2026-10-18"]["images"] == 1 and days["2026-10-18"]["cost_usd"] == 0.006
     assert days["2026-10-03"] == {
         "date": "2026-10-03",
+        "chat_allowance": 0,
         "chat_tokens": 0,
         "requests": 0,
         "images": 0,
@@ -1143,9 +1143,11 @@ async def test_usage_counts_only_this_utc_months_events_of_the_caller(
         "embedding_tokens": 0,
         "cost_usd": 0.0,
     }
-    assert sum(entry["chat_tokens"] for entry in usage["daily"]) == usage["chat_tokens"]["used"]
+    assert sum(entry["chat_tokens"] for entry in usage["daily"]) == usage["chat_tokens"]
     assert round(sum(entry["cost_usd"] for entry in usage["daily"]), 6) == usage["cost_usd"]["total"]
-    assert usage["by_model"] == [
+    # The rows were written without allowance tokens (an answer's are in test_usage_allowance.py)
+    rows = [{key: value for key, value in row.items() if key != "allowance_tokens"} for row in usage["by_model"]]
+    assert rows == [
         {"model_name": "Claude Sonnet 5.5", "kind": "vision", "tokens": 1700, "requests": 1, "cost_usd": 0.02},
         {"model_name": "GPT Image 2", "kind": "image", "tokens": 322, "requests": 1, "cost_usd": 0.006},
         {"model_name": "Claude Haiku 5.5", "kind": "chat", "tokens": 180, "requests": 2, "cost_usd": 0.0015},
@@ -1158,6 +1160,7 @@ async def test_usage_counts_only_this_utc_months_events_of_the_caller(
         },
         {"model_name": "Claude Sonnet 5.5", "kind": "chat", "tokens": 7, "requests": 1, "cost_usd": 0.0},
     ]
+    assert {entry["allowance_tokens"] for entry in usage["by_model"]} == {0}
 
 
 async def test_a_deleted_models_usage_keeps_its_stored_name(
@@ -1172,7 +1175,7 @@ async def test_a_deleted_models_usage_keeps_its_stored_name(
 
     [entry] = (await usage_of(alice))["by_model"]
     assert (entry["model_name"], entry["tokens"]) == ("openai/gpt-5.4-mini", 9)
-    assert (await usage_of(alice))["chat_tokens"]["used"] == 9  # history stays
+    assert (await usage_of(alice))["chat_tokens"] == 9  # history stays
 
 
 async def test_limits_come_from_the_users_settings_and_the_admin_has_none(
@@ -1181,12 +1184,12 @@ async def test_limits_come_from_the_users_settings_and_the_admin_has_none(
     pin_clock: Callable[[datetime], None],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(settings, "vision_monthly_token_limit", 12345)
     alice = await create_user(
         "alice",
         monthly_token_limit=5000,
         rate_limit_per_min=7,
         monthly_image_limit=6,
+        vision_monthly_token_limit=12345,
         max_documents=9,
         max_storage_mb=40,
         max_upload_mb=3,
@@ -1195,30 +1198,29 @@ async def test_limits_come_from_the_users_settings_and_the_admin_has_none(
     usage = await usage_of(alice)
     admin = await usage_of(admin_client)
 
-    assert usage["chat_tokens"]["limit"] == 5000 and usage["images"]["limit"] == 6
+    assert usage["chat_allowance"]["limit"] == 5000 and usage["images"]["limit"] == 6
     assert usage["vision_tokens"]["limit"] == 12345 and usage["rate_limit_per_min"] == 7
     assert {key: usage["documents"][key] for key in ("max_documents", "max_storage_mb", "max_upload_mb")} == {
         "max_documents": 9,
         "max_storage_mb": 40,
         "max_upload_mb": 3,
     }
-    assert (admin["chat_tokens"]["limit"], admin["images"]["limit"], admin["vision_tokens"]["limit"]) == (0, 0, 0)
+    assert (admin["chat_allowance"]["limit"], admin["images"]["limit"], admin["vision_tokens"]["limit"]) == (0, 0, 0)
     assert admin["rate_limit_per_min"] == 0
     assert (admin["documents"]["max_documents"], admin["documents"]["max_storage_mb"]) == (0, 0)
     assert admin["documents"]["max_upload_mb"] == settings.max_upload_mb_hard
-    # Without a user_image_limits row the default limit applies.
-    monkeypatch.setattr(settings, "default_monthly_image_limit", 17)
+    # Without a value of her own her plan's limit applies.
     async with SessionLocal() as session:
-        row = await session.get(UserImageLimit, alice.user_id)
-        assert row is not None
-        await session.delete(row)
+        row = await session.get(User, alice.user_id)
+        assert row is not None and row.monthly_image_limit is not None
+        row.monthly_image_limit = None
         await session.commit()
-    assert (await usage_of(alice))["images"]["limit"] == 17
+    assert (await usage_of(alice))["images"]["limit"] == 60  # Professional's
     # The page and /auth/me agree on every limit.
     limits = (await alice.get("/api/auth/me")).json()["limits"]
     again = await usage_of(alice)
     assert (limits["monthly_token_limit"], limits["monthly_image_limit"], limits["rate_limit_per_min"]) == (
-        again["chat_tokens"]["limit"],
+        again["chat_allowance"]["limit"],
         again["images"]["limit"],
         again["rate_limit_per_min"],
     )
@@ -1288,7 +1290,7 @@ async def test_the_month_and_its_reset_follow_utc(
     assert [entry["date"] for entry in usage["daily"]] == [
         (date.fromisoformat(start) + timedelta(days=n)).isoformat() for n in range(days)
     ]
-    assert usage["chat_tokens"]["used"] == used
+    assert usage["chat_tokens"] == used
 
 
 async def test_usage_after_a_real_answer_matches_the_events_and_auth_me(create_user: CreateUser) -> None:
@@ -1302,7 +1304,9 @@ async def test_usage_after_a_real_answer_matches_the_events_and_auth_me(create_u
     async with SessionLocal() as session:
         events = list(await session.scalars(select(UsageEvent).where(UsageEvent.user_id == alice.user_id)))
     chats = [event for event in events if event.kind == "chat"]
-    assert usage["chat_tokens"]["used"] == sum(event.total_tokens for event in chats) == me["chat_tokens"] == 47
+    assert usage["chat_tokens"] == sum(event.total_tokens for event in chats) == me["chat_tokens"] == 47
+    allowance = sum(event.allowance_tokens for event in chats)
+    assert usage["chat_allowance"]["used"] == me["chat_allowance_used"] == allowance == 84
     assert usage["requests"] == len(chats) == 1
     assert usage["images"]["used"] == me["images"] == 0
     assert usage["cost_usd"]["total"] == round(me["cost_usd"], 6)
@@ -1374,6 +1378,7 @@ async def test_the_export_holds_only_the_callers_data_even_with_shared_documents
     assert set(entries) == {
         "README.txt",
         "account.json",
+        "billing.json",
         "documents.json",
         "conversations/index.json",
         *(name for name in entries if name.startswith(f"conversations/{conversation_id:06d}-")),
@@ -1676,7 +1681,7 @@ async def test_an_account_with_nothing_exports_a_valid_zip(create_user: CreateUs
     response = await export_of(alice)
     entries = unzip(response)
 
-    assert set(entries) == {"README.txt", "account.json", "documents.json", "conversations/index.json"}
+    assert set(entries) == {"README.txt", "account.json", "billing.json", "documents.json", "conversations/index.json"}
     assert json.loads(entries["documents.json"]) == [] and json.loads(entries["conversations/index.json"]) == []
     assert (response.headers["x-export-conversations"], response.headers["x-export-omitted"]) == ("0", "0")
 
@@ -1983,6 +1988,7 @@ INFO_KEYS = {
     "import_max_items",
     "capabilities",
     "connection",
+    "in_plan",
 }
 CAPABILITY_KEYS = {"id", "name", "description", "enabled", "granted"}
 CONNECTION_KEYS = {

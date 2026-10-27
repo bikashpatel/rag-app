@@ -1,6 +1,6 @@
 """Gmail's own API, mounted at /api/plugins/gmail (docs/briefs/plugins-gmail.md, section 6): the Gmail browser,
 imports, and the pending sends' Send, Cancel and Edit. Plugin errors map to their status (PluginError.http_status):
-never 401."""
+never 401. Every route but Cancel needs access and a plan that includes Gmail (402, plans-billing 5.6)."""
 
 import asyncio
 from typing import Annotated, Any
@@ -39,8 +39,9 @@ router = APIRouter(tags=["gmail"])
 
 GmailIdPath = Annotated[str, Path(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 SendIdPath = Annotated[int, Path(ge=1, le=MAX_INT)]
-Reader = Annotated[tuple[User, PluginAccess], Depends(registry.require(PLUGIN_ID, "read"))]
-Sender = Annotated[tuple[User, PluginAccess], Depends(registry.require(PLUGIN_ID, "send"))]
+Reader = Annotated[tuple[User, registry.PlanPluginAccess], Depends(registry.require(PLUGIN_ID, "read"))]
+Sender = Annotated[tuple[User, registry.PlanPluginAccess], Depends(registry.require(PLUGIN_ID, "send"))]
+InPlan = Annotated[User, Depends(registry.in_plan(PLUGIN_ID))]
 
 
 def _client(access: PluginAccess) -> GmailClient:
@@ -163,6 +164,7 @@ async def import_items(request: GmailImportRequest, auth: Reader) -> GmailImport
             access.connection,
             user,
             selections,
+            access.ent,
             origin="ui",
             deadline=asyncio.get_running_loop().time() + importer.IMPORT_SECONDS,
         )
@@ -170,7 +172,8 @@ async def import_items(request: GmailImportRequest, auth: Reader) -> GmailImport
 
 
 @router.get("/sends/{send_id}")
-async def get_send(send_id: SendIdPath, user: User = Depends(get_current_user)) -> PendingSend:
+async def get_send(send_id: SendIdPath, user: InPlan) -> PendingSend:
+    """Also while Gmail is turned off."""
     return await sends.get(user, send_id)
 
 
@@ -181,6 +184,7 @@ async def send_email(send_id: SendIdPath, body: PendingSendConfirm, auth: Sender
 
 @router.post("/sends/{send_id}/cancel")
 async def cancel_send(send_id: SendIdPath, user: User = Depends(get_current_user)) -> PendingSend:
+    """Always open: a user without a plan can still stop a proposed email."""
     return await sends.cancel(user, send_id)
 
 

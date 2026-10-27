@@ -90,6 +90,10 @@ NOTE_NO_TOOLS = (
     "This chat model can't use Gmail in this app. If the user asks about their email, say so and that another chat "
     "model in the model menu may be able to."
 )
+NOTE_NOT_IN_PLAN = (
+    "The user's plan doesn't include the Gmail plugin. If the user asks about their email, tell them their plan "
+    "doesn't include Gmail and that {unlock} does; you can't search, read, draft or send email in this conversation."
+)
 OPEN_CALL_ERRORS = {
     "failed": "The model call failed before the Gmail action was finished.",
     "declined": "The model declined to continue, so the Gmail action wasn't done.",
@@ -123,6 +127,9 @@ _SEND_NOTE = (
 
 def note_reconnect(reason: str) -> str:
     return _NOTE_RECONNECT.format(reason=reason)
+
+
+registry.register_plan_note(PLUGIN_ID, NOTE_NOT_IN_PLAN)
 
 
 # ---------------- Schemas and prompt (10.2, 10.3) ----------------
@@ -293,7 +300,8 @@ def instructions(account_email: str, usable: frozenset[str]) -> str:
 
 
 def toolset(plugin: Plugin, access: PluginAccess) -> ChatToolSet:
-    assert access.connection is not None
+    """`access` is the turn's (registry.plan_chat), with the entitlements the whole answer keeps."""
+    assert access.connection is not None and isinstance(access, registry.PlanPluginAccess)
     return ChatToolSet(
         plugin_id=PLUGIN_ID,
         tools=tool_specs(access.usable),
@@ -385,10 +393,11 @@ class _Runner:
 class GmailSession:
     """The Gmail calls of one answer: limits, cards ("g1", "g2", …), the reading budget, and running each call."""
 
-    def __init__(self, context: "AnswerContext", plugin: Plugin, access: PluginAccess) -> None:
+    def __init__(self, context: "AnswerContext", plugin: Plugin, access: "registry.PlanPluginAccess") -> None:
         assert access.connection is not None
         self.context = context
         self.plugin = plugin
+        self.ent = access.ent  # the turn's: its plan holds for the whole answer
         self.connection: ConnectionInfo = access.connection  # refreshed by every call's re-check
         self.subject = access.connection.account_subject  # the account the answer started with
         self.reply_offered = "read" in access.usable
@@ -474,8 +483,9 @@ class GmailSession:
     # ---------------- Checks ----------------
 
     async def _recheck(self, capability: str) -> None:
-        """P26: the plugin, the connection (same account), "Use in chat" and the capability, just before the call."""
-        access = await registry.live_access(self.context.user.id, self.plugin)
+        """P26: the plugin, the connection (same account), "Use in chat" and the capability, just before the call (the
+        plan is the turn's)."""
+        access = await registry.live_access(self.context.user.id, self.plugin, self.ent)
         connection = access.connection
         if not access.enabled:
             raise _Failure(_TURNED_OFF)
@@ -716,6 +726,7 @@ class GmailSession:
                 self.context.user,
                 thread_ids,
                 include,
+                self.ent,
                 max_items=settings.gmail_import_max_items,
                 deadline=asyncio.get_running_loop().time() + importer.IMPORT_SECONDS,
                 stopping=self.context.cards.stopping,

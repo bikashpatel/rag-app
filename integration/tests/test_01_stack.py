@@ -19,6 +19,7 @@ EXPECTED_SERVICES = {
     "fake-llm",
     "fake-google",
     "fake-alerts",
+    "fake-razorpay",
 }
 # What a backend-image container may have in its environment: the generated env file, docker-compose.yml's
 # `environment`, the image's ENV and what Docker adds. Anything else would have come from somewhere else (.env).

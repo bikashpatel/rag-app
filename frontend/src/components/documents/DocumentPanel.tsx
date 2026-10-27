@@ -1,8 +1,10 @@
 import { useEffect, useId, useState, type JSX, type KeyboardEvent } from "react";
+import { Link } from "react-router-dom";
 import type { DocumentConfig, DocumentScope, DocumentSelection } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
 import GmailImportModal from "../connections/GmailImportModal";
 import { gmailReady, requestConnections, usePlugins } from "../connections/pluginStore";
+import { formatBytes, formatMegabytes, formatNumber } from "../../lib/format";
 import { AlertCircleIcon, AlertIcon, CloseIcon, MailIcon } from "../ui/icons";
 import DocumentList from "./DocumentList";
 import "./documents.css";
@@ -34,6 +36,22 @@ function dropzoneHint(config: DocumentConfig | null, configError: string | null)
   return configError ? "Uploads are unavailable until the upload settings load." : "Loading upload settings…";
 }
 
+/** Over a limit the plan lowered (B28): the documents are kept, adding more waits until the user is under it. */
+function overLimit(config: DocumentConfig | null): string | null {
+  if (!config) return null;
+  const maxBytes = config.max_storage_mb * BYTES_PER_MB;
+  const advice = "Delete some or upgrade to add more.";
+  if (config.max_documents > 0 && config.document_count > config.max_documents) {
+    const allows = formatNumber(config.max_documents);
+    return `You have ${formatNumber(config.document_count)} documents; your plan allows ${allows}. ${advice}`;
+  }
+  if (config.max_storage_mb > 0 && config.storage_bytes > maxBytes) {
+    const allows = formatMegabytes(config.max_storage_mb);
+    return `You use ${formatBytes(config.storage_bytes)}; your plan allows ${allows}. ${advice}`;
+  }
+  return null;
+}
+
 function quotaWarning(config: DocumentConfig | null): string | null {
   if (!config) return null;
   if (config.max_documents > 0 && config.document_count >= config.max_documents) {
@@ -49,6 +67,7 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
   const titleId = useId();
   const { user } = useAuth();
   const ownerId = user?.id ?? null;
+  const hasAccess = user === null || user.is_admin || user.plan.access;
   const uploads = useUploads(ownerId);
   const uploadsActive = uploads.some((item) => item.status !== "failed");
   const {
@@ -61,7 +80,7 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
     upsertDocument,
     deleteDocument,
     reprocessDocument,
-  } = useDocuments(uploadsActive);
+  } = useDocuments(uploadsActive, hasAccess);
   const [scope, setScope] = useState<DocumentScope>("private");
   const [announcement, setAnnouncement] = useState("");
   const [importing, setImporting] = useState(false);
@@ -79,6 +98,7 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
     gmailPlugin.capabilities.some((capability) => capability.id === "read" && capability.enabled);
 
   const canUpload = config !== null && ownerId !== null;
+  const over = user?.is_admin ? null : overLimit(config);
   const canShare = config?.can_upload_shared ?? false;
 
   function enqueue(files: File[], folders: string[] = []) {
@@ -175,6 +195,15 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
       </div>
 
       <div className="docs-scroll">
+        {over ? (
+          <div className="ui-notice ui-notice-warning docs-notice" role="status">
+            <AlertIcon size={15} />
+            <span className="ui-notice-text">{over}</span>
+            <Link className="btn btn-ghost btn-xs" to="/plans">
+              See plans
+            </Link>
+          </div>
+        ) : null}
         <UploadQueue items={uploads} onRemove={(id) => uploadManager.remove(id)} />
         {documents === null ? (
           documentsError ? (

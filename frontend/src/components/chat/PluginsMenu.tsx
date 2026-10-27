@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
-import type { PluginInfo } from "../../api/types";
+import type { PluginInfo, PlanUnlock } from "../../api/types";
+import { UpgradePill } from "../billing/LockedHint";
 import { pluginStatus, reloadPlugins, usePlugins, type PluginStatus } from "../connections/pluginStore";
 import Menu, { MenuHead, MenuItem, MenuLink, MenuNote, MenuSeparator } from "../ui/Menu";
 import Spinner from "../ui/Spinner";
 import { ChevronDownIcon, ChevronRightIcon, LockIcon, MailIcon, PlugIcon, RefreshIcon, SettingsIcon } from "../ui/icons";
 
 // The Plugins menu in the top bar (functional brief 8.3, visual spec 6.11): every registered plugin with its real
-// status, whether or not it is set up. It never starts OAuth: each row opens the plugin's card in Settings → Plugins
+// status, whether or not it is set up or in the user's plan (plans-billing-visual.md 7.4). It never starts OAuth: each row opens the plugin's card in Settings → Plugins
 // & data, which carries Connect, the testing-mode hint, errors and grants.
 
 const SUBTITLE = "Apps the assistant can use for you in chat.";
@@ -15,6 +16,8 @@ const ADMIN_PLUGINS_PATH = "/admin#plugins";
 
 type PluginsMenuProps = {
   isAdmin: boolean;
+  /** Which plan includes a plugin outside the user's plan ("Included in Professional"). */
+  unlock: PlanUnlock | null;
   /** Settings → Plugins & data, focused on that plugin's card (null: no particular card). */
   onOpenPlugin: (pluginId: string | null) => void;
 };
@@ -39,10 +42,17 @@ type Row = {
   end: ReactNode;
 };
 
-function rowFor(plugin: PluginInfo, status: PluginStatus, isAdmin: boolean): Row {
+function rowFor(plugin: PluginInfo, status: PluginStatus, isAdmin: boolean, unlock: PlanUnlock | null): Row {
   const email = plugin.connection?.account_email;
   const quiet = <ChevronRightIcon size={16} />;
   switch (status) {
+    case "not_in_plan": {
+      const plan = unlock?.plugins[plugin.id] ?? null;
+      const detail = [plan ? `Included in ${plan}.` : null, plugin.connection ? "Your connection is kept." : null]
+        .filter(Boolean)
+        .join(" ");
+      return { tone: "off", status: "Not in your plan", detail: detail || null, action: "card", end: <UpgradePill /> };
+    }
     case "connected":
       return {
         tone: "connected",
@@ -130,14 +140,16 @@ function StatusLine({ tone, children }: { tone: Row["tone"]; children: ReactNode
 function PluginItem({
   plugin,
   isAdmin,
+  unlock,
   onOpenPlugin,
 }: {
   plugin: PluginInfo;
   isAdmin: boolean;
+  unlock: PlanUnlock | null;
   onOpenPlugin: (pluginId: string) => void;
 }) {
   const status = pluginStatus(plugin);
-  const row = rowFor(plugin, status, isAdmin);
+  const row = rowFor(plugin, status, isAdmin, unlock);
   const description = (
     <>
       {status === "available" && plugin.description ? (
@@ -171,7 +183,7 @@ function PluginItem({
 }
 
 /** The top bar's Plugins button and menu; a dot and "N needs attention" when a connection needs to be reconnected. */
-export default function PluginsMenu({ isAdmin, onOpenPlugin }: PluginsMenuProps) {
+export default function PluginsMenu({ isAdmin, unlock, onOpenPlugin }: PluginsMenuProps) {
   const { plugins, error } = usePlugins();
   const attention = plugins?.filter((plugin) => pluginStatus(plugin) === "reconnect_needed").length ?? 0;
   const buttonLabel = attention > 0 ? `Plugins, ${attention} ${attention === 1 ? "needs" : "need"} attention` : "Plugins";
@@ -212,7 +224,7 @@ export default function PluginsMenu({ isAdmin, onOpenPlugin }: PluginsMenuProps)
         <MenuNote>No plugins are available.</MenuNote>
       ) : (
         plugins.map((plugin) => (
-          <PluginItem key={plugin.id} plugin={plugin} isAdmin={isAdmin} onOpenPlugin={onOpenPlugin} />
+          <PluginItem key={plugin.id} plugin={plugin} isAdmin={isAdmin} unlock={unlock} onOpenPlugin={onOpenPlugin} />
         ))
       )}
       <MenuSeparator />

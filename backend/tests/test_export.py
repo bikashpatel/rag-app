@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-from conftest import CLIENT_SECRET, TEST_TOKEN_KEY, ApiClient, chat, txt_bytes, upload
+from conftest import CLIENT_SECRET, TEST_TOKEN_KEY, ApiClient, chat, grant_plan, txt_bytes, upload
 from gmail_support import gmail  # noqa: F401
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -20,7 +20,18 @@ from starlette.requests import Request
 
 from app.config import Settings, settings
 from app.db import SessionLocal
-from app.models import Conversation, Message, MessageFile, MessagePluginItem, PluginConnection, User, utcnow
+from app.models import (
+    BillingOrder,
+    BillingPayment,
+    BillingReceipt,
+    Conversation,
+    Message,
+    MessageFile,
+    MessagePluginItem,
+    PluginConnection,
+    User,
+    utcnow,
+)
 from app.plugins.gmail import compose, sends
 from app.plugins.gmail.mime import OutgoingEmail
 from app.plugins.gmail.schemas import GmailSendCard
@@ -29,7 +40,7 @@ from app.services import export
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
 UTC = timezone.utc
-FIXED_ENTRIES = {"README.txt", "account.json", "documents.json", "conversations/index.json"}
+FIXED_ENTRIES = {"README.txt", "account.json", "billing.json", "documents.json", "conversations/index.json"}
 
 
 def unzip(response: Any) -> dict[str, bytes]:
@@ -143,7 +154,8 @@ async def test_the_archive_holds_the_callers_account_documents_and_conversations
         "member",
     )
     assert profile["preferences"]["theme"] == "dark"
-    assert profile["limits"]["monthly_token_limit"] == settings.default_monthly_token_limit
+    assert profile["limits"] == (await alice.get("/api/auth/me")).json()["limits"]  # Professional's
+    assert profile["usage_this_month"] == (await alice.get("/api/auth/me")).json()["usage"]  # the allowance window
     assert profile["usage_this_month"]["chat_tokens"] > 0
     assert profile["conversations"] == {"included": 2, "omitted": 0, "truncated": None}
     assert profile["plugin_connections"] == []
@@ -167,6 +179,10 @@ async def test_the_archive_holds_the_callers_account_documents_and_conversations
     assert [message["role"] for message in data["messages"]] == ["user", "assistant"]
     readme = entries["README.txt"].decode()
     assert "Conversations: 2 included" in readme and "download them from the documents panel" in readme
+    assert "billing.json: your plan periods, orders and payments" in readme
+    billing = as_json(entries, "billing.json")
+    assert (billing["periods"], billing["orders"], billing["payments"], billing["profile"]) == ([], [], [], None)
+    assert billing["complimentary"]["plan"] == "Professional"
     everything = b"".join(entries.values())
     for foreign in (b"Bob's secret question", b"bob.txt", b"handbook.txt", b"The shared handbook"):
         assert foreign not in everything
@@ -331,6 +347,84 @@ async def test_an_account_with_nothing_exports_a_valid_zip(create_user: CreateUs
     assert set(entries) == FIXED_ENTRIES
     assert as_json(entries, "documents.json") == [] and as_json(entries, "conversations/index.json") == []
     assert as_json(entries, "account.json")["conversations"] == {"included": 0, "omitted": 0, "truncated": None}
+
+
+async def add_payment(user: ApiClient, public_id: str, receipt: str | None) -> None:
+    """A paid order with its payment (and receipt), as a confirmed checkout leaves them."""
+    now = utcnow()
+    async with SessionLocal() as db:
+        order = BillingOrder(
+            public_id=public_id,
+            user_id=user.user_id,
+            username=user.username or "",
+            plan_snapshot={"plan_id": 1, "code": "starter", "name": "Starter"},
+            kind="period",
+            amount_paise=50_000,
+            mode="test",
+            status="paid",
+            review_note="Only for the admin",
+            origin="http://testserver",
+            expires_at=now,
+            watch_until=now,
+            paid_at=now,
+        )
+        db.add(order)
+        await db.flush()
+        payment = BillingPayment(
+            razorpay_payment_id=f"pay_{public_id}",
+            order_id=order.id,
+            user_id=user.user_id,
+            username=user.username or "",
+            status="captured",
+            amount_paise=50_000,
+            currency="INR",
+            method="upi",
+            fee_paise=1180,
+            captured_at=now,
+            mode="test",
+        )
+        db.add(payment)
+        await db.flush()
+        if receipt is not None:
+            db.add(
+                BillingReceipt(
+                    number=receipt,
+                    mode="test",
+                    financial_year="26-27",
+                    seq=int(receipt.rsplit("/", 1)[1]),
+                    payment_id=payment.id,
+                    user_id=user.user_id,
+                    issued_at=now,
+                    seller={},
+                    buyer={},
+                    lines=[],
+                    amount_paise=50_000,
+                )
+            )
+        await db.commit()
+
+
+async def test_billing_json_holds_the_callers_periods_orders_payments_and_receipts(create_user: CreateUser) -> None:
+    alice, bob = await create_user("alice", plan=None), await create_user("bob")
+    assert alice.user_id is not None
+    await grant_plan(alice.user_id, "starter", days=30)
+    await add_payment(alice, "ord_alice", "TEST/26-27/000001")
+    await add_payment(bob, "ord_bob", "TEST/26-27/000002")
+    assert (await alice.put("/api/billing/profile", json={"name": "Alice A", "email": "a@example.test"})).is_success
+
+    billing = as_json(unzip(await export_of(alice)), "billing.json")
+
+    [period] = billing["periods"]
+    assert (period["plan"], period["source"], period["reason"]) == ("Starter", "comp", "Test grant")
+    assert billing["complimentary"] is None
+    [order] = billing["orders"]
+    assert (order["id"], order["plan"], order["amount_paise"]) == ("ord_alice", "Starter", 50_000)
+    [payment] = billing["payments"]
+    assert (payment["amount_paise"], payment["method"], payment["receipt"]) == (50_000, "upi", "TEST/26-27/000001")
+    assert billing["profile"] == {"name": "Alice A", "email": "a@example.test"}
+    everything = json.dumps(billing)
+    for private in ("ord_bob", "000002", "Only for the admin", "pay_ord_alice", "1180"):
+        assert private not in everything
 
 
 async def test_the_admins_export_holds_only_the_admins_data(create_user: CreateUser, admin_client: ApiClient) -> None:

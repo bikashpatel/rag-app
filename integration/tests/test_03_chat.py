@@ -218,7 +218,7 @@ def test_usage_matches_me_and_the_admin_report(make_user, admin, fake) -> None:
     assert me["cost_usd"] == pytest.approx(chat_cost + embedding_cost, abs=1e-6)
 
     mine = check(user.client.get("/api/me/usage")).json()
-    assert mine["chat_tokens"]["used"] == chat_tokens and mine["requests"] == 2
+    assert mine["chat_tokens"] == chat_tokens and mine["requests"] == 2
     assert mine["embedding_tokens"] == embedding_tokens
     assert mine["cost_usd"]["chat"] == pytest.approx(chat_cost, abs=1e-6)
     assert sum(day["chat_tokens"] for day in mine["daily"]) == chat_tokens

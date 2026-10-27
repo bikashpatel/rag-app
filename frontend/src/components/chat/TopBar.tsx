@@ -55,7 +55,7 @@ export default function TopBar({
         </button>
       ) : null}
       <div className="chat-topbar-model">
-        <ModelMenu models={models} onOpenSettings={() => openSettings("general")} />
+        <ModelMenu models={models} plan={user?.plan ?? null} onOpenSettings={() => openSettings("general")} />
       </div>
       <h1 className="chat-topbar-title" title={title}>
         {title}
@@ -63,6 +63,7 @@ export default function TopBar({
       <div className="chat-topbar-actions">
         <PluginsMenu
           isAdmin={user?.is_admin ?? false}
+          unlock={user?.plan.unlock ?? null}
           onOpenPlugin={(pluginId) => openSettings("plugins", pluginId ?? undefined)}
         />
         <button

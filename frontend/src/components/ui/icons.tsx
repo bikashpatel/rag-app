@@ -289,3 +289,38 @@ export const CpuIcon = icon(
 );
 export const PenIcon = icon(<path d="M15.5 4.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z" />);
 export const StopIcon = icon(<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none" />);
+
+// Plans and billing (docs/briefs/plans-billing-visual.md 2.2).
+export const CardIcon = icon(
+  <>
+    <rect x="3" y="5.5" width="18" height="13" rx="2.5" />
+    <path d="M3 10h18M7 14.5h3.5" />
+  </>,
+);
+export const TagIcon = icon(
+  <>
+    <path d="M3.5 12V5a1.5 1.5 0 0 1 1.5-1.5h7a1.5 1.5 0 0 1 1.06.44l7.5 7.5a1.5 1.5 0 0 1 0 2.12l-7 7a1.5 1.5 0 0 1-2.12 0l-7.5-7.5A1.5 1.5 0 0 1 3.5 12z" />
+    <circle cx="8.5" cy="8.5" r="1.5" />
+  </>,
+);
+export const ReceiptIcon = icon(
+  <>
+    <path d="M6.5 3.5h11v17l-2.2-1.4-1.9 1.4-1.9-1.4-1.9 1.4-1.9-1.4-1.2 1z" />
+    <path d="M9.5 8h5M9.5 11.5h5M9.5 15h3" />
+  </>,
+);
+export const BankIcon = icon(<path d="M3.5 9 12 4.5 20.5 9M5.5 9.5v7.5M10 9.5v7.5M14 9.5v7.5M18.5 9.5v7.5M3.5 20h17" />);
+export const GiftIcon = icon(
+  <>
+    <rect x="3.5" y="8.5" width="17" height="4" rx="1" />
+    <path d="M5 12.5v6a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-6M12 8.5V20M12 8.5c-1.6-3.6-5.2-4-5-1.6.1 1.4 2.6 1.6 5 1.6zM12 8.5c1.6-3.6 5.2-4 5-1.6-.1 1.4-2.6 1.6-5 1.6z" />
+  </>,
+);
+export const MinusIcon = icon(<path d="M6.5 12h11" />);
+export const ArrowUpRightIcon = icon(<path d="M7 17 17 7M8.5 7H17v8.5" />);
+export const FlaskIcon = icon(
+  <>
+    <path d="M9.5 3.5h5M10 3.5v5.2L4.9 17.6A2 2 0 0 0 6.6 20.5h10.8a2 2 0 0 0 1.7-2.9L14 8.7V3.5" />
+    <path d="M7.3 14.5h9.4" />
+  </>,
+);

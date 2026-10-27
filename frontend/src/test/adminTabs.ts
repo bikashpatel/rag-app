@@ -1,4 +1,15 @@
-import type { AdminPlugin, AdminStats, PluginActivityReport, SystemStatus, UsageReport } from "../api/types";
+import type {
+  AdminModel,
+  AdminPlan,
+  AdminPlugin,
+  AdminStats,
+  AdminUserPlan,
+  PluginActivityReport,
+  SystemStatus,
+  UsageReport,
+} from "../api/types";
+import { makeAdminPlan, PROFESSIONAL, STANDARD, STARTER } from "./billing";
+import { makeAdminModel } from "./fixtures";
 
 export function makeAdminStats(overrides: Partial<AdminStats> = {}): AdminStats {
   return {
@@ -167,4 +178,98 @@ export function makeSystemStatus(overrides: Partial<SystemStatus> = {}): SystemS
     ],
     ...overrides,
   };
+}
+
+// ---------------- Plans and billing (Admin → Plans, Billing, the plan parts of Users) ----------------
+
+/** The seeded chat models with the prices of plans-billing.md 3.3 (USD per million tokens in / out). */
+export function makeSeededChatModels(): AdminModel[] {
+  const chat = (id: number, display_name: string, litellm_model: string, input: number, output: number, is_default = false) =>
+    makeAdminModel({ id, display_name, litellm_model, input_cost_per_mtok: input, output_cost_per_mtok: output, is_default });
+  return [
+    chat(1, "Claude Opus 5.5", "anthropic/claude-opus-5-5", 4, 20, true),
+    chat(2, "GPT-5.5", "openai/gpt-5.5", 5, 30),
+    chat(3, "GPT-5.4 mini", "openai/gpt-5.4-mini", 0.75, 4.5),
+    chat(4, "Claude Haiku 5.5", "anthropic/claude-haiku-5-5", 0.1, 0.5),
+    chat(5, "Claude Sonnet 5.5", "anthropic/claude-sonnet-5-5", 2, 10),
+  ];
+}
+
+/** Starter, Standard (recommended) and Professional as Admin → Plans lists them, with the server's cost figures. */
+export function makeSeededAdminPlans(): AdminPlan[] {
+  return [
+    makeAdminPlan({
+      id: STARTER.id,
+      code: STARTER.code,
+      name: STARTER.name,
+      description: "Ask questions across your documents, for everyday use.",
+      price_paise: 50_000,
+      rank: 10,
+      recommended: false,
+      features: { files: false, images: false, plugins: [] },
+      limits: {
+        monthly_token_limit: 500_000,
+        rate_limit_per_min: 10,
+        max_upload_mb: 10,
+        max_documents: 50,
+        max_storage_mb: 200,
+        monthly_image_limit: 30,
+        vision_monthly_token_limit: 150_000,
+      },
+      chat_model_ids: [4, 3],
+      default_chat_model_id: 4,
+      current_users: 3,
+      scheduled_periods: 0,
+      complimentary_users: 0,
+      used: true,
+      cost: { kept_paise: 48_820, worst_case_paise: 17_169, worst_share: 0.3517, typical_paise: 6_868, typical_share: 0.1407, unlimited: [] },
+    }),
+    makeAdminPlan(),
+    makeAdminPlan({
+      id: PROFESSIONAL.id,
+      code: PROFESSIONAL.code,
+      name: PROFESSIONAL.name,
+      description: "Everything: files, images and Gmail, with every model.",
+      price_paise: 500_000,
+      rank: 30,
+      recommended: false,
+      features: { files: true, images: true, plugins: ["gmail"] },
+      limits: {
+        monthly_token_limit: 5_000_000,
+        rate_limit_per_min: 30,
+        max_upload_mb: 50,
+        max_documents: 500,
+        max_storage_mb: 3_000,
+        monthly_image_limit: 60,
+        vision_monthly_token_limit: 1_000_000,
+      },
+      chat_model_ids: null,
+      default_chat_model_id: null,
+      current_users: 2,
+      scheduled_periods: 1,
+      complimentary_users: 1,
+      used: true,
+      cost: { kept_paise: 488_200, worst_case_paise: 183_568, worst_share: 0.376, typical_paise: 73_427, typical_share: 0.1504, unlimited: [] },
+    }),
+  ];
+}
+
+export function makeAdminUserPlan(overrides: Partial<AdminUserPlan> = {}): AdminUserPlan {
+  return {
+    state: "active",
+    plan: STANDARD,
+    valid_through: "2026-11-07",
+    paid_through: "2026-11-07T18:30:00Z",
+    complimentary: false,
+    open_ended: false,
+    test_mode: false,
+    expiring_soon: false,
+    ended_at: null,
+    ...overrides,
+  };
+}
+
+/** A policy page's Markdown as the static file server answers it. */
+export function markdownResponse(text: string): Response {
+  return new Response(text, { status: 200, headers: { "Content-Type": "text/markdown; charset=utf-8" } });
 }

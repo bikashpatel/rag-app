@@ -67,12 +67,13 @@ function reloadIfStale(): void {
 
 onPluginProblem(() => void reloadPlugins());
 
-/** One status per plugin, in this order of precedence (brief U6). */
-export type PluginStatus = "not_configured" | "disabled" | "reconnect_needed" | "connected" | "available";
+/** One status per plugin, in this order of precedence (brief U6; plans-billing.md 8.6). */
+export type PluginStatus = "not_configured" | "disabled" | "not_in_plan" | "reconnect_needed" | "connected" | "available";
 
 export function pluginStatus(plugin: PluginInfo): PluginStatus {
   if (!plugin.configured) return "not_configured";
   if (!plugin.enabled) return "disabled";
+  if (!plugin.in_plan) return "not_in_plan";
   if (plugin.connection?.status === "reconnect_needed") return "reconnect_needed";
   return plugin.connection ? "connected" : "available";
 }
@@ -80,6 +81,7 @@ export function pluginStatus(plugin: PluginInfo): PluginStatus {
 export const PLUGIN_STATUS_LABEL: Record<PluginStatus, string> = {
   not_configured: "Not set up",
   disabled: "Turned off by the admin",
+  not_in_plan: "Not in your plan",
   reconnect_needed: "Reconnect needed",
   connected: "Connected",
   available: "Not connected",
@@ -118,10 +120,10 @@ export function capabilityUsable(plugin: PluginInfo, capabilityId: string): bool
   return plugin.capabilities.some((capability) => capability.id === capabilityId && capability.enabled && capability.granted);
 }
 
-/** The Gmail plugin when it is enabled, connected and can read mail (browsing and importing work); else null. */
+/** The Gmail plugin when it is enabled, in the plan, connected and can read mail (browsing and importing work); else null. */
 export function gmailReady(plugins: PluginInfo[] | null): PluginInfo | null {
   const gmail = plugins?.find((plugin) => plugin.id === "gmail");
-  if (!gmail || !gmail.enabled || gmail.connection?.status !== "connected") return null;
+  if (!gmail || !gmail.enabled || !gmail.in_plan || gmail.connection?.status !== "connected") return null;
   return capabilityUsable(gmail, "read") ? gmail : null;
 }
 
@@ -132,6 +134,7 @@ export function gmailReady(plugins: PluginInfo[] | null): PluginInfo | null {
 export function unusableReason(plugin: PluginInfo | undefined, capabilityId: string, name: string): string | null {
   if (plugin && !plugin.configured) return `${name} isn't set up yet.`;
   if (!plugin || !plugin.enabled) return `The admin turned ${name} off.`;
+  if (!plugin.in_plan) return `Your plan doesn't include ${name}.`;
   if (!plugin.connection) return `${name} is no longer connected.`;
   if (plugin.connection.status !== "connected") return `${name} needs to be reconnected.`;
   const capability = plugin.capabilities.find((item) => item.id === capabilityId);

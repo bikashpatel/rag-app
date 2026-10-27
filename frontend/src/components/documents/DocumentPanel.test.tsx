@@ -10,6 +10,7 @@ import {
   makeDocument,
   makeDocumentConfig,
   makeGmailPlugin,
+  makeLapsedPlanAccess,
   makeMe,
 } from "../../test/fixtures";
 import { deferred, errorResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
@@ -276,6 +277,46 @@ describe("DocumentPanel", () => {
     expect(screen.getByRole("button", { name: /Drop files here or browse/ })).toHaveAccessibleDescription(
       "You've reached your document limit. Delete a document to upload another.",
     );
+  });
+
+  it("says when the documents are over a limit the plan lowered, with the way to the plans", async () => {
+    await setup({ config: makeDocumentConfig({ document_count: 62, max_documents: 50 }) });
+    const notice = await screen.findByText(/your plan allows 50/);
+    expect(notice).toHaveTextContent("You have 62 documents; your plan allows 50. Delete some or upgrade to add more.");
+    expect(screen.getByRole("link", { name: "See plans" })).toHaveAttribute("href", "/plans");
+  });
+
+  it("says when the storage is over the plan's", async () => {
+    await setup({ config: makeDocumentConfig({ storage_bytes: 2_100 * 1024 * 1024, max_storage_mb: 2_000 }) });
+    expect(await screen.findByText(/your plan allows 2,000 MB/)).toHaveTextContent(
+      "You use 2.1 GB; your plan allows 2,000 MB. Delete some or upgrade to add more.",
+    );
+  });
+
+  it("writes the storage limit as the plan does, and the amount used in bytes", async () => {
+    await setup({ config: makeDocumentConfig({ storage_bytes: 74, max_storage_mb: 3_000 }) });
+    const quota = await screen.findByRole("group", { name: "Your document quota" });
+    expect(quota).toHaveTextContent("Storage74 B / 3,000 MB");
+  });
+
+  it("polls an indexing document only while the user has access", async () => {
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+    const polls = () => setIntervalSpy.mock.calls.filter(([, ms]) => ms === 2_500).length;
+    const lapsed = await setup({ me: makeMe({ plan: makeLapsedPlanAccess() }), documents: [indexing] });
+    await screen.findByText("minutes.md");
+    expect(polls()).toBe(0);
+    const lists = lapsed.calls.filter((call) => call.path === "/documents").length;
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
+    expect(lapsed.calls.filter((call) => call.path === "/documents")).toHaveLength(lists);
+  });
+
+  it("polls an indexing document for a user with a plan", async () => {
+    const setIntervalSpy = vi.spyOn(window, "setInterval");
+    await setup({ documents: [indexing] });
+    await screen.findByText("minutes.md");
+    expect(setIntervalSpy.mock.calls.some(([, ms]) => ms === 2_500)).toBe(true);
   });
 
   it("warns when the storage is full", async () => {

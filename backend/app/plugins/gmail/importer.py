@@ -28,8 +28,8 @@ from app.plugins.gmail.render import render_thread
 from app.plugins.gmail.schemas import GmailImportItem
 from app.schemas import DocumentItem
 from app.services import storage
+from app.services.billing.entitlements import Entitlements
 from app.services.model_registry import get_active_embedding_model
-from app.services.usage import user_limits
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,13 @@ class _Unit:
 
 class _Run:
     def __init__(
-        self, connection: ConnectionInfo, user: User, *, deadline: float, stopping: asyncio.Event | None
+        self,
+        connection: ConnectionInfo,
+        user: User,
+        ent: Entitlements,
+        *,
+        deadline: float,
+        stopping: asyncio.Event | None,
     ) -> None:
         plugin = registry.get_plugin(PLUGIN_ID)
         if plugin is None:
@@ -77,10 +83,11 @@ class _Run:
         self.plugin = plugin
         self.connection = connection
         self.user = user
+        self.ent = ent
         self.client = GmailClient(connection)
         self.deadline = deadline
         self.stopping = stopping
-        self.limit = user_limits(user)["max_upload_mb"] * _MIB
+        self.limit = ent.limits.max_upload_mb * _MIB
         self.threads: dict[str, tuple[list[dict[str, Any]], int]] = {}
         self.messages: dict[str, dict[str, Any]] = {}
         self.subjects: dict[str, str] = {}
@@ -146,6 +153,7 @@ class _Run:
             self.plugin,
             self.connection.account_email,
             importing.ImportFile(filename, data, "email", thread_id),
+            self.ent,
         )
         return subject, outcome
 
@@ -162,7 +170,7 @@ class _Run:
         label = info.filename or label
         if not info.importable:
             return label, importing.ImportOutcome("skipped", None, info.reason)
-        if not self.user.is_admin and info.size_bytes > self.limit:
+        if not self.ent.is_admin and info.size_bytes > self.limit:
             return label, importing.ImportOutcome(
                 "failed", None, f"It's over your limit of {self.limit // _MIB} MB per file."
             )
@@ -177,6 +185,7 @@ class _Run:
             self.plugin,
             self.connection.account_email,
             importing.ImportFile(info.filename, data, "attachment", f"{unit.message_id}/{unit.part_id}"),
+            self.ent,
         )
         return label, outcome
 
@@ -209,14 +218,15 @@ async def import_selection(
     connection: ConnectionInfo,
     user: User,
     items: Sequence[ImportSelection],
+    ent: Entitlements,
     *,
     origin: Origin,
     deadline: float,
     stopping: asyncio.Event | None = None,
 ) -> list[GmailImportItem]:
     """The Gmail browser's import, in request order (each thread, then its attachments). The caller holds
-    user_lock(user.id); `deadline` is a loop.time() value."""
-    run = _Run(connection, user, deadline=deadline, stopping=stopping)
+    user_lock(user.id); `deadline` is a loop.time() value; `ent` sets the limits."""
+    run = _Run(connection, user, ent, deadline=deadline, stopping=stopping)
     units = [
         unit
         for selection in items
@@ -235,6 +245,7 @@ async def chat_import(
     user: User,
     thread_ids: Sequence[str],
     include_attachments: bool,
+    ent: Entitlements,
     *,
     max_items: int,
     deadline: float,
@@ -242,7 +253,7 @@ async def chat_import(
 ) -> list[GmailImportItem]:
     """A chat import: the threads first, then (include_attachments) every importable attachment, in thread and message
     order; past `max_items` the rest is skipped. The caller holds user_lock(user.id)."""
-    run = _Run(connection, user, deadline=deadline, stopping=stopping)
+    run = _Run(connection, user, ent, deadline=deadline, stopping=stopping)
     over = f"Over the import limit of {max_items} items; import the rest from the Gmail browser"
     results = []
     for number, thread_id in enumerate(thread_ids):

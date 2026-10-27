@@ -1,5 +1,6 @@
 import { useId, type ReactNode } from "react";
 import { AlertCircleIcon } from "../ui/icons";
+import SegmentedControl, { type SegmentedOption } from "../ui/SegmentedControl";
 import Switch from "../ui/Switch";
 
 export type ControlProps = {
@@ -34,6 +35,49 @@ export function Field({ label, hint, error, className, children }: FieldProps) {
           {error}
         </span>
       ) : null}
+      {hint ? (
+        <span id={hintId} className="field-hint">
+          {hint}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+type SegmentedFieldProps<T extends string> = {
+  label: string;
+  hint?: ReactNode;
+  value: T;
+  options: readonly SegmentedOption<T>[];
+  onChange: (value: T) => void;
+  disabled?: boolean;
+};
+
+/** A visible label over a small segmented control (its radio group carries the same name), then the hint. */
+export function SegmentedField<T extends string>({
+  label,
+  hint,
+  value,
+  options,
+  onChange,
+  disabled,
+}: SegmentedFieldProps<T>) {
+  const hintId = useId();
+  return (
+    <div className="admin-segmented">
+      <span className="field-label" aria-hidden="true">
+        {label}
+      </span>
+      <SegmentedControl
+        label={label}
+        value={value}
+        options={options}
+        onChange={onChange}
+        disabled={disabled}
+        size="sm"
+        describedBy={hint ? hintId : undefined}
+        className="admin-segmented-options"
+      />
       {hint ? (
         <span id={hintId} className="field-hint">
           {hint}

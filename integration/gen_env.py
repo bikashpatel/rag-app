@@ -1,9 +1,10 @@
 """Write integration/.run/it.env: the only environment the test stack gets (see compose.it.yml).
 
 Random SECRET_KEY, ADMIN_PASSWORD, POSTGRES_PASSWORD and TOKEN_ENCRYPTION_KEY on every run; fake provider keys, so
-nothing can be billed; Google pointed at the fake; backups in integration/.run/backups; alerts to the fake receiver.
-Ports come from IT_APP_PORT (18090), IT_FAKE_LLM_PORT (18091) and IT_FAKE_GOOGLE_PORT (18092). The file is
-git-ignored and readable only by its owner.
+nothing can be billed; Google and Razorpay pointed at the fakes (random Razorpay test keys and webhook secrets); backups
+in integration/.run/backups; alerts to the fake receiver. Ports come from IT_APP_PORT (18090), IT_FAKE_LLM_PORT
+(18091), IT_FAKE_GOOGLE_PORT (18092) and IT_FAKE_RAZORPAY_PORT (18093). The file is git-ignored and readable only by
+its owner.
 """
 
 import base64
@@ -34,8 +35,9 @@ def main() -> None:
     app_port = _port("IT_APP_PORT", 18090)
     llm_port = _port("IT_FAKE_LLM_PORT", 18091)
     google_port = _port("IT_FAKE_GOOGLE_PORT", 18092)
-    if len({app_port, llm_port, google_port}) != 3:
-        sys.exit("IT_APP_PORT, IT_FAKE_LLM_PORT and IT_FAKE_GOOGLE_PORT must differ")
+    razorpay_port = _port("IT_FAKE_RAZORPAY_PORT", 18093)
+    if len({app_port, llm_port, google_port, razorpay_port}) != 4:
+        sys.exit("IT_APP_PORT, IT_FAKE_LLM_PORT, IT_FAKE_GOOGLE_PORT and IT_FAKE_RAZORPAY_PORT must differ")
     values = {
         "IT_STACK": "rag-it",
         "SECRET_KEY": secrets.token_urlsafe(48),
@@ -47,6 +49,7 @@ def main() -> None:
         "APP_PORT": str(app_port),
         "IT_FAKE_LLM_PORT": str(llm_port),
         "IT_FAKE_GOOGLE_PORT": str(google_port),
+        "IT_FAKE_RAZORPAY_PORT": str(razorpay_port),
         "WORKER_MEM_LIMIT": "2g",
         "PUBLIC_BASE_URLS": f"http://127.0.0.1:{app_port}",
         "TOKEN_ENCRYPTION_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
@@ -56,6 +59,13 @@ def main() -> None:
         "GOOGLE_OAUTH_TOKEN_URL": "http://fake-google:8099/token",
         "GOOGLE_OAUTH_REVOKE_URL": "http://fake-google:8099/revoke",
         "GMAIL_API_BASE_URL": "http://fake-google:8099",
+        # Payments in test mode against the fake Razorpay, its webhooks signed with these secrets, a fast reconciler
+        "RAZORPAY_KEY_ID": f"rzp_test_it{secrets.token_hex(6)}",
+        "RAZORPAY_KEY_SECRET": secrets.token_urlsafe(18),
+        "RAZORPAY_WEBHOOK_SECRET": secrets.token_urlsafe(18),
+        "RAZORPAY_WEBHOOK_SECRET_PREVIOUS": secrets.token_urlsafe(18),
+        "RAZORPAY_API_BASE": "http://fake-razorpay:8000",
+        "BILLING_RECONCILE_SECONDS": "2",
         # Backups into a git-ignored folder of the test run, and a fast monitor alerting the fake receiver. The start-up
         # backup comes long after the monitor would confirm a problem (2 checks 2 s apart), so the suite shows that
         # waiting for it alerts nothing.

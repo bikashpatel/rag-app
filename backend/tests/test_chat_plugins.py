@@ -38,12 +38,13 @@ from sqlalchemy import select, update
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Message, MessagePluginItem, PluginAuditEvent, PluginConnection, PluginSetting
+from app.models import Message, MessagePluginItem, PluginAuditEvent, PluginConnection, PluginSetting, User
 from app.plugins import importing, intent, registry, tasks
 from app.plugins.importing import ImportFile
 from app.routers import chat as chat_router
 from app.routers.chat import _Turn
 from app.services import llm, rag
+from app.services.billing import entitlements
 
 USER = Callable[..., Awaitable[ApiClient]]
 ALICE = "alice@example.test"
@@ -379,7 +380,11 @@ async def test_previous_reply_of_an_answer_citing_an_imported_email_is_left_out(
 ) -> None:
     assert alice.user_id is not None
     thread = ImportFile("Invoice 42.md", b"# Invoice 42\n\nPlease pay invoice 42 by Friday.\n", "email", "t1")
-    outcome = await importing.store_import(alice.user_id, fake, ALICE, thread)
+    async with SessionLocal() as db:
+        user = await db.get(User, alice.user_id)
+        assert user is not None
+        ent = await entitlements.load(db, user)
+    outcome = await importing.store_import(alice.user_id, fake, ALICE, thread, ent)
     assert outcome.status == "imported"
     await process_queue()
     fake_llm.script = [ScriptedCall([("text", "Invoice 42 is due Friday [1]. Shall I draft a reminder?")])]

@@ -21,7 +21,8 @@ OWNED_ROWS = {
     "conversations": "user_id",
     "usage_events": "user_id",
     "login_events": "user_id",
-    "user_image_limits": "user_id",
+    "plan_periods": "user_id",
+    "user_billing_profiles": "user_id",
 }
 
 

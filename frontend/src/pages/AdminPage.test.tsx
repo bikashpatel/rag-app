@@ -4,7 +4,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import type { AdminStats } from "../api/types";
 import { formatNumber } from "../lib/format";
-import { makeActivityReport, makeAdminPlugin, makeAdminStats, makeSystemStatus, makeUsageReport } from "../test/adminTabs";
+import {
+  makeActivityReport,
+  makeAdminPlugin,
+  makeAdminStats,
+  makeSeededAdminPlans,
+  makeSystemStatus,
+  makeUsageReport,
+} from "../test/adminTabs";
+import { makeBillingAdminConfig, makeBillingSummary, makeUserBilling } from "../test/billing";
 import { makeAdminConfig, makeAdminMe, makeAdminModel, makeAdminUser, makeMe } from "../test/fixtures";
 import { errorResponse, stubFetch, type FetchCall, type Route } from "../test/http";
 import { renderWithAuth } from "../test/render";
@@ -22,6 +30,12 @@ function adminRoutes(stats: AdminStats | Route = makeAdminStats(), extra: Record
     "GET /admin/plugins": [makeAdminPlugin()],
     "GET /admin/plugins/gmail/activity": makeActivityReport(),
     "GET /admin/system": makeSystemStatus(),
+    "GET /admin/plans": makeSeededAdminPlans(),
+    "GET /admin/billing/config": makeBillingAdminConfig(),
+    "GET /admin/billing/summary": makeBillingSummary(),
+    "GET /admin/billing/payments": { items: [], total: 0 },
+    "GET /admin/billing/orders": { items: [], total: 0 },
+    "GET /admin/billing/users/7": makeUserBilling(),
     ...extra,
   };
 }
@@ -72,7 +86,16 @@ describe("AdminPage", () => {
       "Image model": "Off",
     });
     const tabs = within(screen.getByRole("tablist", { name: "Admin sections" })).getAllByRole("tab");
-    expect(tabs.map((tab) => tab.textContent)).toEqual(["Users", "Models", "Usage", "Documents", "Plugins", "System"]);
+    expect(tabs.map((tab) => tab.textContent)).toEqual([
+      "Users",
+      "Plans",
+      "Billing",
+      "Models",
+      "Usage",
+      "Documents",
+      "Plugins",
+      "System",
+    ]);
     expect(screen.getByRole("tab", { name: "Users" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("tabpanel", { name: "Users" })).toBeInTheDocument();
     expect(await screen.findByRole("button", { name: "New user" })).toBeInTheDocument();
@@ -82,6 +105,25 @@ describe("AdminPage", () => {
     await renderAdmin(adminRoutes(), "#usage");
     expect(screen.getByRole("tab", { name: "Usage" })).toHaveAttribute("aria-selected", "true");
     expect(await screen.findByRole("heading", { name: /^Usage in / })).toBeInTheDocument();
+  });
+
+  it("opens a Billing section, a record from the hash, and the plans", async () => {
+    const user = userEvent.setup();
+    const { location } = await renderAdmin(adminRoutes(), "#billing/orders");
+    expect(screen.getByRole("tab", { name: "Billing" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByRole("heading", { name: "Orders" })).toBeInTheDocument();
+    await user.click(screen.getByRole("radio", { name: "Business & payments" }));
+    expect(location()).toBe("/admin#billing/business");
+    expect(await screen.findByRole("heading", { name: "Going-live checklist" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("tab", { name: "Plans" }));
+    expect(await screen.findByRole("row", { name: /^Standard/ })).toBeInTheDocument();
+  });
+
+  it("opens a user named in the hash and leaves the plain tab hash", async () => {
+    const { location } = await renderAdmin(adminRoutes(), "#users?user=7");
+    expect(await screen.findByRole("dialog", { name: "Edit maya.chen" })).toBeInTheDocument();
+    await waitFor(() => expect(location()).toBe("/admin#users"));
   });
 
   it("opens the System tab", async () => {
@@ -110,8 +152,8 @@ describe("AdminPage", () => {
 
     act(() => tab("Users").focus());
     await user.keyboard("{ArrowRight}");
-    expect(tab("Models")).toHaveFocus();
-    expect(tab("Models")).toHaveAttribute("aria-selected", "true");
+    expect(tab("Plans")).toHaveFocus();
+    expect(tab("Plans")).toHaveAttribute("aria-selected", "true");
     await user.keyboard("{End}");
     expect(tab("System")).toHaveFocus();
     await user.keyboard("{ArrowRight}");

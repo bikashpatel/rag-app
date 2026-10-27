@@ -1,7 +1,11 @@
-"""Admin API: users, models, usage, documents and re-indexing. Every route requires the admin."""
+"""Admin API: users (with their plan, overrides and usage in their allowance window), models, usage, documents and
+re-indexing. Every route requires the admin."""
 
 import logging
-from typing import Annotated
+from collections import defaultdict
+from collections.abc import Sequence
+from datetime import datetime, timedelta
+from typing import Annotated, Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from sqlalchemy import ColumnElement, and_, case, delete, func, or_, select, update
@@ -19,18 +23,20 @@ from app.models import (
     LoginEvent,
     Message,
     MessagePluginItem,
+    Plan,
     PluginAuditEvent,
     PluginConnection,
     UsageEvent,
     User,
-    UserImageLimit,
     UserPreference,
     user_allowed_models,
+    utcnow,
 )
 from app.plugins import connections
 from app.redis_client import INGEST_QUEUE, forget_ingest_attempts, get_redis
-from app.schemas import MAX_INT, DocumentItem
+from app.schemas import MAX_INT, DocumentItem, UserLimits
 from app.schemas_admin import (
+    UNLIMITED_ALLOWANCE,
     AdminConfig,
     AdminModel,
     AdminModelCreate,
@@ -38,9 +44,12 @@ from app.schemas_admin import (
     AdminStats,
     AdminUser,
     AdminUserCreate,
+    AdminUserPlan,
     AdminUserUpdate,
     AdminUserUsage,
     DailyUsage,
+    LimitName,
+    LimitOverrides,
     ModelRef,
     ModelTestResult,
     ModelUsage,
@@ -49,10 +58,13 @@ from app.schemas_admin import (
     UsageReport,
     UsageTotals,
     UserUsage,
-    default_limits,
 )
+from app.schemas_billing import PlanRef
 from app.security import hash_password_async
 from app.services import image_tool, llm, vectorstore
+from app.services.billing import audit, entitlements, periods
+from app.services.billing.entitlements import Entitlements, Limits
+from app.services.billing.periods import LIMIT_NAMES
 from app.services.model_registry import (
     get_active_embedding_model,
     get_active_image_model,
@@ -68,7 +80,7 @@ from app.services.storage import (
     remove_file,
     vision_page_counts,
 )
-from app.services.usage import month_bounds, utc_day
+from app.services.usage import month_bounds, usage_window, utc_day
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +93,7 @@ _USERNAME_TAKEN = "This username is already taken"
 _ACTIVE_EMBEDDING = "This is the active embedding model. Make another embedding model the default first."
 
 _CHAT_TOKENS = func.coalesce(func.sum(case((UsageEvent.kind == "chat", UsageEvent.total_tokens))), 0)
+_CHAT_ALLOWANCE = func.coalesce(func.sum(case((UsageEvent.kind == "chat", UsageEvent.allowance_tokens))), 0)
 _EMBEDDING_TOKENS = func.coalesce(func.sum(case((UsageEvent.kind == "embedding", UsageEvent.total_tokens))), 0)
 _VISION_TOKENS = func.coalesce(func.sum(case((UsageEvent.kind == "vision", UsageEvent.total_tokens))), 0)
 _COST = func.coalesce(func.sum(UsageEvent.cost_usd), 0.0)
@@ -106,9 +119,12 @@ def _stale(active_id: int | None) -> ColumnElement[bool]:
 
 
 @router.get("/config")
-async def get_config() -> AdminConfig:
+async def get_config(db: AsyncSession = Depends(get_db)) -> AdminConfig:
+    cheapest = await db.scalar(
+        select(Plan).where(Plan.status == "active").order_by(Plan.price_paise, Plan.rank).limit(1)
+    )
     return AdminConfig(
-        defaults=default_limits(),
+        defaults=periods.plan_limits(cheapest) if cheapest is not None else UserLimits(**dict.fromkeys(LIMIT_NAMES, 0)),
         max_upload_mb_hard=settings.max_upload_mb_hard,
         admin_username=settings.admin_username,
     )
@@ -145,7 +161,7 @@ async def get_stats(db: AsyncSession = Depends(get_db)) -> AdminStats:
 
 
 async def _get_user(db: AsyncSession, user_id: int, *, lock: bool = False) -> User:
-    """`lock`: FOR NO KEY UPDATE until the commit, re-reading the row."""
+    """`lock`: FOR NO KEY UPDATE until the commit, re-reading the row (the user lock of plans-billing B42)."""
     user = await db.get(User, user_id, with_for_update={"key_share": True} if lock else None, populate_existing=lock)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
@@ -174,29 +190,69 @@ async def _chat_models(db: AsyncSession, model_ids: list[int]) -> list[LLMModel]
     return models
 
 
-async def _usage_this_month(db: AsyncSession, user_id: int | None = None) -> dict[int, AdminUserUsage]:
-    start, end, _ = month_bounds(None)
-    query = (
-        select(UsageEvent.user_id, _CHAT_TOKENS, _EMBEDDING_TOKENS, _VISION_TOKENS, _IMAGES, _COST)
-        .where(UsageEvent.created_at >= start, UsageEvent.created_at < end)
-        .group_by(UsageEvent.user_id)
-    )
-    if user_id is not None:
-        query = query.where(UsageEvent.user_id == user_id)
+def _confirmed(body: AdminUserCreate | AdminUserUpdate) -> None:
+    """An override of 0 for monthly_token_limit (an unlimited chat allowance) needs confirm_unlimited."""
+    unlimited = body.overrides is not None and body.overrides.changes().get("monthly_token_limit") == 0
+    if unlimited and not body.confirm_unlimited:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=UNLIMITED_ALLOWANCE)
+
+
+class _WithoutOverrides:
+    """A user as the plan alone sees them (every limit override NULL): the entitlements' limits are then the plan's,
+    to compare the overrides with (above_plan)."""
+
+    def __init__(self, user: User) -> None:
+        self._user = user
+
+    def __getattr__(self, name: str) -> Any:
+        return None if name in LIMIT_NAMES else getattr(self._user, name)
+
+
+def _audited(user: User) -> dict[str, Any]:
+    """The values a user.updated event records before and after (plans-billing B45)."""
     return {
-        owner: AdminUserUsage(
-            chat_tokens=chat, embedding_tokens=embedding, vision_tokens=vision, images=images, cost_usd=_cost(cost)
-        )
-        for owner, chat, embedding, vision, images, cost in (await db.execute(query)).all()
+        "overrides": {name: getattr(user, name) for name in LIMIT_NAMES},
+        "restrict_models": user.restrict_models,
+        "allowed_model_ids": sorted(model.id for model in user.allowed_models),
+        "billing_tester": user.billing_tester,
     }
 
 
-async def _image_limits(db: AsyncSession, user_id: int | None = None) -> dict[int, int]:
-    """user id -> their own monthly image limit (users without a row get DEFAULT_MONTHLY_IMAGE_LIMIT)."""
-    query = select(UserImageLimit.user_id, UserImageLimit.monthly_image_limit)
-    if user_id is not None:
-        query = query.where(UserImageLimit.user_id == user_id)
-    return {owner: limit for owner, limit in (await db.execute(query)).tuples()}
+async def _usage_in_windows(
+    db: AsyncSession, windows: dict[int, tuple[datetime, datetime]]
+) -> dict[int, AdminUserUsage]:
+    """user id -> their usage in their window, in one query (users sharing a window, as the calendar month, share a
+    condition)."""
+    by_window: defaultdict[tuple[datetime, datetime], list[int]] = defaultdict(list)
+    for user_id, window in windows.items():
+        by_window[window].append(user_id)
+    rows = await db.execute(
+        select(UsageEvent.user_id, _CHAT_TOKENS, _CHAT_ALLOWANCE, _EMBEDDING_TOKENS, _VISION_TOKENS, _IMAGES, _COST)
+        .where(
+            or_(
+                *(
+                    and_(UsageEvent.user_id.in_(ids), UsageEvent.created_at >= start, UsageEvent.created_at < end)
+                    for (start, end), ids in by_window.items()
+                )
+            )
+        )
+        .group_by(UsageEvent.user_id)
+    )
+    found = {row[0]: row[1:] for row in rows.tuples()}
+    usage = {}
+    for user_id, (start, end) in windows.items():
+        chat, allowance, embedding, vision, images, cost = found.get(user_id, (0, 0, 0, 0, 0, 0.0))
+        usage[user_id] = AdminUserUsage(
+            chat_tokens=chat,
+            chat_allowance_used=allowance,
+            embedding_tokens=embedding,
+            vision_tokens=vision,
+            images=images,
+            cost_usd=_cost(cost),
+            window_start=start,
+            window_end=end,
+        )
+    return usage
 
 
 async def _documents_by_owner(db: AsyncSession, owner_id: int | None = None) -> dict[int, tuple[int, int]]:
@@ -209,101 +265,156 @@ async def _documents_by_owner(db: AsyncSession, owner_id: int | None = None) -> 
     return {owner: (count, size) for owner, count, size in (await db.execute(query)).all()}
 
 
-def _admin_user(
-    user: User, usage: AdminUserUsage | None, documents: tuple[int, int] | None, image_limit: int | None
-) -> AdminUser:
-    """`image_limit`: the user's own monthly image limit, None without a row (the env default applies; the admin is
-    exempt, so 0)."""
-    document_count, storage_bytes = documents or (0, 0)
-    if user.is_admin:
-        image_limit = 0
-    elif image_limit is None:
-        image_limit = settings.default_monthly_image_limit
-    return AdminUser(
-        id=user.id,
-        username=user.username,
-        is_admin=user.is_admin,
-        is_active=user.is_active,
-        monthly_token_limit=user.monthly_token_limit,
-        rate_limit_per_min=user.rate_limit_per_min,
-        max_upload_mb=user.max_upload_mb,
-        max_documents=user.max_documents,
-        max_storage_mb=user.max_storage_mb,
-        monthly_image_limit=image_limit,
-        restrict_models=user.restrict_models,
-        allowed_model_ids=sorted(model.id for model in user.allowed_models),
-        created_at=user.created_at,
-        last_login_at=user.last_login_at,
-        usage=usage or AdminUserUsage(chat_tokens=0, embedding_tokens=0, vision_tokens=0, images=0, cost_usd=0.0),
-        document_count=document_count,
-        storage_bytes=int(storage_bytes),
+def _above_plan(user: User, plan: Limits) -> list[LimitName]:
+    """The overrides more generous than the plan's value: unlimited (0) against a limit, or a higher limit."""
+    above: list[LimitName] = []
+    for name in LIMIT_NAMES:
+        own, planned = getattr(user, name), getattr(plan, name)
+        if own is not None and planned and (own == 0 or own > planned):
+            above.append(name)  # type: ignore[arg-type]
+    return above
+
+
+def _user_plan(user: User, ent: Entitlements, codes: dict[int, str], now: datetime) -> AdminUserPlan:
+    expiring = (
+        ent.state == "active"
+        and ent.period_id is not None
+        and user.comp_plan_id is None
+        and ent.paid_through is not None
+        and ent.paid_through - now <= timedelta(days=settings.billing_reminder_days)
+    )
+    plan = None
+    if ent.plan_id is not None and ent.plan_name is not None:
+        plan = PlanRef(id=ent.plan_id, code=codes.get(ent.plan_id, ""), name=ent.plan_name)
+    return AdminUserPlan(
+        state=ent.state,
+        plan=plan,
+        valid_through=ent.valid_through,
+        paid_through=ent.paid_through,
+        complimentary=ent.complimentary,
+        open_ended=ent.open_ended,
+        test_mode=ent.test_mode,
+        expiring_soon=expiring,
+        ended_at=ent.paid_through if ent.state == "expired" else None,
     )
 
 
-async def _admin_user_for(db: AsyncSession, user: User) -> AdminUser:
-    usage = await _usage_this_month(db, user.id)
-    documents = await _documents_by_owner(db, user.id)
-    image_limits = await _image_limits(db, user.id)
-    return _admin_user(user, usage.get(user.id), documents.get(user.id), image_limits.get(user.id))
+async def _admin_users(db: AsyncSession, users: Sequence[User]) -> list[AdminUser]:
+    """AdminUser of each: limits and usage by their entitlements (one query for every user's periods)."""
+    now = utcnow()
+    loaded = await entitlements.load_many(db, users, now=now)
+    planned = await entitlements.load_many(db, [cast(User, _WithoutOverrides(user)) for user in users], now=now)
+    codes = dict((await db.execute(select(Plan.id, Plan.code))).tuples().all())
+    usage = await _usage_in_windows(db, {user.id: usage_window(loaded[user.id], now) for user in users})
+    documents = await _documents_by_owner(db, users[0].id if len(users) == 1 else None)
+    found = []
+    for user in users:
+        ent = loaded[user.id]
+        document_count, storage_bytes = documents.get(user.id, (0, 0))
+        found.append(
+            AdminUser(
+                id=user.id,
+                username=user.username,
+                is_admin=user.is_admin,
+                is_active=user.is_active,
+                restrict_models=user.restrict_models,
+                allowed_model_ids=sorted(model.id for model in user.allowed_models),
+                created_at=user.created_at,
+                last_login_at=user.last_login_at,
+                usage=usage[user.id],
+                document_count=document_count,
+                storage_bytes=int(storage_bytes),
+                billing_tester=user.billing_tester,
+                limits=entitlements.user_limits(ent),
+                overrides=LimitOverrides(**{name: getattr(user, name) for name in LIMIT_NAMES}),
+                above_plan=[] if user.is_admin else _above_plan(user, planned[user.id].limits),
+                no_models=ent.access and user.restrict_models and not user.is_admin and not ent.chat_model_ids,
+                plan=_user_plan(user, ent, codes, now),
+            )
+        )
+    return found
 
 
 @router.get("/users")
 async def list_users(db: AsyncSession = Depends(get_db)) -> list[AdminUser]:
-    users = await db.scalars(select(User).order_by(User.is_admin.desc(), User.username))
-    usage = await _usage_this_month(db)
-    documents = await _documents_by_owner(db)
-    image_limits = await _image_limits(db)
-    return [_admin_user(user, usage.get(user.id), documents.get(user.id), image_limits.get(user.id)) for user in users]
+    users = list(await db.scalars(select(User).order_by(User.is_admin.desc(), User.username)))
+    return await _admin_users(db, users) if users else []
 
 
 @router.post("/users", status_code=status.HTTP_201_CREATED)
-async def create_user(body: AdminUserCreate, db: AsyncSession = Depends(get_db)) -> AdminUser:
+async def create_user(
+    body: AdminUserCreate, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)
+) -> AdminUser:
+    """With `grant`, a complimentary plan from now (as Admin → Billing grants it); else no plan until the user pays."""
+    _confirmed(body)
     if await db.scalar(select(User.id).where(User.username == body.username)) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_USERNAME_TAKEN)
+    plan = await db.get(Plan, body.grant.plan_id) if body.grant is not None else None
+    if body.grant is not None and plan is None:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unknown plan.")
     user = User(
-        **body.model_dump(exclude={"password", "allowed_model_ids", "monthly_image_limit"}),
-        is_admin=False,
+        username=body.username,
         password_hash=await hash_password_async(body.password),
+        is_admin=False,
+        is_active=body.is_active,
+        restrict_models=body.restrict_models,
+        billing_tester=body.billing_tester,
         allowed_models=await _chat_models(db, body.allowed_model_ids),
+        **(body.overrides.changes() if body.overrides is not None else {}),
     )
     db.add(user)
     try:
         await db.flush()
-        db.add(UserImageLimit(user_id=user.id, monthly_image_limit=body.monthly_image_limit))
-        await db.commit()
     except IntegrityError:
         await db.rollback()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_USERNAME_TAKEN) from None
-    return await _admin_user_for(db, user)
+    await audit.record_event(
+        db, source="admin", type="user.created", actor=admin.username, user_id=user.id, detail=_audited(user)
+    )
+    if body.grant is not None and plan is not None:
+        grant = body.grant
+        await periods.grant(db, user, plan, days=grant.days, reason=grant.reason, actor=admin.username, start="now")
+    await db.commit()
+    return (await _admin_users(db, [user]))[0]
 
 
 @router.patch("/users/{user_id}")
-async def update_user(user_id: Id, body: AdminUserUpdate, db: AsyncSession = Depends(get_db)) -> AdminUser:
-    changes = body.model_dump(exclude_none=True, exclude={"monthly_image_limit"})
+async def update_user(
+    user_id: Id, body: AdminUserUpdate, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)
+) -> AdminUser:
+    """Every change of an override, the allowed list, restrict_models or billing_tester writes a user.updated event
+    with the values before and after."""
+    _confirmed(body)
+    changes = body.model_dump(exclude_none=True, exclude={"overrides", "confirm_unlimited"})
     # Hashed before the row is locked, so the lock isn't held while hashing.
     password_hash = await hash_password_async(changes.pop("password")) if "password" in changes else None
     # Locked: token_version and password_hash are read-modify-write, and change-password writes them too.
     user = _editable_user(await _get_user(db, user_id, lock=True))
+    before = _audited(user)
     if "allowed_model_ids" in changes:
         user.allowed_models = await _chat_models(db, changes.pop("allowed_model_ids"))
     if changes.get("is_active") is False or password_hash is not None:
         user.token_version += 1
     if password_hash is not None:
         user.password_hash = password_hash
-    for field, value in changes.items():
+    for field, value in {**changes, **(body.overrides.changes() if body.overrides is not None else {})}.items():
         setattr(user, field, value)
-    if body.monthly_image_limit is not None:  # the user row is locked, so concurrent updates can't both insert
-        if (limit := await db.get(UserImageLimit, user.id)) is not None:
-            limit.monthly_image_limit = body.monthly_image_limit
-        else:
-            db.add(UserImageLimit(user_id=user.id, monthly_image_limit=body.monthly_image_limit))
+    after = _audited(user)
+    if after != before:
+        changed = {key: {"before": before[key], "after": after[key]} for key in after if after[key] != before[key]}
+        await audit.record_event(
+            db, source="admin", type="user.updated", actor=admin.username, user_id=user.id, detail=changed
+        )
     await db.commit()
-    return await _admin_user_for(db, user)
+    return (await _admin_users(db, [user]))[0]
 
 
 @router.delete("/users/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_user(user_id: Id, db: AsyncSession = Depends(get_db)) -> None:
+    """Their open payment links are cancelled first (best effort); billing records stay with the username, except the
+    events of a user who never had an order."""
     user = _editable_user(await _get_user(db, user_id))
+    await periods.on_user_deleted(db, user)
     # Their plugin grants, revoked at the providers once the rows are gone (unless another connection shares one).
     revocations = await connections.revoke_all_for_user(db, user.id)
     documents = await lock_documents(db, Document.owner_id == user.id)
@@ -319,7 +430,6 @@ async def delete_user(user_id: Id, db: AsyncSession = Depends(get_db)) -> None:
     await db.execute(delete(Message).where(Message.conversation_id.in_(conversation_ids)))
     await db.execute(delete(Conversation).where(Conversation.user_id == user.id))
     await db.execute(delete(UsageEvent).where(UsageEvent.user_id == user.id))
-    await db.execute(delete(UserImageLimit).where(UserImageLimit.user_id == user.id))
     await db.execute(delete(PluginConnection).where(PluginConnection.user_id == user.id))
     await db.execute(delete(PluginAuditEvent).where(PluginAuditEvent.user_id == user.id))
     await db.execute(delete(UserPreference).where(UserPreference.user_id == user.id))

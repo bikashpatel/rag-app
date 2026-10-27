@@ -1,6 +1,7 @@
 """The caller's plugins and connections (SPEC.md section 6, "Plugins"; docs/briefs/plugins-gmail.md, section 5): the
 list, connect, the OAuth callback, "Use in chat" and disconnect. Nobody else's connection appears anywhere here.
-Plugin problems never answer 401, which the client takes as a signed-out session."""
+Plugin problems never answer 401, which the client takes as a signed-out session. Connecting needs access and a plan
+that includes the plugin (402); the list, "Use in chat" and disconnect stay open (plans-billing 5.6)."""
 
 from typing import Annotated
 
@@ -11,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import get_db
-from app.deps import get_current_user
+from app.deps import current_entitlements, get_current_user, get_entitled_user, get_entitlements
 from app.models import PluginConnection, User
 from app.plugins import connections, oauth, registry
 from app.plugins.base import Plugin
@@ -23,6 +24,7 @@ from app.schemas_plugins import (
     PluginConnectResponse,
     PluginInfo,
 )
+from app.services.billing.entitlements import Entitlements, allows_plugin
 
 router = APIRouter(prefix="/plugins", tags=["plugins"])
 
@@ -45,13 +47,17 @@ async def _connection(db: AsyncSession, user: User, plugin: Plugin) -> PluginCon
 
 
 @router.get("")
-async def list_plugins(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> list[PluginInfo]:
+async def list_plugins(
+    user: User = Depends(get_current_user),
+    ent: Entitlements = Depends(get_entitlements),
+    db: AsyncSession = Depends(get_db),
+) -> list[PluginInfo]:
     """Every registered plugin (the catalog), whatever its state, with the caller's own connection when there is one:
-    the client derives "Not set up", "Turned off by the admin", "Reconnect needed", "Connected" or "Not connected"
-    from `configured`, `enabled` and `connection`. Listing changes nothing in chat."""
+    the client derives "Not set up", "Turned off by the admin", "Not in your plan", "Reconnect needed", "Connected" or
+    "Not connected" from `configured`, `enabled`, `in_plan` and `connection`. Listing changes nothing in chat."""
     found: list[PluginInfo] = []
     for plugin in registry.all_plugins():
-        access = await registry.access_for(db, user, plugin)
+        access = await registry.access_for(db, user, plugin, ent)
         row = await _connection(db, user, plugin) if access.connection is not None else None
         granted = registry.granted_capabilities(plugin, row.scopes or ()) if row is not None else frozenset()
         found.append(
@@ -76,6 +82,7 @@ async def list_plugins(user: User = Depends(get_current_user), db: AsyncSession 
                     for capability in plugin.capabilities
                 ],
                 connection=connections.status_view(plugin, row) if row is not None else None,
+                in_plan=access.entitled,
             )
         )
     return found
@@ -87,10 +94,15 @@ async def connect(
     request: Request,
     response: Response,
     body: Annotated[PluginConnectRequest | None, Body()] = None,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_entitled_user),
     db: AsyncSession = Depends(get_db),
 ) -> PluginConnectResponse:
+    """402 feature_not_in_plan when the plan doesn't include the plugin and the admin has it switched on (turned off
+    answers 403, as start_connect checks)."""
     plugin = _plugin(plugin_id)
+    ent = current_entitlements(request)
+    if not allows_plugin(ent, plugin.id) and (await registry.state(db, plugin)).enabled:
+        raise await registry.not_in_plan(db, ent, plugin)
     start = await oauth.start_connect(
         db, user, plugin, body.capabilities if body is not None else None, request.headers.get("origin")
     )

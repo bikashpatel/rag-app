@@ -32,7 +32,9 @@ npx vitest run src/components/chat   # a folder or file
 | `http.ts` | `stubFetch({ "GET /path": body \| (call) => reply })` replaces `fetch` and returns the requests sent (an unrouted request answers 500 naming it); `jsonResponse`, `errorResponse`, `streamResponse`, `deferred` |
 | `render.tsx` | `renderWithRouter` and `renderWithAuth` (the real `AuthProvider` after its session check: stub `GET /auth/me`), with `location()` for redirect checks |
 | `chatStream.ts` | SSE events as the backend writes them and `liveStream()`, a chat response the test feeds event by event |
-| `fixtures.ts`, `adminTabs.ts` | `make…` builders typed with `src/api/types.ts` |
+| `fixtures.ts`, `adminTabs.ts` | `make…` builders typed with `src/api/types.ts`; `makeMe()` has an open-ended complimentary Professional plan (every feature), like the backend tests' default user, and `makePaidPlanAccess`/`makeLapsedPlanAccess` give the other states |
+| `adminTabs.ts` (plans and billing) | `makeSeededChatModels` and `makeSeededAdminPlans` (the seeded models and plans as Admin → Plans loads them), `makeAdminUserPlan`, and `markdownResponse` for the `/legal/*.md` pages |
+| `billing.ts` | plans and billing builders with the seeded plans' values: `makeCatalog` (Starter, Standard, Professional), `makePlanOffer`, orders, payments, periods, `makeBillingStatus`, and the admin's plans, payments, orders and summary |
 | `documents.ts` | `controlUploads` (a `vi.mock`ed upload the test settles), `settle` and `makeFile` |
 | `browser.ts` | what jsdom lacks (`matchMedia`, `ResizeObserver`, scrolling, one-pixel client rects) and `setMediaQueries` for the phone and tablet layouts |
 

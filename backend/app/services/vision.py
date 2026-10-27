@@ -78,7 +78,7 @@ _MIN_RETRY_AFTER, _MAX_RETRY_AFTER = 1.0, 60.0
 _TEST_IMAGE_SIZE = (480, 160)
 
 # Reasons that stop new calls, in the order they are reported.
-_STOPPED, _MODEL_CHANGED, _FAILED, _DEADLINE = "stopped", "model changed", "failed", "deadline"
+_STOPPED, _MODEL_CHANGED, _FAILED, _ALLOWANCE, _DEADLINE = "stopped", "model changed", "failed", "allowance", "deadline"
 
 
 class Stopped(Exception):
@@ -87,6 +87,10 @@ class Stopped(Exception):
 
 class ModelChanged(Exception):
     """The vision model was disabled, un-defaulted, deleted or edited during the run."""
+
+
+class AllowanceUsed(Exception):
+    """The run used the owner's vision allowance that was left, with scanned pages still unread."""
 
 
 @dataclass
@@ -99,6 +103,7 @@ class VisionRun:
     checkpoint: Callable[[], Awaitable[None]]  # raises Stopped or ModelChanged
     deadline: float  # time.monotonic(); no call starts after it
     used: set[tuple[int, str]] = field(default_factory=set)
+    budget: int | None = None  # the owner's vision tokens left when the run started; no call starts once it is used
 
 
 @dataclass
@@ -178,8 +183,8 @@ async def read_pages(run: VisionRun, parsed: ParsedDocument, filename: str) -> l
     """Read the parsed document's page images and merge the text into its segments.
 
     One task per unit, `VISION_CONCURRENCY` calls at a time and `VISION_MAX_IN_FLIGHT` in the worker. Raises Stopped,
-    ModelChanged or DocumentParseError (a scanned page that couldn't be read, or the deadline). `run.usage` holds what
-    the finished calls cost in every case.
+    ModelChanged, AllowanceUsed or DocumentParseError (a scanned page that couldn't be read, or the deadline).
+    `run.usage` holds what the finished calls cost in every case.
     """
     progress = _Progress()
     document_limit = asyncio.Semaphore(settings.vision_concurrency)
@@ -210,6 +215,10 @@ async def read_pages(run: VisionRun, parsed: ParsedDocument, filename: str) -> l
         # A rejected key or an unknown model on a description stopped the calls: every page would fail the same way
         # (even if the deadline passed too), so this is the reason to report, not a timeout.
         raise DocumentParseError(f"Page {unread_scans[0]} couldn't be read with the vision model: {progress.fatal}")
+    if _ALLOWANCE in progress.stops:
+        logger.info("%s: %d page(s) not read: the owner's vision allowance is used up", filename, len(progress.unread))
+        if unread_scans:
+            raise AllowanceUsed
     if unread_scans:
         minutes = max(1, int(settings.vision_timeout_seconds // 60))
         raise DocumentParseError(
@@ -300,6 +309,9 @@ async def _call(
                 raise _Unread
             if time.monotonic() > run.deadline:
                 progress.stops.add(_DEADLINE)
+                raise _Unread
+            if run.budget is not None and run.usage.total_tokens >= run.budget:
+                progress.stops.add(_ALLOWANCE)
                 raise _Unread
             try:
                 await run.checkpoint()

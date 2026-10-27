@@ -13,6 +13,7 @@ from app.plugins.gmail import importer
 from app.plugins.gmail.mime import ParsedThread, parse_message
 from app.plugins.gmail.render import MAX_MESSAGE_CHARS, file_name, render_thread
 from app.services import storage
+from app.services.billing import entitlements
 
 
 def _thread(box, *names: str, total: int | None = None) -> ParsedThread:
@@ -76,10 +77,12 @@ async def test_large_bodies_are_fetched_for_an_import(gmail, create_user) -> Non
     stored = gmail.message("long_body")
     async with SessionLocal() as db:
         user = await db.get(User, client.user_id)
+        ent = await entitlements.load(db, user)
     items = await importer.import_selection(
         connection,
         user,
         [importer.ImportSelection(stored.thread_id, True)],
+        ent,
         origin="ui",
         deadline=asyncio.get_running_loop().time() + 60,
     )

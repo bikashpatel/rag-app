@@ -36,7 +36,7 @@ def test_export_holds_only_the_callers_data(make_user) -> None:
     assert [entry["id"] for entry in index] == [my_conversation]
     base = f"conversations/{my_conversation:06d}-"
     assert index[0]["markdown"].startswith(base) and index[0]["json"].startswith(base)
-    top_level = {"README.txt", "account.json", "documents.json", "conversations/index.json"}
+    top_level = {"README.txt", "account.json", "billing.json", "documents.json", "conversations/index.json"}
     assert names == top_level | {index[0]["markdown"], index[0]["json"]}
     transcript = json.loads(archive.read(index[0]["json"]))
     assert [message["role"] for message in transcript["messages"]] == ["user", "assistant"]

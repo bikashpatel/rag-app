@@ -7,7 +7,17 @@ import DailyUsageChart from "./DailyUsageChart";
 const usage = makeMyUsage();
 
 function renderChart() {
-  render(<DailyUsageChart month={usage.month} daily={usage.daily} rateLimitPerMin={20} resetsAt={usage.resets_at} />);
+  render(
+    <DailyUsageChart
+      start={usage.period_start}
+      end={usage.resets_at}
+      daily={usage.daily}
+      rateLimitPerMin={20}
+      windowLabel="October 2026"
+      windowWord="this period"
+      resetText="Resets 1 Nov, 00:00 UTC"
+    />,
+  );
   return screen.getByRole("group", { name: /per day, October 2026/ });
 }
 
@@ -16,6 +26,47 @@ beforeEach(() => {
 });
 
 describe("DailyUsageChart", () => {
+  it("covers a period across two months, from its first day", () => {
+    const daily = Array.from({ length: 10 }, (_, index) => ({
+      ...usage.daily[index % usage.daily.length],
+      date: `2026-11-${String(index + 6).padStart(2, "0")}`,
+    }));
+    const { container } = render(
+      <DailyUsageChart
+        start="2026-11-06T05:12:00Z"
+        end="2026-12-06T18:30:00Z"
+        daily={daily}
+        rateLimitPerMin={0}
+        windowLabel="6 Nov to 6 Dec 2026"
+        windowWord="this period"
+        resetText="Starts again 7 Dec"
+      />,
+    );
+    expect(screen.getByRole("group", { name: /^Chat tokens per day, 6 Nov to 6 Dec 2026: / })).toBeInTheDocument();
+    const labels = [...container.querySelectorAll("text.settings-chart-axis")].map((label) => label.textContent);
+    expect(labels).toContain("6 Nov");
+    expect(labels).toContain("Today");
+    expect(labels).toContain("27");
+    expect(screen.getByText("Starts again 7 Dec")).toBeInTheDocument();
+    expect(screen.getByText("No request limit")).toBeInTheDocument();
+  });
+
+  it("says when nothing was used yet this period", () => {
+    const empty = usage.daily.map((day) => ({ ...day, chat_tokens: 0, chat_allowance: 0, images: 0, cost_usd: 0, requests: 0 }));
+    render(
+      <DailyUsageChart
+        start={usage.period_start}
+        end={usage.resets_at}
+        daily={empty.map((day) => ({ ...day, vision_tokens: 0, embedding_tokens: 0 }))}
+        rateLimitPerMin={20}
+        windowLabel="October 2026"
+        windowWord="this period"
+        resetText="Resets 1 Nov, 00:00 UTC"
+      />,
+    );
+    expect(screen.getByText("No usage yet this period.")).toBeInTheDocument();
+  });
+
   it("is a named figure whose plot summarises the month", () => {
     const plot = renderChart();
     expect(screen.getByRole("figure", { name: "Per day" })).toBeInTheDocument();

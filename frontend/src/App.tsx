@@ -1,13 +1,18 @@
-import { lazy, Suspense, type ReactNode } from "react";
-import { BrowserRouter, Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
+import { lazy, Suspense, useState, type ReactNode } from "react";
+import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigationType, useParams } from "react-router-dom";
+import type { Me } from "./api/types";
 import { AuthProvider, useAuth } from "./auth/AuthContext";
 import { loginRedirectState, postLoginPath } from "./auth/loginRedirect";
 import SettingsHost from "./components/settings/SettingsHost";
 import ErrorBoundary from "./components/ui/ErrorBoundary";
 import { FullPageMessage, FullPageSpinner } from "./components/ui/FullPageState";
-import { parseSettingsTab, withSettingsTab } from "./lib/settingsLink";
+import { parseSettingsTab, SETTINGS_PARAM, withSettingsTab } from "./lib/settingsLink";
+import BillingReturnPage from "./pages/BillingReturnPage";
 import ChatPage from "./pages/ChatPage";
+import CheckoutPage from "./pages/CheckoutPage";
 import LoginPage from "./pages/LoginPage";
+import PlansPage from "./pages/PlansPage";
+import { publicRoutes } from "./pages/public/routes";
 
 const CHUNK_RELOAD_KEY = "rag.chunkReload";
 
@@ -61,7 +66,36 @@ function SettingsRedirect() {
   return <Navigate to={`/${withSettingsTab("", parseSettingsTab(tab ?? "general"))}`} replace />;
 }
 
-function RequireAuth({ children, admin = false }: { children: ReactNode; admin?: boolean }) {
+/**
+ * Without access (no plan, or it ended) the chat goes to /plans, keeping an open Settings tab. Decided when the route
+ * is entered (a page load, or a navigation to another path), not when Me changes on the page already shown, so a plan
+ * that ends there doesn't move the user (8.1, 8.7). The chat page's own replace navigations keep the decision.
+ */
+function PlanGate({ user, children }: { user: Me; children: ReactNode }) {
+  const { pathname, search } = useLocation();
+  const navigationType = useNavigationType();
+  const hasAccess = user.is_admin || user.plan.access;
+  const [entry, setEntry] = useState({ pathname, allowed: hasAccess });
+  let current = entry;
+  if (entry.pathname !== pathname) {
+    current = { pathname, allowed: navigationType === "REPLACE" ? entry.allowed : hasAccess };
+    setEntry(current);
+  }
+  if (current.allowed) return <>{children}</>;
+  const tab = parseSettingsTab(new URLSearchParams(search).get(SETTINGS_PARAM));
+  return <Navigate to={{ pathname: "/plans", search: withSettingsTab("", tab) }} replace />;
+}
+
+export function RequireAuth({
+  children,
+  admin = false,
+  needsPlan = false,
+}: {
+  children: ReactNode;
+  admin?: boolean;
+  /** The chat routes: only with access to the app (a plan, or the admin). */
+  needsPlan?: boolean;
+}) {
   const { user, loading, bootError, retry, signedOut } = useAuth();
   const location = useLocation();
   if (loading) return <FullPageSpinner />;
@@ -69,6 +103,7 @@ function RequireAuth({ children, admin = false }: { children: ReactNode; admin?:
   // After an explicit logout don't carry the page along: the next person to sign in may be someone else.
   if (!user) return <Navigate to="/login" replace state={signedOut ? undefined : loginRedirectState(location)} />;
   if (admin && !user.is_admin) return <Navigate to="/" replace />;
+  if (needsPlan) return <PlanGate user={user}>{children}</PlanGate>;
   return <>{children}</>;
 }
 
@@ -98,7 +133,7 @@ export default function App() {
             <Route
               path="/"
               element={
-                <RequireAuth>
+                <RequireAuth needsPlan>
                   <ChatPage />
                 </RequireAuth>
               }
@@ -106,8 +141,32 @@ export default function App() {
             <Route
               path="/c/:conversationId"
               element={
-                <RequireAuth>
+                <RequireAuth needsPlan>
                   <ChatPage />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/plans"
+              element={
+                <RequireAuth>
+                  <PlansPage />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/plans/checkout/:code"
+              element={
+                <RequireAuth>
+                  <CheckoutPage />
+                </RequireAuth>
+              }
+            />
+            <Route
+              path="/billing/return"
+              element={
+                <RequireAuth>
+                  <BillingReturnPage />
                 </RequireAuth>
               }
             />
@@ -123,6 +182,7 @@ export default function App() {
             />
             <Route path="/settings" element={<SettingsRedirect />} />
             <Route path="/settings/:tab" element={<SettingsRedirect />} />
+            {publicRoutes}
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
           <SettingsHost />

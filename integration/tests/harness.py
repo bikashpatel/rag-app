@@ -45,6 +45,11 @@ _SHELL_VARIABLES = (
     "BACKUP_START_DELAY_SECONDS",
     "BACKUP_UID",
     "BACKUP_GID",
+    "IT_FAKE_RAZORPAY_PORT",
+    "RAZORPAY_KEY_ID",
+    "RAZORPAY_KEY_SECRET",
+    "RAZORPAY_WEBHOOK_SECRET",
+    "RAZORPAY_WEBHOOK_SECRET_PREVIOUS",
     "COMPOSE_FILE",
     "COMPOSE_PROJECT_NAME",
     "COMPOSE_ENV_FILES",
@@ -53,7 +58,16 @@ _SHELL_VARIABLES = (
 
 
 # Values of the generated env file that must never appear in a log, a backup listing or an alert.
-SECRETS = ("SECRET_KEY", "ADMIN_PASSWORD", "POSTGRES_PASSWORD", "TOKEN_ENCRYPTION_KEY", "GOOGLE_OAUTH_CLIENT_SECRET")
+SECRETS = (
+    "SECRET_KEY",
+    "ADMIN_PASSWORD",
+    "POSTGRES_PASSWORD",
+    "TOKEN_ENCRYPTION_KEY",
+    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "RAZORPAY_KEY_SECRET",
+    "RAZORPAY_WEBHOOK_SECRET",
+    "RAZORPAY_WEBHOOK_SECRET_PREVIOUS",
+)
 
 
 def _read_env() -> dict[str, str]:
@@ -71,6 +85,7 @@ ENV = _read_env()
 APP_URL = f"http://127.0.0.1:{ENV['APP_PORT']}"
 FAKE_LLM_URL = f"http://127.0.0.1:{ENV['IT_FAKE_LLM_PORT']}"
 FAKE_GOOGLE_URL = f"http://127.0.0.1:{ENV['IT_FAKE_GOOGLE_PORT']}"
+FAKE_RAZORPAY_URL = f"http://127.0.0.1:{ENV['IT_FAKE_RAZORPAY_PORT']}"
 
 
 def leaked_secrets(text: str) -> list[str]:

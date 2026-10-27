@@ -22,18 +22,33 @@ Single-tenant, locally hosted Retrieval-Augmented-Generation chat app.
 - **Documents:** private per user + a shared knowledge base (admin uploads
   with scope `shared`). Retrieval searches the user's private docs **and** all
   shared docs (optionally narrowed to a selection).
-- **Usage controls (per user, set by admin):** monthly token budget, requests
-  per minute, allowed models, upload limits (max file MB, max documents, max
-  total storage MB). **`0` means unlimited** for `monthly_token_limit`,
-  `rate_limit_per_min`, `max_documents`, `max_storage_mb`. `max_upload_mb`
-  is always ≥ 1 and capped by `MAX_UPLOAD_MB_HARD`. Plus a **monthly image
-  count** (`monthly_image_limit`, default `DEFAULT_MONTHLY_IMAGE_LIMIT`, `0` =
-  unlimited). The admin bypasses all usage checks.
-- **Monthly budget** counts **chat (LLM) tokens only** (prompt + completion)
-  in the current UTC calendar month. Embedding and vision tokens are recorded
-  and shown but don't count toward the budget. Vision tokens have a separate
-  monthly allowance per user, `VISION_MONTHLY_TOKEN_LIMIT` (section 7; the
-  admin is exempt).
+- **Plans** (brief `docs/briefs/plans-billing.md`): a user needs a plan to use
+  the app. Without one (none yet, or expired) only the plan page, checkout,
+  Settings and the user's own data stay open (402 elsewhere, section 6, "Access
+  by plan"); nothing is deleted. The admin is exempt. Starter, Standard and
+  Professional are seeded and edited in Admin → Plans. A plan sets its
+  features (files and images from chat, plugins), its chat models and the
+  **usage limits**: chat allowance (`monthly_token_limit`), requests per
+  minute, upload limits (max file MB, max documents, max total storage MB),
+  images (`monthly_image_limit`) and vision tokens
+  (`vision_monthly_token_limit`). **`0` means unlimited**, except
+  `max_upload_mb`, which is always ≥ 1 and capped by `MAX_UPLOAD_MB_HARD`. The
+  admin can override each limit per user; a user's allowed-models list only
+  narrows the plan's models. The admin bypasses all usage checks.
+- **Periods and payments**: plans are prepaid 30-day periods that end at
+  midnight IST and are renewed by paying again (nothing renews by itself),
+  paid through Razorpay Payment Links (UPI, cards, netbanking, wallets). An
+  upgrade, or a new period once an allowance is nearly used, starts a period at
+  once for a credit. The admin grants complimentary plans (dated or
+  open-ended), records bank transfers, refunds payments and tracks disputes;
+  every applied payment gets a receipt (section 6, Billing). Public pricing and
+  policy pages need no sign-in (section 8).
+- **Allowances run per period** (an open-ended complimentary plan and the
+  admin: per UTC calendar month). The **chat allowance** counts each chat
+  answer's cost in standard tokens (`ceil(cost_usd ÷ $0.0000032)`, or its plain
+  token count when the model has no price), so cheap models count less.
+  Embedding tokens are recorded and shown but never counted; vision tokens and
+  images have their own allowances.
 - **Files from chat:** when the user asks, the assistant creates a PDF, Word
   (`.docx`), Excel (`.xlsx`) or Markdown (`.md`) file with the `create_document`
   tool (chat models with function calling only). Each file becomes one of the
@@ -46,7 +61,7 @@ Single-tenant, locally hosted Retrieval-Augmented-Generation chat app.
   user's private documents (indexed by its prompt and description), and can be
   embedded in PDF and DOCX files the assistant creates in the same conversation
   (section 6, Chat; brief `docs/briefs/image-generation.md`). Image costs are
-  `image` usage events and don't count toward the token budget.
+  `image` usage events and don't count toward the chat allowance.
 - **Plugins:** connectors the admin turns on (Admin → Plugins) and each user
   connects to their **own** account (Settings → Plugins & data, OAuth 2.0);
   every user sees every plugin with its status in the top bar's Plugins menu;
@@ -90,7 +105,7 @@ rag-app/
       services/
         __init__.py
         llm.py              FOUNDATION  LiteLLM wrappers: stream_chat, embed_texts, read_image, generate_image, test_model, compute_cost
-        usage.py            FOUNDATION  rate limit, budget check, record_usage, usage_summary
+        usage.py            FOUNDATION  rate limit, allowance checks (in the entitlements' window), record_usage, usage_summary
         vectorstore.py      FOUNDATION  Qdrant wrapper
         model_registry.py   FOUNDATION  model lookup helpers
         storage.py          FOUNDATION  upload paths, delete_document_completely
@@ -106,9 +121,15 @@ rag-app/
         filegen/            CHAT        Markdown / sheets -> PDF (fpdf2), DOCX, XLSX, MD bytes, and image validation (images.py) (pure, no app imports; run by filegen/child.py in a time- and memory-limited child process)
         account.py          ACCOUNT     preferences read/write, User-Agent parsing, approximate IPs, the caller's usage report
         export.py           ACCOUNT     the caller's data export (ZIP)
+        billing/            BILLING     entitlements (what a user may do: the one source for every check), money,
+                                        periods, locks, audit, plans, business, razorpay (client and signatures),
+                                        checkout, payments (apply once), webhooks, reconcile (the worker's billing
+                                        loop), refunds, disputes, receipts (PDF), reminders, summary, csv_export
       fonts/                CHAT        Noto Sans TTFs for generated PDFs (SIL OFL 1.1, fonts/OFL.txt)
       schemas_plugins.py    PLUGINS     plugin API shapes (the Gmail ones are in plugins/gmail/schemas.py)
       schemas_account.py    ACCOUNT     the caller's account shapes (Preferences itself is in schemas.py, with Me)
+      schemas_billing.py    BILLING     plan, billing, public and admin-billing shapes (Me.plan's PlanAccess included)
+      errors.py             BILLING     AppError: an HTTP error with a machine-readable code (section 6)
       plugins/              PLUGINS     framework: base (interfaces), registry, crypto (token encryption), http, oauth,
                                         connections (tokens, refresh, revoke), audit, intent (request check), answer
                                         (sources and cards of one answer), importing (store_import), tasks
@@ -126,6 +147,9 @@ rag-app/
         conversations.py    CHAT        /api/conversations/*
         chat.py             CHAT        /api/chat/stream
         system.py           OPS         /api/health/ready, /api/admin/system/*
+        billing.py          BILLING     /api/billing/* (plans, checkout, orders, payments, receipts, profile, Razorpay)
+        admin_billing.py    BILLING     /api/admin/plans, /api/admin/billing/*
+        public.py           BILLING     /api/public/* (no session)
     tests/                  (in-process API tests, see section 9)
   frontend/
     Dockerfile  .dockerignore  package.json  package-lock.json  vite.config.ts
@@ -133,6 +157,7 @@ rag-app/
     nginx.conf  upload-limit.envsh            nginx template; its upload body limit follows MAX_UPLOAD_MB_HARD;
                                                /theme-boot.js is cached for 5 minutes (no revalidation per load)
     public/theme-boot.js                       FOUNDATION  classic script: applies the cached theme before the first paint
+    public/legal/*.md                          BILLING  the public policy pages' text (Markdown, section 8)
     src/
       main.tsx  App.tsx                        FOUNDATION (App.tsx routes: SETTINGS)
       api/client.ts  api/types.ts              FOUNDATION
@@ -148,10 +173,15 @@ rag-app/
       pages/AdminPage.tsx + components/admin/* FE-ADMIN
       components/connections/*                 FE-CONN (connection cards, Gmail browser and import; CSS prefix conn-)
       components/settings/*                    FE-SETTINGS (the Settings dialog; CSS prefix settings-)
+      lib/billing.ts, components/billing/*     BILLING (money and IST dates, PlanCard, PlanCompareTable, PolicyLinks,
+                                               banners, locked hints, the plan-ended panel; CSS prefixes plans-, billing-)
+      pages/{PlansPage,CheckoutPage,BillingReturnPage}.tsx, pages/plans.css   BILLING (plans- prefix)
+      pages/public/*                           BILLING (public pricing and policy pages; CSS prefix public-)
       **/*.test.ts(x), test/                   Vitest tests next to the code; shared test helpers (section 9)
   integration/              full-stack tests (section 9): run.sh, stack.sh, gen_env.py, compose.it.yml,
                             fake_llm/ (a fake OpenAI-compatible server), fake_google/ (serves the fakes in
-                            backend/tests), fake_alerts/ (a webhook and ntfy receiver for the monitor), tests/
+                            backend/tests), fake_alerts/ (a webhook and ntfy receiver for the monitor),
+                            fake_razorpay/ (payment links, payments, refunds, disputes, signed webhooks), tests/
   scripts/                  OPS (section 10): backup.sh, restore.sh, backup/backup.sh (run by the backup and restore
                             services), watchdog/ (an optional host watchdog: launchd and systemd), README.md
   e2e/                      Playwright browser tests against the running stack (section 9)
@@ -177,14 +207,13 @@ See `backend/app/config.py` for defaults. Important ones:
 | `REDIS_URL`, `QDRANT_URL`, `QDRANT_API_KEY` | infra (`QDRANT_URL=:memory:` = in-process, tests only) |
 | `UPLOAD_DIR` | where uploaded files live (shared volume between backend and worker) |
 | `COOKIE_SECURE` | set `true` behind HTTPS |
-| `DEFAULT_*` | defaults pre-filled when admin creates a user |
+| Removed with plans: `DEFAULT_MONTHLY_TOKEN_LIMIT`, `DEFAULT_RATE_LIMIT_PER_MIN`, `DEFAULT_MAX_UPLOAD_MB`, `DEFAULT_MAX_DOCUMENTS`, `DEFAULT_MAX_STORAGE_MB`, `DEFAULT_MONTHLY_IMAGE_LIMIT`, `VISION_MONTHLY_TOKEN_LIMIT` | limits are set per plan in Admin → Plans; a value still in `.env` is ignored with one warning at start-up naming it |
 | `MAX_UPLOAD_MB_HARD` | absolute per-file cap. nginx accepts this + 10 MB only on `POST /api/documents` (after an auth check) and 1 MB on every other request |
 | `RAG_TOP_K`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `HISTORY_MESSAGES` | RAG tuning |
 | `LOGIN_MAX_ATTEMPTS` (10), `LOGIN_MAX_ATTEMPTS_PER_IP` (100), `LOGIN_WINDOW_SECONDS` (900) | login throttle |
 | `VISION_MAX_PAGES` (50) | PDF pages per document read with the vision model (section 7, step 4) |
 | `VISION_CONCURRENCY` (3), `VISION_MAX_IN_FLIGHT` (4) | vision calls in flight per document, and in the whole worker |
 | `VISION_TIMEOUT_SECONDS` (1800) | time a document may spend reading pages with the vision model; no call starts after it |
-| `VISION_MONTHLY_TOKEN_LIMIT` (2000000) | vision tokens per user per UTC calendar month, checked when a document starts (0 = unlimited; the admin is exempt) |
 | `VISION_MIN_TEXT_CHARS` (40), `VISION_MIN_IMAGE_RATIO` (0.1) | a PDF page with fewer non-whitespace text-layer characters has "no text layer"; images must cover at least this share of a page to be read |
 | `VISION_MAX_IMAGE_PX` (1568, at most 2576), `VISION_MAX_OUTPUT_TOKENS` (8192) | long edge of a rendered page image (a cost choice); `max_tokens` per page, thinking included, when the vision model has no `max_output_tokens` |
 | `WORKER_MEM_LIMIT` (4g; Compose only) | memory limit of the worker container (`mem_limit` and `memswap_limit`) |
@@ -196,7 +225,6 @@ See `backend/app/config.py` for defaults. Important ones:
 | `GENERATED_FILE_CONCURRENCY` (2) | generated files rendered at once (child processes) in one backend process |
 | `CHAT_IMAGE_TOOLS` (true) | offer the `create_image` tool when a usable image model is active and the chat model supports function calling (section 6, Chat); `false` turns image generation off and keeps existing images |
 | `GENERATED_IMAGES_PER_ANSWER` (3) | images one answer may generate |
-| `DEFAULT_MONTHLY_IMAGE_LIMIT` (30) | images per user per UTC calendar month: the user form's default and the value every existing user gets once on the first start with images (0 = unlimited; the admin is exempt) |
 | `IMAGE_MAX_QUALITY` (medium) | highest quality `create_image` may use: `low`, `medium` or `high` |
 | `IMAGE_OUTPUT_FORMAT` (png) | format asked of the image model: `png`, `jpeg` or `webp`; the image is stored as returned |
 | `IMAGE_TIMEOUT_SECONDS` (180) | one image call, waiting for an image slot and quick provider retries included; the call is abandoned after it |
@@ -226,6 +254,15 @@ See `backend/app/config.py` for defaults. Important ones:
 | `WORKER_HEARTBEAT_SECONDS` (15), `WORKER_HEARTBEAT_MAX_AGE_SECONDS` (60) | the worker's heartbeat interval; older (or none): the worker isn't ready |
 | `ALERT_WEBHOOK_URL`, `ALERT_NTFY_URL`, `ALERT_NTFY_TOKEN` | alert channels: a JSON `{"text"}` webhook (Slack, Google Chat, Discord's `/slack`, Teams), an ntfy topic |
 | `ALERT_SMTP_HOST/PORT/USERNAME/PASSWORD/FROM/TO`, `ALERT_SMTP_SECURITY` (`starttls`) | the email channel (`ssl` for port 465, `none` for a local relay); `TO` comma-separated |
+| `RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET` (empty) | Razorpay API keys; both set: online payments are available. `rzp_test_…` = test mode (only users marked as testers can check out; test periods last 1 day and count only while test keys run), `rzp_live_…` = live; any other prefix turns payments off with an error at start-up. The secret is never logged or shown |
+| `RAZORPAY_WEBHOOK_SECRET`, `RAZORPAY_WEBHOOK_SECRET_PREVIOUS` (empty) | webhooks are accepted only when the first is set (required before live keys); the previous one is also accepted, for the day after a rotation |
+| `RAZORPAY_API_BASE` (`https://api.razorpay.com`) | an `http(s)://` origin with no path; another value (a fake, for tests: the integration stack's is plain http) only with test keys: with a live key the backend refuses to start |
+| `BILLING_CHECKOUT_MINUTES` (20, 16 to 120) | a payment link's lifetime |
+| `BILLING_LATE_CAPTURE_DAYS` (5, 1 to 10) | how long an unpaid checkout is still watched for a late payment |
+| `BILLING_REMINDER_DAYS` (5, 1 to 14) | the "ends soon" banner and the first reminder email, this many days before the paid time ends |
+| `BILLING_RECONCILE_SECONDS` (30, 2 to 300) | the tick of the worker's billing loop (checkouts, refunds, reminders) |
+| `BILLING_USD_INR` (88, 1 to 1000) | rupees per dollar, for the plan cost estimates only |
+| `BILLING_EMAIL_FROM` (empty) | with the `ALERT_SMTP_*` server settings: plan reminder emails |
 | `EXPORT_TIMEOUT_SECONDS` (80, 10 to 90) | time from the request to the end of the build of one data export (nothing is sent before the build ends); conversations not reached are left out the same way. At most 90: the Cloudflare tunnel drops a response that sends nothing for about 100 s |
 
 ## 4. Data model (SQLAlchemy, `app/models.py`)
@@ -234,10 +271,15 @@ All timestamps are timezone-aware UTC. Integer primary keys.
 
 - **users**: `id, username (unique, stored lowercase), password_hash,
   is_admin, is_active, token_version, monthly_token_limit, rate_limit_per_min,
-  max_upload_mb, max_documents, max_storage_mb, restrict_models,
-  created_at, updated_at, last_login_at`. Relationship `allowed_models`
-  (M2M via `user_allowed_models`). If `restrict_models` is false the user may
-  use every enabled chat model; if true only `allowed_models`.
+  max_upload_mb, max_documents, max_storage_mb, monthly_image_limit,
+  vision_monthly_token_limit` (the seven limit **overrides**, all nullable:
+  NULL = the plan's value, 0 = unlimited), `restrict_models, billing_tester`
+  (may check out while test keys run; default false), `comp_plan_id → plans
+  (SET NULL), comp_reason, comp_granted_by, comp_granted_at` (an open-ended
+  complimentary plan), `created_at, updated_at, last_login_at`. Relationship
+  `allowed_models` (M2M via `user_allowed_models`). If `restrict_models` is
+  false the user may use every chat model of their plan; if true only those
+  that are also in `allowed_models` (the list only narrows the plan's).
   Bumping `token_version` invalidates all of the user's sessions.
 - **llm_models**: `id, display_name, litellm_model (e.g. "openai/gpt-5.4-mini",
   "anthropic/claude-sonnet-5-5", "ollama/llama3.1"), kind ("chat"|"embedding"|"vision"|"image"),
@@ -271,7 +313,10 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   model_name, prompt_tokens, completion_tokens, error, created_at`.
 - **usage_events**: `id, user_id → users (CASCADE), model_id (SET NULL),
   model_name, kind ("chat"|"embedding"|"vision"|"image"), prompt_tokens, completion_tokens,
-  total_tokens, cost_usd, created_at`. Ingestion records at most one `embedding`
+  total_tokens, cost_usd, allowance_tokens, created_at`. `allowance_tokens` (chat
+  events; 0 for the other kinds) is what the answer counts against the chat
+  allowance: `ceil(cost_usd ÷ 0.0000032)` when it has a cost, else
+  `total_tokens`; fixed when written. Ingestion records at most one `embedding`
   and one `vision` event per document run, for the document's owner. Each
   generated image is one `image` event (prompt tokens = prompt text, completion
   tokens = image tokens), inserted before the image model is called (the monthly
@@ -287,8 +332,11 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   `api_base`, the prompt version, `VISION_MAX_IMAGE_PX` and the page
   `max_tokens`) matches; a successful run deletes the rows it didn't use.
   Never shared between documents, not even identical files.
-- **app_state**: `key (primary key), value, updated_at`. Server flags, e.g.
-  `vision_seeded`, `image_seeded` and `image_limits_backfilled` (section 6, Admin).
+- **app_state**: `key (primary key), value, updated_at`. Server flags and
+  settings, e.g. `vision_seeded`, `image_seeded`, `plans_seeded`,
+  `plans_rollout` (section 6, Admin), `billing_settings` (JSON
+  `BillingSettings`) and `receipt_seq:<mode>:<financial year>` (the last receipt
+  number of a series, section 6, Billing).
 - **message_files**: `id, message_id → messages (CASCADE), document_id →
   documents (SET NULL), filename, format ("pdf"|"docx"|"xlsx"|"md"|"png"|"jpeg"|"webp"),
   size_bytes, created_at`. A file the assistant created in that answer, in
@@ -305,12 +353,6 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   document, which also gets a `generated_documents` row). Source of
   `DocumentItem.image` and `GeneratedFile.image`; `conversation_id` decides which
   images `create_document` may embed.
-- **user_image_limits**: `user_id` (primary key) `→ users (CASCADE),
-  monthly_image_limit, updated_at`. A user's monthly image count (0 =
-  unlimited). Written when the admin creates a user or sends the field in an
-  update; on the first start with this table every existing non-admin user
-  gets a row with `DEFAULT_MONTHLY_IMAGE_LIMIT` (`app_state` key
-  `image_limits_backfilled`). A user without a row gets the env default.
 - **plugin_settings**: `plugin_id` (primary key), `enabled` (false), `capabilities`
   (JSON object: capability id → bool; a missing id uses the plugin's default),
   `updated_at`. The admin's switches; no row = disabled.
@@ -359,6 +401,89 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   derived from `ip` on read (`LoginEvent.ip_private`). One row per successful
   `POST /auth/login`; the newest 20 per user are kept (older rows are deleted when
   one is added). Shown only to the user (`GET /me/account`) and in their export.
+- **plans**: `id, code` (unique, `^[a-z][a-z0-9_-]{1,31}$`, never changed),
+  `name, description, price_paise` (BIGINT, whole rupees: the charge for one
+  period), `rank` (unique; a higher rank is a higher plan), `status`
+  ("active"|"retired": a retired plan can't be bought or renewed),
+  `recommended` (at most one plan, an active one), `features` (JSON `{files,
+  images, plugins: [plugin ids]}`), the seven limits (`monthly_token_limit,
+  rate_limit_per_min, max_upload_mb, max_documents, max_storage_mb,
+  monthly_image_limit, vision_monthly_token_limit`; 0 = unlimited),
+  `restrict_models` (false: every enabled chat model), `default_chat_model_id →
+  llm_models (SET NULL), created_at, updated_at`. Relationship `chat_models`
+  (M2M via **plan_chat_models**: `plan_id → plans (CASCADE), model_id →
+  llm_models (CASCADE)`). A plan a period, an order or an open-ended plan ever
+  used can't be deleted.
+- **plan_periods**: `id, user_id → users (CASCADE), plan_id → plans (SET
+  NULL), starts_at, ends_at, days` (30 paid, 1 in test mode, 1 to 30 for a
+  complimentary row), `source` ("payment"|"comp"), `mode`
+  ("test"|"live"|"offline"|"none"; test periods count only while test keys
+  run), `order_id → billing_orders (SET NULL), snapshot` (JSON `PlanSnapshot`:
+  what the user gets, read instead of the plan), `charge_basis_paise` (what the
+  period was worth, for an upgrade's credit; 0 for comps), `history` (JSON list
+  of changes), `reason, granted_by, revoked_at, revoked_reason, created_at,
+  updated_at`; index `(user_id, ends_at)`. Access comes from these rows: a
+  counting, unrevoked period containing now. `ends_at` = the first midnight IST
+  (18:30 UTC) at or after `starts_at + days`. A user's periods never overlap
+  (on Postgres also the exclusion constraint `ex_plan_periods_no_overlap` over
+  unrevoked non-test periods, checked at commit).
+
+  ```ts
+  type PlanSnapshot = { plan_id: number; code: string; name: string; features: PlanFeatures;
+    limits: UserLimits /* scaled for comp rows shorter than 30 days */; restrict_models: boolean;
+    chat_model_ids: number[] /* when restrict_models; [] otherwise */; default_chat_model_id: number|null }
+  ```
+- **billing_orders**: `id, public_id` (unique, in URLs; Razorpay's
+  `reference_id` is `rag-<public_id>`), `user_id → users (SET NULL), username,
+  plan_id → plans (SET NULL), plan_snapshot` (what was quoted), `kind`
+  ("period"|"now"), `replaces_period_id → plan_periods (SET NULL),
+  replaces_plan_id, replaces_ends_at, credit_paise, amount_paise, currency`
+  ("INR"), `mode` ("test"|"live"|"offline"), `status`
+  ("pending"|"paid"|"expired"|"cancelled"|"review"), `review_reason,
+  reviewed_at, reviewed_by, review_note, terms_accepted_at, razorpay_link_id`
+  (unique), `razorpay_order_id, pay_url, origin` (the app origin the callback
+  returns to, one of `PUBLIC_BASE_URLS`), `expires_at, watch_until,
+  next_check_at, check_step, last_checked_at, checks, last_error,
+  last_payment_error, paid_at, payment_id → billing_payments (SET NULL),
+  created_at, updated_at`. One checkout attempt (or one recorded bank
+  transfer).
+- **billing_payments**: `id, razorpay_payment_id` (unique; null for an offline
+  payment), `order_id → billing_orders (SET NULL), user_id → users (SET NULL),
+  username, status` ("captured"|"failed"|"refunded"|"partially_refunded"|
+  "disputed"), `amount_paise, currency, method, fee_paise, fee_tax_paise,
+  error_code, error_reason, captured_at, applied_at` (set once: the payment
+  bought its period), `refunded_paise` (the sum of its processed refunds),
+  `mode, offline_reference, recorded_by, created_at, updated_at`. Never the
+  payer's email, phone, UPI id, card or bank.
+- **billing_refunds**: `id, payment_id → billing_payments (CASCADE),
+  razorpay_refund_id` (unique), `idempotency_key` (unique), `amount_paise,
+  status` ("creating"|"pending"|"processed"|"failed"), `initiated_by`
+  ("admin"|"razorpay"), `admin_username, reason, end_access, access_ended_at,
+  last_error, created_at, processed_at, updated_at`.
+- **billing_disputes**: `id, razorpay_dispute_id` (unique), `payment_id →
+  billing_payments (CASCADE), amount_paise, status`
+  ("open"|"under_review"|"action_required"|"won"|"lost"|"closed"),
+  `reason_code, respond_by, access_ended_at, created_at, updated_at`.
+- **billing_receipts**: `id, number` (unique), `mode` ("live", which offline
+  payments share, or "test"), `financial_year` ("26-27"), `seq` (unique with
+  mode and financial year), `payment_id → billing_payments (CASCADE, unique),
+  user_id → users (SET NULL), issued_at, seller, buyer, lines` (JSON snapshots,
+  never changed), `amount_paise, method, created_at`.
+- **billing_events**: `id, created_at, source`
+  ("webhook"|"callback"|"reconcile"|"user"|"admin"|"system"), `type` (e.g.
+  `payment.captured`, `period.granted`, `plan.updated`), `razorpay_event_id`
+  (unique), `body_sha256` (unique), `order_id → billing_orders (SET NULL),
+  payment_id → billing_payments (SET NULL), user_id → users (SET NULL), actor,
+  detail` (JSON: ids, statuses, amounts, method, values before and after;
+  never secrets, request bodies or payer details), `processed, attempts,
+  error`. The audit trail of every change that grants or removes value, the
+  webhook inbox and its dedupe.
+- **user_billing_profiles**: `user_id` (primary key) `→ users (CASCADE), name,
+  email, updated_at`. Optional, the user's own: the name on receipts and the
+  address for plan reminders.
+- Billing records outlive their user: orders, payments, receipts and events
+  keep the username and get `user_id` NULL; periods and the billing profile go
+  with the user.
 - The schema is managed by Alembic (`backend/migrations/`, README there):
   `init_db` runs `upgrade head` at start-up, in one transaction under the schema's
   advisory lock (on SQLite with foreign keys off, then `PRAGMA foreign_key_check`
@@ -369,7 +494,13 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   then stamped and aligned by 0002, or refused unchanged. Migrations only go
   forward: a rollback restores the backup taken before the deploy, with the
   previous release checked out and built first (`scripts/restore.sh` checks the
-  backup's revision). Up to revision 0002 the schema is exactly what `create_all`
+  backup's revision). Revision 0003 (plans and billing) creates the billing
+  tables and columns, writes one `rollout.limits_cleared` billing event per
+  non-admin user with their old limits, sets every user's limit columns to NULL
+  (the plan's value), drops `user_image_limits` (folded into
+  `users.monthly_image_limit`), backfills `allowance_tokens` of chat events with
+  their `total_tokens`, and on Postgres adds the exclusion constraint (with the
+  `btree_gist` extension). Up to revision 0002 the schema is exactly what `create_all`
   made; releases up to `c1da1d0` predate migrations, ignore `alembic_version` and
   start on any schema, so go back to one only with a database at 0002 or from
   before migrations. Rolling back past plugins needs the SQL in
@@ -390,26 +521,50 @@ All timestamps are timezone-aware UTC. Integer primary keys.
 
 Errors use FastAPI's shape: `{"detail": "message"}` (validation errors:
 `{"detail": [{loc, msg, type}, ...]}`). 401 = not logged in or session
-invalid, 403 = forbidden, 404 = not found **or not yours** (never leak
-existence), 409 = conflict, 413 = too large, 422 = validation, 429 = rate limit
-or budget exhausted (`detail` explains which; rate limit also sets `Retry-After`),
+invalid, 402 = no plan, an ended plan, or a feature the plan doesn't include
+("Access by plan" below), 403 = forbidden, 404 = not found **or not yours**
+(never leak existence), 409 = conflict, 413 = too large, 422 = validation, 429
+= rate limit or an allowance used up (`detail` explains which; rate limit also
+sets `Retry-After`),
 503 = the vector database is unavailable for an operation that must remove
 vectors (rows and files are kept; retrying is safe), or Redis is unreachable
 (`{"detail": "A required service is temporarily unavailable. Try again shortly."}`;
 login, chat rate limits and admin stats need it).
 
-Timestamps are ISO 8601 strings. Shapes use TypeScript notation; the TS source
-of truth is `frontend/src/api/types.ts`.
+Some errors also carry a machine-readable `code` and, where useful, `feature`
+and `plan`: `{"detail": "…", "code": "plan_expired", "plan": "Standard"}`
+(`app/errors.py`, `AppError`). Clients branch on `code`, never on the text;
+dates in messages are IST dates written "25 Nov 2026".
+
+| Status | `code` | `feature` / `plan` | `detail` (examples) |
+|---|---|---|---|
+| 402 | `plan_required` | – / – | "Choose a plan to start using the assistant." |
+| 402 | `plan_expired` | – / the ended plan's name | "Your Standard plan ended on 25 Nov 2026. Renew it to continue; your chats and documents are kept." |
+| 402 | `feature_not_in_plan` | `files`, `images`, `plugin:<id>` or `model` / the cheapest active plan that has it, or null | "Your Starter plan doesn't include Gmail. It's included in Professional." |
+| 429 | `allowance_used` | `chat_tokens`, `images` or `vision_tokens` / – | "You've used this period's chat allowance (500,214 of 500,000). It starts again with your next period on 26 Nov 2026." (or "It starts again on 1 Dec 2026." for an open-ended plan, "Your Starter plan is valid through 25 Nov 2026." when nothing follows) |
+| 403 | `admin_exempt` | – | "The admin doesn't need a plan." |
+| 409 | `checkout_unavailable` | – | the option's reason, e.g. "You already have a period paid ahead.", or "Another checkout was started at the same time. …" |
+| 409 | `confirmation_required` | – | "This lowers what 3 users paid for until their periods end." |
+| 429 | `too_many_checkouts` | – | "Too many payment attempts. Try again in an hour." / "…tomorrow." (`Retry-After`) |
+| 503 | `payments_unavailable` | – | "Online payment isn't set up yet. Contact <business email>." |
+| 502 | `payment_provider_error` | – | "The payment service didn't answer. Try again in a minute." |
+
+Timestamps are ISO 8601 strings; billing dates (`valid_through` and the like)
+are IST dates `YYYY-MM-DD`; money is integer paise (₹1 = 100). Shapes use
+TypeScript notation; the TS source of truth is `frontend/src/api/types.ts`.
 
 ### Shared shapes
 
 ```ts
-type UserLimits = { monthly_token_limit: number; rate_limit_per_min: number;
-  max_upload_mb: number; max_documents: number; max_storage_mb: number;
-  monthly_image_limit: number /* images per UTC month; 0 = unlimited */ }
-type UsageSummary = { month: string /* "YYYY-MM" */; chat_tokens: number;
-  embedding_tokens: number; vision_tokens: number; images: number /* generated this month */;
-  cost_usd: number /* every kind */; monthly_token_limit: number /* counts chat_tokens only */ }
+type UserLimits = { monthly_token_limit: number /* the chat allowance, in standard tokens */;
+  rate_limit_per_min: number; max_upload_mb: number /* ≥ 1 */; max_documents: number; max_storage_mb: number;
+  monthly_image_limit: number; vision_monthly_token_limit: number /* plain vision tokens (scanned PDF pages) */ }
+  // per period for users with a plan (an open-ended plan and the admin: per UTC calendar month); 0 = unlimited
+type UsageSummary = { month: string /* "YYYY-MM" of window_start */; chat_tokens: number /* plain tokens */;
+  embedding_tokens: number; vision_tokens: number; images: number;
+  cost_usd: number /* every kind */; monthly_token_limit: number /* counts chat_allowance_used */;
+  chat_allowance_used: number /* standard tokens */;
+  window_start: string; window_end: string /* the allowance window: the counts above are in it */ }
 type ThemePreference = "system"|"light"|"dark"     // "system" follows prefers-color-scheme, live
 type AccentColor = "clay"|"ocean"|"sage"|"plum"|"slate"
 type ChatFontSize = "small"|"default"|"large"
@@ -418,12 +573,35 @@ type Preferences = { theme: ThemePreference /* default "system" */; accent: Acce
   default_model_id: number|null /* the chat model new chats start with; null: unset, or no longer one the user
     may use (then the server's default) */ }
 type Me = { id: number; username: string; is_admin: boolean;
-  limits: UserLimits; usage: UsageSummary; preferences: Preferences }
+  limits: UserLimits /* the plan's, merged with the user's overrides */; usage: UsageSummary;
+  preferences: Preferences; plan: PlanAccess }
 type ChatModel = { id: number; display_name: string; provider: string; is_default: boolean;
   can_create_files: boolean /* CHAT_FILE_TOOLS is on and LiteLLM says the model supports function calling */;
   can_create_images: boolean /* CHAT_IMAGE_TOOLS is on, a usable image model is active and the model gets tools */;
   supports_tools: boolean /* the model gets tools (function calling, not rejected since the backend started):
-    plugin tools such as Gmail can be offered */ }
+    plugin tools such as Gmail can be offered */;
+  allowance_rate: number|null /* ×rate against the chat allowance: the blended price (85% input, 15% output)
+    ÷ $3.20 per million, two significant figures; null: no price, it counts plain tokens */ }
+  // can_create_files / can_create_images are server capabilities: the UI combines them with Me.plan.features
+type PlanFeatures = { files: boolean; images: boolean; plugins: string[] /* plugin ids, e.g. "gmail" */ }
+type PlanRef = { id: number; code: string; name: string }
+type PlanState = "exempt" /* the admin */|"none" /* never had a plan */|"active"|"expired"
+type CheckoutKind = "period" /* one more period: now, or when the paid time ends */|"now" /* a new period now, for a credit */
+type PendingOrder = { public_id: string; kind: CheckoutKind; plan: PlanRef; amount_paise: number;
+  created_at: string; expires_at: string; pay_url: string|null /* null once the link expired */ }
+type PlanUnlock = { files: string|null; images: string|null; plugins: Record<string, string|null>;
+  models: string|null /* a higher plan with a chat model the user can't use now */ }
+  // the name of the cheapest active plan that includes each feature; null when none does
+type PlanAccess = { state: PlanState; access: boolean /* exempt or active */;
+  plan: PlanRef|null /* current (period or open-ended), or the last one when expired */;
+  complimentary: boolean; open_ended: boolean; test_mode: boolean;
+  period_start: string|null; period_end: string|null /* the current period; null for an open-ended plan */;
+  paid_through: string|null /* active by a period: the end of the unbroken chain from the current one;
+    expired: when access ended */;
+  valid_through: string|null /* IST date of the last day with access; null: open-ended */;
+  next_plan: PlanRef|null; expiring_soon: boolean; ended_at: string|null /* expired: when access ended */;
+  features: PlanFeatures /* exempt: everything; without access: nothing */; pending_order: PendingOrder|null;
+  can_start_new_period: boolean /* a current period with 90% or more of an allowance used */; unlock: PlanUnlock }
 type ImageQuality = "low"|"medium"|"high"
 type GeneratedImage = { width: number; height: number; alt_text: string;
   quality: ImageQuality /* as requested */ }  // display details only; no prompt
@@ -473,6 +651,55 @@ active embedding model (or has no embedding model). For the user's own counts
 `max_documents`/`max_storage_mb` are reported as 0 (unlimited) and
 `max_upload_mb` as `MAX_UPLOAD_MB_HARD`.
 
+**`Me.plan`** (brief section 4): `active` when a counting, unrevoked period
+contains now (its snapshot applies, and the allowance window is that period)
+or else the user holds an open-ended complimentary plan (the plan's current
+values; the window is the UTC calendar month); `expired` when they had periods
+but none applies; `none` otherwise. `expiring_soon`: active by a period whose
+paid time ends within `BILLING_REMINDER_DAYS`, with nothing scheduled after it
+and no open-ended plan to fall back on. Limits are the snapshot's (or the
+plan's), each replaced by the user's override when set (`max_upload_mb` capped
+by `MAX_UPLOAD_MB_HARD`); models are the plan's, intersected with the user's
+allowed list when `restrict_models`. Without access, `limits` are the last
+period's (or the cheapest active plan's) merged with the overrides, for
+information only. `unlock` comes from the plans table (cached 60 s, cleared on
+every plan change).
+
+### Access by plan (every router)
+
+`deps.get_entitled_user` = the session (as `get_current_user`) + the caller's
+entitlements (`billing.entitlements.load`, the one source of every plan check)
++ 402 `plan_required` or `plan_expired` without access. The admin always passes.
+`test_route_guards.py` classifies every route:
+
+| Routes | No session | No access (`none`, `expired`) | Active | Admin |
+|---|---|---|---|---|
+| `GET /health`, `/health/ready`, `/public/*` | 200 | 200 | 200 | 200 |
+| `GET /billing/razorpay/return`, `POST /billing/razorpay/webhook` | signature only | – | – | – |
+| `POST /auth/login`, `/auth/logout` | as before | as before | as before | as before |
+| `GET /auth/me`, `POST /auth/change-password`, `/auth/logout-others` | 401 | 200 | 200 | 200 |
+| `GET /auth/upload-allowed` (nginx only) | 401 | 403 | 204 | 204 |
+| `/me/preferences`, `/me/account`, `/me/usage`, `POST /me/export` | 401 | 200 | 200 | 200 |
+| `/billing/*` (plans, status, checkout, orders, payments, receipts, profile) | 401 | 200 | 200 | 200 (checkout 403 `admin_exempt`) |
+| `GET /plugins`, `PATCH`/`DELETE /plugins/{id}/connection`, `POST /plugins/gmail/sends/{id}/cancel` | 401 | 200 | 200 | 200 |
+| `GET /conversations` (the list), `DELETE /conversations`, `DELETE /conversations/{id}`, `DELETE /documents/{id}` | 401 | 200 | 200 | 200 |
+| `GET /documents` | 401 | 200, **own documents only** | 200 | 200 |
+| `GET /documents/{id}/download`, `GET /documents/{id}/image` | 401 | 200 for own documents; **402** for shared ones | 200 | 200 |
+| `GET /models`, `POST /chat/stream`, `GET`/`PATCH /conversations/{id}` | 401 | **402** | 200 | 200 |
+| `GET /documents/config`, `POST /documents`, `POST /documents/{id}/reprocess`, `GET /documents/{id}/image/details` | 401 | **402** | 200 | 200 |
+| `POST /plugins/{id}/connect`, the Gmail routes (`/plugins/gmail/threads/*`, `/import`, `GET /sends/{id}`, `/send`, `/revise`) | 401 | **402** | 200, or **402** `feature_not_in_plan` without the plugin | 200 |
+| `/admin/*` | 401 | 403 | 403 | 200 |
+
+Features add a condition and never turn anything on: files need `CHAT_FILE_TOOLS`
+**and** the plan's `files`; images need an active image model **and**
+`images`; a plugin must be set up and turned on by the admin **and** in the
+plan's `plugins`. A feature outside the plan isn't offered to the model (the
+system prompt says which plan includes it), and calling it directly answers
+402 `feature_not_in_plan`. Nothing is deleted when a plan ends or narrows:
+documents over a lowered limit are kept (adding more is refused until under it),
+generated files and images stay downloadable, a Gmail connection is kept but
+unused.
+
 ### Health — `main.py`, `routers/system.py` (public)
 - `GET /health` → `{status: "ok"}`: liveness, cheap, no dependency checked (the Compose healthchecks use it).
 - `GET /health/ready` → 200 `{status: "ready"}` or 503 `{status: "unready"}`, nothing else: Postgres and Redis
@@ -481,7 +708,8 @@ active embedding model (or has no embedding model). For the user's own counts
   checks; `Cache-Control: no-store`.
 
 ### Auth — `routers/auth.py`
-- `POST /auth/login` `{username, password}` → `Me`; sets the cookie. Throttled
+- `POST /auth/login` `{username, password}` → `Me` (with `plan`: a client sends a user without access to
+  `/plans`); sets the cookie. Throttled
   via Redis per username (`LOGIN_MAX_ATTEMPTS` failures) and per client IP
   (`LOGIN_MAX_ATTEMPTS_PER_IP` failures; larger, because every client behind a
   reverse proxy or Docker's port publishing shares one IP) per
@@ -493,6 +721,8 @@ active embedding model (or has no embedding model). For the user's own counts
   can mark the caller's own sign-in; tokens without `sid` stay valid.
 - `POST /auth/logout` → 204; clears the cookie.
 - `GET /auth/me` → `Me`.
+- `GET /auth/upload-allowed` → 204 when the session may upload now (an active plan, or the admin), else 403; 401
+  without a session. nginx asks it before reading an upload's body and turns the 403 into a 402 `plan_required`.
 - `POST /auth/change-password` `{current_password, new_password}` (new ≥ 8
   chars) → 204; bumps `token_version` and re-issues the cookie (same `sid`). The env admin
   gets 400 ("The admin password is managed in .env"); a wrong current password
@@ -524,33 +754,41 @@ type AccountInfo = { id: number; username: string; is_admin: boolean;
   created_at: string; last_login_at: string|null; conversation_count: number;
   recent_logins: LoginEvent[] /* newest first, at most 20 */ }
 type UsageAmount = { used: number; limit: number /* 0 = unlimited; always 0 for the admin */ }
-type MyUsage = { month: string /* "YYYY-MM", UTC */; period_start: string; resets_at: string /* the 1st of next month, 00:00 UTC */;
-  chat_tokens: UsageAmount /* the monthly token budget */; images: UsageAmount /* the monthly image limit */;
-  vision_tokens: UsageAmount /* VISION_MONTHLY_TOKEN_LIMIT */; embedding_tokens: number; requests: number /* chat answers */;
+type MyUsage = { month: string /* "YYYY-MM" of period_start */;
+  period_start: string; resets_at: string /* the allowance window's start and end (the period, or the UTC month) */;
+  chat_allowance: UsageAmount /* standard tokens against monthly_token_limit, the chat allowance */;
+  chat_tokens: number /* plain tokens of chat answers; no limit */; images: UsageAmount /* monthly_image_limit */;
+  vision_tokens: UsageAmount /* vision_monthly_token_limit */; embedding_tokens: number; requests: number /* chat answers */;
   rate_limit_per_min: number /* 0 = unlimited */;
   cost_usd: { total: number; chat: number; embedding: number; vision: number; image: number } /* estimated */;
   documents: { count: number; max_documents: number; storage_bytes: number; max_storage_mb: number; max_upload_mb: number };
-  daily: { date: string /* YYYY-MM-DD, every UTC day from the 1st through today, zeros included */;
-    chat_tokens: number; requests: number; images: number; vision_tokens: number; embedding_tokens: number; cost_usd: number }[];
+  daily: { date: string /* YYYY-MM-DD, every UTC day of the window through today, zeros included */;
+    chat_allowance: number; chat_tokens: number; requests: number; images: number; vision_tokens: number;
+    embedding_tokens: number; cost_usd: number }[];
   by_model: { model_name: string /* display name while the model exists, else the stored litellm id */;
-    kind: "chat"|"embedding"|"vision"|"image"; tokens: number; requests: number; cost_usd: number }[] /* cost descending */ }
+    kind: "chat"|"embedding"|"vision"|"image"; tokens: number; allowance_tokens: number /* 0 for other kinds */;
+    requests: number; cost_usd: number }[] /* cost descending */ }
 ```
 - `GET /me/preferences` → `Preferences` (also in `Me`). `PATCH /me/preferences`
   `PreferencesUpdate` → `Preferences` (the full result). `default_model_id` must
-  be an enabled chat model the caller may use (as in `GET /models`), else 422
+  be an enabled chat model the caller may use (as in `GET /models`; without
+  access any id but null), else 422
   "That model isn't available to you."; on read, a stored default that is no
   longer usable is reported as null (and comes back if the model does).
 - `GET /me/account` → `AccountInfo`.
-- `GET /me/usage` → `MyUsage` for the current UTC month: the same counts the
-  limits use (`chat` tokens for the budget, `image` events for the image limit,
-  `vision` tokens for the vision allowance), documents and storage as in
+- `GET /me/usage` → `MyUsage` for the allowance window (the current period, or
+  the UTC calendar month for an open-ended plan, the admin and a user without
+  access): the same counts the limits use (`allowance_tokens` of chat events for
+  the chat allowance, `image` events for the image limit, `vision` tokens for the
+  vision allowance), the limits as in `Me.limits`, documents and storage as in
   `DocumentConfig`.
 - `POST /me/export` (no body; a POST so nginx's cross-site check applies) →
   `200 application/zip` (a download): `README.txt`,
-  `account.json` (profile, preferences, limits, this month's usage, plugin
-  connections without tokens, sign-ins, and the counts of included and omitted
-  conversations), `documents.json` (metadata of the documents the caller owns; no
-  file bytes), `conversations/index.json`, and per conversation
+  `account.json` (profile, preferences, limits, the usage of the allowance
+  window, plugin connections without tokens, sign-ins, and the counts of included
+  and omitted conversations), `documents.json` (metadata of the documents the
+  caller owns; no file bytes), `billing.json` (the caller's periods, orders,
+  payments and receipt numbers), `conversations/index.json`, and per conversation
   `conversations/<id>-<slug>.md` (a transcript, with one line per plugin card)
   and `.json` (messages with sources, files and plugin cards with their current
   state, as `GET /conversations/{id}` shows them); `<id>` is zero-padded to 6
@@ -567,18 +805,24 @@ type MyUsage = { month: string /* "YYYY-MM", UTC */; period_start: string; reset
   and frees both. The layout is in `docs/briefs/ui-shell-settings.md` section 4.6.
 
 ### Models — `routers/models.py`
-- `GET /models` → `ChatModel[]`: enabled chat models (never embedding, vision or image models) this user may use,
-  default first, then by display_name. `provider` = prefix before `/` of
-  `litellm_model` (or `"openai"` if no prefix). `supports_tools` = `llm.supports_tools(model)`.
+- `GET /models` → `ChatModel[]` (402 without access): the enabled chat models (never embedding, vision or image
+  models) this user may use (the plan's models, narrowed by their allowed list), default first, then by
+  display_name. The default (`is_default`, and the model of a chat sent without `model_id`) is the plan's
+  `default_chat_model_id` when the user may use it, else the server's default chat model when they may, else the
+  first. `provider` = prefix before `/` of `litellm_model` (or `"openai"` if no prefix). `supports_tools` =
+  `llm.supports_tools(model)`. A chat with an enabled model outside the plan answers 402 `feature_not_in_plan`
+  (`feature: "model"`); one the plan has but the allowed list excludes, 403 as before.
 
 ### Documents — `routers/documents.py`
 - `GET /documents` → `DocumentItem[]`: caller's private docs + all shared
-  docs, newest first.
+  docs, newest first (without access: their own documents only).
 - `GET /documents/config` → `DocumentConfig`.
 - `POST /documents` multipart form: `file` (one file), `scope` ("private"
   default | "shared"; shared requires admin, else 403) → 201 `DocumentItem`.
   Validates extension (415 if unsupported), size (413), empty file (422),
-  document count and storage quota (409 with a clear message), duplicate (same
+  document count and storage quota (409 with a clear message, ending "Delete some
+  documents or upgrade your plan."; the limits are `Me.limits`, and documents over
+  a lowered limit are kept), duplicate (same
   owner + scope + sha256 → 409 "This file has already been uploaded"). Streams
   the upload to disk in chunks, never reads the whole file into memory.
   Sanitizes the display filename. Enqueues ingestion.
@@ -588,7 +832,8 @@ type MyUsage = { month: string /* "YYYY-MM", UTC */; period_start: string; reset
 - `POST /documents/{id}/reprocess` → `DocumentItem` (status reset to
   "pending", re-enqueued; a document that is already pending is returned as is
   and not queued again). Same permission rule as delete. 400 when there is no
-  active embedding model.
+  active embedding model. The file-size limit isn't checked again (the file was
+  accepted when uploaded).
 - `GET /documents/{id}/download` → the stored file, streamed, in any status.
   Visible documents only, as in `GET /documents` (the caller's private ones and
   every shared one); others 404 "Document not found"; a row whose file is gone
@@ -640,11 +885,15 @@ type MyUsage = { month: string /* "YYYY-MM", UTC */; period_start: string; reset
   model_id: number|null /* null = default */;
   document_ids: number[]|null /* null = all accessible docs, [] = no retrieval; max 10000 ids */ }
 ```
-Before streaming (normal JSON errors): auth, rate limit (429), budget (429),
+Before streaming (normal JSON errors): auth, access (402 `plan_required` or
+`plan_expired`; a conversation can't be continued without access either), rate
+limit (429), the chat allowance (429 `allowance_used`, `feature: "chat_tokens"`),
 answers in flight (429 "Another answer is still being generated…": a user with
-a monthly budget has at most 2 answers generating at once, since the budget is
-charged when an answer ends), model resolution (400 no model available / 403
-model not allowed), conversation ownership (404). Then responds `200 text/event-stream` with headers
+a chat allowance has at most 2 answers generating at once, since the allowance is
+charged when an answer ends), model resolution (400 no model available / 402
+`feature_not_in_plan` for a model outside the plan / 403 model not allowed),
+conversation ownership (404). The entitlements loaded at the start hold for the
+whole answer. Then responds `200 text/event-stream` with headers
 `Cache-Control: no-cache` and `X-Accel-Buffering: no`. Events, in order
 (`event: <name>\ndata: <json>\n\n`):
 
@@ -699,9 +948,11 @@ new message, prefixed by the previous user message when one exists.
 cells, `source_numbers`), when `CHAT_FILE_TOOLS` is on,
 `litellm.supports_function_calling` is true for the model (and the model hasn't
 rejected tools since the backend started: a first call rejected as a bad request
-is retried once without tools), and the user has room for another document
-(non-admin: below `max_documents` and at least 256 KiB of storage left).
-Otherwise the system prompt says why files can't be created. The system prompt
+is retried once without tools), the user's plan includes files, and the user
+has room for another document (non-admin: below `max_documents` and at least
+256 KiB of storage left). Otherwise the system prompt says why files can't be
+created (outside the plan: that the plan doesn't include files and which plan
+does, from `unlock`; the model must never claim a file). The system prompt
 says to use the tool only when the user's latest message asks for a file, never
 because a passage does. Calls that offer the tool send `parallel_tool_calls:
 false` (one file per model call) and request `GENERATED_FILE_MAX_OUTPUT_TOKENS`.
@@ -717,9 +968,9 @@ quota, rendering and output-limit failures go back to the model as tool errors;
 a response stopped by the provider's safety filter, or without a finish, ends
 the answer with an `error`. At most `GENERATED_FILES_PER_ANSWER` files and that
 number + 2 model calls per answer; the last allowed call is sent with
-`tool_choice: "none"`. With a monthly budget, no further call starts once the
-answer's tokens reach what was left of the budget when it started (the answer
-ends with an `error`). The system prompt and tools are identical for every call
+`tool_choice: "none"`. With a chat allowance, no further call starts once the
+answer's allowance tokens reach what was left of the allowance when it started
+(the answer ends with an `error`). The system prompt and tools are identical for every call
 of an answer (apart from that one retry without tools, before anything is
 replayed). Text from successive calls is joined with a blank line (streamed
 as a `delta` too). One `chat` usage event per answer covers every call (a call
@@ -738,10 +989,11 @@ assistant created (their `[n]` markers neutralized).
 `alt_text`, `aspect` "square"|"landscape"|"portrait" → 1024×1024, 1536×1024,
 1024×1536, `quality` "low"|"medium"|"high", lowered to `IMAGE_MAX_QUALITY`) when
 `CHAT_IMAGE_TOOLS` is on, a usable image model is active (supported, see Admin,
-and not marked unusable), the chat model gets tools (as above), and a non-admin
-user has room for an image (a free document slot and 8 MiB of storage) and
-images left this month; otherwise the system prompt says why images can't be
-made. Both tools go in one list (`create_document` first) that stays identical
+and not marked unusable), the chat model gets tools (as above), the user's plan
+includes images, and a non-admin user has room for an image (a free document
+slot and 8 MiB of storage) and images left in the allowance window; otherwise
+the system prompt says why images can't be made (outside the plan: which plan
+includes them). Both tools go in one list (`create_document` first) that stays identical
 for every call of the answer; an answer makes at most
 `GENERATED_FILES_PER_ANSWER` (when files are offered) +
 `GENERATED_IMAGES_PER_ANSWER` (when images are offered) + 2 model calls, and the
@@ -750,7 +1002,7 @@ call per model call, `tool_choice: "none"` on the last call; when the tools are
 rejected, the retry drops both. For each `create_image` call the server
 validates the arguments, re-reads the active image model, checks room, then
 **reserves** the image: under the per-user lock it counts the user's `image`
-usage events of this UTC month and, below `monthly_image_limit` (or for the
+usage events in the allowance window and, below `monthly_image_limit` (or for the
 admin), inserts one (zero cost). An image job then waits for one of
 `IMAGE_CONCURRENCY` slots and calls the image model through
 `litellm.aimage_generation` (`n=1`, `quality` always sent, base64 data only,
@@ -775,7 +1027,7 @@ a line of their own: the server embeds the images generated in this
 conversation and owned by the user (PDF and DOCX: a picture scaled to the text
 width with its caption and alt text; XLSX and MD: a text reference; unknown ids
 stay text and are reported to the model; at most 10 per file). Image usage never
-counts toward the token budget. In later turns an answer that generated images
+counts toward the chat allowance. In later turns an answer that generated images
 carries "(App note: this answer generated these images, which are in the user's
 documents: "Fox.png" (image:812).)" in the model's history; while
 `create_document` is offered, the conversation's images whose answers are older
@@ -788,7 +1040,8 @@ stopped, and the image is stored, counted and linked to that message when it
 arrives.
 
 **Plugins (Gmail).** When the Gmail plugin is enabled and configured, the user's
-connection is `connected` with `chat_enabled`, and the chat model gets tools,
+plan includes it, their connection is `connected` with `chat_enabled`, and the
+chat model gets tools,
 the tool list also holds (after `create_document` and `create_image`, only for
 capabilities the admin enabled and the user granted): `gmail_search` (`query` in
 Gmail syntax, `max_results` 1..20, `page_token`), `gmail_read_message`
@@ -798,8 +1051,9 @@ and `gmail_import` (`thread_ids` 1..5, `include_attachments`) for `read`;
 `cc`, `bcc`, `subject`, `body` plain text, `reply_to_message_id` (with `read`),
 `attachment_filenames` of the user's own documents). Otherwise the system prompt
 gets at most one sentence (connect from the Plugins menu or Settings → Plugins &
-data, reconnect needed, this model can't use Gmail); a plugin that is turned off
-or not configured adds nothing. The same loop rules apply (one tool call per model call,
+data, reconnect needed, this model can't use Gmail, or, for a connected user
+whose plan doesn't include Gmail, that it doesn't and which plan does); a plugin
+that is turned off or not configured adds nothing. The same loop rules apply (one tool call per model call,
 identical tools and system prompt, the last call without tools); an answer makes
 at most `GENERATED_FILES_PER_ANSWER` + `GENERATED_IMAGES_PER_ANSWER` +
 `GMAIL_TOOL_CALLS_PER_ANSWER` (offered sets only) + 2 model calls, and returns at
@@ -861,7 +1115,8 @@ type PluginInfo = { id: string; name: string; description: string; auth_type: "o
   enabled: boolean /* turned on by the admin and configured: it can be connected and used */;
   testing_mode: boolean /* only the provider app's test users can connect; connections end after 7 days */;
   supports_import: boolean; import_max_items: number|null; capabilities: PluginCapabilityInfo[];
-  connection: PluginConnectionStatus|null /* the caller's own; never anyone else's */ }
+  connection: PluginConnectionStatus|null /* the caller's own; never anyone else's */;
+  in_plan: boolean /* the caller's plan includes it (always true for the admin) */ }
 type PluginConnectRequest = { capabilities?: string[] }   type PluginConnectResponse = { authorize_url: string }
 type PluginConnectionUpdate = { chat_enabled: boolean }
 type PluginOAuthResult = "connected"|"denied"|"expired"|"invalid"|"no_access"|"disabled"|"error"
@@ -916,7 +1171,9 @@ type PluginCard =
 
 Plugin problems never answer 401 (that means "signed out"): not connected,
 reconnect needed or another Google account → 409; the plugin or the capability
-turned off → 403; Gmail unreachable or rate limited → 503; an unknown Gmail id →
+turned off → 403; the plugin outside the caller's plan → 402
+`feature_not_in_plan` (after the 403 checks, before the 409 ones; the connection
+is kept untouched and makes no Google call); Gmail unreachable or rate limited → 503; an unknown Gmail id →
 404; another user's pending send → 404. Send and revise check the caller's own
 Gmail access before the pending send (turned off → 403; not connected,
 reconnect needed or send not granted → 409, e.g. "Gmail isn't connected."), so
@@ -929,8 +1186,9 @@ waiting for a failed call.
   registry order, whatever its state, with the caller's own connection when there
   is one. A client shows one status, in this order of precedence: not
   `configured` → "Not set up" (admins: "Set up in Admin → Plugins"); not
-  `enabled` → "Turned off by the admin"; in both, Disconnect is still offered
-  when the caller has a connection (`DELETE …/connection` works then);
+  `enabled` → "Turned off by the admin"; not `in_plan` → "Not in your plan"
+  (Upgrade); in these three, Disconnect is still offered when the caller has a
+  connection (`DELETE …/connection` works then);
   connection `reconnect_needed` → "Reconnect needed"; a connection →
   "Connected"; else "Not connected" (Connect). Listing a plugin changes nothing
   in chat: its tools are offered only as described under Chat, Plugins.
@@ -945,7 +1203,9 @@ waiting for a failed call.
   requested too, else `gmail.send`), and `login_hint` when reconnecting; sets the cookie
   `rag_oauth_<id>` (a nonce; `HttpOnly`, `SameSite=Lax`, path
   `/api/plugins/<id>/oauth/`, 10 minutes). 404 unknown plugin, 403 turned off,
-  409 not configured, 422 unknown capability, 429 more than 10 a minute.
+  402 `feature_not_in_plan` (`feature: "plugin:<id>"`) outside the plan, 409 not
+  configured, 422 unknown capability, 429 more than 10 a minute. The OAuth
+  callback isn't re-checked against the plan.
 - `GET /plugins/{id}/oauth/callback?state&code&scope|error` (Gmail's is fixed:
   `/api/plugins/gmail/oauth/callback`; no session cookie needed, the user comes
   from the state and must still be active with the same `token_version`; the
@@ -991,22 +1251,200 @@ waiting for a failed call.
   old one, if pending, becomes `replaced`. Only from `pending`, `expired`,
   `failed` (a stale `sending` included) or `cancelled` (409 otherwise).
 
+### Billing — `routers/billing.py` (the caller's own), `routers/public.py`
+
+Brief `docs/briefs/plans-billing.md` sections 3, 4, 6 and 9 hold the rules in
+full; `app/schemas_billing.py` holds these shapes. Request bodies refuse unknown
+fields (422) and take JSON integers for amounts and ids (no coercion).
+
+```ts
+type PlanModel = { id: number; display_name: string; allowance_rate: number|null;
+  answers: number|null /* about this many answers with the plan's allowance (allowance × $3.20/M ÷ the model's
+    blended price ÷ 6,000 tokens, + 1,550 with files, + 1,040 with images; rounded down to two significant
+    figures); null: unlimited or unpriced */ }
+type PlanPlugin = { id: string; name: string; available: boolean /* set up and turned on by the admin */ }
+type CreditLine = { description: string /* "Credit for unused Starter, 26 Oct to 25 Nov" */;
+  amount_paise: number /* positive: the credit taken off (receipt lines store it negative) */ }
+type CheckoutOption = { kind: CheckoutKind; label: string; starts_at: string; ends_at: string;
+  valid_through: string /* IST date */; amount_paise: number /* charged */; plan_price_paise: number;
+  credit: CreditLine|null /* now only */; changes: string[] /* what the switch removes; may be empty */;
+  notes: string[] /* e.g. "Your complimentary plan continues after it." */;
+  unavailable_reason: string|null /* set: shown disabled with this reason */ }
+type PlanOffer = { id: number; code: string; name: string; description: string; price_paise: number;
+  recommended: boolean; features: PlanFeatures;
+  plugins: PlanPlugin[] /* every registered plugin, in registry order; the plan includes those in features.plugins */;
+  limits: UserLimits /* the plan's own */;
+  chat_models: PlanModel[] /* the plan's: every enabled chat model when unrestricted */; all_chat_models: boolean;
+  default_chat_model: PlanModel|null /* the plan's default, else the server's default when the plan has it */;
+  answers_estimate: number|null /* with default_chat_model */;
+  status: "active"|"retired"; current: boolean /* the plan that applies now */;
+  options: CheckoutOption[] /* what the caller can buy now; empty for the admin */ }
+type PaymentsInfo = { available: boolean /* for this caller: keys set, and a tester under test keys */;
+  mode: "test"|"live"|null /* null when not available to this caller */; contact_email: string|null;
+  upi_limit_paise: number /* 0: no limit */; email_reminders: boolean /* SMTP and BILLING_EMAIL_FROM are set */ }
+type PlanCatalog = { plans: PlanOffer[]; payments: PaymentsInfo }
+type OrderStatus = "pending"|"paid"|"expired"|"cancelled"|"review"
+type ReceiptRef = { id: number; number: string }
+type OrderView = { public_id: string; kind: CheckoutKind; plan: PlanRef; amount_paise: number; credit_paise: number;
+  status: OrderStatus; created_at: string; expires_at: string; paid_at: string|null;
+  pay_url: string|null /* pending, not expired */; last_payment_error: string|null;
+  period_start: string|null; period_end: string|null; valid_through: string|null /* what it bought */;
+  receipt: ReceiptRef|null; method: string|null /* upi | card | netbanking | wallet | emi | bank_transfer */;
+  test_mode: boolean }
+type CheckoutRequest = { plan_id: number; kind: CheckoutKind; accept_terms: true }
+type CheckoutStarted = { order: OrderView; pay_url: string }
+type PaymentStatus = "captured"|"refunded"|"partially_refunded"|"disputed"
+type PaymentView = { id: number; paid_at: string; plan: PlanRef|null; kind: CheckoutKind; description: string;
+  amount_paise: number; method: string|null; status: PaymentStatus; refunded_paise: number;
+  period_start: string|null; period_end: string|null /* null: a receipt-only offline payment */;
+  receipt: ReceiptRef|null; test_mode: boolean }
+type PeriodSource = "payment"|"comp"
+type PeriodView = { id: number; plan: PlanRef|null; plan_name: string; starts_at: string; ends_at: string;
+  valid_through: string; source: PeriodSource; current: boolean; test_mode: boolean; reason: string|null /* comps */ }
+type BillingProfile = { name: string|null /* ≤ 100 */; email: string|null /* ≤ 254, ^[^@\s]+@[^@\s]+\.[^@\s]+$ */ }
+type ComplimentaryView = { plan: PlanRef; reason: string; granted_by: string; granted_at: string }
+type BillingStatus = { plan: PlanAccess; periods: PeriodView[] /* unexpired, in order */;
+  complimentary: ComplimentaryView|null /* the open-ended plan */; open_order: OrderView|null;
+  profile: BillingProfile; payments: PaymentsInfo }
+type PublicPlan = Omit<PlanOffer, "id"|"status"|"current"|"options">
+type PublicSite = { business_name: string; contact_email: string|null; contact_phone: string|null; address: string|null }
+type PageSlug = "pricing"|"terms"|"privacy"|"refunds"|"contact"|"about"|"shipping"   // frontend/public/legal/<slug>.md
+```
+
+**Buying** (brief 4.3, 4.4). A `period` adds one period of an active plan,
+starting now when the user has no current period (an open-ended plan applies
+again after it), else when the paid time ends; at most one period may be
+scheduled after the current one. A `now` checkout starts a new 30-day period of
+an active plan at once, replacing the current period: an upgrade (a higher
+rank) or, on the same plan, "Start a new period now" once `can_start_new_period`.
+It costs the plan's price minus a credit, `floor_to_rupee((the current period's
+charge_basis_paise − the refunds of its payment being made or made) × min(share
+of time left, 1 − the largest used share of its limited allowances))`, at least
+₹1; scheduled periods move after the new one.
+Labels: "Choose <plan>" ("Renew <plan>" for the last plan when expired), "Renew",
+"Switch on <date>", "Upgrade now · ₹X", "Start a new period now · ₹X". Reasons
+when unavailable: "You already have a period paid ahead.", "This plan is no
+longer offered.", "Online payment isn't set up yet.", "You're already on this
+plan or a higher one." The server recomputes everything at checkout; nothing
+about the amount comes from the client.
+
+User endpoints (session required; open to users without access):
+
+- `GET /billing/plans` → `PlanCatalog`: the active plans plus the plan of the
+  caller's current or latest period and open-ended plan (even when retired), by
+  rank.
+- `GET /billing/status` → `BillingStatus`.
+- `POST /billing/checkout` `CheckoutRequest` → 201 `CheckoutStarted`: creates a
+  Razorpay Payment Link (20 minutes, `BILLING_CHECKOUT_MINUTES`) and only then
+  cancels the caller's previous pending checkout; an open checkout for the same
+  plan, kind and amount with 10 minutes left is returned instead (201, nothing
+  created). A link is counted in the caps atomically when it is about to be made;
+  a checkout cancelled while its link was made (another one replaced it) cancels
+  that link and answers 409 `checkout_unavailable` ("Another checkout was started
+  at the same time. Open the plans page to see the one to pay."). `pay_url` is always `https://rzp.io/…` or a `razorpay.com`
+  subdomain (any `https` origin only under test keys with a non-default
+  `RAZORPAY_API_BASE`). Errors: 403 `admin_exempt`; 404 unknown plan; 409
+  `checkout_unavailable`; 422 (also without `accept_terms: true`); 429
+  `too_many_checkouts` (5 links in any 60 minutes, 15 per IST day); 502
+  `payment_provider_error`; 503 `payments_unavailable` (no keys, or test keys
+  and the caller isn't a tester).
+- `GET /billing/orders/{public_id}` (`?refresh=true` checks with Razorpay first
+  when no other check of that order runs, at most once every 10 s per order and
+  30 times an hour per user; otherwise the stored order) → `OrderView`; 404 when
+  not the caller's.
+- `POST /billing/orders/{public_id}/cancel` → `OrderView` (`cancelled`; the link
+  is cancelled best effort, and a payment that still arrives is applied); 409
+  when not `pending`.
+- `GET /billing/payments` → `PaymentView[]`: captured, refunded and disputed
+  payments, newest first, at most 200.
+- `GET /billing/receipts/{id}` → `application/pdf` (the caller's own; 404
+  otherwise): `Content-Disposition: attachment;
+  filename="receipt-RA-26-27-000001.pdf"`, `Cache-Control: private, no-store`,
+  `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox`.
+- `GET /billing/profile` → `BillingProfile`; `PUT /billing/profile`
+  `BillingProfile` → `BillingProfile` (blank strings become null; 422 for an
+  invalid email).
+
+Razorpay endpoints (no session; nginx rate-limits both and logs the path only):
+
+- `GET /billing/razorpay/return` (Razorpay's signed redirect after paying,
+  `razorpay_payment_id`, `razorpay_payment_link_id`,
+  `razorpay_payment_link_reference_id`, `razorpay_payment_link_status`,
+  `razorpay_signature`) → always **303**, never an error page: to
+  `<the order's origin>/billing/return?order=<public_id>` (with `&check=failed`
+  when the signature is wrong), or `<first PUBLIC_BASE_URLS entry>/plans?payment=unknown`
+  for an unknown link; `Cache-Control: no-store`, `Referrer-Policy: no-referrer`.
+  The signature is HMAC-SHA256 with the key secret over
+  `<link id>|<reference id>|<status>|<payment id>`.
+- `POST /billing/razorpay/webhook` (raw body, `X-Razorpay-Signature` = HMAC-SHA256
+  of the raw bytes with `RAZORPAY_WEBHOOK_SECRET`, or the previous secret) → 200
+  `{ok: true}` once recorded (deduplicated by `x-razorpay-event-id` and by the
+  body's SHA-256; bodies over 3 days old are ignored); 400 bad signature, 413 over
+  256 KB, 500 when it can't be recorded (Razorpay retries), 503 without a webhook
+  secret. It never changes state from its payload: the worker fetches the entity
+  from Razorpay first.
+
+**Confirmation** (brief 6.4 to 6.8): a plan activates only on a payment fetched
+from Razorpay whose status is `captured` and whose amount, currency (INR), order
+and mode match the stored order, by the callback, the worker after a webhook, or
+the worker's reconciler (every `BILLING_RECONCILE_SECONDS` while the link lives,
+then on a backing-off schedule until `BILLING_LATE_CAPTURE_DAYS` after it
+expired). One `apply_payment` acts **once per Razorpay payment id**, under the
+user's row lock (lock order user → order → payment → refund or dispute →
+receipt counter; no Razorpay call inside a transaction): a `period` order adds a
+period at max(now, paid through) with the order's snapshot (30 days; 1 under
+test keys), a `now` order ends the replaced period and starts the new one, when
+that period is unchanged and its credit, computed again with the period's usage
+and refunds now (the time left as quoted), didn't fall below the quoted one. A
+mismatch, a second payment for one checkout, a changed replaced period, a fallen
+credit or a deleted user puts the order in `review` instead (the admin refunds,
+grants or resolves it). A full refund or a lost dispute ends what the payment
+bought, also a period an upgrade already ended (revoked, so it is never given
+back); a refunded `now` payment gives the replaced period back when nothing
+changed since and that period's own payment wasn't refunded or charged back. A
+partial refund changes nothing unless the admin ticks "End access". When a lost
+dispute or a Dashboard refund returns money whose credit still runs in an
+upgrade, the upgrade stays and Needs attention lists it (`credit_reversed`, with
+lost disputes as `dispute_lost`, each for 30 days). Orders of the other mode than the current keys are paused
+(never cancelled, applied or checked); test-mode periods count only while test
+keys run.
+
+**Receipts** (brief 9): one per applied payment (offline ones too, never comps),
+numbered `<prefix>/<yy>-<yy+1>/<seq:06d>` per Indian financial year (1 April to
+31 March, IST) and mode: `RA/26-27/000001`, `TEST/26-27/000001` under test keys
+(with a watermark); live and offline payments share the live series, with no
+gaps. The row is a snapshot (seller, buyer, lines, amount, method); the PDF
+(fpdf2, Noto Sans) is rendered on demand and shows refunds and lost disputes. No
+GST line.
+
+Public endpoints (`routers/public.py`; no session; `Cache-Control: public,
+max-age=60`):
+
+- `GET /public/site` → `PublicSite` (from the billing settings).
+- `GET /public/plans` → `PublicPlan[]`: the active plans by rank.
+
 ### Admin — `routers/admin.py` (all require admin; non-admin → 403)
 ```ts
+type LimitOverrides = { [K in keyof UserLimits]: number|null }   // null: the plan's value; 0 = unlimited
+type AdminUserPlan = { state: PlanState; plan: PlanRef|null; valid_through: string|null; paid_through: string|null;
+  complimentary: boolean; open_ended: boolean; test_mode: boolean; expiring_soon: boolean; ended_at: string|null }
 type AdminUser = { id: number; username: string; is_admin: boolean; is_active: boolean;
-  monthly_token_limit: number; rate_limit_per_min: number; max_upload_mb: number;
-  max_documents: number; max_storage_mb: number;
-  monthly_image_limit: number /* effective: the user's own value, else DEFAULT_MONTHLY_IMAGE_LIMIT */;
-  restrict_models: boolean;
-  allowed_model_ids: number[]; created_at: string; last_login_at: string|null;
-  usage: { chat_tokens: number; embedding_tokens: number; vision_tokens: number; images: number; cost_usd: number }; // current month
-  document_count: number; storage_bytes: number }
+  restrict_models: boolean; allowed_model_ids: number[]; created_at: string; last_login_at: string|null;
+  usage: { chat_tokens: number; chat_allowance_used: number; embedding_tokens: number; vision_tokens: number;
+    images: number; cost_usd: number; window_start: string; window_end: string } /* the user's allowance window */;
+  document_count: number; storage_bytes: number;
+  billing_tester: boolean /* may check out while test keys run */;
+  limits: UserLimits /* effective: the plan's merged with the overrides */; overrides: LimitOverrides;
+  above_plan: (keyof UserLimits)[] /* overrides more generous than the plan's value */;
+  no_models: boolean /* the allowed list and the plan's models don't overlap */; plan: AdminUserPlan }
 type AdminUserCreate = { username: string /* 3-64, ^[a-zA-Z0-9_.-]+$, lowercased */;
-  password: string /* >= 8 */; is_active?: boolean; monthly_token_limit?: number;
-  rate_limit_per_min?: number; max_upload_mb?: number; max_documents?: number;
-  max_storage_mb?: number; monthly_image_limit?: number /* 0 = unlimited */;
-  restrict_models?: boolean; allowed_model_ids?: number[] }
-type AdminUserUpdate = Partial<Omit<AdminUserCreate, "username">>  // password = reset
+  password: string /* >= 8 */; is_active?: boolean; restrict_models?: boolean; allowed_model_ids?: number[];
+  billing_tester?: boolean; overrides?: Partial<LimitOverrides>;
+  grant?: Omit<GrantRequest, "start"> /* a complimentary plan from now */; confirm_unlimited?: boolean }
+type AdminUserUpdate = { password?: string /* = reset */; is_active?: boolean; restrict_models?: boolean;
+  allowed_model_ids?: number[]; billing_tester?: boolean;
+  overrides?: Partial<LimitOverrides> /* a key present sets it, null clears it; absent keys stay */;
+  confirm_unlimited?: boolean /* required when an override sets monthly_token_limit to 0 */ }
 type ModelKind = "chat"|"embedding"|"vision"|"image"
 type AdminModel = { id: number; display_name: string; litellm_model: string;
   kind: ModelKind; enabled: boolean; is_default: boolean;
@@ -1021,7 +1459,8 @@ type AdminModelCreate = { display_name: string; litellm_model: string; kind: Mod
 type AdminModelUpdate = Partial<Omit<AdminModelCreate, "kind">>
 type ModelTestResult = { ok: boolean; message: string; latency_ms: number; embedding_dim: number|null;
   image_data_url: string|null /* image models: a data: URL of a small thumbnail of the test image */ }
-type AdminConfig = { defaults: UserLimits; max_upload_mb_hard: number; admin_username: string }
+type AdminConfig = { defaults: UserLimits /* what a user without a plan or overrides reports: the cheapest active
+  plan's limits (every 0 when there is no plan) */; max_upload_mb_hard: number; admin_username: string }
 type AdminStats = { users: number; documents: number; stale_documents: number;
   failed_documents: number; active_embedding_model: {id: number; display_name: string}|null;
   active_vision_model: {id: number; display_name: string}|null;
@@ -1042,9 +1481,16 @@ Endpoints:
   admin account cannot be changed or deleted here (400 "The admin account is
   managed in .env"). Changing a password or deactivating bumps
   `token_version`. `allowed_model_ids` must reference existing chat models
-  (422 otherwise). Creating a user writes its `user_image_limits` row with
-  `monthly_image_limit` (default `DEFAULT_MONTHLY_IMAGE_LIMIT`); an update that
-  sends the field writes (or creates) the row.
+  (422 otherwise). Overrides are stored in the user's limit columns (null = the
+  plan's value); an override of 0 for `monthly_token_limit` needs
+  `confirm_unlimited: true` (else 422 "Confirm an unlimited chat allowance.").
+  Every change of an override, the allowed list, `restrict_models` or
+  `billing_tester` writes a `user.updated` billing event with the values before
+  and after. A `grant` on create gives the new user a complimentary plan from now
+  (as `POST /admin/billing/users/{id}/grants`). Deleting a user first cancels
+  their open payment links (best effort); their billing records stay with the
+  username, except the billing events of a user who never had an order, which go
+  with them. A new user has no plan until they pay or get a grant.
 - `GET /admin/models` → `AdminModel[]` · `POST /admin/models` → 201 ·
   `PATCH /admin/models/{id}` · `DELETE /admin/models/{id}` → 204 ·
   `POST /admin/models/{id}/test` → `ModelTestResult`. Setting `is_default`
@@ -1089,9 +1535,13 @@ Endpoints:
   an image model once, recorded as `app_state` key `image_seeded`: "GPT Image 2"
   `openai/gpt-image-2`, the active image model, enabled if `OPENAI_API_KEY` is
   set (prices from LiteLLM's map); an image model the admin deletes is not added
-  again. On that start every existing non-admin user also gets a
-  `user_image_limits` row with `DEFAULT_MONTHLY_IMAGE_LIMIT`, once (`app_state`
-  key `image_limits_backfilled`).
+  again. Bootstrap also seeds Starter, Standard and Professional once when no
+  plan exists (`app_state` key `plans_seeded`; brief 3.2: model lists matched by
+  `litellm_model`, missing models skipped), keeps the receipt counters of the
+  current and next financial year, and once (`plans_rollout`) gives every active
+  non-admin user without a period or an open-ended plan an **open-ended
+  complimentary Professional plan** ("Existing account when plans were
+  introduced", granted by "system").
 - `POST /admin/reindex` `{only_stale?: boolean /* default true */}` →
   `{queued: number}`: sets matching documents (`only_stale`: stale and failed
   ones; otherwise all) to "pending" and enqueues them. 400 when there is no
@@ -1102,6 +1552,143 @@ Endpoints:
 - `GET /admin/documents` → `DocumentItem[]` (all documents, every owner;
   `image` is always null there: prompts are the owner's private content).
   `DELETE /admin/documents/{id}` → 204 (any document).
+
+Plans and billing — `routers/admin_billing.py` (every write takes the user's row
+lock where a user is involved and writes a `billing_events` row with the admin as
+`actor`):
+
+```ts
+type PlanInput = { name: string /* 1..60 */; description: string /* ≤ 300, one line */;
+  price_paise: number /* whole rupees: a multiple of 100, ₹1 to ₹1,00,000 */; rank: number /* unique */;
+  status: "active"|"retired"; recommended: boolean /* at most one plan, which must be active */;
+  features: PlanFeatures /* plugins: registered plugin ids */; limits: UserLimits /* all seven */;
+  chat_model_ids: number[]|null /* null: every enabled chat model */;
+  default_chat_model_id: number|null /* in chat_model_ids when that is a list */ }
+type PlanCostEstimate = { kept_paise: number /* after Razorpay's fee */; worst_case_paise: number /* every allowance
+  used */; worst_share: number /* of kept, 0..n */; typical_paise: number /* 40% of every allowance */;
+  typical_share: number; unlimited: string[] /* limit names set to 0: no ceiling */ }
+type AdminPlan = PlanInput & { id: number; code: string; current_users: number; scheduled_periods: number;
+  complimentary_users: number /* open-ended */; used: boolean /* can't be deleted */; cost: PlanCostEstimate;
+  created_at: string; updated_at: string }
+type PlanCreate = PlanInput & { code: string /* ^[a-z][a-z0-9_-]{1,31}$ */ }
+type PlanUpdate = Partial<PlanInput> & { apply_to_current?: boolean /* default false */;
+  confirm_reduction?: boolean /* required when apply_to_current lowers what paid periods have */ }
+type PlanSaved = { plan: AdminPlan; applied_periods: number }
+type CostInputs = { usd_inr: number; standard_usd_per_mtok: number /* 3.20 */; vision_usd_per_mtok: number;
+  image_usd: number; fee_bp: number /* 236 */ }   // the plan editor computes PlanCostEstimate from these, as the server does
+type BillingSettings = { business_name: string /* 1..100 */; address: string /* ≤ 500, several lines */;
+  contact_email: string|null; contact_phone: string|null /* ≤ 20 */;
+  receipt_prefix: string /* 1 to 4 of A-Z0-9, not TEST */; upi_limit_paise: number /* 0: no limit */ }
+type PaymentsSetup = { configured: boolean; mode: "test"|"live"|null; key_id_hint: string|null /* "rzp_test_…AbCd" */;
+  webhook_secret_set: boolean; previous_webhook_secret_set: boolean; last_webhook_at: string|null;
+  webhook_url: string /* to register */; webhook_events: string[]; test_links_created: number;
+  reconciler_last_run_at: string|null; last_error: string|null /* e.g. keys rejected */;
+  paused_orders: number /* of the other mode */; testers: number; email_reminders: boolean }
+type BillingAdminConfig = { settings: BillingSettings; payments: PaymentsSetup; estimate: CostInputs }
+type UserRef = { id: number|null /* null: deleted */; username: string }
+type AdminOrder = OrderView & { id: number; user: UserRef; mode: "test"|"live"|"offline";
+  razorpay_link_id: string|null; razorpay_order_id: string|null; review_reason: string|null;
+  review_note: string|null; checks: number; last_checked_at: string|null; next_check_at: string|null;
+  last_error: string|null; paused: boolean }
+type AdminOrderDetail = AdminOrder & { events: { at: string; source: string; type: string;
+  detail: Record<string, unknown>; error: string|null }[] }
+type RefundView = { id: number; amount_paise: number; status: "creating"|"pending"|"processed"|"failed";
+  initiated_by: "admin"|"razorpay"; admin_username: string|null; reason: string|null; end_access: boolean;
+  created_at: string; processed_at: string|null; last_error: string|null }
+type DisputeStatus = "open"|"under_review"|"action_required"|"won"|"lost"|"closed"
+type DisputeView = { id: number; razorpay_dispute_id: string; amount_paise: number; status: DisputeStatus;
+  reason_code: string|null; respond_by: string|null; created_at: string; updated_at: string }
+type AdminPayment = PaymentView & { user: UserRef; order_public_id: string|null; razorpay_payment_id: string|null;
+  fee_paise: number|null; fee_tax_paise: number|null; refundable_paise: number;
+  credit_used_paise: number /* credit later upgrades took from its period */;
+  refunds: RefundView[]; disputes: DisputeView[]; offline_reference: string|null; mode: "test"|"live"|"offline" }
+type Page<T> = { items: T[]; total: number }
+type RefundRequest = { amount_paise: number|null /* ≥ 100; null: all that's refundable */;
+  reason: string /* 1..200 */; end_access: boolean }
+type OfflinePaymentRequest = { user_id: number; plan_id: number; amount_paise: number /* ≥ 100 */;
+  received_on: string /* YYYY-MM-DD */; reference: string /* 1..64 */;
+  note: string|null /* ≤ 500; required below the plan's price */; apply: boolean /* false: a receipt only */ }
+type GrantRequest = { plan_id: number; days: number|null /* 1..90; null: open-ended */; reason: string /* 1..200 */;
+  start: "now"|"after_current" /* ignored when open-ended */ }
+type ChangePlanRequest = { plan_id: number; reason: string /* 1..200 */ }
+type RevokeRequest = { reason: string /* 1..200 */ }
+type EndComplimentaryRequest = { reason: string /* 1..200 */ }
+type ResolveRequest = { note: string /* 1..500 */ }
+type ReconcileResult = { checked: number }
+type AttentionKind = "review"|"duplicate"|"refund_failed"|"refund_pending"|"partial_refund"|"dispute"|
+  "dispute_lost"|"credit_reversed"|"webhook_errors"|"payments_not_configured"|"test_mode"|"test_keys_public"|
+  "live_without_webhook"|"keys_rejected"|"paused_orders"
+type AttentionItem = { kind: AttentionKind; message: string; detail: string|null; order_public_id: string|null;
+  payment_id: number|null; count: number|null }
+type UserPlanRow = { user: UserRef; plan: string|null; date: string /* IST: valid through, or ended */;
+  last_payment_at: string|null }
+type BillingSummary = { month: string /* YYYY-MM, IST */; gross_paise: number; fee_paise: number;
+  refunded_paise: number; disputed_paise: number; net_paise: number /* gross − fees − refunds − disputes lost */;
+  payments: number; refunds: number;
+  by_plan: { plan: string; payments: number; gross_paise: number }[];
+  current_users: { plan: string; paid: number; complimentary: number }[]; users_without_plan: number;
+  months: { month: string; gross_paise: number; net_paise: number }[] /* the 12 months up to this one */;
+  expiring: UserPlanRow[] /* valid through within 7 days, nothing after */;
+  lapsed: UserPlanRow[] /* ended within the last 30 days */; attention: AttentionItem[] }
+type UserBilling = { plan: PlanAccess; periods: PeriodView[] /* every one, newest first, at most 100 */;
+  complimentary: ComplimentaryView|null; orders: AdminOrder[]; payments: AdminPayment[]; profile: BillingProfile;
+  events: { at: string; source: string; type: string; actor: string|null; detail: Record<string, unknown> }[] /* newest 50 */ }
+```
+- `GET /admin/plans` → `AdminPlan[]`, every status, by rank. `POST /admin/plans`
+  `PlanCreate` → 201 `PlanSaved` (409 duplicate code or rank; 422 a higher rank
+  that doesn't cost more among active plans ("A higher plan must cost more."),
+  a price that isn't whole rupees, an unknown plugin or model, a recommended
+  plan that is retired). `PATCH /admin/plans/{id}` `PlanUpdate` → `PlanSaved`:
+  a change applies to periods created afterwards; with `apply_to_current` it also
+  rewrites the snapshots of the plan's current and scheduled periods, and 409
+  `confirmation_required` when that lowers a limit or removes a feature or model
+  of a paid one, unless `confirm_reduction`. Open-ended plans follow the plan
+  live; a price change affects new checkouts only. `DELETE /admin/plans/{id}` →
+  204 (409 "This plan has been used. Retire it instead.").
+- `GET /admin/billing/config` → `BillingAdminConfig`; `PUT
+  /admin/billing/settings` `BillingSettings` → `BillingAdminConfig`.
+- `GET /admin/billing/summary?month=YYYY-MM` → `BillingSummary` (IST month;
+  default the current one). `GET /admin/billing/export.csv?month=YYYY-MM` →
+  `text/csv; charset=utf-8`, `Content-Disposition: attachment;
+  filename="payments-2026-10.csv"`: one row per payment and per processed refund
+  or lost dispute of the IST month (date (IST), type, receipt number, user, plan,
+  kind, amount in ₹ with two decimals, method, Razorpay payment id or bank
+  reference, fee, fee GST, refunded); cells starting with `=`, `+`, `-` or `@`
+  get a leading `'`.
+- `GET /admin/billing/orders?status=&user_id=&page=` → `Page<AdminOrder>`,
+  newest first, 50 per page (no `status`: every order; `status=review`: the
+  orders still to review, without the resolved ones). `GET /admin/billing/orders/{public_id}` →
+  `AdminOrderDetail`. `POST /admin/billing/orders/{public_id}/check` →
+  `AdminOrder` (checked with Razorpay now). `POST
+  /admin/billing/orders/{public_id}/resolve` `ResolveRequest` → `AdminOrder` (a
+  `review` order: it stays `review`, with `review_note` and `reviewed_*` set, and
+  leaves Needs attention and the monitor's list; 409 for any other status).
+- `GET /admin/billing/payments?month=&user_id=&status=&page=` →
+  `Page<AdminPayment>`, newest first, 50 per page (no `month`: every month;
+  `status` one of `captured`, `partially_refunded`, `refunded`, `disputed`, by
+  default all four). `GET /admin/billing/payments/{id}` → `AdminPayment` (404
+  unknown). `POST /admin/billing/payments/{id}/refund`
+  `RefundRequest` → `AdminPayment` (409 when nothing is refundable or another
+  refund of it is being created; Razorpay's refund API with an idempotency key;
+  offline payments are recorded only). `POST /admin/billing/offline-payments`
+  `OfflinePaymentRequest` → 201 `AdminPayment` (a bank transfer: the same apply
+  as a Razorpay payment, method `bank_transfer`, a receipt in the live series;
+  422 below ₹1 or without the note below the plan's price).
+- `GET /admin/billing/users/{user_id}` → `UserBilling`. `POST
+  /admin/billing/users/{user_id}/grants` `GrantRequest` → `UserBilling` (a
+  dated grant becomes rows of at most 30 days, a shorter last row with its
+  allowances scaled to its length; `days: null` sets the open-ended plan; 409
+  `start: "now"` with a current period; 404 the admin or an unknown user). `POST
+  /admin/billing/users/{user_id}/end-complimentary` `EndComplimentaryRequest` →
+  `UserBilling` (409 without an open-ended plan). `POST
+  /admin/billing/users/{user_id}/change-plan` `ChangePlanRequest` →
+  `UserBilling` (every unexpired period gets the plan, at no charge; 409 without
+  one). `POST /admin/billing/periods/{id}/revoke` `RevokeRequest` →
+  `UserBilling` (later periods move up; no refund).
+- `POST /admin/billing/reconcile` → `ReconcileResult` (every due order of the
+  current mode now; also retries after rejected keys).
+- `GET /admin/billing/receipts/{id}` → `application/pdf`, any user's (headers
+  as the user's).
 
 Plugins — `routers/admin_plugins.py`:
 
@@ -1150,7 +1737,8 @@ System — `routers/system.py` (section 10):
 
 ```ts
 type CheckStatus = "ok"|"warning"|"critical"|"unknown"
-type CheckId = "postgres"|"redis"|"qdrant"|"worker"|"queue"|"backup"|"disk_uploads"|"disk_backups"|"proxy"|"monitor"
+type CheckId = "postgres"|"redis"|"qdrant"|"worker"|"queue"|"backup"|"disk_uploads"|"disk_backups"|"proxy"|"monitor"|
+  "billing" /* "Payments" */
 type AlertChannel = "webhook"|"ntfy"|"email"
 type SystemCheck = { id: CheckId; label: string; status: CheckStatus; detail: string }
 type SystemAlert = { at: string; kind: "problem"|"reminder"|"recovery"|"test"; title: string; lines: string[];
@@ -1267,10 +1855,16 @@ type AlertTestQueued = { queued_at: string }
    at once).
    *Cost*: vision tokens are one `vision` usage event per run for the owner,
    summed over the calls that completed, also when the run fails or stops; they
-   don't count toward the monthly chat budget. If the owner already used
-   `VISION_MONTHLY_TOKEN_LIMIT` this month when the run starts, only cached
-   pages are used: a scanned page that isn't cached fails the document, and
-   descriptions are skipped. Pages read by the vision model are chunked,
+   don't count toward the chat allowance. If the owner has no access when the
+   run starts ("This PDF has scanned pages, but your plan has ended, so they
+   weren't read. Renew your plan and reprocess the document."), or already used
+   their vision allowance (`vision_monthly_token_limit` in their allowance
+   window; the admin and shared documents are exempt), only cached pages are
+   used: a scanned page that isn't cached fails the document, and descriptions
+   are skipped. A run gets the allowance left when it starts and starts no new
+   call once it has used that (calls in flight finish); scanned pages left
+   unread then fail the document with the allowance message, and the pages read
+   stay cached. Pages read by the vision model are chunked,
    embedded and cited by page like any other.
 5. **Files the assistant created** are ingested like uploads. A generated PDF
    is indexed from its Markdown source (`<stored_name>.source.md`) instead of
@@ -1304,21 +1898,55 @@ type AlertTestQueued = { queued_at: string }
 
 ## 8. Frontend
 
-- Routes: `/login` (public), `/` chat (auth), `/c/:conversationId` (auth),
-  `/admin` (admin only; others redirected to `/`), `/settings` and
-  `/settings/:tab` (redirect to `/?settings=<tab>`). `AuthContext` loads
-  `/api/auth/me` on boot.
+- Routes: `/login` (public), `/` chat and `/c/:conversationId` (signed in
+  **with access**: without it `<Navigate to="/plans" replace>` when the route is
+  entered, never when `Me` changes on a page already shown; the admin always
+  passes), `/plans`, `/plans/checkout/:code?kind=period|now` and
+  `/billing/return?order=<public_id>` (signed in; a deep link survives sign-in),
+  the public pages `/pricing`, `/terms`, `/privacy`, `/refunds`, `/contact`,
+  `/about`, `/shipping` (everyone), `/admin` (admin only; others redirected to
+  `/`), `/settings` and `/settings/:tab` (redirect to `/?settings=<tab>`).
+  `AuthContext` loads `/api/auth/me` on boot. `api/client.ts`: `ApiError` has
+  `code`, `feature` and `plan` from the error body; a 402 `plan_required` or
+  `plan_expired` calls the plan handler (`setPlanRequiredHandler`, one shared
+  refresh of `Me`); after `Me.plan.paid_through` passes in an open tab, a timer
+  refreshes `Me`. Money is shown with `formatInr` ("₹2,000", en-IN grouping) and
+  billing dates as IST dates ("25 Nov 2026"; `src/lib/billing.ts`).
+- **Plans** (brief section 8, looks in `docs/briefs/plans-billing-visual.md`):
+  the plan page (`/plans`: intro by state, notices, one card per plan with
+  features, limits shown as answers and the options as actions, at most one
+  primary button, Compare plans, "How payment works"); checkout (the plan, its
+  dates, the credit, "What changes on <date>", the total, **Pay ₹X** with the
+  consent line "By paying you agree to the Terms of service and the
+  Cancellation and refunds policy." under it, then the same tab goes to
+  `pay_url` after checking it is a Razorpay URL: no Razorpay script runs on the
+  app's origin and the CSP doesn't change); the return page (polls the
+  order with `?refresh=true`: at once, every 3 s for 60 s, then every 15 s up
+  to 10 minutes; a live region; focus on the result heading); banners under the
+  top bar (an open checkout, then "ends in N days", dismissible for the day);
+  when access ends on an open chat page, the composer becomes a "plan ended"
+  panel and the unsent text is kept in `sessionStorage["rag.planDraft"]`.
+  Locked features stay visible as one row each ("Included in <plan>", leading to
+  `/plans`); the model menu shows a model's `allowance_rate` when it isn't 1 and
+  its Files and Images tags only when the plan includes them. Public pages use
+  `PublicLayout` and the Markdown of `frontend/public/legal/<slug>.md` (static
+  files nginx serves as `text/markdown` with `Cache-Control: no-cache`; a first
+  line `<!-- draft -->` shows a "Draft" band; rendered like answers, raw HTML
+  off); `/pricing` shows the plans of `GET /public/plans`.
 - **Settings** is a dialog over the current page, open while the URL has
-  `?settings=general|account|usage|plugins` (any signed-in route; `data` means
+  `?settings=general|account|billing|usage|plugins` (any signed-in route; `data` means
   `plugins`, anything else `general`); opening pushes a history entry, switching
   tabs replaces it, Back or Escape closes it; the chat page's own URL changes
   underneath (a new chat getting `/c/<id>`, a deleted one going to `/`) keep it
   open; a full-screen sheet under 800px.
   Tabs: General (theme, accent, chat font size, default chat model, Enter to
   send), Account (profile, sign-ins, change password unless the env admin, log
-  out other sessions), Usage (`GET /me/usage`, with a CSS/SVG daily chart and a
-  table), Plugins & data (connection cards, export, delete all chats with a typed
-  confirmation). The OAuth return `/?plugin=<id>&oauth=<result>` opens Settings →
+  out other sessions), Plan & billing (the current plan, an open checkout, the
+  periods coming up, receipt details, payment history with receipts), Usage
+  (`GET /me/usage` for the allowance window, "this period", with a CSS/SVG daily
+  chart and a table), Plugins & data (connection cards, export, delete all chats
+  with a typed confirmation; for a user without access also "Your data": their
+  documents with Download and Delete, and their chats with Delete). The OAuth return `/?plugin=<id>&oauth=<result>` opens Settings →
   Plugins & data with the result. Details: `docs/briefs/ui-shell-settings.md`.
 - **Theme engine** (`src/theme/appearance.ts`): `public/theme-boot.js`, a
   classic script loaded blocking in `<head>` (the CSP allows only `'self'`
@@ -1340,8 +1968,10 @@ type AlertTestQueued = { queued_at: string }
   right-hand column at 800px and wider (remembered per browser; a collapsed panel
   stays mounted and keeps polling). The top bar compacts by the chat column's own
   width (container queries), never overflowing. The avatar menu
-  has the username and role, this month's token and image meters, Settings, a
-  theme switch, Admin (admins) and Log out; the sidebar has no footer. The page
+  has the username and the plan line ("Starter · until 31 Oct", "Complimentary
+  Professional", "No active plan"; the admin: "Administrator"), the chat
+  allowance and image meters of the period, Settings, Plan & billing, a theme
+  switch, Admin (admins) and Log out; the sidebar has no footer. The page
   never scrolls.
 - **Model menu**: new chats start with `Me.preferences.default_model_id` when the
   user may use it, else the server default; a pick applies to the current chat
@@ -1417,8 +2047,9 @@ type AlertTestQueued = { queued_at: string }
   viewer. `client.ts` exports `documentImageUrl(id, size = "full")` and
   `getImageDetails(id)`. The
   composer hint and empty state mention images when the selected model's
-  `can_create_images` is true, and the avatar menu's meters (and Settings →
-  Usage) show images this month against `limits.monthly_image_limit`.
+  `can_create_images` is true (and the plan includes images), and the avatar
+  menu's meters (and Settings → Usage) show images this period against
+  `limits.monthly_image_limit`.
 - **Plugins** (FE-CONN, `src/components/connections/`): the top bar's
   **Plugins** menu lists every plugin of `GET /plugins` with its status (section
   6, Plugins) and opens its card in Settings → Plugins & data ("Set up in Admin →
@@ -1452,6 +2083,17 @@ type AlertTestQueued = { queued_at: string }
   redirect URIs to register, testing mode, connection counts (and connections on
   an older encryption key), a request-check Test per chat model, this month's
   activity, per-user activity, Disconnect all.
+  Admin tabs, in order: Users, Plans, Billing, Models, Usage, Documents,
+  Plugins, System. Admin → **Plans** (`#plans`): the plans with their users and
+  cost estimate, and the plan editor (limits, features, models, the live cost
+  estimate computed in the browser from `BillingAdminConfig.estimate` as the
+  server does). Admin → **Billing** (`#billing/overview|payments|orders|business`):
+  needs-attention items, the month's tiles and lists, payments with refunds,
+  bank transfers, orders, business details and the payments setup with the
+  going-live checklist. Admin → **Users**: a Plan column and filters, the user's
+  plan with grants, change plan and revoke, "Can make test payments", and the
+  limits as overrides of the plan's values ("Custom", "Above plan", an inline
+  confirmation for an unlimited chat allowance).
   Admin → **System** (`#system`, `components/admin/SystemTab.tsx`, CSS prefix `admin-system-`; refreshed every 15 s
   while open): every check with its status and detail and a notice naming those that need attention, tiles (worker
   heartbeat, documents waiting, failed in 24 h, database size, free disk per location, app version), Gmail connections
@@ -1469,9 +2111,10 @@ type AlertTestQueued = { queued_at: string }
   `.error-text`, `.stack`, `.row`, `.spacer`; new primitives use the `ui-`
   prefix). Each feature group adds its own
   CSS file next to its components (`chat.css`, `documents.css`, `admin.css`,
-  `connections.css`, `settings.css`, `pages/login.css`)
+  `connections.css`, `settings.css`, `pages/login.css`, `billing/plan-card.css`,
+  `billing/billing.css`, `pages/plans.css`, `pages/public/public.css`)
   using only its own class prefix (`chat-`, `docs-`, `admin-`, `conn-`,
-  `settings-`, `login-`). Light and dark themes, five accents and three chat font sizes are
+  `settings-`, `login-`, `plans-`, `billing-`, `public-`). Light and dark themes, five accents and three chat font sizes are
   token sets selected by the `<html>` attributes of the theme engine
   (`:root[data-theme="dark"]`, `:root[data-accent="…"]`,
   `:root[data-chat-font="…"]`); no CSS reads `prefers-color-scheme`. Every text
@@ -1500,7 +2143,10 @@ Google: a fake Google (OAuth and Gmail, a FastAPI app in `tests/`) is reached
 through `httpx.ASGITransport`, client edge cases use `httpx.MockTransport`, the
 plugin registry is empty unless a test opts in, the same fake runs
 standalone for Docker smoke runs, and one test runs the real LiteLLM for the
-request check with the HTTP layer replaced and checks the request bodies).
+request check with the HTTP layer replaced and checks the request bodies;
+Razorpay is never called: `fake_razorpay` replaces its HTTP transport, and
+`conftest.create_user` gives each user an open-ended complimentary Professional
+plan unless a test asks for another or none).
 Models therefore stick to portable column types (`JSON`, not `JSONB`).
 Run with `pytest` from `backend/` (see `backend/tests/README.md`). The
 Postgres database must be a throwaway one: its name must contain `test` or
@@ -1518,17 +2164,22 @@ generated throwaway env file; the repository's `.env` is never read), runs
 pytest from the host against it and tears it down. Ports on 127.0.0.1 come from
 `IT_APP_PORT`, `IT_FAKE_LLM_PORT` and `IT_FAKE_GOOGLE_PORT` (defaults in
 `integration/README.md`). Every enabled model points at `fake_llm/` (an
-OpenAI-compatible chat, embedding, vision and image server) and Google at
+OpenAI-compatible chat, embedding, vision and image server), Razorpay at
+`fake_razorpay/` (payment links with a hosted page that pays, fails or pays
+late, payments, refunds, disputes and signed webhooks; the stack runs test keys
+and `BILLING_RECONCILE_SECONDS=2`) and Google at
 `fake_google/`, which runs `backend/tests/fake_google.py`, `fake_gmail.py` and
 `fake_google_server.py` (mounted read-only from `backend/tests`), so changes to
-those fakes must keep both suites passing. Real providers and Google are never
-reached. The monitor alerts `fake_alerts/` (a webhook and an ntfy topic), and backups go to
+those fakes must keep both suites passing. Real providers, Razorpay and Google
+are never reached. The monitor alerts `fake_alerts/` (a webhook and an ntfy topic), and backups go to
 `integration/.run/backups`. `test_14_backup_restore.py` is the restore drill (section 10), and
 `test_15_monitoring.py` stops Qdrant, the worker and nginx and checks readiness and the alerts.
 
 `e2e/` is a Playwright suite (Chromium, desktop and phone) against the running
 stack (`http://localhost:8080` by default). It creates and deletes its own
-`e2e-<run id>-<random>` users through the admin API, answers chat with canned
+`e2e-<run id>-<random>` users through the admin API (with an open-ended plan,
+unless a test needs a user without one), route-mocks the payment side (no
+request leaves for Razorpay), answers chat with canned
 SSE, and blocks model, Google, upload and re-index calls (and, in the admin's
 browser context, every write except to its own test users); the one `@live`
 test (a real model call) is skipped unless `E2E_LIVE=1`. See `e2e/README.md`.
@@ -1568,7 +2219,11 @@ reported, `SHA256SUMS` and the same checksums in `manifest.json`, `pg_restore --
 against `postgres.rows`, and every archived file extracted and checked against `uploads.sha256`; a failure deletes it
 and is recorded. The parts are taken one after the other while the app runs (uploads, Qdrant, then Postgres). One
 backup or restore runs at a time (`flock` on the status volume). `.env` is never in a backup: keep it in a password
-manager, since without the same `TOKEN_ENCRYPTION_KEY` users must reconnect Gmail.
+manager, since without the same `TOKEN_ENCRYPTION_KEY` users must reconnect Gmail
+and without the Razorpay keys and webhook secret no payment can be checked.
+Billing rows are in the dump like every table, and receipts are rendered from
+them. A backup taken before revision 0003 restores with `--migrate`; the first
+start then seeds the plans and runs the rollout for that data.
 
 Retention keeps every backup younger than 48 hours; manual and pre-restore backups for `BACKUP_KEEP_DAILY` days; of the
 scheduled and start-up backups, the newest of each of the last `BACKUP_KEEP_DAILY` days and `BACKUP_KEEP_WEEKLY` weeks
@@ -1627,6 +2282,7 @@ alert states and its last 50 alerts in `rag:monitor:status`. The checks:
 | `backup` | the last attempt failed: `critical`; no success yet, the last success older than `BACKUP_MAX_AGE_HOURS`, or the scheduler silent for 30 minutes outside a running backup: `warning`. No success yet or an old one is `unknown` (no alert) while a backup runs or a start-up backup is due (until 10 minutes after `catch_up_at`), and while the status file is missing in the monitor's first 10 minutes |
 | `disk_uploads`, `disk_backups` | free space under `ALERT_DISK_MIN_FREE_PERCENT`: `warning`; under half of it: `critical` |
 | `proxy` | the app doesn't answer 200 through nginx: `critical` |
+| `billing` ("Payments") | `ok` when payments aren't set up or nothing below holds. `warning`: orders in `review`; a dispute needing action whose response is due within 3 days; the reconciler stalled (a due order of the current mode over 15 minutes late); rejected keys; a refund pending or creating for over 7 days, or failed; 20 or more bad webhook or callback signatures in the last hour; a webhook event that failed 3 times; webhooks set up but a payment of the last 24 hours that no webhook reported; live keys without `RAZORPAY_WEBHOOK_SECRET`; test keys while `PUBLIC_BASE_URLS` holds a public `https` origin. `unknown`: the database can't be read. Counts only, never usernames or amounts |
 
 **Alerts** (`app.ops.alerts`):
 

@@ -1,10 +1,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { describe, expect, it, onTestFinished } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { api } from "../api/client";
 import type { Me, Preferences, PreferencesUpdate } from "../api/types";
 import { onUserChanged } from "../lib/appEvents";
-import { makeMe, makePreferences } from "../test/fixtures";
-import { deferred, errorResponse, stubFetch, type FetchCall } from "../test/http";
+import { makeAdminMe, makeLapsedPlanAccess, makeMe, makePaidPlanAccess, makePreferences } from "../test/fixtures";
+import { deferred, errorResponse, jsonResponse, stubFetch, type FetchCall } from "../test/http";
 import { PREFERENCES_KEY } from "../theme/appearance";
 import { AuthProvider, handleExternalPreferences, useAuth } from "./AuthContext";
 
@@ -114,6 +114,100 @@ describe("AuthProvider: the session", () => {
 
   it("requires the provider", () => {
     expect(() => renderHook(() => useAuth())).toThrow("useAuth must be used inside <AuthProvider>");
+  });
+});
+
+describe("AuthProvider: plans", () => {
+  const DAY_MS = 86_400_000;
+  const planExpired = () =>
+    jsonResponse({ detail: "Your Standard plan ended on 7 Nov 2026.", code: "plan_expired", plan: "Standard" }, { status: 402 });
+  const meCalls = (calls: FetchCall[]) => calls.filter((call) => call.path === "/auth/me");
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("refreshes Me once for 402s that say the plan ended", async () => {
+    let answer: Promise<Me> | Me = makeMe({ plan: makePaidPlanAccess() });
+    const { result, calls } = await signedIn({
+      "GET /auth/me": () => answer,
+      "GET /models": planExpired,
+      "GET /documents/config": planExpired,
+    });
+    const lapsed = deferred<Me>();
+    answer = lapsed.promise;
+    await act(async () => {
+      await Promise.allSettled([api.get("/models"), api.get("/documents/config")]);
+      await api.get("/models").catch(() => undefined);
+    });
+    expect(meCalls(calls)).toHaveLength(2);
+    await act(async () => lapsed.resolve(makeMe({ plan: makeLapsedPlanAccess() })));
+    await waitFor(() => expect(result.current.user?.plan.state).toBe("expired"));
+
+    answer = makeMe({ plan: makeLapsedPlanAccess() });
+    await act(() => api.get("/models").catch(() => undefined));
+    await waitFor(() => expect(meCalls(calls)).toHaveLength(3));
+    expect(result.current.user).not.toBeNull();
+  });
+
+  it("leaves a feature outside the plan to the caller, and ignores 402s once signed out", async () => {
+    const { result, calls } = await signedIn({
+      "POST /plugins/gmail/connect": () =>
+        jsonResponse({ detail: "Not in your plan.", code: "feature_not_in_plan", feature: "plugin:gmail" }, { status: 402 }),
+      "POST /auth/logout": () => new Response(null, { status: 204 }),
+      "GET /models": planExpired,
+    });
+    await act(() => api.post("/plugins/gmail/connect").catch(() => undefined));
+    await act(() => result.current.logout());
+    await act(() => api.get("/models").catch(() => undefined));
+    expect(meCalls(calls)).toHaveLength(1);
+  });
+
+  /** Signed in with setTimeout and Date faked from the start, so the provider's timer is a fake one (no waitFor). */
+  async function signedInAt(now: string, me: () => Me) {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], now: new Date(now) });
+    const calls = stubFetch({ "GET /auth/me": me });
+    const hook = renderHook(() => useAuth(), { wrapper: AuthProvider });
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(hook.result.current.user).not.toBeNull();
+    return { ...hook, calls };
+  }
+
+  it("asks again when the paid time ends in an open tab", async () => {
+    let me = makeMe({ plan: makePaidPlanAccess() }); // paid through 7 Nov 2026, 18:30 UTC
+    const { result, calls } = await signedInAt("2026-11-07T18:25:00Z", () => me);
+    me = makeMe({ plan: makeLapsedPlanAccess("expired", { ended_at: "2026-11-07T18:30:00Z" }) });
+    await act(() => vi.advanceTimersByTimeAsync(5 * 60_000));
+    expect(meCalls(calls)).toHaveLength(1);
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(meCalls(calls)).toHaveLength(2);
+    expect(result.current.user?.plan.access).toBe(false);
+
+    await act(() => vi.advanceTimersByTimeAsync(30 * DAY_MS));
+    expect(meCalls(calls)).toHaveLength(2);
+  });
+
+  it("checks a far end again after 24 days, and every minute while this clock runs ahead of the server's", async () => {
+    const me = makeMe({ plan: makePaidPlanAccess({ paid_through: "2026-11-10T00:00:00Z" }) });
+    const { calls } = await signedInAt("2026-10-01T00:00:00Z", () => me);
+    await act(() => vi.advanceTimersByTimeAsync(24 * DAY_MS));
+    expect(meCalls(calls)).toHaveLength(2);
+    await act(() => vi.advanceTimersByTimeAsync(16 * DAY_MS + 1_000));
+    expect(meCalls(calls)).toHaveLength(3);
+    // The server still says active after the paid time: ask again a minute later.
+    await act(() => vi.advanceTimersByTimeAsync(59_000));
+    expect(meCalls(calls)).toHaveLength(3);
+    await act(() => vi.advanceTimersByTimeAsync(1_000));
+    expect(meCalls(calls)).toHaveLength(4);
+  });
+
+  it("sets no timer for an open-ended plan or the admin", async () => {
+    for (const me of [makeMe(), makeAdminMe()]) {
+      const { calls, unmount } = await signedInAt("2026-10-01T00:00:00Z", () => me);
+      await act(() => vi.advanceTimersByTimeAsync(60 * DAY_MS));
+      expect(meCalls(calls)).toHaveLength(1);
+      unmount();
+    }
   });
 });
 

@@ -9,8 +9,8 @@
 #   secrets and fake provider keys.
 # - The project name gives every container, volume and network a `rag-it_` prefix, apart from the live `rag-app` stack.
 # - The default network is internal: postgres, redis, qdrant, backend and worker can't reach the internet, so no real
-#   model provider or Google endpoint can ever be called. Only the frontend and the two fakes join `edge`, for the ports
-#   published on 127.0.0.1.
+#   model provider, Google or Razorpay endpoint can ever be called. Only the frontend and the fakes join `edge`, for the
+#   ports published on 127.0.0.1.
 # - Nothing restarts on its own: a stack left behind by an interrupted run stays down after a Docker restart.
 # - Every container, volume and network carries the marker label: stack.sh and harness.py refuse to touch a project
 #   holding anything without it.
@@ -130,6 +130,36 @@ services:
       - ./integration/fake_alerts:/fake_alerts:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # The backend tests' fake Razorpay (backend/tests/fake_razorpay.py) with a hosted payment page and the tests' controls
+  # (integration/fake_razorpay/server.py). The backend and the worker call it as RAZORPAY_API_BASE
+  # (http://fake-razorpay:8000) with the generated test keys; it delivers signed webhooks to nginx.
+  fake-razorpay:
+    build: ./backend
+    restart: "no"
+    labels: *marker
+    command:
+      - python
+      - /fake_razorpay/server.py
+      - --host=0.0.0.0
+      - --port=8000
+      - --webhook-url=http://frontend/api/billing/razorpay/webhook
+    environment:
+      FAKE_RAZORPAY_KEY_ID: ${RAZORPAY_KEY_ID:?}
+      FAKE_RAZORPAY_KEY_SECRET: ${RAZORPAY_KEY_SECRET:?}
+      FAKE_RAZORPAY_WEBHOOK_SECRET: ${RAZORPAY_WEBHOOK_SECRET:?}
+      FAKE_RAZORPAY_WEBHOOK_SECRET_PREVIOUS: ${RAZORPAY_WEBHOOK_SECRET_PREVIOUS:?}
+    volumes:
+      - ./integration/fake_razorpay:/fake_razorpay:ro
+      - ./backend/tests:/fake_razorpay_src:ro
+    networks: [default, edge]
+    ports:
+      - "127.0.0.1:${IT_FAKE_RAZORPAY_PORT:?}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/_state', timeout=3)"]
       interval: 3s
       timeout: 5s
       retries: 20

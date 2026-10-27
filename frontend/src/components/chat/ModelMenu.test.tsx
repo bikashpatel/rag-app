@@ -1,8 +1,9 @@
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
-import type { ChatModel } from "../../api/types";
-import { makeChatModel } from "../../test/fixtures";
+import type { ChatModel, PlanAccess } from "../../api/types";
+import { makeChatModel, makePaidPlanAccess, makePlanAccess } from "../../test/fixtures";
+import { renderWithRouter } from "../../test/render";
 import ModelMenu from "./ModelMenu";
 import type { ModelsState } from "./useModels";
 
@@ -13,6 +14,7 @@ const gpt = makeChatModel({
   provider: "openai",
   is_default: false,
   can_create_images: false,
+  allowance_rate: 1,
 });
 const mini = makeChatModel({
   id: 3,
@@ -21,6 +23,7 @@ const mini = makeChatModel({
   is_default: false,
   can_create_files: false,
   can_create_images: false,
+  allowance_rate: null,
 });
 
 function modelsState(overrides: Partial<ModelsState> = {}): ModelsState {
@@ -36,11 +39,11 @@ function modelsState(overrides: Partial<ModelsState> = {}): ModelsState {
   };
 }
 
-function setup(state: ModelsState = modelsState()) {
+function setup(state: ModelsState = modelsState(), plan: PlanAccess | null = makePlanAccess()) {
   const user = userEvent.setup();
   const onOpenSettings = vi.fn();
-  render(<ModelMenu models={state} onOpenSettings={onOpenSettings} />);
-  return { user, onOpenSettings };
+  const view = renderWithRouter(<ModelMenu models={state} plan={plan} onOpenSettings={onOpenSettings} />);
+  return { user, onOpenSettings, view };
 }
 
 const openMenu = async (user: ReturnType<typeof userEvent.setup>, name: string) =>
@@ -67,9 +70,38 @@ describe("ModelMenu", () => {
     const openai = screen.getByRole("group", { name: "OpenAI" });
     expect(anthropic).toContainElement(screen.getByRole("menuitemradio", { name: /Claude Opus 5\.5/ }));
     expect(openai).toContainElement(screen.getByRole("menuitemradio", { name: "GPT-5.4 mini" }));
-    expect(screen.getByRole("menuitemradio", { name: /Claude Opus 5\.5/ })).toHaveTextContent("Can create Files and Images");
+    const opusItem = screen.getByRole("menuitemradio", { name: /Claude Opus 5\.5/ });
+    expect(opusItem).toHaveTextContent("Can create Files and Images");
+    expect(opusItem).toHaveAccessibleDescription(/Counts ×2 against your chat allowance$/);
     expect(screen.getByRole("menuitemradio", { name: "GPT-5.5" })).toHaveTextContent("Can create Files");
     expect(screen.getByRole("menuitemradio", { name: "GPT-5.4 mini" })).not.toHaveAccessibleDescription();
+  });
+
+  it("shows a model's rate against the allowance after its name, unless it is 1 or unknown", async () => {
+    const { user } = setup();
+    await openMenu(user, "Model: GPT-5.5");
+    const opusItem = screen.getByRole("menuitemradio", { name: /Claude Opus 5\.5/ });
+    expect(opusItem).toHaveTextContent("×2");
+    expect(screen.getByTitle("Counts ×2 against your chat allowance")).toBeInTheDocument();
+    expect(screen.getByRole("menuitemradio", { name: "GPT-5.5" })).not.toHaveTextContent("×");
+  });
+
+  it("shows the Files and Images tags only when the plan includes them", async () => {
+    const starter = makePaidPlanAccess({ features: { files: false, images: false, plugins: [] } });
+    const { user } = setup(modelsState(), starter);
+    await openMenu(user, "Model: GPT-5.5");
+    expect(screen.getByRole("menuitemradio", { name: /Claude Opus 5\.5/ })).toHaveAccessibleDescription(
+      "Counts ×2 against your chat allowance",
+    );
+    expect(screen.queryByText("Files")).not.toBeInTheDocument();
+    expect(screen.queryByText("Images")).not.toBeInTheDocument();
+  });
+
+  it("offers more models with a higher plan, leading to the plans", async () => {
+    const { user, view } = setup(modelsState(), makePaidPlanAccess());
+    await openMenu(user, "Model: GPT-5.5");
+    await user.click(screen.getByRole("menuitem", { name: "More models with Professional" }));
+    expect(view.location()).toBe("/plans");
   });
 
   it("puts a single provider's models in one unlabelled list", async () => {

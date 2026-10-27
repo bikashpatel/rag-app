@@ -1,16 +1,20 @@
-"""Startup sync: the admin account from .env and the initial model catalogue."""
+"""Startup sync: the admin account from .env, the initial model catalogue and plans, and giving existing users a plan
+once (docs/briefs/plans-billing.md 4.11)."""
 
 import logging
 import os
 from dataclasses import dataclass
+from datetime import timedelta
 
-from sqlalchemy import Integer, func, insert, literal, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import AppState, LLMModel, User, UserImageLimit, UTCDateTime, utcnow
+from app.models import AppState, LLMModel, Plan, PlanPeriod, User, utcnow
 from app.security import hash_password, verify_password
+from app.services.billing import entitlements, periods
+from app.services.billing.money import financial_year, receipt_seq_key
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +37,16 @@ _GPT_MINI = "openai/gpt-5.4-mini"
 _VISION_SEEDED = "vision_seeded"  # app_state key: the vision model was seeded (or one existed) once
 _GPT_IMAGE = "openai/gpt-image-2"
 _IMAGE_SEEDED = "image_seeded"  # app_state key: the image model was seeded (or one existed) once
-_IMAGE_LIMITS_BACKFILLED = "image_limits_backfilled"  # app_state key: existing users got their image limit once
+_HAIKU = "anthropic/claude-haiku-5-5"
+_PLANS_SEEDED = "plans_seeded"  # app_state key: the plans were seeded (or some existed) once
+_PLANS_ROLLOUT = "plans_rollout"  # app_state key: existing users got the open-ended Professional plan once
+_ROLLOUT_PLAN = "professional"
+_ROLLOUT_REASON = "Existing account when plans were introduced"
 
 _SEED_MODELS = (
     _SeedModel("Claude Opus 5.5", _OPUS, "chat", "ANTHROPIC_API_KEY", 4.0, 20.0),
     _SeedModel("Claude Sonnet 5.5", _SONNET, "chat", "ANTHROPIC_API_KEY", 2.0, 10.0),
-    _SeedModel("Claude Haiku 5.5", "anthropic/claude-haiku-5-5", "chat", "ANTHROPIC_API_KEY", 0.10, 0.50),
+    _SeedModel("Claude Haiku 5.5", _HAIKU, "chat", "ANTHROPIC_API_KEY", 0.10, 0.50),
     _SeedModel("GPT-5.5", "openai/gpt-5.5", "chat", "OPENAI_API_KEY"),
     _SeedModel("GPT-5.4 mini", _GPT_MINI, "chat", "OPENAI_API_KEY"),
     _SeedModel(
@@ -173,28 +181,151 @@ async def _seed_image_model(db: AsyncSession) -> None:
         logger.info("The image model was seeded by another process")
 
 
-async def _backfill_image_limits(db: AsyncSession) -> None:
-    """Once per database: every non-admin user without a user_image_limits row gets one with
-    DEFAULT_MONTHLY_IMAGE_LIMIT, so every user has an explicit value and a later change of the env default moves
-    nobody (as with the other limits)."""
-    if await db.get(AppState, _IMAGE_LIMITS_BACKFILLED) is not None:
+@dataclass(frozen=True)
+class _SeedPlan:
+    code: str
+    name: str
+    description: str
+    price_paise: int
+    rank: int
+    files: bool
+    images: bool
+    limits: tuple[int, int, int, int, int, int, int]  # periods.LIMIT_NAMES
+    recommended: bool = False
+    plugins: tuple[str, ...] = ()
+    chat_models: tuple[str, ...] | None = None  # litellm_model of each; None: every enabled chat model
+    default_chat_model: str | None = None
+
+
+# The three plans of plans-billing 3.2; the limits are per period (0 = unlimited).
+_SEED_PLANS = (
+    _SeedPlan(
+        "starter",
+        "Starter",
+        "Ask questions across your documents, for everyday use.",
+        50_000,
+        10,
+        files=False,
+        images=False,
+        limits=(500_000, 10, 10, 50, 200, 30, 150_000),
+        chat_models=(_HAIKU, _GPT_MINI),
+        default_chat_model=_HAIKU,
+    ),
+    _SeedPlan(
+        "standard",
+        "Standard",
+        "Adds files from chat and Claude Sonnet for regular work.",
+        200_000,
+        20,
+        files=True,
+        images=False,
+        limits=(2_000_000, 20, 25, 200, 1000, 30, 500_000),
+        recommended=True,
+        chat_models=(_HAIKU, _GPT_MINI, _SONNET),
+        default_chat_model=_SONNET,
+    ),
+    _SeedPlan(
+        "professional",
+        "Professional",
+        "Everything: files, images and Gmail, with every model.",
+        500_000,
+        30,
+        files=True,
+        images=True,
+        limits=(5_000_000, 30, 50, 500, 3000, 60, 1_000_000),
+        plugins=("gmail",),
+    ),
+)
+
+
+async def _seed_plans(db: AsyncSession) -> None:
+    """The three plans, once per database, when there are none; their model lists from the chat models that exist."""
+    if await db.get(AppState, _PLANS_SEEDED) is not None:
         return
-    limit = settings.default_monthly_image_limit
-    users = select(User.id, literal(limit, Integer()), literal(utcnow(), UTCDateTime())).where(
-        User.is_admin.is_(False), User.id.not_in(select(UserImageLimit.user_id))
-    )
+    seeded = "existing"
+    if await db.scalar(select(func.count()).select_from(Plan)) == 0:
+        chat_models = await db.scalars(select(LLMModel).where(LLMModel.kind == "chat"))
+        chat = {model.litellm_model: model for model in chat_models}
+        for seed in _SEED_PLANS:
+            limits = dict(zip(periods.LIMIT_NAMES, seed.limits, strict=True))
+            limits["max_upload_mb"] = min(limits["max_upload_mb"], settings.max_upload_mb_hard)
+            models = [chat[name] for name in seed.chat_models or () if name in chat]
+            default = chat.get(seed.default_chat_model or "")
+            db.add(
+                Plan(
+                    code=seed.code,
+                    name=seed.name,
+                    description=seed.description,
+                    price_paise=seed.price_paise,
+                    rank=seed.rank,
+                    status="active",
+                    recommended=seed.recommended,
+                    features={"files": seed.files, "images": seed.images, "plugins": list(seed.plugins)},
+                    **limits,
+                    restrict_models=seed.chat_models is not None,
+                    chat_models=models,
+                    default_chat_model_id=default.id if default in models else None,
+                )
+            )
+        seeded = ",".join(seed.code for seed in _SEED_PLANS)
+    db.add(AppState(key=_PLANS_SEEDED, value=seeded))
     try:
-        result = await db.execute(
-            insert(UserImageLimit).from_select(["user_id", "monthly_image_limit", "updated_at"], users)
-        )
-        count = max(0, result.rowcount or 0)  # type: ignore[attr-defined]
-        db.add(AppState(key=_IMAGE_LIMITS_BACKFILLED, value=str(count)))
         await db.commit()
-    except IntegrityError:  # another backend starting at the same time backfilled them first
+    except IntegrityError:  # another backend starting at the same time seeded them first
         await db.rollback()
-        logger.info("The image limits were backfilled by another process")
+        logger.info("The plans were seeded by another process")
         return
-    logger.info("Gave %d existing user(s) the default monthly image limit of %d", count, limit)
+    entitlements.invalidate_unlock()
+    if seeded != "existing":
+        logger.info("Seeded the plans %s", ", ".join(seed.name for seed in _SEED_PLANS))
+
+
+async def _seed_receipt_counters(db: AsyncSession) -> None:
+    """The receipt number counters of the current and the next financial year, in both modes, when missing (a receipt
+    then only ever updates its row)."""
+    now = utcnow()
+    years = {financial_year(now), financial_year(now + timedelta(days=366))}
+    keys = {receipt_seq_key(mode, year) for mode in ("live", "test") for year in years}
+    existing = set(await db.scalars(select(AppState.key).where(AppState.key.in_(keys))))
+    for key in sorted(keys - existing):
+        db.add(AppState(key=key, value="0"))
+    try:
+        await db.commit()
+    except IntegrityError:  # another backend starting at the same time added them
+        await db.rollback()
+
+
+async def _rollout_plans(db: AsyncSession) -> None:
+    """Once per database: every active non-admin user without a period or an open-ended plan gets an open-ended
+    complimentary Professional plan (4.11). The admin can grant inactive users a plan when reactivating them."""
+    if await db.get(AppState, _PLANS_ROLLOUT) is not None:
+        return
+    plan = await db.scalar(select(Plan).where(Plan.code == _ROLLOUT_PLAN))
+    if plan is None:
+        logger.warning("No %r plan to give existing users: they have no plan until the admin grants one", _ROLLOUT_PLAN)
+        return
+    users = list(
+        await db.scalars(
+            select(User)
+            .where(
+                User.is_admin.is_(False),
+                User.is_active.is_(True),
+                User.comp_plan_id.is_(None),
+                User.id.not_in(select(PlanPeriod.user_id)),
+            )
+            .order_by(User.id)
+        )
+    )
+    for user in users:
+        await periods.grant(db, user, plan, days=None, reason=_ROLLOUT_REASON, actor="system", start="now")
+    db.add(AppState(key=_PLANS_ROLLOUT, value=str(len(users))))
+    try:
+        await db.commit()
+    except IntegrityError:  # another backend starting at the same time rolled out first
+        await db.rollback()
+        logger.info("The plans were rolled out by another process")
+        return
+    logger.info("Gave %d existing user(s) the open-ended %s plan", len(users), plan.name)
 
 
 async def bootstrap(db: AsyncSession) -> None:
@@ -204,4 +335,6 @@ async def bootstrap(db: AsyncSession) -> None:
     await db.commit()
     await _seed_vision_model(db)
     await _seed_image_model(db)
-    await _backfill_image_limits(db)
+    await _seed_plans(db)
+    await _seed_receipt_counters(db)
+    await _rollout_plans(db)

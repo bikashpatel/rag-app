@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError, setUnauthorizedHandler } from "../../api/client";
+import { ApiError, setPlanRequiredHandler, setUnauthorizedHandler } from "../../api/client";
 import { makeDocument } from "../../test/fixtures";
 import { uploadDocument } from "./uploadDocument";
 
@@ -92,6 +92,21 @@ describe("uploadDocument", () => {
     const { result, xhr } = start();
     xhr.respond(413, "<html>Request Entity Too Large</html>");
     await expect(result).rejects.toMatchObject({ status: 413, message: "The file is too large." });
+  });
+
+  it("keeps a plan error's code, and refreshes the plan only when it ended", async () => {
+    const onPlanRequired = vi.fn();
+    setPlanRequiredHandler(onPlanRequired);
+    const ended = start();
+    ended.xhr.respond(402, { detail: "Choose a plan to start using the assistant.", code: "plan_required" });
+    await expect(ended.result).rejects.toMatchObject({ status: 402, code: "plan_required" });
+    expect(onPlanRequired).toHaveBeenCalledTimes(1);
+
+    const limit = start();
+    limit.xhr.respond(409, { detail: "You have 62 documents; your plan allows 50. Delete some documents or upgrade your plan." });
+    await expect(limit.result).rejects.toMatchObject({ status: 409, code: null });
+    expect(onPlanRequired).toHaveBeenCalledTimes(1);
+    setPlanRequiredHandler(null);
   });
 
   it("notifies the session check on a 401", async () => {

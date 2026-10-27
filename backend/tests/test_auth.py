@@ -121,7 +121,15 @@ DEFAULT_PREFERENCES = {
 }
 
 
+def this_month_window() -> tuple[str, str]:
+    start = month_start()
+    end = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+    return start.isoformat().replace("+00:00", "Z"), end.isoformat().replace("+00:00", "Z")
+
+
 def zero_usage(monthly_token_limit: int) -> dict[str, Any]:
+    """Nothing used in this UTC month: the window of an open-ended plan and of the admin."""
+    window_start, window_end = this_month_window()
     return {
         "month": this_month(),
         "chat_tokens": 0,
@@ -130,6 +138,9 @@ def zero_usage(monthly_token_limit: int) -> dict[str, Any]:
         "images": 0,
         "cost_usd": 0.0,
         "monthly_token_limit": monthly_token_limit,
+        "chat_allowance_used": 0,
+        "window_start": window_start,
+        "window_end": window_end,
     }
 
 
@@ -146,6 +157,7 @@ async def test_login_returns_me_sets_the_session_cookie_and_records_the_login(
         "max_documents": 4,
         "max_storage_mb": 50,
         "monthly_image_limit": 6,
+        "vision_monthly_token_limit": 8000,
     }
     alice = await create_user("alice", login=False, **limits)
     assert (await get_user("alice")).last_login_at is None
@@ -154,14 +166,18 @@ async def test_login_returns_me_sets_the_session_cookie_and_records_the_login(
     response = await client.login("alice", USER_PASSWORD)
 
     assert response.status_code == 200
-    assert response.json() == {
+    body = response.json()
+    assert body == {
         "id": alice.user_id,
         "username": "alice",
         "is_admin": False,
         "limits": limits,
         "usage": zero_usage(5000),
         "preferences": DEFAULT_PREFERENCES,
+        "plan": body["plan"],
     }
+    assert (body["plan"]["state"], body["plan"]["access"], body["plan"]["open_ended"]) == ("active", True, True)
+    assert body["plan"]["plan"]["code"] == "professional"
     cookie = session_cookie(response)
     assert cookie["httponly"] is True
     assert cookie["samesite"].lower() == "strict"
@@ -515,13 +531,14 @@ async def test_me_reports_the_users_limits_and_this_months_usage(create_user: Cr
         "id": alice.user_id,
         "username": "alice",
         "is_admin": False,
-        "limits": {
+        "limits": {  # Professional's, with the overrides
             "monthly_token_limit": 5000,
-            "rate_limit_per_min": settings.default_rate_limit_per_min,
+            "rate_limit_per_min": 30,
             "max_upload_mb": 3,
-            "max_documents": settings.default_max_documents,
-            "max_storage_mb": settings.default_max_storage_mb,
-            "monthly_image_limit": settings.default_monthly_image_limit,
+            "max_documents": 500,
+            "max_storage_mb": 3000,
+            "monthly_image_limit": 60,
+            "vision_monthly_token_limit": 1_000_000,
         },
         "usage": {
             **body["usage"],
@@ -531,6 +548,7 @@ async def test_me_reports_the_users_limits_and_this_months_usage(create_user: Cr
             "vision_tokens": 3000,
         },
         "preferences": DEFAULT_PREFERENCES,
+        "plan": body["plan"],
     }
     assert body["usage"]["cost_usd"] == pytest.approx(0.78)  # every kind
     assert body["usage"]["monthly_token_limit"] == 5000
@@ -551,10 +569,15 @@ async def test_me_reports_the_admin_as_unlimited(admin_client: ApiClient) -> Non
             "max_documents": 0,
             "max_storage_mb": 0,
             "monthly_image_limit": 0,
+            "vision_monthly_token_limit": 0,
         },
         "usage": zero_usage(0),
         "preferences": DEFAULT_PREFERENCES,
+        "plan": response.json()["plan"],
     }
+    plan = response.json()["plan"]
+    assert (plan["state"], plan["access"], plan["plan"]) == ("exempt", True, None)
+    assert (plan["features"]["files"], plan["features"]["images"]) == (True, True)
 
 
 async def test_bearer_header_authenticates_like_the_cookie(create_user: CreateUser, client: ApiClient) -> None:

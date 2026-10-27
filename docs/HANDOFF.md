@@ -9,8 +9,10 @@ Docker (committed on 2026-10-24 in `d11a9e5`), and on 2026-10-25 after the test 
 Playwright end-to-end suite, a full-stack integration suite, more backend tests with coverage, and a CI workflow, all
 reviewed, fixed and verified (committed in `3a277a0` and `d4eada1`). Updated again later on 2026-10-25 after operations: Alembic
 migrations, backups with a tested restore, and monitoring with alerts, built, reviewed, fixed and deployed to the live
-stack (not committed yet). `SPEC.md` is the binding contract; `README.md` has setup, commands, the test suites,
-operations (section 8), the architecture and how to use the app.
+stack (committed in `91e20bc`). Updated on 2026-10-27 after plans, Razorpay checkout and plan-based access were built,
+reviewed and deployed to the live stack (not committed yet). `SPEC.md` is the binding contract; `README.md` has setup,
+commands, the test suites, operations (section 8), plans and billing (section 9), the architecture and how to use the
+app.
 
 ## Status
 
@@ -112,7 +114,7 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
     OpenAI-compatible model server and the fake Google.
   - CI: `.github/workflows/ci.yml` runs all of them on every push; all five jobs passed on GitHub on 2026-10-25. See
     "Test suites and CI" below.
-- **Operations** (2026-10-25, in the working tree, not committed yet; `README.md` section 8, `SPEC.md` section 10, see
+- **Operations** (2026-10-25, committed in `91e20bc`; `README.md` section 8, `SPEC.md` section 10, see
   "Operations" below). Deployed to the live `rag-app` stack on 2026-10-25 after a verified backup:
   - **Migrations:** Alembic 1.20.0 (`backend/migrations/`: baseline 0001 and the align migration 0002), run by
     `app.db.init_db` at start-up in one transaction under the advisory lock. The live database was stamped at 0001
@@ -132,7 +134,29 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
     Docker and the stack when the app stops answering.
   - **Review fixes** (2026-10-25/26): the 8 confirmed findings of the operations review are fixed, with failure
     injection in the restore drill and `integration/tests/test_16_watchdog.py` (see "Operations" below and "How it
-    was verified"). Not yet on the live stack.
+    was verified"). Redeployed to the live stack on 2026-10-26; CI green on all five jobs at `c58622b`.
+- **Plans, Razorpay checkout and plan-based access** (2026-10-27, in the working tree, not committed yet;
+  `docs/briefs/plans-billing.md` revision 2, `plans-billing-visual.md` and `payments-razorpay-research.md`;
+  `README.md` section 9, `SPEC.md`; see "Plans and billing" below). Built, reviewed and **deployed to the live stack on
+  2026-10-27**: migration 0003 is applied, `bikash` holds an open-ended complimentary Professional plan from the
+  rollout, and the admin is exempt. No Razorpay keys are set yet, so users see "Online payment isn't set up yet." and
+  no payment has gone through Razorpay, not even in test mode.
+  - Backend: `services/billing/` (entitlements, periods, plans, checkout, the exactly-once `apply_payment`, the
+    Razorpay client, webhooks, the worker's reconciler, refunds, disputes, receipts, reminders, the admin summary and
+    CSV), `routers/{billing,admin_billing,public}.py`, `schemas_billing.py`, `errors.py` (`AppError` with a `code`),
+    `deps.get_entitled_user`, migration `0003_plans_billing.py` (10 tables; the users' limit columns become nullable
+    overrides; `user_image_limits` dropped), the plan seeding, receipt counters and rollout in `bootstrap.py`, the
+    `billing` monitor check, and enforcement in chat, documents, plugins, usage and vision ingestion; the export gains
+    `billing.json`. nginx: the return and webhook locations (rate-limited, logged without the query), the upload
+    check through `GET /api/auth/upload-allowed`, and `/legal/`. No new dependency.
+  - Frontend: `PlansPage`, `CheckoutPage`, `BillingReturnPage`, the public pages (`pages/public/`),
+    `components/billing/`, Settings → Plan & billing and "Your data", Admin → Plans and Billing, the plan parts of
+    Admin → Users, locked items in the chat menus, and the policy drafts in `frontend/public/legal/`.
+  - Tests: 20 new backend test files (`test_billing_*.py`, `test_entitlements.py`, `test_plan_gating.py`,
+    `test_usage_allowance.py`, `test_admin_plans.py`, `test_admin_billing.py`, `test_migration_0003.py`,
+    `test_ops_billing.py`, `test_fake_razorpay.py`) with the in-process fake Razorpay (`tests/fake_razorpay.py`),
+    `integration/tests/test_17_billing.py` against the same fake served by `integration/fake_razorpay/`, and
+    `e2e/tests/billing.spec.ts`.
 
 How the work went: the lead wrote `SPEC.md` and the foundation code. Agents then built the
 feature areas in parallel from `docs/briefs/`, followed by backend integration tests, frontend
@@ -167,6 +191,12 @@ The redesign went the same way, with a design round first:
 - a Docker rebuild with an API smoke, a files-from-chat smoke, a 60-step browser pass on real data and two polish rounds
   of 193 screenshots each, which found 2 more bugs and 4 visual defects, all fixed.
 
+Plans and billing went the same way: research on Razorpay's documentation (`payments-razorpay-research.md`), a
+functional and a visual brief, reviews of their first revision for security, product and design (45 points, answered
+in the functional brief's sections 0.2 and 0.3) and second revisions; builders in parallel on frozen interfaces (brief
+section 13); then security, entitlement and UX reviews of the code (31 findings, 16 confirmed, all fixed), a rehearsal
+of migration 0003 on a restored copy of a real backup, and the live deploy.
+
 The Compose project `rag-app` was left running with its data, on the final redesign build. The vision feature, files
 from chat, images from chat and plugins are committed (`9fb8be6`, `70f8076`, `7eaf587`, then `c5fb005`). The redesign
 is in two commits: `5148b83`, a WIP snapshot pushed to `origin/main` before its review, and `d11a9e5`, with the review
@@ -180,6 +210,11 @@ agents' smoke and browser-pass scripts lived in scratch directories and are not 
 
 | Check | Result |
 |---|---|
+| Plans and billing: backend (2026-10-27) | `pytest -q --cov --cov-fail-under=94` **3016 passed, 47 skipped**, coverage 95.6 %; `pytest -m postgres` on a throwaway Postgres 17 **47 passed**: the 35 earlier ones plus payments applied and checkouts started at once, receipt numbering and the plans migration. The payment paths run against the in-process fake Razorpay |
+| Plans and billing: frontend (2026-10-27) | Vitest **1040 passed in 78 files**; re-run for this handoff with coverage: 94.2 % of statements, 89.4 % of branches, 93.9 % of functions, 96.1 % of lines, over the thresholds (92, 87, 91, 94) |
+| Plans and billing: integration (2026-10-27; `integration/run.sh`) | **160 passed in 18 files**, including `test_17_billing.py` against the fake Razorpay (test keys, testers only): payment through the hosted page and the signed return, failures and late captures, the return and webhooks at once applying once, tampered amounts and forged returns and webhooks, refunds from the app and the Dashboard counted once, a lost dispute, renewal and an upgrade with its credit, expiry and renewal with the data intact, activation by the reconciler alone, Gmail outside a changed plan, and the monitor's `billing` warning; and the restore drill with a recorded bank transfer |
+| Plans and billing: reviews (2026-10-27) | Security, entitlement and UX reviews of the built code: **31 findings, 16 confirmed and fixed**, among them chargeback, refund and upgrade-credit issues |
+| Plans and billing: migration rehearsal and live deploy (2026-10-27) | Migration 0003 rehearsed on a restored copy of a real backup, then deployed to the live `rag-app` stack: the database is at 0003, `bikash` got the open-ended complimentary Professional plan ("Existing account when plans were introduced"), the admin is exempt, and with no Razorpay keys the plans show "Online payment isn't set up yet.". End-to-end against the live stack: **52 passed, 1 skipped** (the `@live` test) |
 | Operations review fixes (2026-10-25/26; OPS-1 to OPS-5, OPS-7 to OPS-9) | Backend: ruff 0.13.0 clean on app, tests and migrations; mypy 1.18.2 clean on app and migrations (89 files); `pytest -q --cov --cov-fail-under=94` **2516 passed, 35 skipped** (622 s), coverage 95.4 %; `pytest -m postgres` on a throwaway Postgres 17.11 (tmpfs, random port and password, removed) **35 passed** (22 s). Integration (`integration/run.sh`, once): **147 passed, 1 failed** of 148 in 17 files (727 s of tests; the Mac slept for hours mid-run, lid closed on battery). The failure was `test_a_restore_with_migrate_reconciles_only_after_migrating`: its migration and reconcile output were right, but readiness answered 503 at the one check right after a wake; restore.sh now asks for up to a minute. Teardown left nothing. Control for OPS-1: the same 24 uploads to a Qdrant on half a CPU failed 16 times with the old pipe-into-nc method and 0 times with `lib.sh`. Then (2026-10-26): backend, worker, monitor and backup redeployed to the live stack (all 8 services healthy, ready 200, Alembic at 0002, row counts unchanged), e2e against it **47 passed, 1 skipped**, and CI green on all five jobs at `c58622b`, its integration job running the whole suite including the restore drill. Getting there, CI exposed two races and timing limits too tight for a slow runner (Settings focus checks, two speed guards), fixed in `c82a91e` and `c58622b` |
 | Live deploy of operations (2026-10-25, Compose project `rag-app`) | Before: the admin API listed the env admin and `bikash`, 8 documents (all ready), 9 models, Gmail configured, enabled, 1 connection; per-table row counts recorded read-only (21 tables). A fresh backup with `scripts/backup.sh` (`20261025T143921Z-manual`, 35.8 MB) passed `sha256sum -c`, the restore service's `verify`, `pg_restore --list`, and a restore into a throwaway Postgres 17.11 (no network, tmpfs, removed) with every table's rows equal to the live counts; its 16 archived files matched the live volume's checksums. `docker compose up -d --build`, then `--force-recreate frontend`: the backend logged "Database made before migrations: stamping revision 0001, 0 difference(s)", ran 0001 → 0002 and started; the worker found the schema up to date. After: `alembic current` 0002 (head), `alembic check` "No new upgrade operations detected", `pg_dump -s` identical to before apart from `alembic_version`; all 21 tables' row counts unchanged; users, documents, models and Gmail status unchanged in the admin API (`old_key` 0, `reconnect_needed` 0, and a read-only check decrypted 1 of 1 connections' tokens); every document's file present at its recorded size; Qdrant `rag_chunks_6` 60 points as before; `/api/health/ready` 200; Admin → System every check `ok` except `monitor` (warning: no alert channel configured); the backup service scheduled for 02:30 UTC (no start-up backup needed, today's exist); all 8 services healthy |
 | Backend after operations (2026-10-25; `pytest -q --cov --cov-fail-under=94`) | **2509 passed, 35 skipped** in 477 s, coverage 95.4 % combined. ruff 0.13.0 clean on app, tests and migrations; mypy 1.18.2 clean (86 files) |
@@ -278,7 +313,7 @@ All contract changes are already in `SPEC.md` and `frontend/src/api/types.ts`.
   embedding model. `only_stale` reindexing also re-queues failed documents.
 - **Chat:** `document_ids` accepts at most 10 000 ids (the brief said 500); `message` is 1 to
   20 000 characters, and only the last 4 000 characters of the retrieval query are used. Users with
-  a monthly budget can have at most 2 answers generating at once (`MAX_CHATS_IN_FLIGHT`; 429
+  a limited chat allowance can have at most 2 answers generating at once (`MAX_CHATS_IN_FLIGHT`; 429
   "Another answer is still being generated…" with `Retry-After: 5`), because the budget is checked
   at the start of an answer and charged at the end. Usage is committed before the assistant message,
   so an answer that can't be stored is still billed. NUL characters are dropped from answers.
@@ -335,7 +370,8 @@ All contract changes are already in `SPEC.md` and `frontend/src/api/types.ts`.
   `message_files` and `generated_documents` for files from chat, `generated_images` and `user_image_limits` for
   images, six `plugin_*`/`gmail_*` tables for plugins (see "Plugins and Gmail"), and `user_preferences` and
   `login_events` for Settings (the per-user image limit is a table of its own rather than a `users` column, so Alembic
-  didn't have to come in with a feature; brief section 3.3). A `message_files` row is deleted with its message.
+  didn't have to come in with a feature; brief section 3.3; migration 0003 replaced it with
+  `users.monthly_image_limit`). A `message_files` row is deleted with its message.
   Deleting its document sets its `document_id` to null, and the card then shows "Deleted". `generated_documents`
   and `generated_images` live as long as the document. Images also put new values into existing string columns
   (`llm_models.kind` and `usage_events.kind` `image`; `message_files.format` `png`, `jpeg`, `webp`), which is why a
@@ -425,8 +461,9 @@ was done about each. What matters when maintaining it:
 - **Cost controls:** `reasoning_effort="low"` and `max_tokens` 8192 per page; `VISION_MAX_PAGES` (only scans
   covered by page images, at least 90%, can fail the document, before any call; other pages beyond the cap keep
   their text layer, logged); `VISION_CONCURRENCY` per document and `VISION_MAX_IN_FLIGHT` per worker (asyncio
-  semaphores per event loop); `VISION_TIMEOUT_SECONDS` per document; `VISION_MONTHLY_TOKEN_LIMIT` per user,
-  checked when a run starts (admin exempt). One `vision` usage event per run, recorded on every path (also
+  semaphores per event loop); `VISION_TIMEOUT_SECONDS` per document; a vision allowance per user
+  (`VISION_MONTHLY_TOKEN_LIMIT` until plans; now the plan's vision tokens per period), checked when a run starts (admin
+  exempt). One `vision` usage event per run, recorded on every path (also
   failures, stops, re-queues and cancellation); it doesn't count toward the chat budget.
 - **Retries:** each vision call is one HTTP request (`max_retries=0`). `vision.read_pages` retries rate limits,
   5xx, "overloaded" and connection errors up to 4 times, waiting `Retry-After` (clamped to 1-60 s) or 2, 5, 15
@@ -461,7 +498,8 @@ Choices the agents made beyond the user's decisions, still to be confirmed with 
 
 - `VISION_MONTHLY_TOKEN_LIMIT` (2,000,000 per user per month, roughly 400-600 pages) is a control the user didn't
   ask for. It bounds upload/delete churn, which the page cache can't. `0` turns it off, which matches "not
-  counted against the budget" strictly.
+  counted against the budget" strictly. Settled by plans (2026-10-27): the setting is gone, and each plan sets vision
+  tokens per period (150,000, 500,000 and 1,000,000 as seeded), approved by the owner with the plan limits.
 - Only page-image scans can fail a document over `VISION_MAX_PAGES`; short-text pages with partial images (slide
   decks with photos) are read in page order up to the cap and keep their text layer beyond it.
 - The seeded "Claude Sonnet 5.5 (vision)" became active on the existing database without any admin action, so
@@ -627,7 +665,8 @@ After a reload the card comes from `message_files`. To put an image in a file, t
 What matters when maintaining it:
 
 - **Settings** (in `.env.example`): `CHAT_IMAGE_TOOLS` (true), `GENERATED_IMAGES_PER_ANSWER` (3, at most 10),
-  `DEFAULT_MONTHLY_IMAGE_LIMIT` (30; 0 = unlimited), `IMAGE_MAX_QUALITY` (medium), `IMAGE_OUTPUT_FORMAT` (png),
+  `DEFAULT_MONTHLY_IMAGE_LIMIT` (30; 0 = unlimited; removed with plans, which set images per period),
+  `IMAGE_MAX_QUALITY` (medium), `IMAGE_OUTPUT_FORMAT` (png),
   `IMAGE_TIMEOUT_SECONDS` (180, slot wait included) and `IMAGE_CONCURRENCY` (3 per backend process). Constants: prompt
   at most 4,000 characters, title 120, alt text 300; image data at most 32 MiB, 16 to 4,096 px per edge, at most
   16,777,216 pixels; at most 10 images per generated file; the room check before reserving is a free document slot
@@ -659,11 +698,14 @@ What matters when maintaining it:
   until `min(60 s, IMAGE_TIMEOUT_SECONDS / 2)` before its deadline, so a request that is sent always has that long.
   If no slot comes in time, the user is told too many images are being made; nothing is sent and the reservation is
   released.
-- **The monthly count (I11, I12).** Each user has a `user_image_limits` row (0 = unlimited; the admin is exempt). The
+- **The monthly count (I11, I12).** Since plans (2026-10-27) the count runs per period, with the plan's limit and an
+  optional override in `users.monthly_image_limit`; migration 0003 dropped `user_image_limits` and the backfill
+  described next. Before plans, each user had a `user_image_limits` row (0 = unlimited; the admin is exempt). The
   first start with this feature gave every existing non-admin user `DEFAULT_MONTHLY_IMAGE_LIMIT` once (`app_state` key
   `image_limits_backfilled`), and creating a user writes a row, so a later change of the env default moves nobody. The
   **reservation** runs under the per-user upload lock (`storage.serialized_uploads`: an asyncio lock plus
-  `FOR NO KEY UPDATE` on the user row). It counts this UTC month's `image` usage events and inserts one at zero cost.
+  `FOR NO KEY UPDATE` on the user row). It counts the `image` usage events of the allowance window (this UTC month
+  before plans) and inserts one at zero cost.
   What happens to that event:
   - settled with the reported tokens and cost when a response arrives;
   - deleted (released) when nothing was sent, or the provider refused or failed without billing (safety refusal, rate
@@ -911,7 +953,7 @@ smoke and browser run used a fake Google.
   - cards flag recipients the user never typed (by exact address), unnamed attachments, Bcc and the email replied to
     (P24);
   - text the model sends may not hide characters.
-- **Logs** (P20). Plugin paths are logged without their query, by uvicorn's filter and nginx's `plugin_path` format.
+- **Logs** (P20). Plugin paths are logged without their query, by uvicorn's filter and nginx's `path_only` format.
   nginx doesn't access-log the callback, and logs only `crit` errors there. The `httpx` logger is at WARNING, and the
   Gmail browser's search goes in a POST body. Tokens, codes, the client secret, search terms, subjects, addresses
   and email text are never logged.
@@ -1347,6 +1389,58 @@ fixed, and deployed to the live stack. Migrations are under "Database" above.
 - **The worker stops at once on a schema this release can't use** (one made before migrations that differs, or one a
   newer release migrated), with the reason, instead of retrying for 60 s like a database that is still starting.
 
+### Plans and billing
+
+Built, reviewed and deployed by 2026-10-27 from [`docs/briefs/plans-billing.md`](briefs/plans-billing.md)
+(decisions B1 to B45 in its section 0, the review responses in 0.2 and 0.3),
+[`plans-billing-visual.md`](briefs/plans-billing-visual.md) and
+[`payments-razorpay-research.md`](briefs/payments-razorpay-research.md); `SPEC.md` has the contract and `README.md`
+section 9 the owner's guide. The owner approved the three open questions that changed the build (brief 14.1, 1 to 3)
+on 2026-10-26: the allowance counted by model price with 3.2's limits and model lists, `bikash` on Professional with no
+end date, and the consent line under Pay. What matters when maintaining it:
+
+- **One source of truth for access** (B3, B4). `billing.entitlements.load(db, user)` decides the state (`exempt`,
+  `none`, `active`, `expired`), features, models, merged limits and the allowance window. Every gated route depends on
+  `deps.get_entitled_user` (402 `plan_required`, `plan_expired` or `feature_not_in_plan`, with a `code` from
+  `errors.AppError`); the open routes (sign-in, Settings, billing, the plugin catalog, Disconnect, deletes, listing and
+  downloading one's own documents) keep `get_current_user`. Nothing reads the `users` limit columns or the removed
+  `DEFAULT_*` settings directly. `test_route_guards.py` has a row per route. The UI only mirrors `Me.plan`.
+- **Periods, not subscriptions** (B2, B11 to B13, B23). A `plan_periods` row snapshots the plan's features, limits and
+  models; paid periods end at the first midnight IST at least 30 days after they start; at most one period is paid
+  ahead; `now` checkouts (upgrades, a new period once 90 % of an allowance is used) end the current period for a credit
+  of `basis × min(time left, allowance left)`. Complimentary plans are dated rows (1 to 90 days, scaled allowances for
+  short rows) or one open-ended plan per user (`users.comp_plan_id`, the plan's live values per calendar month). Plan
+  edits reach paid periods only when the admin applies them, with a second confirmation when they lower something.
+- **Allowances per period, the chat allowance by price** (B5, B8). `usage_events.allowance_tokens` stores each chat
+  answer's cost in standard tokens ($3.20 per million) when it is written; the budget sums it over the window.
+  Per-user overrides live in the nullable `users` limit columns (NULL = the plan's value), and a user's allowed-models
+  list only narrows the plan's models (B6).
+- **Payments** (B14 to B20). One Razorpay Payment Link per checkout (20 minutes), the browser in the same tab, no
+  Razorpay script on our origin. A plan activates only through `payments.apply_payment`, from the signed return, a
+  signed webhook (worker) or the reconciler, always on the payment fetched from Razorpay, once per payment id, and only
+  when amount, currency, order and mode match. Webhooks are optional until the public domain exists and required
+  before live keys. Test keys let only testers pay, with 1-day periods that stop counting under live keys.
+- **Locks and races** (B42). Every per-user money or access change takes the user's row lock first, in one order (user
+  → order → payment → refund or dispute → receipt counter); no Razorpay call runs inside a transaction. On Postgres an
+  exclusion constraint (`btree_gist`) keeps a user's counting periods from overlapping.
+- **Refunds, disputes, bank transfers** (B21, B22, B41). Refunds start in Admin → Billing with an idempotency key; each
+  state change applies once; a full refund or a lost dispute ends what the payment bought. Offline transfers go through
+  the same apply with method `bank_transfer`.
+- **Records and privacy** (B29, B30, B45). One immutable receipt row per applied payment, numbered per financial year
+  and mode (`RA/26-27/000001`, `TEST/…`), rendered to PDF on demand. Billing records outlive a deleted user (`user_id`
+  null, the username kept); a user who never had an order takes their billing events along. No payer email, phone,
+  UPI id, card or bank is stored, events included. Every admin change that grants or removes value writes a billing
+  event.
+- **Public pages and GST** (B10, B31). The policy pages are Markdown in `frontend/public/legal/`, seeded as drafts;
+  there is no GST in version 1.
+- **Migration 0003 and the rollout** (B24, B37). The migration adds the 10 tables and the `users` columns, makes the
+  limit columns nullable, records each user's old limits in a `rollout.limits_cleared` event, clears them and drops
+  `user_image_limits`. `bootstrap.py` seeds the plans (`plans_seeded`), the receipt counters, and gives every active
+  non-admin user an open-ended complimentary Professional plan once (`plans_rollout`). A pre-0003 backup restores with
+  `--migrate` and is rolled out the same way.
+- **The settings** `RAZORPAY_*` and `BILLING_*` (`README.md` section 9); `DEFAULT_*` limits and
+  `VISION_MONTHLY_TOKEN_LIMIT` are removed and ignored with a warning.
+
 ## Known limitations and open risks
 
 - **Parsing is only partly isolated.** pypdf, python-docx, python-pptx, openpyxl and BeautifulSoup still parse
@@ -1359,7 +1453,8 @@ fixed, and deployed to the live stack. Migrations are under "Database" above.
   Sonnet 5.5; the brief estimates $0.01-0.03 for dense pages). Vector-drawn charts and pages whose content is
   over 2 MiB aren't checked for images; DOCX/PPTX images aren't read. A 5xx retried after the provider
   finished can be billed twice (accepted, rare). `RLIMIT_AS` in the render child was verified on Linux only.
-  The monthly vision allowance is checked when a run starts, so a user can go over it by the runs in progress.
+  The vision allowance (per period, from the plan) is checked when a run starts, so a user can go over it by the runs
+  in progress.
   Only Anthropic's Sonnet 5.5 was tried live as a vision model; the OpenAI and Gemini effort mappings were
   checked offline, and the Ollama example is untested.
 - **Vision `NO_CONTENT` after a preamble (waiting on the user's decision).** `vision.clean_output` checks for
@@ -1450,11 +1545,35 @@ fixed, and deployed to the live stack. Migrations are under "Database" above.
     recreating (see "Plugins and Gmail").
 - **Usage history goes with the user.** Deleting a user cascades their `usage_events` (SPEC section 4), so their
   chat, embedding, vision and image costs leave the usage report (after the smoke runs, this month's vision total
-  was back to 0). Keep cost history elsewhere if it must survive user deletion.
-- **Some Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks. The 35
-  `postgres`-marked tests (passed on Postgres 17.11 on 2026-10-25; CI's `backend-postgres` job runs them) cover
-  parallel uploads against the document, storage and duplicate checks with only the row lock left, the migrations and
-  the schema's advisory lock across two processes, UTC sessions, the image reservation race and the account tests. Still not raced between processes:
+  was back to 0). Keep cost history elsewhere if it must survive user deletion. Billing records are the exception:
+  orders, payments, refunds, disputes, receipts and their events stay with the username for the accounts, and only a
+  user who never had an order takes their billing events along.
+- **Plans and billing, not yet checked or not built:**
+  - **Razorpay isn't configured yet**: no keys in `.env`, so no test-mode check has been done and no payment has gone
+    through Razorpay. Every suite uses a fake (in-process in the backend tests, `integration/fake_razorpay/` in the
+    integration stack, intercepted requests in e2e). The checks of brief 14.2 are open: the localhost `callback_url`,
+    the UPI QR and intent, a test UPI path after the end of UPI Collect, `order_id`, auto-capture, `fee` and `tax` in
+    the payment, a repeated `reference_id`, disputes with test keys, the website check, and the live UPI limit.
+  - **Webhooks need the public domain.** Until it exists, payments are confirmed only by the return page and the
+    worker's reconciler (a sleeping Mac confirms them on waking), and refunds made in Razorpay's Dashboard and disputes
+    don't reach the app. The billing rate limits in nginx key on the tunnel's address until `real_ip_header` is set
+    (next step 5).
+  - **The policy pages are drafts** (`frontend/public/legal/*.md`), and they are rendered in the browser; if
+    Razorpay's website check doesn't run JavaScript, they need pre-rendering (brief 14.3).
+  - **GST is not implemented**: no GSTIN, no tax line, no tax invoices (brief B10). Registering for GST needs a
+    separate feature before GST is charged.
+  - Reminder emails are off until `BILLING_EMAIL_FROM` and the `ALERT_SMTP_*` settings are set.
+  - **E2E runs against the live stack write billing events** for their `e2e-` users (the plan grants of the admin
+    API). They are deleted with the users only because those users never place an order; a test user with an order
+    would leave its billing records behind, by design.
+  - The standard token is tied to one price ($3.20 per million); if model prices move a lot, edit the allowances in
+    Admin → Plans.
+- **Some Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks. The 47
+  `postgres`-marked tests (CI's `backend-postgres` job runs them) cover parallel uploads against the document, storage
+  and duplicate checks with only the row lock left, the migrations and the schema's advisory lock across two processes,
+  UTC sessions, the image reservation race, the account tests, one payment applied from three sides at once, two
+  orders and a grant racing a payment, checkouts started at once, the periods' exclusion constraint, receipt numbering
+  across the financial-year boundary, and migration 0003. Still not raced between processes:
   an admin password reset against a password change and a document deleted while the worker finishes it (both
   checked once with scratch tests against Postgres 17), and the embedding model edited while a job writes vectors.
 - **One worker only.** A second worker container would reset the other's in-flight documents (the
@@ -1538,6 +1657,27 @@ fixed, and deployed to the live stack. Migrations are under "Database" above.
 
 ## Next steps
 
+Plans, Razorpay checkout and plan-based access are built, reviewed and deployed to the live stack (2026-10-27), not
+committed yet (step 1). What is left, for the owner (`README.md` section 9 has the how-to):
+
+- **Razorpay test mode:** add the test keys to `.env` (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`), run `docker compose
+  up -d backend worker` and recreate the frontend, mark a tester (a `smoke-*` user, never `bikash`), and run the
+  test-mode checks of brief 14.2 (items 1 to 6; item 7 once the domain exists) with **at most 10 payment links**
+  (test mode allows about 30 per business). Record what Razorpay does differently in the brief and here.
+- **The domain and the webhook:** once the Cloudflare domain exists (step 5), register
+  `https://<domain>/api/billing/razorpay/webhook` with the 14 events Admin → Billing lists, and put its secret in
+  `RAZORPAY_WEBHOOK_SECRET`.
+- **KYC and live keys:** complete Razorpay's KYC and website review, put the live keys in `.env`, work through the
+  going-live checklist (Admin → Billing → Business & payments), set the UPI limit Razorpay confirms, then one live
+  Starter payment by a `smoke-*` user and a full refund (brief 14.2, item 8; Razorpay keeps its fee, about ₹12).
+- **Policy pages and business details:** replace the drafts in `frontend/public/legal/*.md` (terms, privacy, refunds,
+  shipping, contact, about, the pricing intro; Claude can draft them for review) and rebuild the frontend; fill in the
+  business name, address, contact email and phone in Admin → Billing → Business & payments. Brief 14.1 lists the
+  owner's questions these pages answer (refund policy, bank transfers, how long lapsed users' data is kept).
+- **GST:** decide whether to register (brief 14.1, item 4). Version 1 has no GST; charging it needs tax invoices built
+  first.
+- Optional: **reminder emails**, by setting `BILLING_EMAIL_FROM` and the `ALERT_SMTP_*` settings.
+
 The test suites and CI are written, reviewed, verified and committed (`3a277a0`, then `d4eada1`), and CI is green on
 GitHub (2026-10-25). What is left:
 
@@ -1576,8 +1716,8 @@ of it:
 - With the user's approval for the spend (a few cents per image), run the remaining live cases: Stop during
   generation, an image through the Cloudflare tunnel, an image requested from GPT-5.4 mini, and a provider refusal.
   Use a `smoke-*` user, deleted afterwards, never `bikash`.
-- Confirm the open points listed at the end of "Images from chat" with the user. If a per-user switch to block images
-  is wanted, add it now (it needs an `ALTER TABLE` on the running database, or Alembic).
+- Confirm the open points listed at the end of "Images from chat" with the user. Since plans, images are a plan
+  feature, so a user is kept from images by a plan without them; a separate per-user switch would need a migration.
 - Optional: measure the other sizes and qualities and update `llm._IMAGE_OUTPUT_TOKENS` (and its test) for gpt-image-2.
 
 Files from chat is built and was verified live in Docker on 2026-10-16. What is left of it:
@@ -1598,20 +1738,22 @@ Files from chat is built and was verified live in Docker on 2026-10-16. What is 
 
 1. Done: every feature, the test suites and CI are committed. The redesign is in `5148b83` and `d11a9e5`, plugins
    with Gmail in `c5fb005`, images from chat in `7eaf587`, files from chat, the vision follow-up fix and
-   `test_vision_independent.py` in `70f8076`, and the test suites and CI in `3a277a0` and `d4eada1`. Operations
-   (migrations, backups, monitoring) are deployed but not committed yet: commit them so CI runs them.
+   `test_vision_independent.py` in `70f8076`, the test suites and CI in `3a277a0` and `d4eada1`, and operations
+   (migrations, backups, monitoring) in `91e20bc`, with CI green at `c58622b`. Plans and billing are deployed but not
+   committed yet: commit them so CI runs them.
 2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
-3. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the
-   monthly vision allowance and the automatic activation of the seeded Sonnet vision model).
+3. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the automatic
+   activation of the seeded Sonnet vision model; the vision allowance is now set per plan).
 4. **Hosting** (the owner's choice): the stack runs on Docker Desktop on this Mac, which sleeps and quits now and then.
    A small Linux server with Docker Engine and Compose is enough (8 GB of memory: the worker alone may use 4 GB). Moving there: clone, put `.env` back,
    copy a backup into `./backups`, `docker compose up -d --build`, then `scripts/restore.sh latest --yes
    --no-safety-backup` (`scripts/README.md`, "A new machine"); install the watchdog's systemd timer (step 8).
 5. Before exposing the app beyond localhost (the owner will give the domain, managed in Cloudflare): put HTTPS in
    front, set `COOKIE_SECURE=true` (the OAuth nonce cookie then gets `Secure` too), list the public address in
-   `PUBLIC_BASE_URLS` and register its Gmail callback in Google, configure `set_real_ip_from`/`real_ip_header` in
-   `nginx.conf` for the outer proxy so the per-IP throttle sees real clients, and consider rate limits on upload and
-   reprocess. Then point an external uptime check at `https://<domain>/api/health/ready`.
+   `PUBLIC_BASE_URLS` and register its Gmail callback in Google and its Razorpay webhook (above), configure
+   `set_real_ip_from`/`real_ip_header` in `nginx.conf` for the outer proxy so the per-IP throttle and the billing rate
+   limits see real clients, and consider rate limits on upload and reprocess. Then point an external uptime check at
+   `https://<domain>/api/health/ready`.
 6. **Choose an alert channel** (the owner): a webhook (Slack, Google Chat, Discord, Teams), ntfy (the simplest for
    push to a phone) or email. Put its `ALERT_*` settings in `.env` (`README.md` section 8), run `docker compose up -d
    monitor`, then press **Send a test alert** in Admin → System. Until then alerts are only logged.

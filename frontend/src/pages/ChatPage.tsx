@@ -1,8 +1,12 @@
 import { memo, useCallback, useEffect, useId, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { DocumentConfig, DocumentSelection } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
+import PendingCheckoutBanner from "../components/billing/PendingCheckoutBanner";
+import PlanBanner from "../components/billing/PlanBanner";
+import PlanEndedPanel from "../components/billing/PlanEndedPanel";
+import { canUpgrade, checkoutPath } from "../components/billing/planText";
 import "../components/chat/chat.css";
 import Composer, { type ComposerHandle } from "../components/chat/Composer";
 import ConversationSidebar from "../components/chat/ConversationSidebar";
@@ -27,7 +31,7 @@ import {
   usePlugins,
 } from "../components/connections/pluginStore";
 import DocumentPanel from "../components/documents/DocumentPanel";
-import { AlertCircleIcon, CloseIcon, InfoIcon } from "../components/ui/icons";
+import { AlertCircleIcon, AlertIcon, CloseIcon, InfoIcon, LockIcon } from "../components/ui/icons";
 import { onConversationsDeleted } from "../lib/appEvents";
 import { formatNumber } from "../lib/format";
 import { useOpenSettings, useReplacePath, type SettingsTab } from "../lib/settingsLink";
@@ -47,6 +51,10 @@ const UPLOAD_SETTINGS_FAILED = "Couldn't check your upload settings, so nothing 
 const LATE_SIDEBAR_RELOAD_MS = 1500;
 /** After Stop or a lost connection the server saves the partial answer's usage a moment later: check it again then. */
 const LATE_USAGE_REFRESH_MS = [1500, 5000];
+/** The unsent message when the plan ended on the page: put back when that chat (or a new chat) opens with access. */
+const PLAN_DRAFT_KEY = "rag.planDraft";
+
+type PlanDraft = { conversation_id: number | null; text: string };
 
 // Streaming re-renders the page on every frame; the document panel only depends on the selection.
 const StableDocumentPanel = memo(DocumentPanel);
@@ -74,6 +82,24 @@ function storeDocumentsCollapsed(collapsed: boolean): void {
     else localStorage.removeItem(DOCUMENTS_PANEL_KEY);
   } catch {
     /* storage unavailable: the choice lasts until the page reloads */
+  }
+}
+
+function readPlanDraft(): PlanDraft | null {
+  try {
+    const draft = JSON.parse(sessionStorage.getItem(PLAN_DRAFT_KEY) ?? "null") as PlanDraft | null;
+    return draft !== null && typeof draft.text === "string" ? draft : null;
+  } catch {
+    return null;
+  }
+}
+
+function storePlanDraft(draft: PlanDraft | null): void {
+  try {
+    if (draft) sessionStorage.setItem(PLAN_DRAFT_KEY, JSON.stringify(draft));
+    else sessionStorage.removeItem(PLAN_DRAFT_KEY);
+  } catch {
+    /* storage unavailable: the draft is lost with the page */
   }
 }
 
@@ -105,6 +131,9 @@ export default function ChatPage() {
   const lateUsageTimers = useRef<number[]>([]);
   const routeIdRef = useRef(routeId);
   routeIdRef.current = routeId;
+  /** The composer's unsent text (kept when the plan ends on this page). */
+  const draftRef = useRef("");
+  const [draftKept, setDraftKept] = useState(false);
 
   const conversations = useConversations();
   const models = useModels(preferences.default_model_id);
@@ -203,6 +232,27 @@ export default function ChatPage() {
   const { send, stop, reload: reloadThread, status: threadStatus, threadKey } = thread;
   const threadEmpty = thread.messages.length === 0;
 
+  // The plan ended while this page was open (8.7): the page stays, an answer streaming finishes, then the composer
+  // becomes the plan-ended panel and its unsent text is kept for when the plan is renewed.
+  const hasAccess = user === null || user.is_admin || user.plan.access;
+  const planEnded = !hasAccess && !thread.streaming;
+  const keepDraft = useCallback(() => {
+    if (!draftRef.current.trim()) return;
+    storePlanDraft({ conversation_id: routeIdRef.current, text: draftRef.current });
+    setDraftKept(true);
+  }, []);
+  useEffect(() => {
+    if (planEnded) keepDraft();
+  }, [planEnded, keepDraft]);
+  useEffect(() => {
+    if (!hasAccess) return;
+    const draft = readPlanDraft();
+    if (!draft || (routeId !== null && draft.conversation_id !== routeId)) return;
+    composerRef.current?.restore(draft.text);
+    storePlanDraft(null);
+    setDraftKept(false);
+  }, [hasAccess, routeId]);
+
   useEffect(() => {
     if (!focusComposer.current || threadStatus !== "ready") return;
     focusComposer.current = false;
@@ -267,14 +317,17 @@ export default function ChatPage() {
       }
       const accepted = await send({ message: text, modelId, documentIds });
       if (!accepted) {
-        composerRef.current?.restore(text);
+        if (!draftRef.current.trim()) draftRef.current = text;
+        // The plan-ended panel may already have replaced the composer: keep the text for the renewal instead.
+        if (composerRef.current) composerRef.current.restore(text);
+        else keepDraft();
         restoreAttachments(taken.snapshot);
         // The chosen model may have been disabled, deleted or withdrawn since the list was loaded (400/403): refetch
         // so the picker drops it and falls back to the default.
         reloadModels();
       }
     },
-    [send, modelId, reloadModels, selection, takeAttachments, restoreAttachments],
+    [send, modelId, reloadModels, selection, takeAttachments, restoreAttachments, keepDraft],
   );
   const handleSend = useCallback((text: string) => void sendMessage(text, true), [sendMessage]);
   const handleRetry = useCallback((text: string) => void sendMessage(text, false), [sendMessage]);
@@ -342,13 +395,18 @@ export default function ChatPage() {
 
   const noModels = models.models !== null && models.models.length === 0;
   const selectedModel = models.models?.find((model) => model.id === modelId) ?? null;
-  const canCreateFiles = selectedModel?.can_create_files ?? false;
-  const canCreateImages = selectedModel?.can_create_images ?? false;
-  const imagesOffered = models.models?.some((model) => model.can_create_images) ?? false;
+  // A capability counts when the model and the server can and the plan includes it (8.6).
+  const plan = user?.plan ?? null;
+  const canCreateFiles = (selectedModel?.can_create_files ?? false) && (plan?.features.files ?? true);
+  const canCreateImages = (selectedModel?.can_create_images ?? false) && (plan?.features.images ?? true);
+  const imagesOffered = (models.models?.some((model) => model.can_create_images) ?? false) && (plan?.features.images ?? true);
   const imageLimit = user && !user.is_admin ? user.limits.monthly_image_limit : 0;
   const imagesLeft = user && imageLimit > 0 ? Math.max(imageLimit - user.usage.images, 0) : null;
   const imagesNote =
-    imagesLeft !== null ? `${formatNumber(imagesLeft)} of ${formatNumber(imageLimit)} left this month` : "Saved to My documents";
+    imagesLeft !== null ? `${formatNumber(imagesLeft)} of ${formatNumber(imageLimit)} left this period` : "Saved to My documents";
+  const pendingOrder = user && !user.is_admin ? user.plan.pending_order : null;
+  const sendError = thread.sendError;
+  const planError = sendError?.code === "feature_not_in_plan" || sendError?.code === "allowance_used";
   const disabledReason =
     thread.status === "loading"
       ? "Loading conversation…"
@@ -429,6 +487,11 @@ export default function ChatPage() {
           onPreferenceError={onPreferenceError}
           onLogout={onLogout}
         />
+        {pendingOrder ? (
+          <PendingCheckoutBanner order={pendingOrder} />
+        ) : user && !user.is_admin ? (
+          <PlanBanner key={user.plan.paid_through ?? ""} plan={user.plan} />
+        ) : null}
         {notice ? (
           <div
             className={`ui-notice ui-notice-${notice.tone} chat-notice`}
@@ -448,10 +511,35 @@ export default function ChatPage() {
         </div>
 
         <div className="chat-bottom">
-          {thread.sendError ? (
-            <div className="ui-notice ui-notice-danger chat-banner" role="alert">
-              <AlertCircleIcon size={15} />
-              <span className="ui-notice-text">{thread.sendError}</span>
+          {sendError ? (
+            <div className={`ui-notice ui-notice-${planError ? "warning" : "danger"} chat-banner`} role="alert">
+              {sendError.code === "feature_not_in_plan" ? (
+                <LockIcon size={15} />
+              ) : planError ? (
+                <AlertIcon size={15} />
+              ) : (
+                <AlertCircleIcon size={15} />
+              )}
+              <span className="ui-notice-text">{sendError.message}</span>
+              {planError ? (
+                <span className="billing-notice-actions">
+                  {sendError.code === "feature_not_in_plan" ? (
+                    <Link className="btn btn-sm" to="/plans">
+                      See plans
+                    </Link>
+                  ) : null}
+                  {sendError.code === "allowance_used" && plan?.can_start_new_period && plan.plan ? (
+                    <Link className="btn btn-primary btn-sm" to={checkoutPath(plan.plan.code, "now")}>
+                      Start a new period now
+                    </Link>
+                  ) : null}
+                  {sendError.code === "allowance_used" && plan && canUpgrade(plan) ? (
+                    <Link className="btn btn-sm" to="/plans">
+                      Upgrade
+                    </Link>
+                  ) : null}
+                </span>
+              ) : null}
               <button
                 type="button"
                 className="btn btn-ghost btn-icon"
@@ -462,37 +550,44 @@ export default function ChatPage() {
               </button>
             </div>
           ) : null}
-          <Composer
-            ref={composerRef}
-            streaming={thread.streaming}
-            disabledReason={disabledReason}
-            replying={!threadEmpty}
-            selection={selection}
-            canCreateFiles={canCreateFiles}
-            canCreateImages={canCreateImages}
-            enterToSend={preferences.enter_to_send}
-            attachments={attachments.views}
-            onRemoveAttachment={attachments.remove}
-            waiting={attachments.waiting}
-            onDropFiles={(files, folders) => void attachFiles(files, folders, null)}
-            plusMenu={
-              <PlusMenu
-                triggerRef={plusRef}
-                user={user}
-                models={models.models}
-                selectedModel={selectedModel}
-                composerDisabled={disabledReason}
-                plugins={plugins}
-                onStarter={(prefix) => composerRef.current?.insertStarter(prefix)}
-                onAttach={(files, config) => void attachFiles(files, [], config)}
-                onImportGmail={() => setGmailBrowserOpen(true)}
-                onOpenPluginSettings={(pluginId) => openSettings("plugins", pluginId)}
-              />
-            }
-            onSend={handleSend}
-            onStop={thread.stop}
-            onScopeClick={onScopeClick}
-          />
+          {planEnded && user ? (
+            <PlanEndedPanel plan={user.plan} draftKept={draftKept} />
+          ) : (
+            <Composer
+              ref={composerRef}
+              streaming={thread.streaming}
+              disabledReason={disabledReason}
+              replying={!threadEmpty}
+              selection={selection}
+              canCreateFiles={canCreateFiles}
+              canCreateImages={canCreateImages}
+              enterToSend={preferences.enter_to_send}
+              attachments={attachments.views}
+              onRemoveAttachment={attachments.remove}
+              waiting={attachments.waiting}
+              onDropFiles={(files, folders) => void attachFiles(files, folders, null)}
+              plusMenu={
+                <PlusMenu
+                  triggerRef={plusRef}
+                  user={user}
+                  models={models.models}
+                  selectedModel={selectedModel}
+                  composerDisabled={disabledReason}
+                  plugins={plugins}
+                  onStarter={(prefix) => composerRef.current?.insertStarter(prefix)}
+                  onAttach={(files, config) => void attachFiles(files, [], config)}
+                  onImportGmail={() => setGmailBrowserOpen(true)}
+                  onOpenPluginSettings={(pluginId) => openSettings("plugins", pluginId)}
+                />
+              }
+              onSend={handleSend}
+              onStop={thread.stop}
+              onScopeClick={onScopeClick}
+              onDraftChange={(text) => {
+                draftRef.current = text;
+              }}
+            />
+          )}
         </div>
       </main>
 

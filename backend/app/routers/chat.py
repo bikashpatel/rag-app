@@ -10,7 +10,7 @@ from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.db import SessionLocal, get_db
-from app.deps import get_current_user
+from app.deps import current_entitlements, get_entitled_user
 from app.models import (
     Conversation,
     Document,
@@ -37,6 +37,8 @@ from app.plugins.intent import RequestCheck, earlier_user_messages, previous_rep
 from app.routers.conversations import get_owned_conversation
 from app.schemas import MAX_INT, AnswerSource, GeneratedFile, Source
 from app.services import document_tool, image_tool, llm, rag
+from app.services.billing.entitlements import Entitlements
+from app.services.billing.money import allowance_tokens
 from app.services.model_registry import resolve_chat_model
 from app.services.usage import (
     acquire_chat_slot,
@@ -58,7 +60,7 @@ _STOPPED = "Stopped before completion"
 _FAILED = "Something went wrong while generating the answer."
 _NOT_SAVED = "The answer could not be saved."
 _BUDGET_SPENT = (
-    "Your monthly token budget ran out while this answer was being written, so it stops here. Files created above "
+    "This period's chat allowance ran out while this answer was being written, so it stops here. Files created above "
     "are in your documents."
 )
 _DECLINED = "The model declined to continue, so the file wasn't created."
@@ -112,6 +114,7 @@ class _Turn:
     """Everything the stream needs, captured while handling the request."""
 
     user: User
+    ent: Entitlements  # loaded when the request arrived: it holds for the whole answer
     model: LLMModel
     conversation_id: int
     title: str
@@ -126,7 +129,7 @@ class _Turn:
     history_files: dict[int, list[rag.HistoryFile]] = field(default_factory=dict)  # message id -> its files
     # The conversation's images that no answer in `history` lists, so create_document can still embed them.
     earlier_images: list[rag.HistoryFile] = field(default_factory=list)
-    budget_left: int | None = None  # chat tokens left this month when the answer started (None: no budget)
+    budget_left: int | None = None  # the chat allowance left when the answer started (None: unlimited)
     plugin_plan: registry.PluginChatPlan = field(default_factory=registry.PluginChatPlan)
     plugin_notes: dict[int, str] = field(default_factory=dict)  # message id -> the plugins' App note
     history_tainted: bool = False  # an answer of the conversation saw untrusted text (email, plugin output)
@@ -461,9 +464,9 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
     file_max_tokens = plan.max_tokens  # sent by the calls that offer create_document; the max_tokens recovery lowers it
     default_max_tokens = llm.resolve_max_tokens(turn.model)  # what a call without the file tool sends
     files = document_tool.FileSession(
-        turn.user, ctx.sources.entries, answer, file_max_tokens, conversation_id=turn.conversation_id
+        turn.user, ctx.sources.entries, answer, file_max_tokens, conversation_id=turn.conversation_id, ent=turn.ent
     )
-    pictures = image_tool.ImageSession(turn.user, turn.conversation_id, answer)
+    pictures = image_tool.ImageSession(turn.user, turn.conversation_id, answer, turn.ent)
     all_runners: dict[str, ToolRunner] = {
         name: runner
         for name, runner, offered in (
@@ -488,7 +491,8 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
     call_no = 0
     while call_no < max_calls:
         call_no += 1
-        if call_no > 1 and turn.budget_left is not None and answer.usage.total_tokens >= turn.budget_left:
+        spent = allowance_tokens(answer.usage.cost_usd, answer.usage.total_tokens)
+        if call_no > 1 and turn.budget_left is not None and spent >= turn.budget_left:
             answer.error = _BUDGET_SPENT
             return
         offer = bool(tools) and any(runner.can_create() for runner in runners.values()) and call_no < max_calls
@@ -699,25 +703,28 @@ async def _sse_with_keepalive(turn: _Turn) -> AsyncIterator[str]:
 
 @router.post("/stream")
 async def chat_stream(
-    body: ChatRequest, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+    body: ChatRequest, request: Request, user: User = Depends(get_entitled_user), db: AsyncSession = Depends(get_db)
 ) -> StreamingResponse:
-    await check_rate_limit(user)
-    budget_left = await check_budget(db, user)
-    slot = await acquire_chat_slot(user)
+    """402 without access (a conversation started before the plan ended included), then the rate limit, the chat
+    allowance and the answer slot, all by the entitlements loaded now."""
+    ent = current_entitlements(request)
+    await check_rate_limit(user, ent)
+    budget_left = await check_budget(db, user, ent)
+    slot = await acquire_chat_slot(user, ent)
     try:
-        return await _start_turn(body, user, db, slot, budget_left)
+        return await _start_turn(body, user, ent, db, slot, budget_left)
     except BaseException:
         await release_chat_slot(user.id, slot)
         raise
 
 
 async def _start_turn(
-    body: ChatRequest, user: User, db: AsyncSession, slot: str | None, budget_left: int | None
+    body: ChatRequest, user: User, ent: Entitlements, db: AsyncSession, slot: str | None, budget_left: int | None
 ) -> StreamingResponse:
-    model = await resolve_chat_model(db, user, body.model_id)
-    file_plan = await document_tool.plan(db, user, model)
-    image_plan = await image_tool.plan(db, user, model)
-    plugin_plan = await registry.plan_chat(db, user, model)
+    model = await resolve_chat_model(db, user, body.model_id, ent)
+    file_plan = await document_tool.plan(db, user, model, ent)
+    image_plan = await image_tool.plan(db, user, model, ent)
+    plugin_plan = await registry.plan_chat(db, user, model, ent)
 
     history: list[Message] = []
     if body.conversation_id is None:
@@ -749,6 +756,7 @@ async def _start_turn(
     # readable without the request's session because SessionLocal doesn't expire them on commit.
     turn = _Turn(
         user=user,
+        ent=ent,
         model=model,
         conversation_id=conversation.id,
         title=conversation.title,

@@ -71,7 +71,11 @@ async def test_admin_login_and_me(client: ApiClient) -> None:
         "images",
         "cost_usd",
         "monthly_token_limit",
+        "chat_allowance_used",
+        "window_start",
+        "window_end",
     }
+    assert (body["plan"]["state"], body["plan"]["access"]) == ("exempt", True)
 
 
 async def test_models_are_listed_for_users(admin_client: ApiClient) -> None:

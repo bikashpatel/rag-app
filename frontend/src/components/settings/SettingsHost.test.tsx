@@ -82,7 +82,8 @@ describe("SettingsHost", () => {
   it("only the selected tab is a tab stop", async () => {
     await renderHost("/?settings=account");
     const tabs = screen.getAllByRole("tab");
-    expect(tabs.map((tab) => tab.tabIndex)).toEqual([-1, 0, -1, -1]);
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual([-1, 0, -1, -1, -1]);
+    expect(tabs.map((tab) => tab.textContent)).toEqual(["General", "Account", "Plan & billing", "Usage", "Plugins & data"]);
   });
 
   it("closes from the rail's close button, keeping the page and other parameters", async () => {

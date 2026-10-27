@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useId, useRef, useState, type ChangeEvent, type ReactNode, type RefObject } from "react";
 import { api } from "../../api/client";
 import type { ChatModel, DocumentConfig, Me, PluginInfo } from "../../api/types";
-import { formatDayMonth, formatNumber, nextUsageReset } from "../../lib/format";
+import { formatNumber } from "../../lib/format";
+import LockedMenuItem from "../billing/LockedHint";
+import { isStacked, istDayMonth } from "../billing/planText";
 import { pluginStatus } from "../connections/pluginStore";
 import { BYTES_PER_MB } from "../documents/fileTypes";
 import Menu, { MenuGroup, MenuItem } from "../ui/Menu";
@@ -19,7 +21,8 @@ import {
 import { STARTERS } from "./starters";
 
 // The composer's "+" menu (functional brief 9.1, visual spec 6.15). Items that don't exist for the user are hidden;
-// items that are only unavailable now stay, disabled, with the reason as their visible description (U9).
+// items that are only unavailable now stay, disabled, with the reason as their visible description (U9). A feature the
+// server offers but the plan doesn't include is one locked item that leads to the plans (plans-billing.md 8.6).
 
 /** An image needs a document slot and about this much storage; a created file, this much (9.1). */
 const IMAGE_STORAGE_BYTES = 8 * BYTES_PER_MB;
@@ -69,6 +72,17 @@ function storageReason(state: ConfigState, needs: number): string | null {
 
 function capability(plugin: PluginInfo, id: string) {
   return plugin.capabilities.find((item) => item.id === id);
+}
+
+/** "You've used this period's 30 images." and when the count starts again (8.9). */
+function imagesUsedUp(user: Me, limit: number): string {
+  const used = `You've used this period's ${formatNumber(limit)} images.`;
+  const { plan, usage } = user;
+  if (plan.open_ended || plan.period_end === null) return `${used} The count starts again on ${istDayMonth(usage.window_end)}.`;
+  if (isStacked(plan) || plan.next_plan !== null) {
+    return `${used} The count starts again with your next period on ${istDayMonth(usage.window_end)}.`;
+  }
+  return plan.valid_through ? `${used} Your plan is valid through ${istDayMonth(plan.valid_through)}.` : used;
 }
 
 export default function PlusMenu({
@@ -146,38 +160,44 @@ export default function PlusMenu({
   const config = configState.kind === "ready" ? configState.config : lastConfig.current;
   const attachDescription = config ? `Upload to My documents · up to ${config.max_upload_mb} MB each` : "Upload to My documents";
 
-  // Create an image
-  const imagesOffered = models?.some((model) => model.can_create_images) ?? false;
+  // Create an image: offered by the server; in the plan, or one locked item naming the plan that has it.
+  const plan = user?.plan ?? null;
+  const imagesLocked = plan !== null && !plan.features.images ? plan.unlock.images : null;
+  const imagesOffered = (models?.some((model) => model.can_create_images) ?? false) && (plan?.features.images ?? true);
+  const imagesShown = (models?.some((model) => model.can_create_images) ?? false) && (imagesOffered || imagesLocked !== null);
   const imageLimit = user && !user.is_admin ? user.limits.monthly_image_limit : 0;
   const imagesUsed = user?.usage.images ?? 0;
-  const resets = user ? formatDayMonth(nextUsageReset(user.usage.month)) : "";
   const imageReason =
     composerDisabled ??
     modelMissing ??
     (selectedModel && !selectedModel.can_create_images
       ? `${modelName} can't create images. Pick a model marked Images.`
       : null) ??
-    (imageLimit > 0 && imagesUsed >= imageLimit
-      ? `You've used this month's ${formatNumber(imageLimit)} images. The count starts again on ${resets}.`
-      : null) ??
+    (user && imageLimit > 0 && imagesUsed >= imageLimit ? imagesUsedUp(user, imageLimit) : null) ??
     storageReason(configState, IMAGE_STORAGE_BYTES);
   const imageDescription =
     imageLimit > 0
-      ? `${formatNumber(Math.max(imageLimit - imagesUsed, 0))} of ${formatNumber(imageLimit)} left this month`
+      ? `${formatNumber(Math.max(imageLimit - imagesUsed, 0))} of ${formatNumber(imageLimit)} left this period`
       : "Saved to My documents";
 
   // Create a document
-  const filesOffered = models?.some((model) => model.can_create_files) ?? false;
+  const filesLocked = plan !== null && !plan.features.files ? plan.unlock.files : null;
+  const filesServed = models?.some((model) => model.can_create_files) ?? false;
+  const filesOffered = filesServed && (plan?.features.files ?? true);
+  const filesShown = filesServed && (filesOffered || filesLocked !== null);
   const filesReason =
     composerDisabled ??
     modelMissing ??
     (selectedModel && !selectedModel.can_create_files ? `${modelName} can't create files. Pick a model marked Files.` : null) ??
     storageReason(configState, FILE_STORAGE_BYTES);
 
-  // Gmail: hidden unless set up and turned on; one Connect or Reconnect item until connected.
+  // Gmail: hidden unless set up and turned on; one locked item outside the plan; one Connect or Reconnect item until
+  // connected.
   const gmail = plugins?.find((plugin) => plugin.id === "gmail") ?? null;
   const gmailStatus = gmail ? pluginStatus(gmail) : null;
-  const gmailShown = gmail !== null && gmailStatus !== "not_configured" && gmailStatus !== "disabled";
+  const gmailLocked = gmailStatus === "not_in_plan" ? (plan?.unlock.plugins.gmail ?? null) : null;
+  const gmailShown =
+    gmail !== null && gmailStatus !== "not_configured" && gmailStatus !== "disabled" && gmailStatus !== "not_in_plan";
   const read = gmail ? capability(gmail, "read") : undefined;
   const draft = gmail ? capability(gmail, "draft") : undefined;
   const chatReason = (granted: boolean | undefined, what: string): string | null =>
@@ -222,8 +242,13 @@ export default function PlusMenu({
           Attach files…
         </MenuItem>
 
-        {imagesOffered || filesOffered ? (
+        {imagesShown || filesShown ? (
           <MenuGroup label="Create">
+            {imagesShown && !imagesOffered && imagesLocked ? (
+              <LockedMenuItem icon={<ImageIcon size={18} />} plan={imagesLocked}>
+                Create an image
+              </LockedMenuItem>
+            ) : null}
             {imagesOffered ? (
               <MenuItem
                 icon={
@@ -237,6 +262,11 @@ export default function PlusMenu({
               >
                 Create an image
               </MenuItem>
+            ) : null}
+            {filesShown && !filesOffered && filesLocked ? (
+              <LockedMenuItem icon={<FileIcon size={18} />} plan={filesLocked}>
+                Create a document
+              </LockedMenuItem>
             ) : null}
             {filesOffered ? (
               <>
@@ -274,6 +304,13 @@ export default function PlusMenu({
           </MenuGroup>
         ) : null}
 
+        {gmailLocked ? (
+          <MenuGroup label="Gmail">
+            <LockedMenuItem icon={<MailIcon size={18} />} iconClassName="chat-plus-gmail" plan={gmailLocked}>
+              Search, draft and import email
+            </LockedMenuItem>
+          </MenuGroup>
+        ) : null}
         {gmailShown && gmail ? (
           gmailStatus === "available" || gmailStatus === "reconnect_needed" ? (
             <MenuGroup label="Gmail">

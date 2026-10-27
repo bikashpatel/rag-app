@@ -136,6 +136,23 @@ describe("SystemTab", () => {
     expect(tiles()["Free for uploads"]).toBeUndefined();
   });
 
+  it("lists the payments check like the others (plans-billing-visual.md 9.6)", async () => {
+    const base = makeSystemStatus();
+    stubSystem(
+      makeSystemStatus({
+        status: "warning",
+        checks: [
+          ...base.checks,
+          { id: "billing", label: "Payments", status: "warning", detail: "A payment of ₹2,000 needs review" },
+        ],
+      }),
+    );
+    render(<SystemTab />);
+    const notice = (await screen.findByText(/1 check needs/)).closest(".ui-notice");
+    expect(notice).toHaveTextContent("1 check needs attention: Payments.");
+    expect(checks()).toContain("Payments: Warning · A payment of ₹2,000 needs review");
+  });
+
   it("says when the backup service hasn't reported and the monitor isn't running", async () => {
     const base = makeSystemStatus();
     stubSystem(

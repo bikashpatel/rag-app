@@ -1,6 +1,6 @@
 """Importing a file from a plugin's provider into the user's private documents (brief 4.6, P16): supported extensions
-only, the user's upload limits (the admin is exempt), identical bytes linking the existing private document, and a
-provenance row ("Imported from Gmail"); then the normal ingestion."""
+only, the upload limits of the user's plan (the admin is exempt), identical bytes linking the existing private
+document, and a provenance row ("Imported from Gmail"); then the normal ingestion."""
 
 import asyncio
 import hashlib
@@ -18,10 +18,10 @@ from app.plugins import tasks
 from app.plugins.base import Plugin
 from app.schemas import DocumentItem
 from app.services import storage
+from app.services.billing.entitlements import Entitlements
 from app.services.ingestion import enqueue_document
 from app.services.model_registry import get_active_embedding_model
 from app.services.parsing import LEGACY_EXTENSIONS, SUPPORTED_EXTENSIONS
-from app.services.usage import user_limits
 
 logger = logging.getLogger(__name__)
 
@@ -48,10 +48,12 @@ class _Refused(Exception):
     """A quota stops the import; str() is the reason."""
 
 
-async def store_import(user_id: int, plugin: Plugin, account_email: str, file: ImportFile) -> ImportOutcome:
-    """Store one file as a private document of the user. Never raises for user errors; unexpected errors are logged
-    and become `failed`. Writing, the locked checks, the commit and the enqueue run in a task of their own awaited
-    through a shield, so cancelling the caller leaves no orphan file or half-done commit."""
+async def store_import(
+    user_id: int, plugin: Plugin, account_email: str, file: ImportFile, ent: Entitlements
+) -> ImportOutcome:
+    """Store one file as a private document of the user, within the limits of `ent`. Never raises for user errors;
+    unexpected errors are logged and become `failed`. Writing, the locked checks, the commit and the enqueue run in a
+    task of their own awaited through a shield, so cancelling the caller leaves no orphan file or half-done commit."""
     extension = storage.extension_of(file.filename)
     if extension not in SUPPORTED_EXTENSIONS:
         if extension in LEGACY_EXTENSIONS:
@@ -68,8 +70,8 @@ async def store_import(user_id: int, plugin: Plugin, account_email: str, file: I
             user = await db.get(User, user_id)
         if user is None:
             return ImportOutcome("failed", None, "The account no longer exists.")
-        limit = user_limits(user)["max_upload_mb"]
-        if not user.is_admin and len(file.data) > limit * _MIB:
+        limit = ent.limits.max_upload_mb
+        if not ent.is_admin and len(file.data) > limit * _MIB:
             return ImportOutcome(
                 "failed", None, f"The file is {len(file.data) / _MIB:.1f} MB, over your limit of {limit} MB per file."
             )
@@ -79,7 +81,7 @@ async def store_import(user_id: int, plugin: Plugin, account_email: str, file: I
         return ImportOutcome("failed", None, _SERVER_ERROR)
     filename = storage.display_filename(file.filename, extension)
     task = tasks.spawn(
-        _store(user_id, plugin, account_email, file, filename, extension, sha256), name=f"{plugin.id} import"
+        _store(user_id, plugin, account_email, file, filename, extension, sha256, ent), name=f"{plugin.id} import"
     )
     return await asyncio.shield(task)
 
@@ -89,7 +91,14 @@ def _sha256(data: bytes) -> str:
 
 
 async def _store(
-    user_id: int, plugin: Plugin, account_email: str, file: ImportFile, filename: str, extension: str, sha256: str
+    user_id: int,
+    plugin: Plugin,
+    account_email: str,
+    file: ImportFile,
+    filename: str,
+    extension: str,
+    sha256: str,
+    ent: Entitlements,
 ) -> ImportOutcome:
     stored_name = storage.new_stored_name(extension)
     committed = False
@@ -107,8 +116,8 @@ async def _store(
                     .limit(1)
                 )
                 if duplicate is None:
-                    if not user.is_admin:
-                        await _check_quota(db, user, len(file.data))
+                    if not ent.is_admin:
+                        await _check_quota(db, user, len(file.data), ent)
                     doc = Document(
                         owner=user,
                         scope="private",
@@ -164,18 +173,18 @@ def _write(stored_name: str, data: bytes) -> None:
         target.write(data)
 
 
-async def _check_quota(db: AsyncSession, user: User, size: int) -> None:
-    limits = user_limits(user)
-    if not (limits["max_documents"] or limits["max_storage_mb"]):
+async def _check_quota(db: AsyncSession, user: User, size: int, ent: Entitlements) -> None:
+    limits = ent.limits
+    if not (limits.max_documents or limits.max_storage_mb):
         return
     count, used = await storage.owned_totals(db, user.id)
-    if limits["max_documents"] and count >= limits["max_documents"]:
+    if limits.max_documents and count >= limits.max_documents:
         raise _Refused(
-            f"You've reached your limit of {limits['max_documents']} documents. Delete a document to import another."
+            f"You've reached your limit of {limits.max_documents} documents. Delete a document to import another."
         )
-    if limits["max_storage_mb"] and used + size > limits["max_storage_mb"] * _MIB:
+    if limits.max_storage_mb and used + size > limits.max_storage_mb * _MIB:
         raise _Refused(
-            f"This would exceed your storage limit of {limits['max_storage_mb']} MB. Delete some documents to free up "
+            f"This would exceed your storage limit of {limits.max_storage_mb} MB. Delete some documents to free up "
             "space."
         )
 

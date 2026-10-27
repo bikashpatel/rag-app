@@ -16,6 +16,7 @@ from app.db import Base, make_engine
 from app.models import Conversation, Document, LLMModel, LoginEvent, Message, UsageEvent, User, UserPreference
 from app.schemas_account import PreferencesUpdate
 from app.services import account, export
+from app.services.billing import entitlements
 
 pytestmark = pytest.mark.postgres
 
@@ -95,7 +96,7 @@ async def test_usage_days_are_utc_days(engines: list[AsyncEngine], monkeypatch: 
     async with AsyncSession(engines[0], expire_on_commit=False) as db:
         user = await db.get(User, user_id)
         assert user is not None
-        usage = await account.my_usage(db, user)
+        usage = await account.my_usage(db, user, await entitlements.load(db, user))  # no plan: the UTC month
 
     days = {day.date: day for day in usage.daily}
     assert len(days) == 18 and days["2026-10-05"].chat_tokens == 10 and days["2026-10-06"].chat_tokens == 0
@@ -116,7 +117,7 @@ async def test_concurrent_first_preference_saves_both_land(engines: list[AsyncEn
             async with AsyncSession(engine, expire_on_commit=False) as db:
                 user = await db.get(User, user_id)
                 assert user is not None
-                await account.update_preferences(db, user, update)
+                await account.update_preferences(db, user, update, await entitlements.load(db, user))
 
         await asyncio.gather(
             save(engines[0], PreferencesUpdate(theme="dark")), save(engines[1], PreferencesUpdate(accent="sage"))
@@ -154,7 +155,8 @@ async def test_the_export_reads(engines: list[AsyncEngine]) -> None:
         assert user is not None
         records = await export._conversation_page(db, user, [conversation_id, conversation_id + 1])
         documents = await export._documents(db, user)
-        profile = await export._account(db, user, datetime.now(timezone.utc))
+        profile = await export._account(db, user, await entitlements.load(db, user), datetime.now(timezone.utc))
+        billing = await export._billing(db, user)
 
     assert list(records) == [conversation_id] and [m["content"] for m in records[conversation_id]["messages"]] == [
         "Q",
@@ -162,3 +164,4 @@ async def test_the_export_reads(engines: list[AsyncEngine]) -> None:
     ]
     assert [document["filename"] for document in documents] == ["a.txt"]
     assert profile["username"] == "smoke-pg" and profile["plugin_connections"] == []
+    assert billing == {"periods": [], "complimentary": None, "orders": [], "payments": [], "profile": None}

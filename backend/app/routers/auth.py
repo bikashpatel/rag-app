@@ -16,14 +16,17 @@ from app.deps import (
     current_session_expiry,
     current_session_id,
     get_current_user,
+    get_entitlements,
     set_session_cookie,
 )
 from app.models import User, utcnow
 from app.redis_client import get_redis
-from app.schemas import Me, UsageSummary, UserLimits
+from app.schemas_account import Me
 from app.security import hash_password_async, needs_rehash, verify_password_async
 from app.services import account
-from app.services.usage import monthly_image_limit, usage_summary, user_limits
+from app.services.billing import entitlements
+from app.services.billing.entitlements import Entitlements
+from app.services.usage import usage_summary
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -88,14 +91,15 @@ async def _count_attempt(redis: Redis, limits: dict[str, int]) -> None:
     )
 
 
-async def build_me(db: AsyncSession, user: User) -> Me:
+async def build_me(db: AsyncSession, user: User, ent: Entitlements) -> Me:
     return Me(
         id=user.id,
         username=user.username,
         is_admin=user.is_admin,
-        limits=UserLimits(**user_limits(user), monthly_image_limit=await monthly_image_limit(db, user)),
-        usage=UsageSummary(**await usage_summary(db, user)),
-        preferences=await account.read_preferences(db, user),
+        limits=entitlements.user_limits(ent),
+        usage=await usage_summary(db, user, ent),
+        preferences=await account.read_preferences(db, user, ent),
+        plan=await entitlements.plan_access(db, user, ent),
     )
 
 
@@ -121,7 +125,7 @@ async def login(body: LoginRequest, request: Request, response: Response, db: As
     )
     await db.commit()
     set_session_cookie(response, user, event.id)
-    return await build_me(db, user)
+    return await build_me(db, user, await entitlements.load(db, user))
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
@@ -130,8 +134,20 @@ async def logout(response: Response) -> None:
 
 
 @router.get("/me")
-async def me(user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)) -> Me:
-    return await build_me(db, user)
+async def me(
+    user: User = Depends(get_current_user),
+    ent: Entitlements = Depends(get_entitlements),
+    db: AsyncSession = Depends(get_db),
+) -> Me:
+    return await build_me(db, user, ent)
+
+
+@router.get("/upload-allowed", status_code=status.HTTP_204_NO_CONTENT)
+async def upload_allowed(ent: Entitlements = Depends(get_entitlements)) -> None:
+    """nginx asks this before reading an upload's body (FastAPI parses it before route dependencies run): 204 when
+    the session may upload now (an active plan, or the admin), else 403, which nginx answers as 402 plan_required."""
+    if not ent.access:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Choose a plan to upload documents.")
 
 
 async def _lock_session_user(db: AsyncSession, user: User) -> None:

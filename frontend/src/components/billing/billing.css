@@ -1,0 +1,581 @@
+/* billing- pieces outside the plan card: policy links, banners, locked items, Settings → Plan & billing, "Your data"
+   and the plan-ended panel (plans-billing-visual.md 3.5, 7, 8 and its class map). Colours only from global.css. */
+
+.billing-policy-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  margin: 0;
+  padding: 0;
+  font-size: 13.5px;
+  list-style: none;
+}
+.billing-policy-links a {
+  color: var(--text-2);
+}
+
+/* ---------- Banners under the chat's top bar (7.1) ---------- */
+.billing-banner {
+  align-items: center;
+}
+.billing-banner > svg {
+  margin-top: 0;
+}
+.billing-banner .btn-sm {
+  flex: none;
+  height: 30px;
+  margin: -4px 0;
+}
+.billing-banner .billing-banner-dismiss {
+  width: 28px;
+  height: 28px;
+}
+.billing-notice-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.billing-notice-error {
+  display: block;
+  margin-top: 4px;
+  color: var(--danger);
+}
+
+/* ---------- Locked items, the lock badge and the Upgrade pill (3.5, 7.2) ---------- */
+.billing-locked-icon {
+  position: relative;
+}
+.billing-lock-badge {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--border-strong);
+  color: var(--text-2);
+}
+.billing-upgrade-pill {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  height: 28px;
+  padding: 0 8px 0 12px;
+  border-radius: var(--radius-pill);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 13.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+.ui-menu-item .billing-upgrade-pill {
+  margin-left: 4px;
+}
+.billing-locked-item .ui-menu-end {
+  align-self: center;
+}
+.billing-more-models > svg:first-child {
+  color: var(--text-3);
+}
+.billing-rate-tag {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- The plan-ended panel in the composer's place (7.7) ---------- */
+.billing-ended {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  max-width: 776px;
+  margin: 0 auto;
+  padding: 18px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  animation: fade-in var(--dur-2) ease-out;
+}
+.billing-ended-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+.billing-ended-main {
+  flex: 1;
+  min-width: 0;
+}
+.billing-ended-title {
+  margin: 0;
+  color: var(--text);
+  font-size: 16.5px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+/* Focused by the page to announce the panel; it isn't a control, so it shows no ring. */
+.billing-ended-title:focus-visible {
+  box-shadow: none;
+}
+.billing-ended-text {
+  margin: 2px 0 0;
+  color: var(--text-2);
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+.billing-ended-draft {
+  margin: 4px 0 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.billing-ended-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+/* ---------- Settings → Plan & billing: the plan card (8.2) ---------- */
+.billing-current {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.billing-current-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+.billing-current-head:last-child {
+  border-bottom: 0;
+}
+.billing-plan-tile {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 52px;
+  height: 52px;
+  border-radius: 15px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.billing-plan-tile-none {
+  border: 1.5px dashed var(--border-strong);
+  background: transparent;
+  color: var(--text-3);
+}
+.billing-current-main {
+  flex: 1;
+  min-width: 0;
+}
+.billing-current-name {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 24px;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.012em;
+}
+.billing-current-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: 14px;
+}
+.billing-current-meta .badge > svg {
+  margin-right: 1px;
+}
+.billing-days {
+  flex: none;
+  text-align: right;
+}
+.billing-days b {
+  display: block;
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 30px;
+  font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -0.015em;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.billing-days span {
+  color: var(--text-3);
+  font-size: 13.5px;
+}
+.billing-timeline {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 20px;
+  color: var(--text-3);
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+.billing-timeline b {
+  color: var(--text);
+  font-weight: 600;
+}
+.billing-current-body {
+  margin: 0;
+  padding: 16px 20px;
+  color: var(--text-2);
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+.billing-current-notice {
+  margin: 0 20px 14px;
+}
+.billing-facts {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  margin: 0;
+  border-top: 1px solid var(--border);
+}
+.billing-facts dt,
+.billing-facts dd {
+  margin: 0;
+  padding: 11px 20px;
+  border-top: 1px solid var(--border);
+  font-size: 14.5px;
+}
+.billing-facts dt:first-of-type,
+.billing-facts dd:first-of-type {
+  border-top: 0;
+}
+.billing-facts dt {
+  color: var(--text-3);
+}
+.billing-facts dd {
+  padding-left: 0;
+  color: var(--text);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.billing-facts dd small {
+  display: block;
+  margin-top: 1px;
+  color: var(--text-3);
+  font-size: 13.5px;
+  font-weight: 400;
+}
+.billing-current-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+  padding: 14px 20px;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.billing-current-foot p {
+  flex: 1 1 240px;
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13.5px;
+}
+.billing-current-foot .billing-foot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-left: auto;
+}
+.billing-pending {
+  margin-bottom: 14px;
+}
+
+/* ---------- Lists: coming up, "Your data" (8.3, 8.5) ---------- */
+.billing-list {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  list-style: none;
+}
+.billing-list-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.billing-list-row:last-child {
+  border-bottom: 0;
+}
+.billing-list-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.billing-list-text {
+  display: flex;
+  flex: 1 1 200px;
+  flex-direction: column;
+  min-width: 0;
+}
+.billing-list-text b {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.billing-list-text span {
+  color: var(--text-3);
+  font-size: 13.5px;
+}
+.billing-list-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-left: auto;
+}
+.billing-list-confirm {
+  display: flex;
+  flex-basis: 100%;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--danger-soft);
+  color: var(--text);
+  font-size: 14px;
+}
+.billing-list-confirm p {
+  flex: 1 1 220px;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.billing-list-more {
+  margin-top: 8px;
+}
+.billing-yourdata {
+  margin-bottom: 8px;
+}
+.billing-yourdata .error-text {
+  margin-top: 8px;
+}
+
+/* ---------- Receipt details and the payment history (8.3) ---------- */
+.billing-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+  margin-top: 14px;
+}
+.billing-form .error-text {
+  margin-top: 6px;
+}
+.billing-form-actions {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.billing-form-actions p {
+  flex: 1 1 260px;
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13.5px;
+}
+.billing-table td {
+  white-space: nowrap;
+}
+.billing-table td.billing-table-desc {
+  white-space: normal;
+}
+.billing-table-desc b {
+  display: block;
+  color: var(--text);
+  font-weight: 600;
+}
+.billing-table-desc small {
+  color: var(--text-3);
+  font-size: 13px;
+}
+.billing-table-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.billing-table td.billing-table-status {
+  display: table-cell;
+}
+.billing-table-status .badge + .badge {
+  margin-left: 4px;
+}
+.billing-receipt-link {
+  font-variant-numeric: tabular-nums;
+}
+.billing-table .btn-xs {
+  margin: -4px 0;
+}
+.billing-skeleton-row {
+  display: block;
+  height: 44px;
+  margin-top: 8px;
+}
+.billing-help {
+  margin: 18px 0 8px;
+  color: var(--text-3);
+  font-size: 13.5px;
+}
+
+@media (max-width: 799.98px) {
+  .billing-current-head {
+    flex-wrap: wrap;
+    padding: 16px;
+  }
+  .billing-plan-tile {
+    width: 44px;
+    height: 44px;
+    border-radius: 13px;
+  }
+  .billing-days {
+    display: flex;
+    flex-basis: 100%;
+    align-items: baseline;
+    gap: 8px;
+    padding-left: 60px;
+    text-align: left;
+  }
+  .billing-days b {
+    display: inline;
+    font-size: 22px;
+  }
+  .billing-timeline {
+    padding: 14px 16px;
+  }
+  .billing-current-body {
+    padding: 14px 16px;
+  }
+  .billing-current-notice {
+    margin: 0 16px 14px;
+  }
+  .billing-facts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .billing-facts dt {
+    padding: 11px 16px 0;
+  }
+  .billing-facts dd {
+    padding: 2px 16px 11px;
+    border-top: 0;
+  }
+  .billing-current-foot {
+    padding: 14px 16px;
+  }
+  .billing-current-foot .billing-foot-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+  .billing-current-foot .billing-foot-actions .btn {
+    flex: 1;
+  }
+  .billing-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .billing-ended {
+    padding: 16px;
+  }
+  .billing-ended-actions .btn {
+    flex: 1;
+  }
+  .billing-banner .billing-banner-dismiss {
+    margin-left: auto;
+  }
+}
+
+/* Payment history: a table on wide panels; stacked rows when the Settings panel is narrow. */
+@container settings-panel (max-width: 600px) {
+  .billing-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+  }
+  .billing-table,
+  .billing-table tbody,
+  .billing-table td {
+    display: block;
+  }
+  .billing-table tr {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 2px 12px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .billing-table tbody tr:last-child {
+    border-bottom: 0;
+  }
+  .billing-table td {
+    padding: 0;
+    border: 0;
+  }
+  .billing-table tbody tr:hover td {
+    background: transparent;
+  }
+  .billing-table .billing-table-desc {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .billing-table .billing-table-amount {
+    grid-column: 2;
+    grid-row: 1;
+    color: var(--text);
+    font-weight: 650;
+  }
+  .billing-table .billing-table-date {
+    display: none;
+  }
+  .billing-table td.billing-table-status {
+    display: block;
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: end;
+  }
+  .billing-table .billing-table-receipt {
+    grid-column: 1;
+    grid-row: 2;
+  }
+  .billing-table .billing-table-receipt .btn {
+    margin-left: -8px;
+  }
+}
+
+@media (forced-colors: active) {
+  .billing-lock-badge,
+  .billing-upgrade-pill {
+    border: 1px solid CanvasText;
+  }
+}

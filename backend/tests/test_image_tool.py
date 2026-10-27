@@ -21,8 +21,10 @@ from app.config import settings
 from app.db import SessionLocal, make_engine
 from app.models import LLMModel, UsageEvent, User
 from app.services import filegen, image_tool, llm, storage
+from app.services.billing import entitlements
+from app.services.billing.entitlements import Entitlements
 from app.services.document_tool import ToolInputError
-from app.services.usage import images_this_month, month_start
+from app.services.usage import images_in_window, month_start
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
@@ -437,6 +439,11 @@ async def active_image_model() -> LLMModel:
         return model
 
 
+async def entitlements_of(user: User) -> Entitlements:
+    async with SessionLocal() as db:
+        return await entitlements.load(db, user)
+
+
 async def image_events(user_id: int) -> list[UsageEvent]:
     async with SessionLocal() as db:
         return list(
@@ -447,10 +454,11 @@ async def image_events(user_id: int) -> list[UsageEvent]:
 async def test_concurrent_reservations_with_one_image_left(create_user: CreateUser) -> None:
     await create_user("alice", monthly_image_limit=2)
     alice, model = await user_row("alice"), await active_image_model()
-    first = await image_tool.reserve(alice, model)
+    ent = await entitlements_of(alice)
+    first = await image_tool.reserve(alice, model, ent)
     assert first.left == 1
 
-    results = await asyncio.gather(*(image_tool.reserve(alice, model) for _ in range(2)), return_exceptions=True)
+    results = await asyncio.gather(*(image_tool.reserve(alice, model, ent) for _ in range(2)), return_exceptions=True)
     reserved = [result for result in results if isinstance(result, image_tool.Reservation)]
     refused = [result for result in results if isinstance(result, image_tool.ImageLimitReached)]
     assert len(reserved) == 1 and len(refused) == 1 and refused[0].limit == 2 and reserved[0].left == 0
@@ -468,15 +476,17 @@ async def test_the_admin_and_unlimited_users_are_never_refused(
     await create_user("bob", monthly_image_limit=0)
     bob, admin, model = await user_row("bob"), await user_row("admin"), await active_image_model()
     for user in (bob, admin):
+        ent = await entitlements_of(user)
         for _ in range(3):
-            assert (await image_tool.reserve(user, model)).left is None
+            assert (await image_tool.reserve(user, model, ent)).left is None
     assert len(await image_events(admin.id)) == 3
 
 
 async def test_settle_and_release(create_user: CreateUser) -> None:
     await create_user("alice")
     alice, model = await user_row("alice"), await active_image_model()
-    kept, dropped = await image_tool.reserve(alice, model), await image_tool.reserve(alice, model)
+    ent = await entitlements_of(alice)
+    kept, dropped = await image_tool.reserve(alice, model, ent), await image_tool.reserve(alice, model, ent)
     await image_tool.settle(kept.event_id, llm.Usage(50, 272, 0.00841))
     await image_tool.release(dropped.event_id)
     [event] = await image_events(alice.id)
@@ -484,7 +494,7 @@ async def test_settle_and_release(create_user: CreateUser) -> None:
     assert event.cost_usd == pytest.approx(0.00841)
 
 
-async def test_the_count_follows_the_utc_month(create_user: CreateUser) -> None:
+async def test_the_count_follows_the_utc_month_of_an_open_ended_plan(create_user: CreateUser) -> None:
     await create_user("alice")
     alice = await user_row("alice")
     start = month_start()
@@ -493,7 +503,7 @@ async def test_the_count_follows_the_utc_month(create_user: CreateUser) -> None:
             db.add(UsageEvent(user_id=alice.id, model_name="m", kind="image", created_at=created))
         db.add(UsageEvent(user_id=alice.id, model_name="m", kind="chat", created_at=start))
         await db.commit()
-        assert await images_this_month(db, alice.id) == 2
+        assert await images_in_window(db, alice.id, await entitlements.load(db, alice)) == 2
 
 
 @pytest.mark.postgres
@@ -527,10 +537,7 @@ async def test_the_row_lock_alone_serializes_reservations_across_processes(monke
             user = User(username="smoke-pg", password_hash="x", is_admin=False)
             model = LLMModel(display_name="GPT Image 2", litellm_model="openai/gpt-image-2", kind="image")
             db.add_all([user, model])
-            await db.flush()
-            from app.models import UserImageLimit
-
-            db.add(UserImageLimit(user_id=user.id, monthly_image_limit=1))
+            user.monthly_image_limit = 1
             await db.commit()
         for attempt in range(5):
             async with AsyncSession(engines[0]) as db:
@@ -540,7 +547,8 @@ async def test_the_row_lock_alone_serializes_reservations_across_processes(monke
             async def one(engine_index: int) -> image_tool.Reservation | BaseException:
                 async with AsyncSession(engines[engine_index], expire_on_commit=False) as db:
                     try:
-                        return await image_tool._reserve(db, user, model)
+                        # No plan in this database: the override of 1 is the limit
+                        return await image_tool._reserve(db, user, model, await entitlements.load(db, user))
                     except image_tool.ImageLimitReached as exc:
                         return exc
 

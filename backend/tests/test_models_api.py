@@ -22,6 +22,9 @@ GPT_MINI = "GPT-5.4 mini"
 SMALL = "OpenAI text-embedding-3-small"
 LARGE = "OpenAI text-embedding-3-large"
 
+# ×rate against the chat allowance (plans-billing 3.3): each model's blended price ÷ $3.20 per million
+RATES = {OPUS: 2.0, SONNET: 1.0, HAIKU: 0.05, GPT: 2.7, GPT_MINI: 0.41}
+
 NOT_ALLOWED = {"detail": "You are not allowed to use this model."}
 NOT_AVAILABLE = {"detail": "This model is not available."}
 
@@ -65,11 +68,15 @@ async def test_unrestricted_user_gets_every_enabled_chat_model_default_first(
     # Every seeded chat model supports function calling; CHAT_IMAGE_TOOLS is off in the tests unless asked for.
     files = {"can_create_files": True, "can_create_images": False, "supports_tools": True}
     assert models == [
-        {"id": model_ids[OPUS], "display_name": OPUS, "provider": "anthropic", "is_default": True, **files},
-        {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": False, **files},
-        {"id": model_ids[SONNET], "display_name": SONNET, "provider": "anthropic", "is_default": False, **files},
-        {"id": model_ids[GPT_MINI], "display_name": GPT_MINI, "provider": "openai", "is_default": False, **files},
-        {"id": model_ids[GPT], "display_name": GPT, "provider": "openai", "is_default": False, **files},
+        {"id": model_ids[name], "display_name": name, "provider": provider, "is_default": name == OPUS, **files}
+        | {"allowance_rate": RATES[name]}
+        for name, provider in (
+            (OPUS, "anthropic"),
+            (HAIKU, "anthropic"),
+            (SONNET, "anthropic"),
+            (GPT_MINI, "openai"),
+            (GPT, "openai"),
+        )
     ]
 
 
@@ -106,16 +113,21 @@ async def test_default_model_comes_first_and_the_rest_sort_by_name_ignoring_case
 
 
 @pytest.mark.parametrize(
-    ("litellm_model", "provider", "can_create_files"),
+    ("litellm_model", "provider", "can_create_files", "rate"),
     [
-        ("ollama/llama3.1", "ollama", True),  # LiteLLM's model map says these two support function calling
-        ("gpt-4o-mini", "openai", True),
-        ("azure/my-deployment/v2", "azure", False),
-        ("openrouter/anthropic/claude-sonnet", "openrouter", False),
+        ("ollama/llama3.1", "ollama", True, None),  # LiteLLM's model map says these two support function calling
+        ("gpt-4o-mini", "openai", True, 0.068),  # and has this one's price
+        ("azure/my-deployment/v2", "azure", False, None),
+        ("openrouter/anthropic/claude-sonnet", "openrouter", False, None),
     ],
 )
 async def test_provider_is_the_prefix_of_the_litellm_model(
-    litellm_model: str, provider: str, can_create_files: bool, admin_client: ApiClient, create_user: CreateUser
+    litellm_model: str,
+    provider: str,
+    can_create_files: bool,
+    rate: float | None,
+    admin_client: ApiClient,
+    create_user: CreateUser,
 ) -> None:
     user = await create_user()
     created = await admin_client.post(
@@ -133,6 +145,7 @@ async def test_provider_is_the_prefix_of_the_litellm_model(
         "can_create_files": can_create_files,
         "can_create_images": False,
         "supports_tools": can_create_files,  # CHAT_FILE_TOOLS is on: files follow tool support
+        "allowance_rate": rate,  # None: no price, it counts plain tokens
     }
 
 
@@ -144,9 +157,12 @@ async def test_restricted_user_gets_only_allowed_enabled_models(
     await patch_model(admin_client, model_ids[SONNET], enabled=False)
 
     files = {"can_create_files": True, "can_create_images": False, "supports_tools": True}
+    # Without the server's default among them, the first is the default
     assert await listed(user) == [
-        {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": False, **files},
-        {"id": model_ids[GPT], "display_name": GPT, "provider": "openai", "is_default": False, **files},
+        {"id": model_ids[HAIKU], "display_name": HAIKU, "provider": "anthropic", "is_default": True, **files}
+        | {"allowance_rate": RATES[HAIKU]},
+        {"id": model_ids[GPT], "display_name": GPT, "provider": "openai", "is_default": False, **files}
+        | {"allowance_rate": RATES[GPT]},
     ]
 
     await patch_model(admin_client, model_ids[GPT], is_default=True)

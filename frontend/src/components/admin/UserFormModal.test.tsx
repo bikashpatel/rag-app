@@ -3,8 +3,10 @@ import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminModel, AdminUser, AdminUserCreate, AdminUserUpdate } from "../../api/types";
-import { makeAdminConfig, makeAdminModel, makeAdminUser } from "../../test/fixtures";
-import { deferred, errorResponse, stubFetch, type FetchCall } from "../../test/http";
+import { makeAdminUserPlan, makeSeededAdminPlans } from "../../test/adminTabs";
+import { makeUserBilling } from "../../test/billing";
+import { makeAdminConfig, makeAdminModel, makeAdminUser, makeLimits } from "../../test/fixtures";
+import { deferred, errorResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
 import UserFormModal from "./UserFormModal";
 
 const chatModels: AdminModel[] = [
@@ -17,6 +19,7 @@ const chatModels: AdminModel[] = [
     is_default: false,
   }),
 ];
+const plans = makeSeededAdminPlans();
 
 type Props = ComponentProps<typeof UserFormModal>;
 
@@ -26,8 +29,12 @@ function renderForm(overrides: Partial<Props> = {}) {
     config: makeAdminConfig(),
     chatModels,
     modelsError: null,
+    plans,
+    paymentsOpen: true,
     onClose: vi.fn(),
     onSaved: vi.fn(),
+    onPlanChanged: vi.fn(),
+    onNavigate: vi.fn(),
     ...overrides,
   };
   render(<UserFormModal {...props} />);
@@ -38,24 +45,31 @@ function renderForm(overrides: Partial<Props> = {}) {
 const setupUser = () => userEvent.setup({ delay: null });
 const field = (name: string) => screen.getByRole("textbox", { name });
 const passwordField = (label = "Password") => screen.getByLabelText(label);
+const CHAT = "Chat allowance (standard tokens)";
 
 function sent(calls: FetchCall[], method: string): unknown[] {
   return calls.filter((call) => call.method === method).map((call) => call.body);
 }
 
+async function fillAccount(user: ReturnType<typeof setupUser>, username = "maya.chen") {
+  await user.type(field("Username"), username);
+  await user.type(passwordField(), "correct horse battery");
+}
+
 describe("UserFormModal: creating", () => {
-  it("starts from the default limits", () => {
+  it("starts with blank overrides that show the plan's values", () => {
     renderForm();
     expect(screen.getByRole("dialog", { name: "New user" })).toBeInTheDocument();
     expect(field("Username")).toHaveFocus();
-    expect(field("Monthly token limit")).toHaveValue("2000000");
-    expect(field("Monthly image limit")).toHaveValue("50");
-    expect(field("Requests per minute")).toHaveValue("20");
-    expect(field("Max file size (MB)")).toHaveValue("25");
+    expect(field(CHAT)).toHaveValue("");
+    expect(field(CHAT)).toHaveAttribute("placeholder", "Plan: 2,000,000");
+    expect(field("Images per period")).toHaveAttribute("placeholder", "Plan: 50");
+    expect(field("Requests per minute")).toHaveAttribute("placeholder", "Plan: 20");
     expect(field("Max file size (MB)")).toHaveAccessibleDescription("1 to 100 MB per file.");
-    expect(field("Max documents")).toHaveValue("100");
-    expect(field("Max storage (MB)")).toHaveValue("500");
+    expect(screen.queryByText("Custom")).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "Active" })).toBeChecked();
+    expect(screen.getByRole("switch", { name: "Start with a complimentary plan" })).not.toBeChecked();
+    expect(screen.getByRole("switch", { name: "Can make test payments" })).not.toBeChecked();
     expect(screen.getByRole("switch", { name: "Restrict to selected models" })).not.toBeChecked();
     expect(screen.queryByRole("group", { name: "Allowed chat models" })).not.toBeInTheDocument();
   });
@@ -112,28 +126,23 @@ describe("UserFormModal: creating", () => {
     expect(sent(calls, "POST")).toEqual([expect.objectContaining({ password: "12345678" })]);
   });
 
-  it("validates the limits and clears a field's error once it is edited", async () => {
+  it("validates the overrides and clears a field's error once it is edited", async () => {
     const calls = stubFetch({});
     const user = setupUser();
     renderForm();
 
-    await user.type(field("Username"), "maya.chen");
-    await user.type(passwordField(), "correct horse battery");
-    await user.clear(field("Monthly token limit"));
-    await user.type(field("Monthly token limit"), "lots");
-    await user.clear(field("Max file size (MB)"));
+    await fillAccount(user);
+    await user.type(field(CHAT), "lots");
     await user.type(field("Max file size (MB)"), "101");
-    await user.clear(field("Max documents"));
     await user.type(field("Max documents"), "-1");
-    await user.clear(field("Requests per minute"));
     await user.type(field("Requests per minute"), "2.5");
     await user.click(screen.getByRole("button", { name: "Create user" }));
 
-    expect(field("Monthly token limit")).toHaveAccessibleDescription(expect.stringContaining("Enter a whole number."));
+    expect(field(CHAT)).toHaveAccessibleDescription(expect.stringContaining("Enter a whole number."));
     expect(field("Max file size (MB)")).toHaveAccessibleDescription(expect.stringContaining("Must be at most 100."));
     expect(field("Max documents")).toHaveAccessibleDescription(expect.stringContaining("Must be at least 0."));
     expect(field("Requests per minute")).toHaveAccessibleDescription(expect.stringContaining("Enter a whole number."));
-    expect(field("Monthly token limit")).toHaveFocus();
+    expect(field(CHAT)).toHaveFocus();
     expect(calls).toHaveLength(0);
 
     await user.clear(field("Max file size (MB)"));
@@ -143,34 +152,119 @@ describe("UserFormModal: creating", () => {
     expect(field("Max file size (MB)")).toHaveAccessibleDescription(expect.stringContaining("Must be at least 1."));
   });
 
-  it("creates the user with a lowercase username and the typed limits", async () => {
-    const created = makeAdminUser({ id: 12, username: "maya.chen", monthly_token_limit: 0 });
+  it("marks typed values Custom, flags those above the plan, and resets to the plan", async () => {
+    const user = setupUser();
+    renderForm();
+
+    await user.type(field("Requests per minute"), "60");
+    const rate = field("Requests per minute").closest(".field") as HTMLElement;
+    expect(within(rate).getByText("Custom")).toBeInTheDocument();
+    expect(within(rate).getByText("Above plan")).toBeInTheDocument();
+
+    await user.clear(field("Requests per minute"));
+    await user.type(field("Requests per minute"), "5");
+    expect(within(rate).queryByText("Above plan")).not.toBeInTheDocument();
+
+    await user.click(within(rate).getByRole("button", { name: "Reset Requests per minute to the plan's value" }));
+    expect(field("Requests per minute")).toHaveValue("");
+    expect(within(rate).queryByText("Custom")).not.toBeInTheDocument();
+  });
+
+  it("asks before an unlimited chat allowance and sends the confirmation", async () => {
+    const created = makeAdminUser({ id: 12 });
     const calls = stubFetch({ "POST /admin/users": created });
     const user = setupUser();
     const props = renderForm();
 
     await user.type(field("Username"), "  Maya.Chen ");
     await user.type(passwordField(), "correct horse battery");
-    await user.clear(field("Monthly token limit"));
-    await user.type(field("Monthly token limit"), "0");
+    await user.type(field(CHAT), "0");
+    expect(screen.getByText("Unlimited chat allowance: this user has no cost ceiling.")).toBeInTheDocument();
     await user.click(screen.getByRole("switch", { name: "Active" }));
+    await user.click(screen.getByRole("button", { name: "Create user" }));
+    expect(field(CHAT)).toHaveAccessibleDescription(
+      expect.stringContaining("Confirm an unlimited chat allowance below."),
+    );
+    expect(calls).toHaveLength(0);
+
+    await user.click(screen.getByRole("button", { name: "Allow unlimited" }));
+    expect(screen.getByText("Unlimited chat allowance allowed: this user has no cost ceiling.")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Create user" }));
 
     const body: AdminUserCreate = {
       username: "maya.chen",
       password: "correct horse battery",
       is_active: false,
-      monthly_token_limit: 0,
-      monthly_image_limit: 50,
-      rate_limit_per_min: 20,
-      max_upload_mb: 25,
-      max_documents: 100,
-      max_storage_mb: 500,
       restrict_models: false,
       allowed_model_ids: [],
+      billing_tester: false,
+      overrides: { monthly_token_limit: 0 },
+      confirm_unlimited: true,
     };
     await waitFor(() => expect(props.onSaved).toHaveBeenCalledWith(created, true));
     expect(sent(calls, "POST")).toEqual([body]);
+  });
+
+  it("starts with a 30-day Professional grant while users can't pay, and sends it", async () => {
+    const calls = stubFetch({ "POST /admin/users": makeAdminUser() });
+    const user = setupUser();
+    renderForm({ paymentsOpen: false });
+
+    expect(
+      screen.getByText("This user can't use the app until they have a plan, and online payment isn't set up yet."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Start with a complimentary plan" })).toBeChecked();
+    expect(screen.getByRole("combobox", { name: "Plan" })).toHaveDisplayValue("Professional");
+    expect(field("Days")).toHaveValue("30");
+    expect(field(CHAT)).toHaveAttribute("placeholder", "Plan: 5,000,000");
+
+    await fillAccount(user);
+    await user.click(screen.getByRole("switch", { name: "Can make test payments" }));
+    await user.click(screen.getByRole("button", { name: "Create user" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(sent(calls, "POST")).toEqual([
+      expect.objectContaining({
+        billing_tester: true,
+        grant: { plan_id: 3, days: 30, reason: "New account" },
+      }),
+    ]);
+  });
+
+  it("grants with no end date, and checks the days and the reason", async () => {
+    const calls = stubFetch({ "POST /admin/users": makeAdminUser() });
+    const user = setupUser();
+    renderForm({ paymentsOpen: false });
+
+    await fillAccount(user);
+    await user.clear(field("Days"));
+    await user.type(field("Days"), "91");
+    await user.clear(field("Reason"));
+    await user.click(screen.getByRole("button", { name: "Create user" }));
+    expect(field("Days")).toHaveAccessibleDescription(expect.stringContaining("Must be at most 90."));
+    expect(field("Reason")).toHaveAccessibleDescription(expect.stringContaining("This field is required."));
+
+    await user.selectOptions(screen.getByRole("combobox", { name: "Plan" }), "Starter");
+    expect(field(CHAT)).toHaveAttribute("placeholder", "Plan: 500,000");
+    await user.click(screen.getByRole("switch", { name: "No end date" }));
+    expect(field("Days")).toBeDisabled();
+    await user.type(field("Reason"), "Family");
+    await user.click(screen.getByRole("button", { name: "Create user" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(sent(calls, "POST")).toEqual([
+      expect.objectContaining({ grant: { plan_id: 1, days: null, reason: "Family" } }),
+    ]);
+  });
+
+  it("creates without a plan when the grant is switched off", async () => {
+    const calls = stubFetch({ "POST /admin/users": makeAdminUser() });
+    const user = setupUser();
+    renderForm({ paymentsOpen: false });
+    await fillAccount(user);
+    await user.click(screen.getByRole("switch", { name: "Start with a complimentary plan" }));
+    expect(screen.getByText("Without a plan the user sees the plan page and pays to start.")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Create user" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(sent(calls, "POST")[0]).not.toHaveProperty("grant");
   });
 
   it("restricts the user to the checked chat models", async () => {
@@ -178,8 +272,7 @@ describe("UserFormModal: creating", () => {
     const user = setupUser();
     const props = renderForm();
 
-    await user.type(field("Username"), "maya.chen");
-    await user.type(passwordField(), "correct horse battery");
+    await fillAccount(user);
     await user.click(screen.getByRole("switch", { name: "Restrict to selected models" }));
 
     const checklist = screen.getByRole("group", { name: "Allowed chat models" });
@@ -199,19 +292,24 @@ describe("UserFormModal: creating", () => {
 
   it("explains when the model list is loading, failed or empty", async () => {
     const user = setupUser();
-    const { unmount } = render(
+    const first = render(
       <UserFormModal
         user={null}
         config={makeAdminConfig()}
         chatModels={null}
         modelsError={null}
+        plans={null}
+        paymentsOpen
         onClose={() => {}}
         onSaved={() => {}}
+        onPlanChanged={() => {}}
+        onNavigate={() => {}}
       />,
     );
+    expect(screen.getByRole("switch", { name: "Start with a complimentary plan" })).toBeDisabled();
     await user.click(screen.getByRole("switch", { name: "Restrict to selected models" }));
     expect(screen.getByText("Loading models…")).toBeInTheDocument();
-    unmount();
+    first.unmount();
 
     renderForm({ chatModels: null, modelsError: "Couldn't load the model list." });
     await user.click(screen.getByRole("switch", { name: "Restrict to selected models" }));
@@ -230,8 +328,7 @@ describe("UserFormModal: creating", () => {
     const user = setupUser();
     const props = renderForm();
 
-    await user.type(field("Username"), "maya.chen");
-    await user.type(passwordField(), "correct horse battery");
+    await fillAccount(user);
     await user.click(screen.getByRole("button", { name: "Create user" }));
 
     await waitFor(() =>
@@ -249,8 +346,7 @@ describe("UserFormModal: creating", () => {
     const user = setupUser();
     renderForm();
 
-    await user.type(field("Username"), "maya.chen");
-    await user.type(passwordField(), "correct horse battery");
+    await fillAccount(user);
     await user.click(screen.getByRole("button", { name: "Create user" }));
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Database is unavailable.");
@@ -263,8 +359,7 @@ describe("UserFormModal: creating", () => {
     const user = setupUser();
     const props = renderForm();
 
-    await user.type(field("Username"), "maya.chen");
-    await user.type(passwordField(), "correct horse battery");
+    await fillAccount(user);
     await user.click(screen.getByRole("button", { name: "Create user" }));
 
     expect(screen.getByRole("button", { name: "Create user" })).toBeDisabled();
@@ -285,46 +380,79 @@ describe("UserFormModal: creating", () => {
 });
 
 describe("UserFormModal: editing", () => {
-  const existing = makeAdminUser({ monthly_token_limit: 500_000, restrict_models: true, allowed_model_ids: [2] });
+  const existing = makeAdminUser({
+    restrict_models: true,
+    allowed_model_ids: [2],
+    limits: makeLimits({ monthly_token_limit: 500_000 }),
+    overrides: { ...makeAdminUser().overrides, monthly_token_limit: 500_000 },
+    plan: makeAdminUserPlan(),
+  });
 
-  it("shows the user's values without a username field", () => {
+  function stubEdit(routes: Record<string, Route> = {}) {
+    return stubFetch({ "GET /admin/billing/users/7": makeUserBilling(), ...routes });
+  }
+
+  it("shows the user's overrides and the plan's values without a username field", async () => {
+    stubEdit();
     renderForm({ user: existing });
     expect(screen.getByRole("dialog", { name: "Edit maya.chen" })).toBeInTheDocument();
     expect(screen.queryByRole("textbox", { name: "Username" })).not.toBeInTheDocument();
     expect(passwordField("Set new password")).toHaveValue("");
-    expect(field("Monthly token limit")).toHaveValue("500000");
+    expect(field(CHAT)).toHaveValue("500000");
+    expect(within(field(CHAT).closest(".field") as HTMLElement).getByText("Custom")).toBeInTheDocument();
+    expect(field(CHAT)).toHaveAttribute("placeholder", "Plan: 2,000,000");
+    expect(field("Requests per minute")).toHaveValue("");
+    expect(field("Requests per minute")).toHaveAttribute("placeholder", "Plan: 20");
     expect(screen.getByRole("switch", { name: "Restrict to selected models" })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: /GPT-5\.5/ })).toBeChecked();
     expect(screen.getByRole("checkbox", { name: /Claude Opus 5\.5/ })).not.toBeChecked();
+    expect(await screen.findByText(/Standard, valid 8 Oct to 7 Nov 2026/)).toBeInTheDocument();
   });
 
-  it("keeps the password when the field is left blank", async () => {
-    const saved = makeAdminUser({ rate_limit_per_min: 60 });
-    const calls = stubFetch({ "PATCH /admin/users/7": saved });
+  it("sends only the overrides that changed, null for one reset to the plan", async () => {
+    const saved = makeAdminUser();
+    const calls = stubEdit({ "PATCH /admin/users/7": saved });
     const user = setupUser();
     const props = renderForm({ user: existing });
 
-    await user.clear(field("Requests per minute"));
     await user.type(field("Requests per minute"), "60");
+    await user.click(screen.getByRole("button", { name: `Reset ${CHAT} to the plan's value` }));
+    await user.click(screen.getByRole("switch", { name: "Can make test payments" }));
     await user.click(screen.getByRole("button", { name: "Save changes" }));
 
     const body: AdminUserUpdate = {
       is_active: true,
-      monthly_token_limit: 500_000,
-      monthly_image_limit: 50,
-      rate_limit_per_min: 60,
-      max_upload_mb: 25,
-      max_documents: 100,
-      max_storage_mb: 500,
       restrict_models: true,
       allowed_model_ids: [2],
+      billing_tester: true,
+      overrides: { monthly_token_limit: null, rate_limit_per_min: 60 },
     };
     await waitFor(() => expect(props.onSaved).toHaveBeenCalledWith(saved, false));
     expect(sent(calls, "PATCH")).toEqual([body]);
   });
 
+  it("keeps the server's Above plan flag for an unchanged override and needs no confirmation for an existing 0", async () => {
+    stubEdit();
+    renderForm({
+      user: makeAdminUser({
+        overrides: { ...makeAdminUser().overrides, monthly_token_limit: 0 },
+        above_plan: ["monthly_token_limit"],
+        plan: makeAdminUserPlan(),
+      }),
+    });
+    const chat = field(CHAT).closest(".field") as HTMLElement;
+    expect(within(chat).getByText("Above plan")).toBeInTheDocument();
+    expect(screen.queryByText("Unlimited chat allowance: this user has no cost ceiling.")).not.toBeInTheDocument();
+  });
+
+  it("warns when the allowed models and the plan don't overlap", () => {
+    stubEdit();
+    renderForm({ user: makeAdminUser({ restrict_models: true, allowed_model_ids: [2], no_models: true }) });
+    expect(screen.getByText("No model left: the user's list and the plan's models don't overlap.")).toBeInTheDocument();
+  });
+
   it("sends a new password only when it is long enough", async () => {
-    const calls = stubFetch({ "PATCH /admin/users/7": makeAdminUser() });
+    const calls = stubEdit({ "PATCH /admin/users/7": makeAdminUser() });
     const user = setupUser();
     const props = renderForm({ user: existing });
 
@@ -333,7 +461,7 @@ describe("UserFormModal: editing", () => {
     expect(passwordField("Set new password")).toHaveAccessibleDescription(
       expect.stringContaining("Use at least 8 characters."),
     );
-    expect(calls).toHaveLength(0);
+    expect(sent(calls, "PATCH")).toHaveLength(0);
 
     await user.type(passwordField("Set new password"), "-but-longer");
     await user.click(screen.getByRole("button", { name: "Save changes" }));
@@ -342,10 +470,11 @@ describe("UserFormModal: editing", () => {
   });
 
   it("shows a 409 while editing as an alert, not as a username error", async () => {
-    stubFetch({ "PATCH /admin/users/7": () => errorResponse(409, "The user changed meanwhile.") });
+    stubEdit({ "PATCH /admin/users/7": () => errorResponse(409, "The user changed meanwhile.") });
     const user = setupUser();
     renderForm({ user: existing });
 
+    await screen.findByText(/Standard, valid/);
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("The user changed meanwhile.");
   });

@@ -13,6 +13,7 @@ from redis.exceptions import TimeoutError as RedisTimeoutError
 
 from app.config import settings
 from app.db import SessionLocal, close_db, init_db
+from app.errors import AppError
 from app.redis_client import close_redis
 from app.services.vectorstore import close_qdrant
 
@@ -21,12 +22,13 @@ logger = logging.getLogger("app")
 # httpx logs every request's full URL at INFO, which would put Gmail search queries in the log.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-_PLUGIN_QUERY = re.compile(r"^(/api/plugins(?:/[^?]*)?)\?.*$", re.DOTALL)
+_PLUGIN_QUERY = re.compile(r"^(/api/plugins(?:/[^?]*)?|/api/billing/razorpay/return)\?.*$", re.DOTALL)
 
 
 class _RedactPluginQuery(logging.Filter):
-    """uvicorn's access log line of any plugin path without its query: an OAuth callback's holds a one-time code and
-    the state, and no plugin request may put search terms, addresses or subjects in the log (brief P20)."""
+    """uvicorn's access log line of any plugin path, and of the return from Razorpay, without its query: an OAuth
+    callback's holds a one-time code and the state, no plugin request may put search terms, addresses or subjects in
+    the log (brief P20), and Razorpay's return carries payment ids and a signature (plans-billing 6.12)."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
@@ -46,12 +48,14 @@ async def lifespan(_: FastAPI):
     from app.plugins import crypto, oauth, registry, tasks
     from app.plugins import http as plugin_http
     from app.routers.chat import drain_answers
+    from app.services.billing import business
 
     await init_db()
     async with SessionLocal() as db:
         await bootstrap(db)
     plugins = registry.all_plugins()
     oauth.log_startup(plugins)
+    business.log_startup()
     await crypto.rotate_all()
     for plugin in plugins:
         try:
@@ -85,12 +89,44 @@ def create_app() -> FastAPI:
     )
 
     from app.plugins.base import PluginError
-    from app.routers import admin, admin_plugins, auth, chat, conversations, documents, me, models, plugins, system
+    from app.routers import (
+        admin,
+        admin_billing,
+        admin_plugins,
+        auth,
+        billing,
+        chat,
+        conversations,
+        documents,
+        me,
+        models,
+        plugins,
+        public,
+        system,
+    )
 
-    for module in (auth, me, models, documents, conversations, chat, admin, admin_plugins, plugins, system):
+    for module in (
+        auth,
+        me,
+        models,
+        documents,
+        conversations,
+        chat,
+        admin,
+        admin_plugins,
+        admin_billing,
+        plugins,
+        billing,
+        public,
+        system,
+    ):
         app.include_router(module.router, prefix="/api")
     app.include_router(system.admin_router, prefix="/api")
     plugins.mount_plugin_routers(app)
+
+    @app.exception_handler(AppError)
+    async def app_error(_: Request, exc: AppError) -> JSONResponse:
+        return JSONResponse(status_code=exc.status_code, content=exc.body(), headers=exc.headers)
 
     @app.exception_handler(PluginError)
     async def plugin_error(_: Request, exc: PluginError) -> JSONResponse:

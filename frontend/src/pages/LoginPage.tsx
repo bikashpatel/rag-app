@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { ApiError } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { postLoginPath } from "../auth/loginRedirect";
+import PolicyLinks from "../components/billing/PolicyLinks";
 import { AlertCircleIcon, FileIcon, LockIcon, QuoteIcon, ShieldIcon, SparkleIcon } from "../components/ui/icons";
 import PasswordInput from "../components/ui/PasswordInput";
 import { ButtonSpinner } from "../components/ui/Spinner";
@@ -190,6 +191,7 @@ export default function LoginPage() {
           </div>
 
           <p className="login-credit">This application is designed, developed &amp; maintained by ELARXSYS.COM</p>
+          <PolicyLinks compact className="login-policies" />
         </div>
       </main>
     </div>

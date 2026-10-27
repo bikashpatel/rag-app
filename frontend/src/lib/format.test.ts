@@ -7,11 +7,11 @@ import {
   formatDateTime,
   formatDayMonth,
   formatLimit,
+  formatMegabytes,
   formatMonthName,
   formatRelativeTime,
   formatResetMoment,
   formatUtcDay,
-  nextUsageReset,
 } from "./format";
 
 describe("formatBytes", () => {
@@ -27,6 +27,14 @@ describe("formatBytes", () => {
     [1024 ** 5 * 3, "3072 TB"],
   ])("%d bytes -> %s", (bytes, expected) => {
     expect(formatBytes(bytes)).toBe(expected);
+  });
+});
+
+describe("formatMegabytes", () => {
+  it("writes a limit in megabytes as the plans do, with thousands separators", () => {
+    expect(formatMegabytes(200)).toBe("200 MB");
+    expect(formatMegabytes(1_000)).toBe("1,000 MB");
+    expect(formatMegabytes(3_000)).toBe("3,000 MB");
   });
 });
 
@@ -83,12 +91,6 @@ describe("dates", () => {
     expect(daysUntil("2026-10-20T09:30:01Z", now)).toBe(1);
     expect(daysUntil("2026-10-01T00:00:00Z", now)).toBe(0);
     expect(daysUntil("garbage", now)).toBe(0);
-  });
-
-  it("finds the next monthly reset, across a year end", () => {
-    expect(nextUsageReset("2026-10")).toBe("2026-11-01T00:00:00.000Z");
-    expect(nextUsageReset("2026-12")).toBe("2027-01-01T00:00:00.000Z");
-    expect(nextUsageReset("October")).toBe("");
   });
 
   it("describes times relative to now", () => {

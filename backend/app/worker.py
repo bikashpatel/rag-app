@@ -15,6 +15,7 @@ from app.ops import heartbeat
 from app.ops.settings import ops_settings
 from app.redis_client import INGEST_QUEUE, close_redis, get_redis
 from app.schemas import MAX_INT
+from app.services.billing.reconcile import BillingLoop
 from app.services.ingestion import (
     process_document,
     reclaim_interrupted,
@@ -42,7 +43,8 @@ class Worker:
 
     A job is popped only when a slot is free, so stopping never strands a popped id: running jobs get a
     grace period, and anything still unfinished stays "processing" until recover_pending() on the next start.
-    While it takes jobs it refreshes its heartbeat in Redis (app.ops.heartbeat), and removes it when it stops.
+    While it takes jobs it refreshes its heartbeat in Redis (app.ops.heartbeat), and removes it when it stops. Beside
+    the jobs runs the billing loop (services/billing/reconcile.py): webhooks, the payment reconciler and reminders.
     A job that ends without recording a result (e.g. the database failed its final update) leaves its document
     "processing" too; the periodic sweep retries it. A job reading pages with the vision model (network waits) gives
     its slot back until it leaves that phase.
@@ -66,12 +68,16 @@ class Worker:
             return
         set_vision_phase_listener(self._vision_phase_changed)
         beating = asyncio.create_task(self._beat(), name="worker-heartbeat")
+        background = [beating]
+        if BillingLoop.wanted():
+            background.append(asyncio.create_task(BillingLoop(self._stopping).run(), name="worker-billing"))
         try:
             await self._consume()
             await self._drain()
         finally:
-            beating.cancel()
-            await asyncio.gather(beating, return_exceptions=True)
+            for task in background:
+                task.cancel()
+            await asyncio.gather(*background, return_exceptions=True)
             with contextlib.suppress(Exception):
                 await heartbeat.clear()
             set_vision_phase_listener(None)

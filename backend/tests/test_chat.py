@@ -26,6 +26,7 @@ from app.routers import chat as chat_router
 from app.routers.chat import _Answer, _stream_answer, _Turn
 from app.services import rag, vectorstore
 from app.services import usage as usage_service
+from app.services.billing.money import format_ist_date, ist_date
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 StartTurn = Callable[..., Awaitable[_Turn]]
@@ -425,9 +426,17 @@ async def test_longest_message_and_most_document_ids_are_accepted(create_user: C
 
 # ---------------- Usage controls ----------------
 
+# FakeLLM's answer: 42 + 5 tokens of Claude Opus 5.5 ($4 / $20 per 1M), $0.000268, counts 84 standard tokens
+ANSWER_ALLOWANCE = 84
 
-async def test_exhausted_monthly_budget_is_rejected(create_user: CreateUser, fake_llm: FakeLLM) -> None:
-    alice = await create_user("alice", monthly_token_limit=47)
+
+def next_month_ist() -> str:
+    """When an open-ended plan's allowances start again (an IST date)."""
+    return format_ist_date(ist_date(usage_service.next_month(usage_service.month_start())))
+
+
+async def test_a_used_up_chat_allowance_is_rejected(create_user: CreateUser, fake_llm: FakeLLM) -> None:
+    alice = await create_user("alice", monthly_token_limit=ANSWER_ALLOWANCE)
     first, _ = await chat(alice, "First question?", document_ids=[])
 
     second, _ = await chat(alice, "Second question?", document_ids=[])
@@ -435,14 +444,16 @@ async def test_exhausted_monthly_budget_is_rejected(create_user: CreateUser, fak
     assert first.status_code == 200
     assert second.status_code == 429
     assert second.json() == {
-        "detail": "Monthly token budget used up (47 of 47 tokens). Ask the admin to raise your limit."
+        "detail": f"You've used this period's chat allowance (84 of 84). It starts again on {next_month_ist()}.",
+        "code": "allowance_used",
+        "feature": "chat_tokens",
     }
     assert len(fake_llm.chat_calls) == 1
     assert await _conversation_count(alice) == 1
 
 
-async def test_budget_counts_only_this_months_chat_tokens(create_user: CreateUser) -> None:
-    alice = await create_user("alice", monthly_token_limit=48)
+async def test_the_allowance_counts_only_this_windows_chat_answers(create_user: CreateUser) -> None:
+    alice = await create_user("alice", monthly_token_limit=ANSWER_ALLOWANCE + 12)
     async with SessionLocal() as session:
         session.add(
             UsageEvent(
@@ -451,6 +462,7 @@ async def test_budget_counts_only_this_months_chat_tokens(create_user: CreateUse
                 kind="chat",
                 prompt_tokens=1_000_000,
                 total_tokens=1_000_000,
+                allowance_tokens=2_000_000,
                 created_at=usage_service.month_start() - timedelta(seconds=1),
             )
         )
@@ -462,8 +474,9 @@ async def test_budget_counts_only_this_months_chat_tokens(create_user: CreateUse
 
     usage = (await alice.get("/api/auth/me")).json()["usage"]
     assert usage["embedding_tokens"] > 0
+    assert (usage["chat_tokens"], usage["chat_allowance_used"]) == (94, 2 * ANSWER_ALLOWANCE)
     assert (first.status_code, second.status_code, third.status_code) == (200, 200, 429)
-    assert third.json()["detail"].startswith("Monthly token budget used up (94 of 48 tokens)")
+    assert third.json()["detail"].startswith("You've used this period's chat allowance (168 of 96).")
 
 
 async def test_rate_limit_is_per_user_and_per_minute(

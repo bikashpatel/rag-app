@@ -42,15 +42,16 @@ from conftest import (
 from PIL import Image
 from pypdf import PdfReader, PdfWriter
 from qdrant_client import models as qm
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, update
 from sqlalchemy.exc import OperationalError
 
 from app.bootstrap import bootstrap
 from app.config import settings
 from app.db import SessionLocal
-from app.models import AppState, Document, LLMModel, UsageEvent, VisionPage
+from app.models import AppState, Document, LLMModel, UsageEvent, User, VisionPage
 from app.redis_client import INGEST_QUEUE, get_redis
 from app.services import ingestion, llm, pdf_images, vectorstore, vision
+from app.services.billing.money import format_ist_date, ist_date
 from app.services.model_registry import get_active_embedding_model
 from app.services.parsing import (
     DocumentParseError,
@@ -62,7 +63,7 @@ from app.services.parsing import (
     parse_file,
 )
 from app.services.pdf_images import PageMeasurer, Rendered, RenderJob, render_pages
-from app.services.usage import month_start
+from app.services.usage import month_start, next_month
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
@@ -94,6 +95,18 @@ BRIEF_DESCRIBE = "Page {page} of a document. The text on this page has already b
 @pytest.fixture
 async def alice(create_user: CreateUser) -> ApiClient:
     return await create_user("alice")
+
+
+async def vision_allowance(user_id: int, tokens: int) -> None:
+    """The user's override of their plan's vision allowance (0 = unlimited)."""
+    async with SessionLocal() as session:
+        await session.execute(update(User).where(User.id == user_id).values(vision_monthly_token_limit=tokens))
+        await session.commit()
+
+
+def restarts() -> str:
+    """When an open-ended plan's allowances start again: the first day of the next UTC month (an IST date)."""
+    return f"It starts again on {format_ist_date(ist_date(next_month(month_start())))}."
 
 
 @pytest.fixture
@@ -676,14 +689,15 @@ def test_pages_left_over_the_cap_are_counted_per_page(
     assert "classify.pdf: 2 page(s) not read with the vision model (VISION_MAX_PAGES=1)" in caplog.messages
 
 
-# ---------------- The monthly allowance ----------------
+# ---------------- The vision allowance (per period; an open-ended plan: per UTC month) ----------------
 
 
 async def test_the_allowance_is_checked_when_a_run_starts(
     alice: ApiClient, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One document can go past the allowance by its own pages; the next run is refused."""
-    monkeypatch.setattr(settings, "vision_monthly_token_limit", 5000)
+    """One document can go past the allowance by the calls already in flight when it is used; the next run is
+    refused."""
+    await vision_allowance(alice.user_id, 5000)  # type: ignore[arg-type]
     await add_usage(alice.user_id, "vision", 4999)  # type: ignore[arg-type]
 
     first = await ingest(alice, "first.pdf", scanned_pdf_bytes("One", "Two"))
@@ -692,16 +706,33 @@ async def test_the_allowance_is_checked_when_a_run_starts(
     assert first["status"] == "ready"
     assert (second["status"], second["error"]) == (
         "failed",
-        "This PDF has scanned pages, but your monthly allowance for the vision model is used up (8,399 of 5,000 "
-        "tokens). Ask the admin to raise VISION_MONTHLY_TOKEN_LIMIT, or try again next month.",
+        "This PDF has scanned pages, but this period's allowance for the vision model is used up (8,399 of 5,000 "
+        "tokens). " + restarts(),
     )
     assert len(fake_llm.vision_calls) == 2
+
+
+async def test_a_run_stops_reading_once_it_used_the_allowance_left(
+    alice: ApiClient, fake_llm: FakeLLM, one_call_at_a_time: None
+) -> None:
+    await vision_allowance(alice.user_id, 5000)  # type: ignore[arg-type]
+    await add_usage(alice.user_id, "vision", 4000)  # type: ignore[arg-type]
+
+    result = await ingest(alice, "three.pdf", scanned_pdf_bytes("One", "Two", "Three"))
+
+    assert (result["status"], result["error"]) == (
+        "failed",
+        "This PDF has scanned pages, but this period's allowance for the vision model is used up (5,700 of 5,000 "
+        "tokens). " + restarts(),
+    )
+    assert len(fake_llm.vision_calls) == 1
+    assert await cache_rows(result["id"]) != []  # the page read is kept for a later run
 
 
 async def test_only_the_owners_vision_tokens_of_this_month_count(
     alice: ApiClient, create_user: CreateUser, fake_llm: FakeLLM, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(settings, "vision_monthly_token_limit", 5000)
+    await vision_allowance(alice.user_id, 5000)  # type: ignore[arg-type]
     bob = await create_user("bob")
     await add_usage(alice.user_id, "vision", 50_000, month_start() - timedelta(days=1))  # type: ignore[arg-type]
     await add_usage(alice.user_id, "chat", 50_000)  # type: ignore[arg-type]
@@ -726,7 +757,7 @@ async def test_over_the_allowance_cached_scans_are_used_and_new_descriptions_dro
     result = await ingest(alice, "mixed.pdf", image_pdf_bytes(("", 1.0), (page_text(2), 0.3), shared_image=False))
     assert result["status"] == "ready"
     assert [(row[1], row[2]) for row in await cache_rows(result["id"])] == [(1, "transcribe")]
-    monkeypatch.setattr(settings, "vision_monthly_token_limit", CALL_TOKENS)
+    await vision_allowance(alice.user_id, CALL_TOKENS)  # type: ignore[arg-type]
     starts = len(child_starts)
 
     with caplog.at_level(logging.INFO):
@@ -1121,7 +1152,7 @@ async def test_without_an_active_vision_model_nothing_is_read(
 ) -> None:
     model = await vision_model()
     assert (await admin_client.patch(f"/api/admin/models/{model.id}", json=change)).status_code == 200
-    monkeypatch.setattr(settings, "vision_monthly_token_limit", 100)
+    await vision_allowance(alice.user_id, 100)  # type: ignore[arg-type]
     await add_usage(alice.user_id, "vision", 1000)  # type: ignore[arg-type]
 
     scan = await ingest(alice, "scan.pdf", scanned_pdf_bytes("Invoice"))

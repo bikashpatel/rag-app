@@ -29,14 +29,25 @@ export function monthLabel(month: string): string {
 type MonthPickerProps = {
   month: string;
   onChange: (month: string) => void;
+  /** The last month that can be chosen (default: the current UTC month; billing passes the IST month). */
+  latest?: string;
+  /** The input's accessible name. */
+  label?: string;
   /** Shows a spinner while the selected month's data loads over the previous month's. */
   loading?: boolean;
   loadingLabel?: string;
 };
 
 /** Previous/next buttons around a month input; months after the current one can't be chosen. */
-export default function MonthPicker({ month, onChange, loading = false, loadingLabel = "Loading" }: MonthPickerProps) {
-  const thisMonth = currentMonth();
+export default function MonthPicker({
+  month,
+  onChange,
+  latest,
+  label = "Month",
+  loading = false,
+  loadingLabel = "Loading",
+}: MonthPickerProps) {
+  const thisMonth = latest ?? currentMonth();
   const [draft, setDraft] = useState(month);
   const inputId = useId();
   const draftValid = MONTH_PATTERN.test(draft) && draft <= thisMonth;
@@ -58,7 +69,7 @@ export default function MonthPicker({ month, onChange, loading = false, loadingL
         <ChevronLeftIcon />
       </button>
       <label className="sr-only" htmlFor={inputId}>
-        Month
+        {label}
       </label>
       <input
         id={inputId}

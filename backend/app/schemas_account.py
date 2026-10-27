@@ -1,19 +1,32 @@
-"""Request and response shapes of the caller's own account (SPEC.md section 6, "Account";
-docs/briefs/ui-shell-settings.md): preferences, sign-in history, usage, and deleting every conversation. Contract only.
-`Preferences` itself is in app.schemas, because `Me` carries it."""
+"""Request and response shapes of the caller's own account (SPEC.md section 6, "Auth" and "Account";
+docs/briefs/ui-shell-settings.md): `Me`, preferences, sign-in history, usage, and deleting every conversation. Contract
+only. `Me` is here rather than in app.schemas because it carries the plan (app.schemas_billing imports app.schemas)."""
 
 from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
-from app.schemas import MAX_INT, AccentColor, ChatFontSize, ThemePreference
+from app.schemas import MAX_INT, AccentColor, ChatFontSize, Preferences, ThemePreference, UsageSummary, UserLimits
+from app.schemas_billing import PlanAccess
 
 DeviceType = Literal["desktop", "mobile", "tablet", "unknown"]
 UsageKind = Literal["chat", "embedding", "vision", "image"]
 
 # PATCH fields that may be omitted but never null (only default_model_id has a null meaning).
 _NOT_NULL = ("theme", "accent", "chat_font_size", "enter_to_send")
+
+
+class Me(BaseModel):
+    """GET /auth/me and POST /auth/login."""
+
+    id: int
+    username: str
+    is_admin: bool
+    limits: UserLimits  # the plan's, merged with the user's overrides
+    usage: UsageSummary  # in the allowance window
+    preferences: Preferences = Field(default_factory=Preferences)
+    plan: PlanAccess
 
 
 class PreferencesUpdate(BaseModel):
@@ -75,7 +88,7 @@ class UsageAmount(BaseModel):
 
 
 class UsageCosts(BaseModel):
-    """Estimated USD this month (the models' prices, or LiteLLM's cost map), per usage kind."""
+    """Estimated USD in the window (the models' prices, or LiteLLM's cost map), per usage kind."""
 
     total: float
     chat: float
@@ -96,6 +109,7 @@ class DocumentUsage(BaseModel):
 
 class MyUsageDay(BaseModel):
     date: str  # "YYYY-MM-DD" (UTC)
+    chat_allowance: int  # standard tokens of chat answers
     chat_tokens: int
     requests: int  # chat answers
     images: int
@@ -108,25 +122,28 @@ class MyUsageModel(BaseModel):
     model_name: str  # the model's display name while it exists, else the litellm id stored with the usage
     kind: UsageKind
     tokens: int  # prompt + completion (image models: prompt text + image tokens)
+    allowance_tokens: int  # standard tokens against the chat allowance; 0 for the other kinds
     requests: int  # chat: answers; image: images; embedding and vision: ingestion runs
     cost_usd: float
 
 
 class MyUsage(BaseModel):
-    """GET /me/usage: the caller's current UTC calendar month."""
+    """GET /me/usage: the caller's allowance window (the current period, or the UTC calendar month for an open-ended
+    plan, the admin and a user without access), with the counts the limits use."""
 
-    month: str  # "YYYY-MM"
-    period_start: datetime  # the 1st, 00:00 UTC
-    resets_at: datetime  # the 1st of next month, 00:00 UTC: the monthly counts start again
-    chat_tokens: UsageAmount  # limit: monthly_token_limit (the only budget; prompt + completion of chat calls)
-    images: UsageAmount  # limit: the monthly image limit
-    vision_tokens: UsageAmount  # limit: VISION_MONTHLY_TOKEN_LIMIT
+    month: str  # "YYYY-MM" of period_start
+    period_start: datetime  # the window's start
+    resets_at: datetime  # the window's end: the counts start again
+    chat_allowance: UsageAmount  # standard tokens against monthly_token_limit (the chat allowance)
+    chat_tokens: int  # plain tokens of chat answers (prompt + completion); no limit
+    images: UsageAmount  # limit: monthly_image_limit
+    vision_tokens: UsageAmount  # limit: vision_monthly_token_limit
     embedding_tokens: int  # recorded, never limited
-    requests: int  # chat answers this month
+    requests: int  # chat answers in the window
     rate_limit_per_min: int  # chat requests per minute; 0 = unlimited
     cost_usd: UsageCosts
     documents: DocumentUsage
-    daily: list[MyUsageDay]  # every UTC day from the 1st through today, zeros included
+    daily: list[MyUsageDay]  # every UTC day of the window through today, zeros included
     by_model: list[MyUsageModel]  # cost descending
 
 

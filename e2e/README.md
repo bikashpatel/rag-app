@@ -16,6 +16,7 @@ Google** in the default run.
 | `settings.spec.ts` | General (theme, accent and font size apply at once, after a reload and in another browser), Account (sign-ins and "This device", change password, log out other sessions), Usage (real zeros and an intercepted month with data), Export my data (a ZIP), Delete all chats (typed `DELETE`) |
 | `admin.spec.ts` | Admin entry in the admin's avatar menu, the other tabs load (read only), create a user (validation errors, duplicate name), edit limits, deactivate (the user's session ends), delete, the admin guard blocking a model's Enable switch |
 | `phone.spec.ts` | (`phone` project, Pixel 7) the conversations drawer, the documents slide-over, no sideways scrolling (the page, the thread, menus and dialogs; code blocks, tables and tab strips scroll on their own) with a long answer, menu sheet and Settings sheet |
+| `billing.spec.ts` | Sign-in to the plans, checkout, a "Razorpay" page on the app's own origin and the return page into the chat; a user without a plan sent from `/` and `/c/<id>` to the plans with Settings and "Your data" reachable; a plan ending in an open chat (the panel, the message kept); locked "+" items leading to the plans; the public pages without a session. The payment side is intercepted; access is real (admin API grants) |
 | `a11y.spec.ts` | One `main` landmark per page, named menus and dialogs, Escape closing menus, dialogs and confirmations with focus returned, Settings by keyboard alone |
 | `live.spec.ts` | `@live`: one real short answer from Claude Haiku 5.5; skipped unless `E2E_LIVE=1` |
 
@@ -63,7 +64,8 @@ npx playwright show-report
   users: models, shared documents, plugin settings, other users and the admin's own preferences, password and sessions
   can't change whatever a test clicks. A test with a blocked request fails, and so does one with an uncaught page error
   or a CSP violation. Connect Gmail is never clicked.
-- **Test data.** Users are `e2e-<run id>-<random>` with random passwords, created through the admin API and deleted
+- **Test data.** Users are `e2e-<run id>-<random>` with random passwords, created through the admin API with an
+  open-ended complimentary Professional plan (`userOptions.plan`: another plan's code, or `null` for none), and deleted
   with all their data after each test. Teardown deletes this run's users left behind (and fails if one remains); global
   setup deletes `e2e-` users older than an hour (an interrupted earlier run). Runs against the same stack may overlap:
   none touches another's users. No other user, model, plugin setting or the shared knowledge base is ever changed.

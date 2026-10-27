@@ -5,11 +5,13 @@ import { useCallback, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import type { OAuthReturn } from "../components/connections/ConnectionsPanel";
 
-export type SettingsTab = "general" | "account" | "usage" | "plugins";
+export type SettingsTab = "general" | "account" | "billing" | "usage" | "plugins";
 
+/** The tabs shown, in order. */
 export const SETTINGS_TABS: readonly { id: SettingsTab; label: string }[] = [
   { id: "general", label: "General" },
   { id: "account", label: "Account" },
+  { id: "billing", label: "Plan & billing" },
   { id: "usage", label: "Usage" },
   { id: "plugins", label: "Plugins & data" },
 ];
@@ -17,11 +19,13 @@ export const SETTINGS_TABS: readonly { id: SettingsTab; label: string }[] = [
 /** The query parameter that opens the dialog. */
 export const SETTINGS_PARAM = "settings";
 
+const TAB_IDS: ReadonlySet<string> = new Set<SettingsTab>(["general", "account", "billing", "usage", "plugins"]);
+
 /** null when absent; "data" is the Plugins & data tab; anything else is General. */
 export function parseSettingsTab(value: string | null): SettingsTab | null {
   if (value === null) return null;
   if (value === "data") return "plugins";
-  return SETTINGS_TABS.find((tab) => tab.id === value)?.id ?? "general";
+  return TAB_IDS.has(value) ? (value as SettingsTab) : "general";
 }
 
 /**

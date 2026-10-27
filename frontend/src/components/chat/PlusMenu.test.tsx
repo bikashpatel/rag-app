@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
@@ -11,8 +11,10 @@ import {
   makeDocumentConfig,
   makeGmailPlugin,
   makeMe,
+  makePaidPlanAccess,
 } from "../../test/fixtures";
 import { deferred, errorResponse, stubFetch, type Route } from "../../test/http";
+import { renderWithRouter } from "../../test/render";
 import Composer, { type ComposerHandle } from "./Composer";
 import PlusMenu from "./PlusMenu";
 
@@ -71,7 +73,7 @@ function Harness(overrides: Partial<PlusProps>) {
 async function setup(overrides: Partial<PlusProps> = {}, config: Route = makeDocumentConfig()) {
   const calls = stubFetch({ "GET /documents/config": config });
   const user = userEvent.setup();
-  const view = render(<Harness {...overrides} />);
+  const view = renderWithRouter(<Harness {...overrides} />);
   const open = async () => {
     await user.click(screen.getByRole("button", { name: "Add files and more" }));
     await screen.findByRole("menu", { name: "Add files and more" });
@@ -106,7 +108,7 @@ describe("PlusMenu", () => {
 
     await act(async () => config.resolve(makeDocumentConfig()));
     expectEnabled("Attach files…", "Upload to My documents · up to 25 MB each");
-    expectEnabled("Create an image", "47 of 50 left this month");
+    expectEnabled("Create an image", "47 of 50 left this period");
     FORMATS.forEach((name) => expectEnabled(name));
     expect(screen.getByRole("group", { name: "Create" })).toContainElement(item("Create an image"));
     expect(screen.getByRole("group", { name: "Create a document" })).toContainElement(item("Excel spreadsheet"));
@@ -190,11 +192,70 @@ describe("PlusMenu", () => {
     expect(item("PDF document")).toHaveAccessibleDescription("Pick a model first.");
   });
 
-  it("says when this month's images are used up and when the count starts again", async () => {
+  it("says when this period's images are used up and when the count starts again", async () => {
     const user = makeMe();
     const { open } = await setup({ user: { ...user, usage: { ...user.usage, images: 50 } } });
     await open();
-    expectDisabled("Create an image", "You've used this month's 50 images. The count starts again on 1 Nov.");
+    expectDisabled("Create an image", "You've used this period's 50 images. The count starts again on 1 Nov.");
+  });
+
+  it("dates the images count by the period: the next one, or the plan's end when nothing follows", async () => {
+    const paid = makeMe({ plan: makePaidPlanAccess({ features: { files: true, images: true, plugins: [] } }) });
+    const usage = { ...paid.usage, images: 50, window_end: "2026-11-07T18:30:00Z" };
+    const first = await setup({ user: { ...paid, usage } });
+    await first.open();
+    expectDisabled("Create an image", "You've used this period's 50 images. Your plan is valid through 7 Nov.");
+    first.view.unmount();
+
+    const next = makePaidPlanAccess({ features: { files: true, images: true, plugins: [] }, next_plan: { id: 1, code: "starter", name: "Starter" } });
+    const second = await setup({ user: { ...paid, plan: next, usage } });
+    await second.open();
+    expectDisabled(
+      "Create an image",
+      "You've used this period's 50 images. The count starts again with your next period on 8 Nov.",
+    );
+  });
+
+  it("shows features outside the plan as one locked item each, leading to the plans", async () => {
+    const starter = makeMe({
+      plan: makePaidPlanAccess({
+        features: { files: false, images: false, plugins: [] },
+        unlock: { files: "Standard", images: "Professional", plugins: { gmail: "Professional" }, models: "Standard" },
+      }),
+    });
+    const { open, user, view } = await setup({ user: starter });
+    await open();
+    expect(item("Create an image")).not.toHaveAttribute("aria-disabled");
+    expect(item("Create an image")).toHaveAccessibleDescription("Included in Professional. Opens the plans page.");
+    expect(item("Create a document")).toHaveAccessibleDescription("Included in Standard. Opens the plans page.");
+    FORMATS.forEach((name) => expect(queryItem(name)).not.toBeInTheDocument());
+    expect(screen.getAllByText("Upgrade")).toHaveLength(2);
+    await user.click(item("Create a document"));
+    expect(view.location()).toBe("/plans");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("hides a locked feature no plan includes", async () => {
+    const plan = makePaidPlanAccess({
+      features: { files: true, images: false, plugins: [] },
+      unlock: { files: null, images: null, plugins: {}, models: null },
+    });
+    const { open } = await setup({ user: makeMe({ plan }) });
+    await open();
+    expect(queryItem("Create an image")).not.toBeInTheDocument();
+    expect(item("PDF document")).toBeInTheDocument();
+  });
+
+  it("shows Gmail outside the plan as one locked item", async () => {
+    const plan = makePaidPlanAccess({ features: { files: true, images: false, plugins: [] } });
+    const gmail = makeGmailPlugin({ in_plan: false, connection: makeConnection() });
+    const { open } = await setup({ user: makeMe({ plan }), plugins: [gmail] });
+    await open();
+    expect(screen.getByRole("group", { name: "Gmail" })).toContainElement(item("Search, draft and import email"));
+    expect(item("Search, draft and import email")).toHaveAccessibleDescription(
+      "Included in Professional. Opens the plans page.",
+    );
+    expect(queryItem("Search my email")).not.toBeInTheDocument();
   });
 
   it("doesn't count images for the admin", async () => {

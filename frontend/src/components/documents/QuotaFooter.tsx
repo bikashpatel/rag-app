@@ -1,5 +1,5 @@
 import type { DocumentConfig } from "../../api/types";
-import { formatBytes, formatLimit, formatNumber } from "../../lib/format";
+import { formatBytes, formatLimit, formatMegabytes, formatNumber } from "../../lib/format";
 import { AlertCircleIcon, AlertIcon } from "../ui/icons";
 import { meterState } from "../ui/Meter";
 import { BYTES_PER_MB } from "./fileTypes";
@@ -18,6 +18,7 @@ export default function QuotaFooter({ config }: { config: DocumentConfig }) {
         used={config.storage_bytes}
         limit={config.max_storage_mb * BYTES_PER_MB}
         format={formatBytes}
+        formatLimitValue={() => formatMegabytes(config.max_storage_mb)}
       />
     </footer>
   );
@@ -29,6 +30,8 @@ type QuotaMeterProps = {
   /** 0 = unlimited: shown as "Unlimited" without a bar. */
   limit: number;
   format: (value: number) => string;
+  /** The limit's own words when they differ from the amount's (storage: "3,000 MB", as the plan says it). */
+  formatLimitValue?: (limit: number) => string;
 };
 
 /**
@@ -36,7 +39,7 @@ type QuotaMeterProps = {
  * caption under the bar adds a warning icon and "Almost used up", at 100% an alert icon and "Limit reached" (never
  * colour alone); under the bar, so the two columns' rows and bars stay aligned in the narrow footer.
  */
-function QuotaMeter({ label, used, limit, format }: QuotaMeterProps) {
+function QuotaMeter({ label, used, limit, format, formatLimitValue = format }: QuotaMeterProps) {
   const ratio = limit > 0 ? Math.min(1, used / limit) : 0;
   const state = meterState(used, limit);
   return (
@@ -45,7 +48,7 @@ function QuotaMeter({ label, used, limit, format }: QuotaMeterProps) {
         <span>{label}</span>
         <span className="ui-meter-value">
           <span>
-            {format(used)} <small>/ {formatLimit(limit, format)}</small>
+            {format(used)} <small>/ {formatLimit(limit, formatLimitValue)}</small>
           </span>
         </span>
       </div>

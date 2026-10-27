@@ -7,6 +7,8 @@ from app.config import settings
 from app.db import get_db
 from app.models import User
 from app.security import create_access_token, decode_access_token
+from app.services.billing import entitlements
+from app.services.billing.entitlements import Entitlements
 
 
 def _unauthorized() -> HTTPException:
@@ -56,6 +58,31 @@ def current_session_id(request: Request) -> int | None:
 def current_session_expiry(request: Request) -> datetime | None:
     """When the token that authenticated this request expires (get_current_user ran)."""
     return getattr(request.state, "session_expires_at", None)
+
+
+async def get_entitlements(
+    request: Request, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> Entitlements:
+    """The caller's entitlements, without requiring access (the routes that stay open to users without a plan);
+    stored for current_entitlements."""
+    ent = await entitlements.load(db, user)
+    request.state.entitlements = ent
+    return ent
+
+
+async def get_entitled_user(
+    request: Request, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> User:
+    """The session user, who must have access (an active plan, or the admin): 402 plan_required or plan_expired
+    otherwise. The entitlements are kept for the request (current_entitlements)."""
+    entitlements.require_access(await get_entitlements(request, user, db))
+    return user
+
+
+def current_entitlements(request: Request) -> Entitlements:
+    """The entitlements get_entitled_user or get_entitlements loaded for this request."""
+    ent: Entitlements = request.state.entitlements
+    return ent
 
 
 async def get_current_admin(user: User = Depends(get_current_user)) -> User:

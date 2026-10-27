@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, ApiError, postSSE, type SSEMessage } from "../../api/client";
+import { api, ApiError, isPlanRequired, postSSE, type SSEMessage } from "../../api/client";
 import type {
   ChatMessage,
   ChatStreamEvent,
@@ -90,6 +90,9 @@ export type ThreadStatus = "ready" | "loading" | "error";
 
 export type SendRequest = { message: string; modelId: number | null; documentIds: DocumentSelection };
 
+/** A request refused before streaming; `code` is the server's (`allowance_used`, `feature_not_in_plan`, …). */
+export type SendError = { message: string; code: string | null };
+
 type Callbacks = {
   /** The first message of a new chat created conversation `id` (navigate to it). */
   onConversationCreated: (id: number, title: string) => void;
@@ -112,8 +115,11 @@ export type ChatThread = {
   /** Changes whenever the thread is replaced (another conversation or a new chat), not when a stream adopts its new id. */
   threadKey: number;
   streaming: boolean;
-  /** Error from a request rejected before streaming (rate limit, budget, model, ...). */
-  sendError: string | null;
+  /**
+   * Error from a request rejected before streaming (rate limit, allowance, model, ...). A 402 for a plan that ended has
+   * none: the page shows the plan-ended panel instead.
+   */
+  sendError: SendError | null;
   dismissSendError: () => void;
   /**
    * Resolves false when the turn didn't start: rejected before streaming, or a new chat that ended before the
@@ -243,7 +249,7 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
   const [threadKey, setThreadKey] = useState(0);
   const [reloadKey, setReloadKey] = useState(0);
   const [streaming, setStreaming] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
+  const [sendError, setSendError] = useState<SendError | null>(null);
 
   const callbacksRef = useRef(callbacks);
   callbacksRef.current = callbacks;
@@ -461,7 +467,7 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
     const undoUnstartedTurn = (reason: string): boolean => {
       if (stream.detached || stream.conversationId !== null) return false;
       setMessages((list) => list.filter((item) => item.key !== userKey && item.key !== assistantKey));
-      setSendError(reason);
+      setSendError({ message: reason, code: null });
       return true;
     };
     try {
@@ -487,7 +493,7 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
         rejected = true;
         if (!stream.detached) {
           setMessages((list) => list.filter((item) => item.key !== userKey && item.key !== assistantKey));
-          setSendError(err.message);
+          setSendError(isPlanRequired(err) ? null : { message: err.message, code: err.code });
         }
       } else {
         undone = undoUnstartedTurn(LOST_EARLY);

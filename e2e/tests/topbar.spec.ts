@@ -113,14 +113,15 @@ test.describe("member", () => {
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
   });
 
-  test("the avatar menu has usage, Settings, a theme switch and Log out, and no Admin", async ({ page, user }) => {
+  test("the avatar menu has usage, Plan & billing, Settings, a theme switch and Log out, and no Admin", async ({ page, user }) => {
     const menu = await openAvatarMenu(page);
     await expect(menu).toHaveAccessibleName(`Account: ${user.username}, Member`);
-    for (const item of ["View usage", "Settings", "Log out"]) {
+    await expect(menu.getByText("Complimentary Professional")).toBeVisible();
+    for (const item of ["View usage", "Plan & billing", "Settings", "Log out"]) {
       await expect(menu.getByRole("menuitem", { name: item, exact: true })).toBeVisible();
     }
     await expect(menu.getByRole("menuitem", { name: "Admin" })).toHaveCount(0);
-    await expect(menu.getByRole("menuitem", { name: "View usage" })).toHaveAccessibleDescription(/^Tokens this month: 0/);
+    await expect(menu.getByRole("menuitem", { name: "View usage" })).toHaveAccessibleDescription(/^Chat allowance this period: 0/);
 
     const theme = menu.getByRole("group", { name: "Theme" });
     await expect(theme.getByRole("menuitemradio")).toHaveText(["System", "Light", "Dark"]);

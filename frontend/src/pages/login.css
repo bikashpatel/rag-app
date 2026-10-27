@@ -369,6 +369,14 @@
   text-align: center;
 }
 
+/* The public pages Razorpay's review needs, centred under the card. */
+.login-policies {
+  margin-top: 14px;
+}
+.login-policies ul {
+  justify-content: center;
+}
+
 /* ---------- Narrower desktops: the aside tightens before it goes ---------- */
 @media (max-width: 1279.98px) {
   .login-aside {
