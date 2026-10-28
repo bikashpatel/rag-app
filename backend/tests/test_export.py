@@ -133,7 +133,7 @@ async def test_the_archive_holds_the_callers_account_documents_and_conversations
     newest, oldest = second[0][1]["conversation_id"], first[0][1]["conversation_id"]
     assert response.headers["content-type"] == "application/zip"
     today = datetime.now(UTC).date().isoformat()
-    assert response.headers["content-disposition"] == f'attachment; filename="rag-assistant-export-alice-{today}.zip"'
+    assert response.headers["content-disposition"] == f'attachment; filename="asknuvexusdoc-export-alice-{today}.zip"'
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert (response.headers["x-export-conversations"], response.headers["x-export-omitted"]) == ("2", "0")

@@ -96,7 +96,7 @@ describe("SystemTab", () => {
       name: (_, element) => element.classList.contains("admin-system-alert"),
     });
     expect(items).toHaveLength(2);
-    expect(items[0]).toHaveTextContent("Resolved[RAG Assistant] Resolved: Vector store (Qdrant)");
+    expect(items[0]).toHaveTextContent("Resolved[AskNuvexusDoc] Resolved: Vector store (Qdrant)");
     expect(items[0]).toHaveTextContent("RESOLVED Vector store (Qdrant): OK again after 4 min");
     expect(items[0]).not.toHaveTextContent("Details:");
     expect(items[0]).toHaveTextContent("Sent to Webhook and ntfy");

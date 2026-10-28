@@ -1,5 +1,7 @@
 # Build briefs
 
+> The product was renamed from "RAG Assistant" to **AskNuvexusDoc** on 2026-10-28; the briefs below keep the old name as written.
+
 Detailed, per-area requirements for finishing the app. Read [`../../SPEC.md`](../../SPEC.md)
 first; it is the binding contract. Status of every file is in [`../HANDOFF.md`](../HANDOFF.md).
 

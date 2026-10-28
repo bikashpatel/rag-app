@@ -26,7 +26,7 @@ export function FullPageMessage({ title, children, action }: FullPageMessageProp
     <div className="ui-fullpage">
       <div className="card ui-fullpage-card" role="alert">
         <span className="ui-brand-mark" aria-hidden="true">
-          R
+          N
         </span>
         <h1 className="ui-fullpage-title">{title}</h1>
         <div className="ui-fullpage-text">{children}</div>

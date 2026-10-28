@@ -106,7 +106,7 @@ describe("ChatPage", () => {
     expect(within(sidebar()).getByRole("heading", { name: "Today" })).toBeInTheDocument();
     expect(within(sidebar()).getByRole("heading", { name: "Older" })).toBeInTheDocument();
     expect(within(sidebar()).getByRole("link", { name: "Q3 review" })).toHaveAttribute("href", "/c/42");
-    expect(document.title).toBe("RAG Assistant");
+    expect(document.title).toBe("AskNuvexusDoc");
   });
 
   it("says when there are no conversations yet, and retries a failed list", async () => {
@@ -145,7 +145,7 @@ describe("ChatPage", () => {
     const links = within(sidebar()).getAllByRole("link");
     expect(links.map((link) => link.textContent)).toEqual(["How did revenue change?", "Hiring plan"]);
     expect(links[0]).toHaveAttribute("aria-current", "page");
-    expect(document.title).toBe("How did revenue change? · RAG Assistant");
+    expect(document.title).toBe("How did revenue change? · AskNuvexusDoc");
     expect(calls.find((call) => call.path === "/chat/stream")?.body).toEqual({
       conversation_id: null,
       message: "How did revenue change?",
@@ -218,7 +218,7 @@ describe("ChatPage", () => {
     expect(screen.getByRole("article", { name: "You" })).toHaveTextContent("Summarize the Q3 report");
     expect(screen.getByRole("heading", { level: 1, name: "Q3 review" })).toBeInTheDocument();
     expect(within(sidebar()).getByRole("link", { name: "Q3 review" })).toHaveAttribute("aria-current", "page");
-    expect(document.title).toBe("Q3 review · RAG Assistant");
+    expect(document.title).toBe("Q3 review · AskNuvexusDoc");
     expect(composer()).toHaveAttribute("placeholder", "Reply…");
 
     await user.type(composer(), "And costs?{Enter}");

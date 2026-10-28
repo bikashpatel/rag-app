@@ -254,7 +254,7 @@ async def test_the_name_on_the_receipt_is_the_username_without_a_profile(
     (receipt,) = await receipt_rows()
 
     assert receipt.buyer == {"name": "ian", "username": "ian", "email": None}
-    assert receipt.seller["name"] == "RAG Assistant" and receipt.lines[0]["description"] == "Starter plan, 1 day"
+    assert receipt.seller["name"] == "AskNuvexusDoc" and receipt.lines[0]["description"] == "Starter plan, 1 day"
 
 
 @pytest.mark.postgres

@@ -1,4 +1,4 @@
-# RAG App — Build Specification (shared contract)
+# AskNuvexusDoc — Build Specification (shared contract)
 
 This file is the single source of truth for everyone building this app. Backend
 and frontend are built in parallel against it, so **field names, paths, and
@@ -7,7 +7,9 @@ same edit and say so in your report.
 
 ## 1. Overview
 
-Single-tenant, locally hosted Retrieval-Augmented-Generation chat app.
+AskNuvexusDoc (asknuvexusdoc.com; "RAG Assistant" until 2026-10-28): a single-tenant, locally hosted
+Retrieval-Augmented-Generation chat app. The name is what users see; technical identifiers (Compose, container and
+volume names, `rag_*`/`rag:`/`rag.` keys, the `rag_session` cookie, environment variables) keep the `rag` prefix.
 
 - **Stack:** FastAPI (Python 3.13) · Postgres 17 · Redis 7.4 · Qdrant 1.19 ·
   React 19 + Vite 8 (TypeScript 5.9) · nginx · Docker Compose.
@@ -249,7 +251,7 @@ See `backend/app/config.py` for defaults. Important ones:
 | `APP_VERSION` (empty) | shown in Admin → System and written to backup manifests |
 | `MONITOR_INTERVAL_SECONDS` (60), `MONITOR_APP_URL` (`http://frontend/api/health`) | the monitor's check interval, and the app through nginx (empty: not checked) |
 | `ALERT_CONFIRM_CHECKS` (2), `ALERT_REPEAT_HOURS` (6) | results in a row before a problem or recovery is announced; "still failing" reminders (0 = none) |
-| `ALERT_NAME` (`RAG Assistant`) | the name alert titles start with |
+| `ALERT_NAME` (`AskNuvexusDoc`) | the name alert titles start with |
 | `ALERT_QUEUE_STUCK_MINUTES` (30), `ALERT_DISK_MIN_FREE_PERCENT` (10) | a stuck ingestion queue; low disk (critical below half of it) |
 | `WORKER_HEARTBEAT_SECONDS` (15), `WORKER_HEARTBEAT_MAX_AGE_SECONDS` (60) | the worker's heartbeat interval; older (or none): the worker isn't ready |
 | `ALERT_WEBHOOK_URL`, `ALERT_NTFY_URL`, `ALERT_NTFY_TOKEN` | alert channels: a JSON `{"text"}` webhook (Slack, Google Chat, Discord's `/slack`, Teams), an ntfy topic |
@@ -797,7 +799,7 @@ type MyUsage = { month: string /* "YYYY-MM" of period_start */;
   `conversations/000062-trip-plan.md`. Only the caller's own data, the
   admin included; never passwords, tokens or keys. Newest conversations first,
   within `EXPORT_MAX_MB` of content and `EXPORT_TIMEOUT_SECONDS`. Headers:
-  `Content-Disposition: attachment; filename="rag-assistant-export-<username>-<YYYY-MM-DD>.zip"`,
+  `Content-Disposition: attachment; filename="asknuvexusdoc-export-<username>-<YYYY-MM-DD>.zip"`,
   `Content-Length`, `Cache-Control: no-store`, `X-Content-Type-Options: nosniff`,
   `X-Export-Conversations: <included>`, `X-Export-Omitted: <omitted>`. 409 while
   another export of the same user is being built or downloaded; 503 when the
@@ -1898,6 +1900,10 @@ type AlertTestQueued = { queued_at: string }
 
 ## 8. Frontend
 
+- **Name and mark:** tab titles are "AskNuvexusDoc" (a new chat), "<conversation title> · AskNuvexusDoc",
+  "Admin · AskNuvexusDoc", "<page> · AskNuvexusDoc" on the plan pages and "<page> · <business name>" on the public
+  pages. The brand mark is the italic serif letter "N" in a `--brand` tile, followed by "AskNuvexusDoc" in the chat
+  sidebar and the admin and plan top bars and by the business name on the public pages (alone on full-page states).
 - Routes: `/login` (public), `/` chat and `/c/:conversationId` (signed in
   **with access**: without it `<Navigate to="/plans" replace>` when the route is
   entered, never when `Me` changes on a page already shown; the admin always

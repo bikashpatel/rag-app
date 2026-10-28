@@ -1,7 +1,7 @@
 # The watchdog as a systemd service, started by rag-watchdog.timer (scripts/watchdog/README.md). Copy both files to
 # /etc/systemd/system/ and set User and RAG_APP_DIR: a user in the docker group that owns the checkout.
 [Unit]
-Description=RAG Assistant watchdog (restart the stack when the app doesn't answer)
+Description=AskNuvexusDoc watchdog (restart the stack when the app doesn't answer)
 After=docker.service network-online.target
 Wants=network-online.target
 

@@ -103,7 +103,7 @@ describe("ProductTour", () => {
     expectScene(0);
     expect(slide()).toHaveAttribute("aria-roledescription", "slide");
     expect(tab(0)).toHaveAttribute("aria-controls", slide().id);
-    expect(within(slide()).getByRole("heading", { level: 2, name: TITLES[0] })).toBeInTheDocument();
+    expect(within(slide()).getByRole("heading", { level: 3, name: TITLES[0] })).toBeInTheDocument();
 
     // All six are in the DOM; the five inactive ones are hidden from assistive technology.
     const all = screen.getAllByRole("group", { hidden: true });
@@ -125,7 +125,7 @@ describe("ProductTour", () => {
     SCENES.forEach(({ title, caption, plan }, i) => {
       fireEvent.click(tab(i));
       expectScene(i);
-      expect(within(slide()).getByRole("heading", { level: 2 })).toHaveTextContent(title);
+      expect(within(slide()).getByRole("heading", { level: 3 })).toHaveTextContent(title);
       expect(within(slide()).getByText(caption)).toBeInTheDocument();
       for (const name of ["Standard and up", "Professional"]) {
         if (name === plan) expect(within(slide()).getByText(name)).toBeInTheDocument();

@@ -1,0 +1,22 @@
+#!/bin/sh
+# Sourced by the nginx image's entrypoint before nginx starts. When the app is reached through a trusted reverse proxy
+# (the Cloudflare tunnel), NGINX_REAL_IP_FROM lists the addresses that proxy connects from (CIDRs, space or comma
+# separated) and nginx takes the visitor's address from NGINX_REAL_IP_HEADER (default CF-Connecting-IP), so per-address
+# limits and the sign-in history see real visitors. Unset: nothing changes. Set it only while the port is published on
+# 127.0.0.1, so nobody else can send that header.
+real_ip_conf=/etc/nginx/conf.d/00-real-ip.conf
+rm -f "$real_ip_conf"
+real_ip_from=$(printf '%s' "${NGINX_REAL_IP_FROM:-}" | tr ',' ' ')
+if [ -n "$(printf '%s' "$real_ip_from" | tr -d ' ')" ]; then
+    real_ip_header=${NGINX_REAL_IP_HEADER:-CF-Connecting-IP}
+    case "$real_ip_header" in
+        '' | *[!A-Za-z0-9-]*) echo "NGINX_REAL_IP_HEADER must be a header name" >&2; exit 1 ;;
+    esac
+    for cidr in $real_ip_from; do
+        case "$cidr" in
+            *[!0-9A-Fa-f.:/]*) echo "NGINX_REAL_IP_FROM: not an address or CIDR: $cidr" >&2; exit 1 ;;
+        esac
+        printf 'set_real_ip_from %s;\n' "$cidr"
+    done > "$real_ip_conf"
+    printf 'real_ip_header %s;\n' "$real_ip_header" >> "$real_ip_conf"
+fi

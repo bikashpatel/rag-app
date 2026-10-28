@@ -23,7 +23,7 @@ CONTENT_TYPES: dict[FileFormat, str] = {
     "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     "md": "text/markdown",
 }
-CREATOR = "RAG Assistant"
+CREATOR = "AskNuvexusDoc"
 MAX_IMAGES_PER_FILE = 10
 
 _MAX_STEM_CHARS = 120

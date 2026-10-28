@@ -2,7 +2,7 @@
   "name": "rag-app-e2e",
   "version": "0.1.0",
   "private": true,
-  "description": "Playwright end-to-end tests for RAG Assistant, run against the Docker stack",
+  "description": "Playwright end-to-end tests for AskNuvexusDoc, run against the Docker stack",
   "scripts": {
     "test": "playwright test",
     "test:ui": "playwright test --ui",

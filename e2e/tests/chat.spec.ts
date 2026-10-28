@@ -84,7 +84,7 @@ test("an answer streams in piece by piece, with citations and its sources", asyn
   // The new conversation from the meta event is in the sidebar and the top bar.
   await expect(conversationList(page).getByRole("link", { name: question })).toHaveAttribute("aria-current", "page");
   await expect(page.getByRole("heading", { level: 1, name: question })).toBeVisible();
-  await expect(page).toHaveTitle(`${question} · RAG Assistant`);
+  await expect(page).toHaveTitle(`${question} · AskNuvexusDoc`);
 });
 
 test("a canned answer is never saved: the server doesn't know the conversation", async ({ page }) => {

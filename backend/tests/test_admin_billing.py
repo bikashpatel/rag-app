@@ -199,7 +199,7 @@ async def test_billing_settings_and_the_payments_setup(
     )
 
     assert config["settings"] == {
-        "business_name": "RAG Assistant",
+        "business_name": "AskNuvexusDoc",
         "address": "",
         "contact_email": None,
         "contact_phone": None,

@@ -379,7 +379,7 @@ describe("downloadMyData", () => {
         exportResponse({ "Content-Disposition": 'attachment; filename="../../etc/passwd"', "X-Export-Omitted": "-3" }),
     });
     await expect(downloadMyData()).resolves.toMatchObject({
-      filename: "rag-assistant-export.zip",
+      filename: "asknuvexusdoc-export.zip",
       conversations: 0,
       omitted: 0,
     });

@@ -22,14 +22,14 @@ describe("PlansFrame", () => {
   it("leads back to the chat for a user with access, and names the tab", async () => {
     await setup(makeMe());
     expect(screen.getByRole("link", { name: "Back to chat" })).toHaveAttribute("href", "/");
-    expect(screen.getByRole("link", { name: "RAG Assistant home" })).toHaveAttribute("href", "/");
-    expect(document.title).toBe("Plans · RAG Assistant");
+    expect(screen.getByRole("link", { name: "AskNuvexusDoc home" })).toHaveAttribute("href", "/");
+    expect(document.title).toBe("Plans · AskNuvexusDoc");
   });
 
   it("keeps a user without access on the plans", async () => {
     await setup(makeMe({ plan: makeLapsedPlanAccess() }));
     expect(screen.queryByRole("link", { name: "Back to chat" })).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "RAG Assistant home" })).toHaveAttribute("href", "/plans");
+    expect(screen.getByRole("link", { name: "AskNuvexusDoc home" })).toHaveAttribute("href", "/plans");
   });
 
   it("opens Settings from the avatar menu and says when signing out fails", async () => {

@@ -29,11 +29,11 @@ export default function AdminHeader() {
   return (
     <header className="admin-topbar">
       <div className="admin-topbar-inner">
-        <Link to="/" className="ui-brand admin-brand" aria-label="RAG Assistant home">
+        <Link to="/" className="ui-brand admin-brand" aria-label="AskNuvexusDoc home">
           <span className="ui-brand-mark" aria-hidden="true">
-            R
+            N
           </span>
-          <span className="ui-brand-name admin-brand-name">RAG Assistant</span>
+          <span className="ui-brand-name admin-brand-name">AskNuvexusDoc</span>
         </Link>
         <span className="badge badge-accent">Admin</span>
         <span className="spacer" />

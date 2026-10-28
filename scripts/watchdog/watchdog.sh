@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Host-level watchdog for the RAG Assistant (scripts/watchdog/README.md). The monitor service can't notice Docker
+# Host-level watchdog for AskNuvexusDoc (scripts/watchdog/README.md). The monitor service can't notice Docker
 # itself stopping (Docker Desktop quitting, the Mac restarting); this runs outside Docker, every 5 minutes, from launchd
 # (macOS) or a systemd timer (Linux):
 #
@@ -187,7 +187,7 @@ start_docker() {
   done
 }
 
-name=$(setting ALERT_NAME "RAG Assistant")
+name=$(setting ALERT_NAME "AskNuvexusDoc")
 if [ "${1:-}" = --test ]; then
   send test "[$name] Test alert (watchdog)" "This is a test alert from the host watchdog on $(hostname). If you can read it, this channel works."
   exit 0

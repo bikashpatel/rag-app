@@ -83,7 +83,7 @@ async def test_ends_soon_tomorrow_and_ended_once_each(create_user: CreateUser, m
     recipients, first = mailbox[0]
     assert recipients == ["bob@example.test"]
     assert first.lines[0] == "Hello Bob,"
-    assert first.lines[2].startswith("Your Standard plan on RAG Assistant ends on ")
+    assert first.lines[2].startswith("Your Standard plan on AskNuvexusDoc ends on ")
     assert first.lines[2].endswith(" (IST).")
     assert "http://localhost:8080/plans" in first.lines
     assert first.lines[-2:] == [

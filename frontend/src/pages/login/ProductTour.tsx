@@ -181,7 +181,7 @@ export default function ProductTour() {
               </div>
               <div className="login-tour-text">
                 <div className="login-tour-head">
-                  <h2 className="login-tour-title">{title}</h2>
+                  <h3 className="login-tour-title">{title}</h3>
                   {plan ? <span className="login-tour-plan">{plan}</span> : null}
                 </div>
                 <p className="login-tour-caption">{caption}</p>

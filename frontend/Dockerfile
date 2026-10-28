@@ -11,5 +11,6 @@ FROM nginx:1.30.5-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed4307
 ENV NGINX_ENVSUBST_FILTER=^NGINX_
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY --chmod=0755 upload-limit.envsh /docker-entrypoint.d/15-upload-limit.envsh
+COPY --chmod=0755 real-ip.envsh /docker-entrypoint.d/16-real-ip.envsh
 COPY --from=build /app/dist /usr/share/nginx/html
 EXPOSE 80

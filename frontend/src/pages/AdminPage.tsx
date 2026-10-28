@@ -62,7 +62,7 @@ export default function AdminPage() {
 
   useEffect(() => {
     const previousTitle = document.title;
-    document.title = "Admin · RAG Assistant";
+    document.title = "Admin · AskNuvexusDoc";
     return () => {
       document.title = previousTitle;
     };

@@ -1,6 +1,6 @@
 # Runs rag-watchdog.service 2 minutes after boot and then every 5 minutes (scripts/watchdog/README.md).
 [Unit]
-Description=RAG Assistant watchdog every 5 minutes
+Description=AskNuvexusDoc watchdog every 5 minutes
 
 [Timer]
 OnBootSec=2min

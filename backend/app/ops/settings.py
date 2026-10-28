@@ -48,7 +48,7 @@ class AlertSettings(BaseSettings):
     monitor_interval_seconds: int = Field(default=60, ge=1, le=3600)
     # The app through nginx, from inside the Compose network; empty: no proxy check
     monitor_app_url: str = "http://frontend/api/health"
-    alert_name: str = Field(default="RAG Assistant", min_length=1, max_length=80)
+    alert_name: str = Field(default="AskNuvexusDoc", min_length=1, max_length=80)
     alert_confirm_checks: int = Field(default=2, ge=1, le=60)  # consecutive results before a problem or recovery
     alert_repeat_hours: float = Field(default=6, ge=0, le=720)  # "still failing" reminders; 0: none
     alert_webhook_url: str = ""  # JSON {"text": ...}: Slack, Discord (/slack), Google Chat, Teams

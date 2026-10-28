@@ -43,7 +43,7 @@ const FINE_POINTER_QUERY = "(pointer: fine)";
 /** "hidden" while the documents column is collapsed on this device (800 px and wider; functional brief 8.4). */
 const DOCUMENTS_PANEL_KEY = "rag.documentsPanel";
 const MAX_ID = 2_147_483_647;
-const APP_TITLE = "RAG Assistant";
+const APP_TITLE = "AskNuvexusDoc";
 const MISSING_NOTICE = "That conversation doesn't exist or has been deleted.";
 const LOGOUT_FAILED = "Couldn't sign out. Check your connection and try again.";
 const UPLOAD_SETTINGS_FAILED = "Couldn't check your upload settings, so nothing was attached. Try again.";

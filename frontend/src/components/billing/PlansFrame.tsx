@@ -6,10 +6,10 @@ import AvatarMenu from "../chat/AvatarMenu";
 import { AlertCircleIcon, ArrowLeftIcon, CloseIcon } from "../ui/icons";
 import "./billing.css";
 
-const APP_TITLE = "RAG Assistant";
+const APP_TITLE = "AskNuvexusDoc";
 
 type PlansFrameProps = {
-  /** The tab title before " · RAG Assistant". */
+  /** The tab title before " · AskNuvexusDoc". */
   title: string;
   /** `.plans-main` plus the page's width variant. */
   mainClassName: string;
@@ -46,7 +46,7 @@ export default function PlansFrame({ title, mainClassName, live = false, childre
         <div className="plans-topbar-inner">
           <Link to={hasAccess ? "/" : "/plans"} className="ui-brand" aria-label={`${APP_TITLE} home`}>
             <span className="ui-brand-mark" aria-hidden="true">
-              R
+              N
             </span>
             <span className="ui-brand-name">{APP_TITLE}</span>
           </Link>

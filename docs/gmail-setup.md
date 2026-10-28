@@ -19,14 +19,15 @@ on in Admin → Plugins. Until then Gmail is off and nothing in the UI mentions 
 
 ## 1. Create a project and enable the Gmail API
 
-1. Open <https://console.cloud.google.com/>. Create a project (for example "RAG Assistant") or pick an existing one,
+1. Open <https://console.cloud.google.com/>. Create a project (for example "AskNuvexusDoc") or pick an existing one,
    and check that it is selected in the top bar.
 2. Go to **APIs & Services → Library**, search for **Gmail API** and click **Enable**.
 
 ## 2. Configure the Google Auth Platform
 
 1. Open **Google Auth Platform** (<https://console.cloud.google.com/auth/overview>) and click **Get started**.
-2. Fill in **App information**: app name "RAG Assistant", and your email as the user support email.
+2. Fill in **App information**: app name "AskNuvexusDoc", and your email as the user support email. Users see this
+   name on Google's consent screen. An app set up before the rename can be renamed under **Branding**.
 3. Under **Audience**, choose **External**. **Internal** works only when the project belongs to a Workspace
    organization and every user is in that organization; see section 9.
 4. Under **Contact information**, enter your email. Accept the policy and click **Create**.
@@ -62,8 +63,8 @@ gmail.readonly gmail.compose`. Admin → Plugins lists the exact set under "Scop
 
 ## 5. Create the OAuth client
 
-1. Open **Clients → Create client**. Choose application type **Web application** and name it, for example "RAG
-   Assistant (local)".
+1. Open **Clients → Create client**. Choose application type **Web application** and name it, for example
+   "AskNuvexusDoc (local)".
 2. Under **Authorized redirect URIs**, click **Add URI** and enter exactly:
 
    ```
@@ -230,7 +231,7 @@ After switching to Internal or In production:
   proposals. It also revokes the grant at Google, unless another user of this app has connected the same Google
   account (revoking would cut them off too). Drafts and sent mail stay in Gmail, and imported documents stay in the
   user's documents.
-- **At Google:** the account owner can remove "RAG Assistant" at <https://myaccount.google.com/permissions> at any
+- **At Google:** the account owner can remove "AskNuvexusDoc" at <https://myaccount.google.com/permissions> at any
   time. The app notices on the next Gmail call and shows "Reconnect needed".
 - **The admin, for everyone:** Admin → Plugins → **Disconnect all users** deletes every Gmail connection and revokes
   each Google account's grant once.

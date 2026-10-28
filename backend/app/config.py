@@ -15,7 +15,7 @@ RAZORPAY_API_BASE = "https://api.razorpay.com"
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=None, extra="ignore", case_sensitive=False)
 
-    app_name: str = "RAG Assistant"
+    app_name: str = "AskNuvexusDoc"
 
     # --- Security ---
     secret_key: str = Field(min_length=32)

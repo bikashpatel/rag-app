@@ -110,7 +110,7 @@ async def test_a_state_change_goes_to_every_channel_and_is_published(results: di
     assert published.channels == ["webhook", "ntfy"] and published.interval_seconds == 60
     assert [item.id for item in published.checks] == ["qdrant"]
     (alert,) = published.alerts
-    assert alert.kind == "problem" and alert.title == "[RAG Assistant] Problem: Vector store (Qdrant)"
+    assert alert.kind == "problem" and alert.title == "[AskNuvexusDoc] Problem: Vector store (Qdrant)"
     assert (alert.delivered, alert.failed) == (["webhook", "ntfy"], [])
     assert published.states["qdrant"]["status"] == "critical"
 
@@ -173,7 +173,7 @@ async def test_without_channels_alerts_are_logged_and_kept(
     with caplog.at_level(logging.WARNING, "app.monitor"):
         await watcher.cycle()
 
-    assert "Alert: [RAG Assistant] Problem: Vector store (Qdrant) | PROBLEM Vector store (Qdrant)" in caplog.text
+    assert "Alert: [AskNuvexusDoc] Problem: Vector store (Qdrant) | PROBLEM Vector store (Qdrant)" in caplog.text
     assert "No alert channel is configured" in caplog.text
     assert watcher.outbox == [] and len(watcher.history) == 1
 

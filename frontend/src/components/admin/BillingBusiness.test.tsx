@@ -58,7 +58,7 @@ describe("Billing → Business & payments", () => {
     const { calls } = setup(live, { "PUT /admin/billing/settings": saved });
     const user = userEvent.setup();
 
-    expect(await screen.findByRole("textbox", { name: "Business name" })).toHaveValue("RAG Assistant");
+    expect(await screen.findByRole("textbox", { name: "Business name" })).toHaveValue("AskNuvexusDoc");
     expect(field("Receipt prefix")).toHaveAccessibleDescription(
       expect.stringContaining("Receipts read RA/26-27/000001."),
     );

@@ -10,6 +10,22 @@ import { renderWithAuth } from "../test/render";
 import LoginPage from "./LoginPage";
 
 const signedOut = { "GET /auth/me": () => errorResponse(401, "Not authenticated") };
+const PHONE = "(max-width: 799.98px)";
+
+// The owner's copy, verbatim (visual spec 6.28).
+const HEADLINE = "Your documents. Your AI. Your answers.";
+const SUBHEADING = "Unlock the intelligence hidden in your documents—without compromising confidentiality.";
+const PARAGRAPH_1 =
+  "Upload your contracts, internal reports, policies, and confidential handbooks. Ask questions in natural language, " +
+  "explore complex information, and get clear, context-aware answers with references to the exact passages " +
+  "behind them.";
+const PARAGRAPH_2 =
+  "No endless searching. No reading hundreds of pages. Just a smarter way to work with your knowledge, with privacy " +
+  "and security at the heart of the experience.";
+const CLOSING = "Your knowledge deserves a more private way to AI.";
+const HERO_ALT =
+  "AskNuvexusDoc.com: a friendly robot gathers your PDF, Word, Excel and PowerPoint files and answers a question " +
+  "with page references";
 
 function renderLoginPage(state?: LoginRedirectState) {
   return renderWithAuth(<LoginPage />, { route: { pathname: "/login", state } });
@@ -23,6 +39,34 @@ function fields() {
   };
 }
 
+/** A paragraph whose whole text is `text` (it may hold inline markup). */
+function paragraph(text: string): HTMLElement {
+  return screen.getByText((_, element) => element?.tagName === "P" && element.textContent === text);
+}
+
+/**
+ * The owner's copy, checked word for word: the headline (visually hidden: the hero picture shows it), both paragraphs
+ * (the second as items and a sentence) and the closing line. None of it is hidden from assistive technology. Returns
+ * the parts in reading order, the picture after the headline.
+ */
+function expectCopy(): HTMLElement[] {
+  const headline = screen.getByRole("heading", { level: 2, name: HEADLINE });
+  expect(headline).toHaveClass("sr-only");
+  const hero = screen.getByRole("img", { name: HERO_ALT });
+  const items = ["No endless searching.", "No reading hundreds of pages."].map((text) => screen.getByText(text));
+  expect(items.map((item) => item.tagName)).toEqual(["LI", "LI"]);
+  const rest = paragraph(PARAGRAPH_2.slice(PARAGRAPH_2.indexOf("Just")));
+  expect([...items, rest].map((part) => part.textContent).join(" ")).toBe(PARAGRAPH_2);
+  const parts = [headline, hero, paragraph(SUBHEADING), paragraph(PARAGRAPH_1), ...items, rest, paragraph(CLOSING)];
+  for (const part of parts) expect(part.closest('[aria-hidden="true"]')).toBeNull();
+  parts.slice(1).forEach((part, i) => expect(precedes(parts[i], part)).toBe(true));
+  return parts;
+}
+
+function precedes(first: Node, second: Node): boolean {
+  return Boolean(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
 function loginCalls(calls: FetchCall[]): FetchCall[] {
   return calls.filter((call) => call.method === "POST" && call.path === "/auth/login");
 }
@@ -33,7 +77,7 @@ describe("LoginPage", () => {
     const user = userEvent.setup();
     await renderLoginPage();
 
-    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Welcome back to RAG Assistant");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Welcome back to AskNuvexusDoc");
     const { username, password, submit } = fields();
     expect(username).toHaveFocus();
     expect(password).toHaveAttribute("type", "password");
@@ -51,29 +95,86 @@ describe("LoginPage", () => {
     expect(submit).toBeDisabled();
   });
 
-  it("puts the form before the product tour, so the keyboard and screen readers reach it first", async () => {
+  it("puts the form before the copy and the tour, so the keyboard and screen readers reach it first", async () => {
     stubFetch(signedOut);
     await renderLoginPage();
 
     const main = screen.getByRole("main");
+    const aside = screen.getByRole("complementary", { name: "About AskNuvexusDoc" });
     const tour = screen.getByRole("region", { name: "Product tour" });
     expect(screen.getAllByRole("main")).toHaveLength(1);
-    expect(main.compareDocumentPosition(tour) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(main).not.toContainElement(tour);
+    expect(precedes(main, aside)).toBe(true);
+    expect(main).not.toContainElement(aside);
+    expect(aside).toContainElement(tour);
     expect(fields().username).toHaveFocus();
   });
 
-  it("leaves the product tour out on phones", async () => {
-    setMediaQueries((query) => query === "(max-width: 799.98px)");
+  it("leads the aside with the hero picture and the owner's copy around the product tour", async () => {
     stubFetch(signedOut);
     await renderLoginPage();
 
-    expect(fields().username).toBeInTheDocument();
+    const aside = screen.getByRole("complementary", { name: "About AskNuvexusDoc" });
+    const [headline, hero, subheading, lead, ...pitch] = expectCopy();
+    const tour = screen.getByRole("region", { name: "Product tour" });
+    for (const part of [headline, hero, subheading, lead, ...pitch]) expect(aside).toContainElement(part);
+    // The picture, the subheading and the first paragraph, then the tour, then the second paragraph and the close.
+    expect(precedes(lead, tour) && precedes(tour, pitch[0])).toBe(true);
+
+    // The large picture: both sizes to choose from, its box reserved before it loads, fetched first.
+    expect(hero).toHaveAttribute("srcset", expect.stringMatching(/hero-800.*\.webp 800w, .*hero-1600.*\.webp 1600w$/));
+    expect(hero).toHaveAttribute("sizes", "(min-width: 1280px) 560px, calc(52vw - 80px)");
+    expect(hero).toHaveAttribute("width", "1600");
+    expect(hero).toHaveAttribute("height", "900");
+    expect(hero).toHaveAttribute("decoding", "async");
+    expect(hero).toHaveAttribute("fetchpriority", "high");
+
+    // One h1 (the form's), the headline as h2 and the tour's scene titles under it.
+    expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
+    expect(screen.getAllByRole("heading", { level: 2 })).toEqual([headline]);
+    expect(within(tour).getByRole("heading", { level: 3 })).toHaveTextContent("Cited answers");
+
+    // The old hero and points row are gone.
+    expect(screen.queryByText(/Ask your documents/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Private to you")).not.toBeInTheDocument();
+    expect(screen.queryByText("Files and images on request")).not.toBeInTheDocument();
+  });
+
+  it("on phones, leaves the tour out and shows the copy after the form, the picture placed above it", async () => {
+    setMediaQueries((query) => query === PHONE);
+    stubFetch(signedOut);
+    await renderLoginPage();
+
+    const main = screen.getByRole("main");
+    const [headline, hero, ...rest] = expectCopy();
+    expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Product tour" })).not.toBeInTheDocument();
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    for (const part of [headline, hero, ...rest]) expect(main).toContainElement(part);
+
+    // The small picture only, its box reserved before it loads.
+    expect(hero).toHaveAttribute("src", expect.stringMatching(/hero-800.*\.webp$/));
+    expect(hero).not.toHaveAttribute("srcset");
+    expect(hero).not.toHaveAttribute("fetchpriority");
+    expect(hero).toHaveAttribute("width", "800");
+    expect(hero).toHaveAttribute("height", "450");
+
+    // The form comes first in the DOM (CSS shows the picture above it); the copy ends before the credit line.
+    expect(precedes(fields().submit, headline)).toBe(true);
+    expect(headline.parentElement).toHaveClass("login-mobile-hero");
+    expect(headline.parentElement).toContainElement(hero);
+    expect(precedes(rest[rest.length - 1], screen.getByText(/designed, developed/))).toBe(true);
+    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
+      "Welcome back to AskNuvexusDoc",
+      HEADLINE,
+    ]);
+    expect(fields().username).toHaveFocus();
 
     act(() => setMediaQueries(() => false)); // the window widens
     expect(screen.getByRole("region", { name: "Product tour" })).toBeInTheDocument();
+    expect(screen.getAllByRole("heading", { level: 2, name: HEADLINE })).toHaveLength(1);
+    expect(screen.getAllByRole("img", { name: HERO_ALT })).toHaveLength(1);
+    expect(screen.getByRole("complementary")).toContainElement(screen.getByRole("heading", { level: 2 }));
+    expect(screen.getByRole("img", { name: HERO_ALT })).toHaveAttribute("fetchpriority", "high");
   });
 
   it("links the public pages Razorpay's review reads under the card", async () => {

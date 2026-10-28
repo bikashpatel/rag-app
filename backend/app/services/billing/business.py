@@ -53,7 +53,7 @@ _SAMPLE_SECONDS = 60
 
 def default_settings() -> BillingSettings:
     return BillingSettings(
-        business_name=settings.app_name[:100] or "RAG Assistant",
+        business_name=settings.app_name[:100] or "AskNuvexusDoc",
         address="",
         contact_email=None,
         contact_phone=None,

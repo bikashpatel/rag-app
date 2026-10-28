@@ -17,7 +17,7 @@ def engine(
     confirm: int = 2, repeat_hours: float = 6, link: str | None = "http://localhost:8080/admin#system"
 ) -> AlertEngine:
     return AlertEngine(
-        name="RAG Assistant", confirm=confirm, repeat_seconds=repeat_hours * 3600, link=link, scrub=Scrubber([])
+        name="AskNuvexusDoc", confirm=confirm, repeat_seconds=repeat_hours * 3600, link=link, scrub=Scrubber([])
     )
 
 
@@ -40,7 +40,7 @@ def test_a_problem_is_sent_once_confirmed_and_then_not_repeated() -> None:
     assert sent[:2] == [None, None]
     notification = sent[2]
     assert notification.kind == "problem"
-    assert notification.title == "[RAG Assistant] Problem: Vector store (Qdrant)"
+    assert notification.title == "[AskNuvexusDoc] Problem: Vector store (Qdrant)"
     assert notification.lines == [
         "PROBLEM Vector store (Qdrant) (critical): detail",
         "At 2026-09-21 14:15:20 UTC.",
@@ -67,7 +67,7 @@ def test_a_recovery_says_how_long_it_failed() -> None:
 
     assert [item.kind for item in sent] == ["problem", "recovery"]
     recovery = sent[1]
-    assert recovery.title == "[RAG Assistant] Resolved: Ingestion worker"
+    assert recovery.title == "[AskNuvexusDoc] Resolved: Ingestion worker"
     # Failing from the first critical result (minute 0) to the first OK one (minute 12).
     assert recovery.lines[0] == "RESOLVED Ingestion worker: OK again after 12 min (detail)"
 
@@ -77,7 +77,7 @@ def test_still_failing_reminders_every_repeat_interval_and_none_with_zero() -> N
     sent = run(alerts, [{"backup": "warning"}] * 130)
     kinds = [(index, item.kind) for index, item in enumerate(sent) if item is not None]
     assert kinds == [(0, "problem"), (60, "reminder"), (120, "reminder")]
-    assert sent[60].title == "[RAG Assistant] Still failing: Backups"
+    assert sent[60].title == "[AskNuvexusDoc] Still failing: Backups"
     assert sent[60].lines[0] == "STILL FAILING Backups (warning) for 60 min: detail"
 
     quiet = engine(confirm=1, repeat_hours=0)
@@ -125,7 +125,7 @@ def test_everything_that_changed_at_once_is_one_notification() -> None:
 
     assert notification is not None and notification.kind == "problem"
     assert notification.title == (
-        "[RAG Assistant] Problem: Database (Postgres), Vector store (Qdrant), Ingestion worker and 1 more"
+        "[AskNuvexusDoc] Problem: Database (Postgres), Vector store (Qdrant), Ingestion worker and 1 more"
     )
     assert notification.lines == [
         "PROBLEM Database (Postgres) (critical): Unreachable: connection refused",
@@ -169,7 +169,7 @@ def test_a_loaded_state_keeps_its_fields() -> None:
 def test_the_test_notification() -> None:
     notification = engine().test_notification(T0)
     assert notification.kind == "test"
-    assert notification.title == "[RAG Assistant] Test alert"
+    assert notification.title == "[AskNuvexusDoc] Test alert"
     assert notification.lines[0].startswith("This is a test alert sent from Admin -> System.")
 
 
@@ -200,7 +200,7 @@ def test_scrubber_removes_secret_values_and_url_credentials() -> None:
 
 def test_messages_are_scrubbed() -> None:
     alerts = AlertEngine(
-        name="RAG Assistant", confirm=1, repeat_seconds=0, link=None, scrub=Scrubber(["leaked-secret-value"])
+        name="AskNuvexusDoc", confirm=1, repeat_seconds=0, link=None, scrub=Scrubber(["leaked-secret-value"])
     )
     notification = alerts.evaluate([result("backup", "critical", "failed: leaked-secret-value")], T0)
     assert notification is not None

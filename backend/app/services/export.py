@@ -188,7 +188,7 @@ class _Built:
     omitted: int
 
     def headers(self, user: User) -> dict[str, str]:
-        filename = f"rag-assistant-export-{user.username}-{self.exported_at:%Y-%m-%d}.zip"  # usernames: [a-z0-9_.-]
+        filename = f"asknuvexusdoc-export-{user.username}-{self.exported_at:%Y-%m-%d}.zip"  # usernames: [a-z0-9_.-]
         return {
             "Content-Disposition": f'attachment; filename="{filename}"',
             "Cache-Control": "no-store",
@@ -646,7 +646,7 @@ def _readme(
     user: User, exported_at: datetime, documents: int, included: int, omitted: int, truncated: Truncated | None
 ) -> bytes:
     lines = [
-        "RAG Assistant: data export",
+        "AskNuvexusDoc: data export",
         "",
         f"Exported {_time(exported_at)} (UTC) for {user.username}.",
         "",

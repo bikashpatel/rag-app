@@ -254,7 +254,7 @@ export function makeBillingStatus(overrides: Partial<BillingStatus> = {}): Billi
 
 export function makePublicSite(overrides: Partial<PublicSite> = {}): PublicSite {
   return {
-    business_name: "RAG Assistant",
+    business_name: "AskNuvexusDoc",
     contact_email: "billing@example.com",
     contact_phone: null,
     address: null,
@@ -301,7 +301,7 @@ export function makeAdminPlan(overrides: Partial<AdminPlan> = {}): AdminPlan {
 export function makeBillingAdminConfig(overrides: Partial<BillingAdminConfig> = {}): BillingAdminConfig {
   return {
     settings: {
-      business_name: "RAG Assistant",
+      business_name: "AskNuvexusDoc",
       address: "",
       contact_email: "billing@example.com",
       contact_phone: null,

@@ -19,7 +19,7 @@ WEBHOOK = "https://hooks.slack.example/services/T0/B0/very-secret-token"
 NTFY = "https://ntfy.example/private-topic"
 
 
-def notification(kind: str = "problem", title: str = "[RAG Assistant] Problem: Redis") -> Notification:
+def notification(kind: str = "problem", title: str = "[AskNuvexusDoc] Problem: Redis") -> Notification:
     return Notification(kind, title, ["PROBLEM Redis (critical): Unreachable", "At now."], ["redis"], at=1_790_000_000)  # type: ignore[arg-type]
 
 
@@ -47,20 +47,20 @@ async def test_the_webhook_posts_slack_style_text(monkeypatch: pytest.MonkeyPatc
     assert (request.method, str(request.url)) == ("POST", WEBHOOK)
     assert request.headers["content-type"] == "application/json"
     assert json.loads(request.content) == {
-        "text": "[RAG Assistant] Problem: Redis\nPROBLEM Redis (critical): Unreachable\nAt now."
+        "text": "[AskNuvexusDoc] Problem: Redis\nPROBLEM Redis (critical): Unreachable\nAt now."
     }
 
 
 async def test_ntfy_sends_the_title_priority_and_tags_as_headers(monkeypatch: pytest.MonkeyPatch) -> None:
     sent = mock_http(monkeypatch, lambda request: httpx.Response(200, json={"id": "x"}))
 
-    await NtfyChannel(NTFY, token="tk_secret").send(notification(title="[RAG Assistant] Problem: Café"))
-    await NtfyChannel(NTFY).send(notification("recovery", "[RAG Assistant] Resolved: Redis"))
+    await NtfyChannel(NTFY, token="tk_secret").send(notification(title="[AskNuvexusDoc] Problem: Café"))
+    await NtfyChannel(NTFY).send(notification("recovery", "[AskNuvexusDoc] Resolved: Redis"))
 
     problem, recovery = sent
     assert str(problem.url) == NTFY
     assert problem.content.decode() == "PROBLEM Redis (critical): Unreachable\nAt now."
-    assert problem.headers["title"] == "[RAG Assistant] Problem: Caf?"
+    assert problem.headers["title"] == "[AskNuvexusDoc] Problem: Caf?"
     assert (problem.headers["priority"], problem.headers["tags"]) == ("high", "rotating_light")
     assert problem.headers["authorization"] == "Bearer tk_secret"
     assert (recovery.headers["priority"], recovery.headers["tags"]) == ("default", "white_check_mark")
@@ -136,7 +136,7 @@ def email(security: str = "starttls", username: str = "alerts@example.com") -> E
     return EmailChannel(
         "smtp.example.com",
         587,
-        "RAG Assistant <alerts@example.com>",
+        "AskNuvexusDoc <alerts@example.com>",
         ["ops@example.com", "owner@example.com"],
         username=username,
         password="smtp-password-secret",
@@ -151,8 +151,8 @@ async def test_email_uses_starttls_logs_in_and_sends(smtp: type[FakeSMTP]) -> No
     assert session.address == ("smtp.example.com", 587)
     assert session.steps == ["starttls", "login alerts@example.com", "send", "quit"]
     (message,) = session.messages
-    assert message["Subject"] == "[RAG Assistant] Problem: Redis"
-    assert message["From"] == "RAG Assistant <alerts@example.com>"
+    assert message["Subject"] == "[AskNuvexusDoc] Problem: Redis"
+    assert message["From"] == "AskNuvexusDoc <alerts@example.com>"
     assert message["To"] == "ops@example.com, owner@example.com"
     assert message["Date"] == "Mon, 21 Sep 2026 14:13:20 +0000"
     assert message.get_content() == "PROBLEM Redis (critical): Unreachable\nAt now.\n"

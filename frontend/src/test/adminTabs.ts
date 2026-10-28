@@ -162,7 +162,7 @@ export function makeSystemStatus(overrides: Partial<SystemStatus> = {}): SystemS
       {
         at: "2026-10-20T08:12:00Z",
         kind: "recovery",
-        title: "[RAG Assistant] Resolved: Vector store (Qdrant)",
+        title: "[AskNuvexusDoc] Resolved: Vector store (Qdrant)",
         lines: ["RESOLVED Vector store (Qdrant): OK again after 4 min (Reachable; 1 collection)", "At 2026-10-20 08:12:00 UTC.", "Details: http://localhost:8080/admin#system"],
         delivered: ["webhook", "ntfy"],
         failed: [],
@@ -170,7 +170,7 @@ export function makeSystemStatus(overrides: Partial<SystemStatus> = {}): SystemS
       {
         at: "2026-10-20T08:08:00Z",
         kind: "problem",
-        title: "[RAG Assistant] Problem: Vector store (Qdrant)",
+        title: "[AskNuvexusDoc] Problem: Vector store (Qdrant)",
         lines: ["PROBLEM Vector store (Qdrant) (critical): Unreachable: connection refused", "At 2026-10-20 08:08:00 UTC."],
         delivered: ["webhook"],
         failed: ["ntfy"],

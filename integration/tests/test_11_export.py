@@ -26,7 +26,7 @@ def test_export_holds_only_the_callers_data(make_user) -> None:
     response = check(alice.client.post("/api/me/export"))
     assert response.headers["content-type"] == "application/zip"
     disposition = response.headers["content-disposition"]
-    assert disposition.startswith("attachment;") and f"rag-assistant-export-{alice.username}-" in disposition
+    assert disposition.startswith("attachment;") and f"asknuvexusdoc-export-{alice.username}-" in disposition
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["x-export-conversations"] == "1" and response.headers["x-export-omitted"] == "0"
 

@@ -74,7 +74,7 @@ describe("AdminPage", () => {
     await renderAdmin();
 
     expect(screen.getByRole("heading", { level: 1, name: "Administration" })).toBeInTheDocument();
-    expect(document.title).toBe("Admin · RAG Assistant");
+    expect(document.title).toBe("Admin · AskNuvexusDoc");
     expect(await overview()).toEqual({
       Users: "3",
       Documents: "42",
@@ -166,11 +166,11 @@ describe("AdminPage", () => {
   });
 
   it("restores the page title when it closes", async () => {
-    document.title = "RAG Assistant";
+    document.title = "AskNuvexusDoc";
     const { unmount } = await renderAdmin();
-    expect(document.title).toBe("Admin · RAG Assistant");
+    expect(document.title).toBe("Admin · AskNuvexusDoc");
     unmount();
-    expect(document.title).toBe("RAG Assistant");
+    expect(document.title).toBe("AskNuvexusDoc");
   });
 });
 

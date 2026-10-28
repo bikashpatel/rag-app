@@ -1,5 +1,5 @@
 #!/bin/sh
-# Backups of the RAG Assistant (SPEC.md section 10), run by the backup and restore services of docker-compose.yml in
+# Backups of AskNuvexusDoc (SPEC.md section 10), run by the backup and restore services of docker-compose.yml in
 # the pinned postgres image (busybox, pg_dump, pg_restore, psql). Never run on the host: use scripts/backup.sh and
 # scripts/restore.sh. The steps are in lib.sh.
 #

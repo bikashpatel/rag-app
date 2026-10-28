@@ -250,7 +250,7 @@ export function deleteAllConversations(): Promise<ConversationsDeleted> {
   return api.del<ConversationsDeleted>("/conversations");
 }
 
-const EXPORT_FALLBACK_NAME = "rag-assistant-export.zip";
+const EXPORT_FALLBACK_NAME = "asknuvexusdoc-export.zip";
 
 /** The file name of a `Content-Disposition: attachment; filename="…"` header, if it is a plain, safe one. */
 function attachmentFilename(header: string | null): string | null {
@@ -265,7 +265,7 @@ function headerCount(res: Response, name: string): number {
 
 /**
  * POST /me/export with fetch (an empty JSON body); ApiError (with the server's detail) on non-2xx. The file name comes
- * from Content-Disposition (fallback "rag-assistant-export.zip"), the counts from X-Export-Conversations / -Omitted.
+ * from Content-Disposition (fallback "asknuvexusdoc-export.zip"), the counts from X-Export-Conversations / -Omitted.
  */
 export async function downloadMyData(
   signal?: AbortSignal,

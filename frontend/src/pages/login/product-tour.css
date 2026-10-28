@@ -3,8 +3,8 @@
    Scene parts animate only under .login-tour-play, timed by --d (start) and --to (end of a passing state); without
    it the base styles are the finished scene. The global reduced-motion rule stays in force. */
 
-/* The window is 316px tall where there's room and gives way down to 228px on short screens: the aside lets the
-   tour shrink (login.css), and the first row of the stage takes what is left after the captions. */
+/* The window is 316px tall where there's room and gives way down to 228px on shorter screens: login.css sizes the
+   stage's first row by the viewport's height. */
 .login-tour {
   --login-tour-bar: 31px;
   display: flex;

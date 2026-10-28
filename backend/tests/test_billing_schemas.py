@@ -52,7 +52,7 @@ STARTER = {
     "default_chat_model_id": 4,
 }
 SETTINGS = {
-    "business_name": "RAG Assistant",
+    "business_name": "AskNuvexusDoc",
     "address": "12 MG Road\nBengaluru 560001",
     "contact_email": "billing@example.com",
     "contact_phone": "+91 80 1234 5678",

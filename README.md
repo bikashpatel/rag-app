@@ -1,7 +1,8 @@
-# RAG Assistant
+# AskNuvexusDoc
 
-A self-hosted, single-tenant Retrieval-Augmented-Generation app: upload documents and
-chat with them on a prepaid plan, and manage users, plans, payments, models and usage from an admin page.
+AskNuvexusDoc ([asknuvexusdoc.com](https://asknuvexusdoc.com)) is a self-hosted, single-tenant
+Retrieval-Augmented-Generation app: upload documents and chat with them on a prepaid plan, and manage users, plans,
+payments, models and usage from an admin page.
 
 This application is designed, developed & maintained by ELARXSYS.COM.
 
@@ -619,6 +620,13 @@ by hand, with a read-only token, actions pinned to commit SHAs, a timeout per jo
 
 ## 8. Operations
 
+**Public address.** The app is served at https://asknuvexusdoc.com through a Cloudflare named tunnel on the host
+(`cloudflared tunnel run` from `~/.cloudflared/config.yml`, started at login by a LaunchAgent), which forwards to
+nginx on `127.0.0.1:8080`. With HTTPS in front, `.env` sets `COOKIE_SECURE=true`, lists the https origins in
+`PUBLIC_BASE_URLS`, and sets `NGINX_REAL_IP_FROM` so nginx trusts Cloudflare's `CF-Connecting-IP` only for connections
+from Docker's network (`frontend/real-ip.envsh`). Sign in at the https address: some browsers drop Secure cookies on
+`http://localhost`.
+
 Three parts keep the data safe and say when something breaks: migrations at start-up, daily verified backups with a
 tested restore, and a monitor that sends alerts. The details are in [`scripts/README.md`](scripts/README.md) (backups
 and restore), [`backend/migrations/README.md`](backend/migrations/README.md) and
@@ -773,7 +781,7 @@ Every one is optional; the defaults are in `.env.example`. After a change, run `
 | `MONITOR_INTERVAL_SECONDS` (60) | how often the monitor checks |
 | `MONITOR_APP_URL` (`http://frontend/api/health`) | the app through nginx, from inside Docker; empty: not checked |
 | `ALERT_CONFIRM_CHECKS` (2), `ALERT_REPEAT_HOURS` (6, 0: never) | results in a row before an alert, and the reminder interval |
-| `ALERT_NAME` (`RAG Assistant`) | the start of every alert's title |
+| `ALERT_NAME` (`AskNuvexusDoc`) | the start of every alert's title |
 | `BACKUP_MAX_AGE_HOURS` (26, 0: no backup checks) | the oldest the last good backup may be |
 | `ALERT_QUEUE_STUCK_MINUTES` (30), `ALERT_DISK_MIN_FREE_PERCENT` (10) | the queue and disk thresholds |
 | `WORKER_HEARTBEAT_SECONDS` (15), `WORKER_HEARTBEAT_MAX_AGE_SECONDS` (60) | the worker's heartbeat, and the age that makes the app "unready" |

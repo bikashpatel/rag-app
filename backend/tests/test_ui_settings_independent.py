@@ -1456,7 +1456,7 @@ async def test_the_response_is_a_bounded_attachment_download(create_user: Create
     headers = response.headers
     assert headers["content-type"] == "application/zip"
     assert headers["content-disposition"] in {
-        f'attachment; filename="rag-assistant-export-alice-{day.isoformat()}.zip"' for day in (before, after)
+        f'attachment; filename="asknuvexusdoc-export-alice-{day.isoformat()}.zip"' for day in (before, after)
     }
     assert int(headers["content-length"]) == len(response.content)
     assert headers["cache-control"] == "no-store"

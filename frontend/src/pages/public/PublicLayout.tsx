@@ -8,7 +8,7 @@ import "./public.css";
 
 /** Before the business details load (or when they can't): the app's name only. */
 const FALLBACK_SITE: PublicSite = {
-  business_name: "RAG Assistant",
+  business_name: "AskNuvexusDoc",
   contact_email: null,
   contact_phone: null,
   address: null,
@@ -56,7 +56,7 @@ export default function PublicLayout({ children }: { children: ReactNode }) {
           <div className="public-topbar-inner">
             <Link to="/pricing" className="ui-brand public-brand" aria-label={`${site.business_name}: pricing`}>
               <span className="ui-brand-mark" aria-hidden="true">
-                R
+                N
               </span>
               <span className="ui-brand-name public-brand-name">{site.business_name}</span>
             </Link>

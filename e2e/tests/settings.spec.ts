@@ -216,7 +216,7 @@ test.describe("Plugins & data", () => {
     const download = page.waitForEvent("download");
     await dialog.getByRole("button", { name: "Export", exact: true }).click();
     const file = await download;
-    expect(file.suggestedFilename()).toMatch(new RegExp(`^rag-assistant-export-${user.username}-\\d{4}-\\d{2}-\\d{2}\\.zip$`));
+    expect(file.suggestedFilename()).toMatch(new RegExp(`^asknuvexusdoc-export-${user.username}-\\d{4}-\\d{2}-\\d{2}\\.zip$`));
     const bytes = await readFile(await file.path());
     expect(bytes.subarray(0, 4)).toEqual(Buffer.from("PK\x03\x04", "latin1"));
     for (const name of ["README.txt", "account.json", "documents.json", "conversations/index.json"]) {

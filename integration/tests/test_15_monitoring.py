@@ -54,8 +54,8 @@ def outage(service: str, label: str, *, check_readiness: bool) -> None:
     assert all(len(items) == 1 for items in lines("RESOLVED", label, start).values())
     webhook, ntfy = problem["webhook"][0], problem["ntfy"][0]
     title = webhook["text"].splitlines()[0]
-    assert title.startswith("[RAG Assistant] Problem: ") and label in title
-    assert ntfy["headers"]["title"].startswith("[RAG Assistant] Problem")
+    assert title.startswith("[AskNuvexusDoc] Problem: ") and label in title
+    assert ntfy["headers"]["title"].startswith("[AskNuvexusDoc] Problem")
     assert ntfy["headers"]["priority"] == "high" and ntfy["headers"]["tags"] == "rotating_light"
     assert ntfy["text"] in webhook["text"]
 
@@ -130,7 +130,7 @@ def test_a_test_alert_reaches_every_channel_even_after_a_failed_delivery(admin: 
         return test if test and sorted(test["delivered"]) == ["ntfy", "webhook"] else None
 
     record = wait_until(recorded, 30, "the test alert in Admin -> System")
-    assert record["failed"] == [] and record["title"] == "[RAG Assistant] Test alert"
+    assert record["failed"] == [] and record["title"] == "[AskNuvexusDoc] Test alert"
 
 
 def test_alerts_hold_no_secrets_usernames_or_document_names(admin: httpx.Client) -> None:

@@ -14,6 +14,13 @@ reviewed and deployed to the live stack (not committed yet). `SPEC.md` is the bi
 commands, the test suites, operations (section 8), plans and billing (section 9), the architecture and how to use the
 app.
 
+**Renamed on 2026-10-28:** the product is now **AskNuvexusDoc** (the owner's domain is asknuvexusdoc.com), formerly
+"RAG Assistant". The new name is in the tab titles, the brand (mark "N"), the default business name on receipts and
+public pages, generated-file metadata, the data export's file name and README, alert titles and the docs; the sign-in
+page is renamed separately with its rework. Technical identifiers keep `rag` (`CLAUDE.md`). On a running install, an
+`APP_NAME` or `ALERT_NAME` in `.env` and a business name saved in Admin → Billing → Business & payments still show
+the old name until changed there; the receipt prefix stays `RA`.
+
 ## Status
 
 Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
@@ -525,7 +532,7 @@ blocks and links. HTML and footnotes aren't supported, and images only as `image
 generated in the same conversation (see "Images from chat"). Rendering in short:
 
 - **PDF**: fpdf2 with Noto Sans fonts. It has headings, paragraphs, bold and italic, nested lists, tables, code
-  blocks, links with their host shown, a "page / pages" footer and the creator "RAG Assistant".
+  blocks, links with their host shown, a "page / pages" footer and the creator "AskNuvexusDoc".
 - **DOCX**: python-docx with Heading, List Bullet and List Number styles, plus tables, complex-script bold and
   italic, and right-to-left text.
 - **XLSX**: openpyxl. Each sheet has a bold header row, a frozen first row, an auto-filter and fitted column widths.
@@ -1748,12 +1755,17 @@ Files from chat is built and was verified live in Docker on 2026-10-16. What is 
    A small Linux server with Docker Engine and Compose is enough (8 GB of memory: the worker alone may use 4 GB). Moving there: clone, put `.env` back,
    copy a backup into `./backups`, `docker compose up -d --build`, then `scripts/restore.sh latest --yes
    --no-safety-backup` (`scripts/README.md`, "A new machine"); install the watchdog's systemd timer (step 8).
-5. Before exposing the app beyond localhost (the owner will give the domain, managed in Cloudflare): put HTTPS in
-   front, set `COOKIE_SECURE=true` (the OAuth nonce cookie then gets `Secure` too), list the public address in
-   `PUBLIC_BASE_URLS` and register its Gmail callback in Google and its Razorpay webhook (above), configure
-   `set_real_ip_from`/`real_ip_header` in `nginx.conf` for the outer proxy so the per-IP throttle and the billing rate
-   limits see real clients, and consider rate limits on upload and reprocess. Then point an external uptime check at
-   `https://<domain>/api/health/ready`.
+5. **Public address: done on 2026-10-28.** https://asknuvexusdoc.com (and www) reach the app through a Cloudflare
+   named tunnel `asknuvexusdoc` run from this Mac (`~/.cloudflared/config.yml`, LaunchAgent
+   `~/Library/LaunchAgents/com.asknuvexusdoc.tunnel.plist`, log `~/Library/Logs/asknuvexusdoc-tunnel.log`; DNS CNAMEs
+   created by `cloudflared tunnel route dns`). `.env` has `COOKIE_SECURE=true`, `PUBLIC_BASE_URLS` with both https
+   origins and localhost, and `NGINX_REAL_IP_FROM=172.16.0.0/12` (`frontend/real-ip.envsh`: nginx takes the visitor's
+   address from `CF-Connecting-IP` for connections from Docker's network, so throttles, billing rate limits and the
+   sign-in history see real visitors; verified). Still to do: the owner turns on Cloudflare **Always Use HTTPS**,
+   registers the Gmail callbacks for both https origins in Google, and sets the Razorpay webhook
+   (`https://asknuvexusdoc.com/api/billing/razorpay/webhook`) with `RAZORPAY_WEBHOOK_SECRET`; consider rate limits
+   on upload and reprocess; point an external uptime check at `https://asknuvexusdoc.com/api/health/ready`. The site
+   is up only while this Mac and Docker run (see Hosting).
 6. **Choose an alert channel** (the owner): a webhook (Slack, Google Chat, Discord, Teams), ntfy (the simplest for
    push to a phone) or email. Put its `ALERT_*` settings in `.env` (`README.md` section 8), run `docker compose up -d
    monitor`, then press **Send a test alert** in Admin → System. Until then alerts are only logged.

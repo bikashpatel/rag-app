@@ -1,7 +1,9 @@
-# RAG Assistant: notes for coding agents
+# AskNuvexusDoc: notes for coding agents
 
-Self-hosted, single-tenant RAG chat app (locally hosted for now): users upload documents
-and chat with them through a streaming UI; an admin manages users, models and usage limits.
+AskNuvexusDoc (asknuvexusdoc.com) is a self-hosted, single-tenant RAG chat app (locally hosted for now): users upload
+documents and chat with them through a streaming UI; an admin manages users, models and usage limits. It was called
+"RAG Assistant" until 2026-10-28; technical identifiers (the `rag-app` folder, Compose, container and volume names,
+`rag_*`/`rag:`/`rag.` keys, environment variables) keep their old names on purpose.
 
 **Start here:** [`docs/HANDOFF.md`](docs/HANDOFF.md) lists what is done, what is missing,
 and the ordered next steps. [`SPEC.md`](SPEC.md) is the binding contract (API, data model,

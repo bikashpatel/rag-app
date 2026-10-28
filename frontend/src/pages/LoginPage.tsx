@@ -5,9 +5,11 @@ import { useAuth } from "../auth/AuthContext";
 import { postLoginPath } from "../auth/loginRedirect";
 import PolicyLinks from "../components/billing/PolicyLinks";
 import { useMediaQuery } from "../components/chat/useMediaQuery";
-import { AlertCircleIcon, FileIcon, LockIcon, QuoteIcon, ShieldIcon } from "../components/ui/icons";
+import { AlertCircleIcon, ShieldIcon } from "../components/ui/icons";
 import PasswordInput from "../components/ui/PasswordInput";
 import { ButtonSpinner } from "../components/ui/Spinner";
+import HeroArt from "./login/HeroArt";
+import { Deck, Headline, Pitch } from "./login/LoginCopy";
 import ProductTour from "./login/ProductTour";
 import "./login.css";
 
@@ -17,17 +19,19 @@ const PHONE_QUERY = "(max-width: 799.98px)";
 /** The brand mark and name (decorative here: the page's heading names the app for assistive tech). */
 function Brand() {
   return (
-    <span className="ui-brand">
-      <span className="ui-brand-mark">R</span>
-      <span className="ui-brand-name">RAG Assistant</span>
+    <span className="ui-brand" aria-hidden="true">
+      <span className="ui-brand-mark">N</span>
+      <span className="ui-brand-name">AskNuvexusDoc</span>
     </span>
   );
 }
 
 /**
- * Sign-in (visual spec 6.28): a split page with the form card on the right and the editorial aside with the product
- * tour on the left (not rendered on phones, where a compact hero sits above the form). The form comes first in the
- * DOM, so keyboard and screen-reader users reach it before the tour; the grid places the aside on the left.
+ * Sign-in (visual spec 6.28): a split page with the form card on the right and, on the left, the aside with the
+ * owner's hero picture and copy around the product tour. The form comes first in the DOM, so keyboard and screen-reader
+ * users reach it before the copy; the grid places the aside on the left, and the form stays in view while the page
+ * scrolls. Phones get no aside: the picture shows above the form (placed there by CSS, it follows the form in the DOM)
+ * and the copy below it.
  */
 export default function LoginPage() {
   const { login } = useAuth();
@@ -62,16 +66,8 @@ export default function LoginPage() {
     <div className="login-page">
       <main className="login-main">
         <div className="login-card">
-          <div className="login-mobile-hero" aria-hidden="true">
-            <Brand />
-            <p className="login-hero-title">
-              Ask your documents <em>anything.</em>
-            </p>
-            <p className="login-hero-deck">Every answer points to the passages it came from.</p>
-          </div>
-
           <h1 className="login-title">
-            Welcome back<span className="sr-only"> to RAG Assistant</span>
+            Welcome back<span className="sr-only"> to AskNuvexusDoc</span>
           </h1>
           <p className="login-lede">Sign in to continue to your documents and chats.</p>
 
@@ -124,35 +120,36 @@ export default function LoginPage() {
             <span>Accounts are created by your administrator. Ask them if you need access or a new password.</span>
           </div>
 
+          {phone ? (
+            <>
+              <div className="login-mobile-hero">
+                <Brand />
+                <Headline />
+                <HeroArt phone />
+              </div>
+              <div className="login-about">
+                <Deck />
+                <Pitch />
+              </div>
+            </>
+          ) : null}
+
           <p className="login-credit">This application is designed, developed &amp; maintained by ELARXSYS.COM</p>
           <PolicyLinks compact className="login-policies" />
         </div>
       </main>
 
       {phone ? null : (
-        <div className="login-aside">
-          <div className="login-hero" aria-hidden="true">
+        <aside className="login-aside" aria-label="About AskNuvexusDoc">
+          <div className="login-hero">
             <Brand />
-            <p className="login-hero-title">
-              Ask your documents <em>anything.</em>
-            </p>
+            <Headline />
+            <HeroArt />
+            <Deck />
           </div>
           <ProductTour />
-          <ul className="login-points" aria-hidden="true">
-            <li>
-              <LockIcon size={15} />
-              Private to you
-            </li>
-            <li>
-              <QuoteIcon size={15} />
-              Cited answers
-            </li>
-            <li>
-              <FileIcon size={15} />
-              Files and images on request
-            </li>
-          </ul>
-        </div>
+          <Pitch />
+        </aside>
       )}
     </div>
   );

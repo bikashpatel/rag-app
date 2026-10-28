@@ -127,8 +127,11 @@ services:
     build: ./frontend
     restart: unless-stopped
     environment:
-      # nginx's upload body limit follows it (frontend/upload-limit.envsh); pass nothing else from .env.
+      # nginx's upload body limit follows it (frontend/upload-limit.envsh), and the real visitor address behind a
+      # trusted proxy (frontend/real-ip.envsh); pass nothing else from .env.
       MAX_UPLOAD_MB_HARD: ${MAX_UPLOAD_MB_HARD:-100}
+      NGINX_REAL_IP_FROM: ${NGINX_REAL_IP_FROM:-}
+      NGINX_REAL_IP_HEADER: ${NGINX_REAL_IP_HEADER:-CF-Connecting-IP}
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:80"
     healthcheck:

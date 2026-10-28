@@ -78,9 +78,9 @@ function ConversationSidebar({
       <div className="chat-sidebar-header">
         <div className="ui-brand chat-brand">
           <span className="ui-brand-mark" aria-hidden="true">
-            R
+            N
           </span>
-          <span className="ui-brand-name">RAG Assistant</span>
+          <span className="ui-brand-name">AskNuvexusDoc</span>
         </div>
         {drawer ? (
           <button type="button" className="btn btn-ghost btn-icon" onClick={onClose} aria-label="Close conversations">

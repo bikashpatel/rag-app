@@ -142,7 +142,7 @@ def test_pdf_has_every_construct_and_no_active_content() -> None:
     assert reader.metadata is not None
     assert (reader.metadata.title, reader.metadata.creator, reader.metadata.author) == (
         "Quarterly report",
-        "RAG Assistant",
+        "AskNuvexusDoc",
         None,
     )
 
@@ -355,8 +355,8 @@ def test_docx_has_styles_runs_lists_tables_links_and_properties() -> None:
     properties = document.core_properties
     assert (properties.title, properties.author, properties.last_modified_by) == (
         "Quarterly report",
-        "RAG Assistant",
-        "RAG Assistant",
+        "AskNuvexusDoc",
+        "AskNuvexusDoc",
     )
     assert properties.created is not None
     assert datetime.now(timezone.utc) - properties.created.replace(tzinfo=timezone.utc) < timedelta(minutes=5)
@@ -393,7 +393,7 @@ def test_xlsx_types_cells_and_never_writes_formulas() -> None:
 
     workbook = openpyxl.load_workbook(io.BytesIO(data))
     assert workbook.sheetnames == ["Q3 salesNorth", "Sheet2", "x" * 31, "x" * 27 + " (2)", "שלום", "Notes", "Sources"]
-    assert (workbook.properties.title, workbook.properties.creator) == ("Quarterly report", "RAG Assistant")
+    assert (workbook.properties.title, workbook.properties.creator) == ("Quarterly report", "AskNuvexusDoc")
     sheet = workbook["Q3 salesNorth"]
     header = sheet[1]
     assert [cell.value for cell in header] == ["Region", "Revenue", "Date", "Note"]

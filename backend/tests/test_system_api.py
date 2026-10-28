@@ -174,7 +174,7 @@ async def test_system_status_reports_every_check(
     alert = {
         "at": iso(120),
         "kind": "problem",
-        "title": "[RAG Assistant] Problem: Redis",
+        "title": "[AskNuvexusDoc] Problem: Redis",
         "lines": ["PROBLEM Redis (critical): Unreachable: connection failed"],
         "delivered": ["webhook"],
         "failed": [],
@@ -222,7 +222,7 @@ async def test_system_status_reports_every_check(
     assert body["gmail_reconnect_needed"] == 0
     assert body["monitor"]["running"] is True and body["monitor"]["channels"] == ["webhook"]
     assert body["monitor"]["test_pending"] is False
-    assert [item["title"] for item in body["alerts"]] == ["[RAG Assistant] Problem: Redis"]
+    assert [item["title"] for item in body["alerts"]] == ["[AskNuvexusDoc] Problem: Redis"]
 
 
 async def test_queue_failed_documents_and_gmail_reconnects_are_counted(

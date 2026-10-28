@@ -98,7 +98,7 @@ export async function submitLogin(page: Page, username: string, password: string
 }
 
 export function loginHeading(page: Page): Locator {
-  return page.getByRole("heading", { name: "Welcome back to RAG Assistant" });
+  return page.getByRole("heading", { name: "Welcome back to AskNuvexusDoc" });
 }
 
 /** Scroll containers meant to scroll sideways on their own: code blocks, tables and tab strips. */

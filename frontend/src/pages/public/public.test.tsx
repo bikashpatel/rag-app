@@ -69,7 +69,7 @@ describe("public pages", () => {
     expect(screen.getByText("Last updated 26 Oct 2026")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "A second title" })).toBeInTheDocument();
     expect(within(screen.getByRole("main")).getByRole("link", { name: "Terms" })).toHaveAttribute("href", "/terms");
-    expect(document.title).toBe("Cancellation and refunds · RAG Assistant");
+    expect(document.title).toBe("Cancellation and refunds · AskNuvexusDoc");
 
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
     const nav = screen.getByRole("navigation", { name: "Site" });
@@ -105,7 +105,7 @@ describe("public pages", () => {
     });
     expect(await screen.findByText("This page hasn't been written yet.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 1, name: "Shipping and delivery" })).toBeInTheDocument();
-    expect(within(screen.getByRole("contentinfo")).getByText("RAG Assistant")).toBeInTheDocument();
+    expect(within(screen.getByRole("contentinfo")).getByText("AskNuvexusDoc")).toBeInTheDocument();
   });
 
   it("shows a failed page with a retry, keeping the frame while moving between pages", async () => {
@@ -138,7 +138,7 @@ describe("public pages", () => {
     expect(screen.getByRole("heading", { name: "Compare plans" })).toBeInTheDocument();
     expect(screen.getByText(/plans don't renew automatically/)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Sign in to choose a plan" })).toHaveAttribute("href", "/login");
-    expect(document.title).toBe("Pricing · RAG Assistant");
+    expect(document.title).toBe("Pricing · AskNuvexusDoc");
   });
 
   it("sends a signed-in visitor from pricing to the plans", async () => {

@@ -107,13 +107,13 @@ describe("PluginsDataTab", () => {
       expect(screen.getByRole("status")).toHaveTextContent("Preparing your export…");
       response.resolve(
         exportResponse({
-          "Content-Disposition": 'attachment; filename="rag-assistant-export-2026-10-20.zip"',
+          "Content-Disposition": 'attachment; filename="asknuvexusdoc-export-2026-10-20.zip"',
           "X-Export-Conversations": "12",
           "X-Export-Omitted": "0",
         }),
       );
-      await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Saved rag-assistant-export-2026-10-20.zip (7 B)."));
-      expect(downloads).toEqual(["rag-assistant-export-2026-10-20.zip blob:http://localhost/export"]);
+      await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("Saved asknuvexusdoc-export-2026-10-20.zip (7 B)."));
+      expect(downloads).toEqual(["asknuvexusdoc-export-2026-10-20.zip blob:http://localhost/export"]);
       expect(sent(calls, "POST", "/me/export")).toEqual([{}]);
       expect(button).not.toHaveAttribute("aria-disabled");
     });
@@ -124,11 +124,11 @@ describe("PluginsDataTab", () => {
         "POST /me/export": () => exportResponse({ "X-Export-Conversations": "50", "X-Export-Omitted": "3" }),
       });
       await user.click(screen.getByRole("button", { name: "Export" }));
-      expect(await screen.findByText("Saved rag-assistant-export.zip (7 B).")).toBeInTheDocument();
+      expect(await screen.findByText("Saved asknuvexusdoc-export.zip (7 B).")).toBeInTheDocument();
       expect(
         screen.getByText("The export holds your newest 50 conversations; 3 older ones didn't fit."),
       ).toBeInTheDocument();
-      expect(downloads).toEqual(["rag-assistant-export.zip blob:http://localhost/export"]);
+      expect(downloads).toEqual(["asknuvexusdoc-export.zip blob:http://localhost/export"]);
     });
 
     it("reports a refused export", async () => {
