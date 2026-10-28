@@ -1,8 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import App from "../App";
 import type { LoginRedirectState } from "../auth/loginRedirect";
+import { setMediaQueries } from "../test/browser";
 import { makeMe } from "../test/fixtures";
 import { deferred, errorResponse, stubFetch, type FetchCall } from "../test/http";
 import { renderWithAuth } from "../test/render";
@@ -48,6 +49,31 @@ describe("LoginPage", () => {
 
     await user.clear(password);
     expect(submit).toBeDisabled();
+  });
+
+  it("puts the form before the product tour, so the keyboard and screen readers reach it first", async () => {
+    stubFetch(signedOut);
+    await renderLoginPage();
+
+    const main = screen.getByRole("main");
+    const tour = screen.getByRole("region", { name: "Product tour" });
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+    expect(main.compareDocumentPosition(tour) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(main).not.toContainElement(tour);
+    expect(fields().username).toHaveFocus();
+  });
+
+  it("leaves the product tour out on phones", async () => {
+    setMediaQueries((query) => query === "(max-width: 799.98px)");
+    stubFetch(signedOut);
+    await renderLoginPage();
+
+    expect(fields().username).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Product tour" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+
+    act(() => setMediaQueries(() => false)); // the window widens
+    expect(screen.getByRole("region", { name: "Product tour" })).toBeInTheDocument();
   });
 
   it("links the public pages Razorpay's review reads under the card", async () => {

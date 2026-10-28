@@ -1,0 +1,1112 @@
+/* The product tour in the sign-in aside (ProductTour.tsx, tourScenes.tsx). login-tour- prefix; colours only from the
+   global.css tokens, except the generated picture's fixed colours in tourScenes.tsx (it depicts an image).
+   Scene parts animate only under .login-tour-play, timed by --d (start) and --to (end of a passing state); without
+   it the base styles are the finished scene. The global reduced-motion rule stays in force. */
+
+/* The window is 316px tall where there's room and gives way down to 228px on short screens: the aside lets the
+   tour shrink (login.css), and the first row of the stage takes what is left after the captions. */
+.login-tour {
+  --login-tour-bar: 31px;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 560px;
+  min-height: 0;
+}
+
+/* ---------- Controls: Pause/Play, then the story-style segments (the tabs) ---------- */
+.login-tour-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.btn.login-tour-toggle {
+  border-color: var(--border-strong);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  color: var(--text-2);
+}
+.login-tour-tabs {
+  display: flex;
+  flex: 1;
+  gap: 6px;
+  min-width: 0;
+}
+.login-tour-tab {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  min-width: 0;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-xs);
+  background: none;
+}
+.login-tour-track {
+  position: relative;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+  transition:
+    height var(--dur-1),
+    background var(--dur-1);
+}
+.login-tour-tab:hover .login-tour-track {
+  background: var(--rule);
+}
+.login-tour-tab[aria-selected="true"] .login-tour-track {
+  height: 5px;
+}
+.login-tour-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--accent);
+  transform: scaleX(0);
+  transform-origin: left center;
+}
+.login-tour-tab[data-seen] .login-tour-fill {
+  transform: none;
+}
+.login-tour-tab[aria-selected="true"] .login-tour-fill {
+  animation: login-tour-progress linear both paused;
+}
+.login-tour[data-running] .login-tour-tab[aria-selected="true"] .login-tour-fill {
+  animation-play-state: running;
+}
+.login-tour[data-reduced] .login-tour-tab[aria-selected="true"] .login-tour-fill {
+  animation: none;
+  transform: none;
+}
+
+/* ---------- The stage: one window frame, the slides stacked over it ---------- */
+.login-tour-slides {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-rows: minmax(228px, 316px) auto;
+  min-height: 0;
+  margin-top: 14px;
+}
+.login-tour-frame {
+  position: relative;
+  grid-area: 1 / 1;
+}
+/* A second sheet tucked under the window, like the specimen cards. */
+.login-tour-sheet {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  transform: translate(-6px, 7px) rotate(-2.4deg);
+}
+.login-tour-window {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+  box-shadow: var(--shadow-lg);
+}
+.login-tour-window-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: calc(var(--login-tour-bar) - 1px);
+  padding: 0 13px;
+  border-bottom: 1px solid var(--border);
+  background: var(--sidebar);
+}
+.login-tour-window-bar i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border-strong);
+}
+
+/* Every slide spans both rows (window, captions) through a subgrid, so the captions row fits the longest one. */
+.login-tour-slide {
+  display: grid;
+  grid-row: 1 / 3;
+  grid-column: 1;
+  grid-template-rows: subgrid;
+  min-width: 0;
+  visibility: hidden;
+  transition: visibility 0s linear 240ms;
+}
+.login-tour-slide[data-active] {
+  visibility: visible;
+  transition: none;
+}
+/* A size container: scenes adapt to the window's size (the @container rules at the end). */
+.login-tour-scene {
+  position: relative;
+  container-type: size;
+  padding-top: var(--login-tour-bar);
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  opacity: 0;
+  transition: opacity 220ms var(--ease-out);
+}
+.login-tour-scene > * {
+  height: 100%;
+}
+.login-tour-slide[data-active] .login-tour-scene {
+  opacity: 1;
+  animation: login-tour-fade 320ms var(--ease-out);
+}
+/* Positioned, so it paints above the window's shadow (the frame is positioned too). */
+.login-tour-text {
+  position: relative;
+  margin-top: 20px;
+  opacity: 0;
+  transition: opacity 140ms linear;
+}
+/* The new caption comes in once the old one has gone, so the two never overlap. */
+.login-tour-slide[data-active] .login-tour-text {
+  opacity: 1;
+  animation: login-tour-text 320ms var(--ease-out) 140ms backwards;
+}
+.login-tour-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.login-tour-title {
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.012em;
+}
+.login-tour-plan {
+  display: inline-flex;
+  align-items: center;
+  height: 21px;
+  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
+  color: var(--text-3);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.login-tour-caption {
+  margin: 5px 0 0;
+  text-wrap: pretty;
+  color: var(--text-2);
+  font-size: 15.5px;
+  line-height: 1.45;
+}
+
+/* ---------- Shared scene parts ---------- */
+.login-tour-muted {
+  color: var(--text-3);
+  font-weight: 400;
+}
+.login-tour-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.login-tour-ready {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--success);
+  font-size: 12.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+/* The chat: a new conversation from the top, over the composer. */
+.login-tour-chat {
+  display: flex;
+  flex-direction: column;
+}
+.login-tour-thread {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 16px 18px 10px;
+  overflow: hidden;
+}
+.login-tour-bubble {
+  align-self: flex-end;
+  max-width: 90%;
+  margin: 0;
+  padding: 7px 13px;
+  border-radius: 15px 15px 5px 15px;
+  background: var(--bubble);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+.login-tour-reply {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+.login-tour-reply-fill {
+  flex: 1;
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+.login-tour-mark {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.login-tour-reply-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+}
+.login-tour-reply-fill .login-tour-reply-body {
+  height: 100%;
+}
+.login-tour-answer {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.login-tour-answer strong {
+  font-weight: 650;
+}
+.login-tour-glue {
+  white-space: nowrap;
+}
+.login-tour-cite {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  margin: 0 1px 0 3px;
+  padding: 0 4px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-family: var(--font-sans);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: 0.14em;
+}
+.login-tour-dots {
+  position: absolute;
+  top: 7px;
+  left: 0;
+  display: inline-flex;
+  gap: 4px;
+}
+/* The loops inside passing states (dots, spinners, stripes) stop with them: --d is their start. */
+.login-tour-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-3);
+  animation: login-tour-bounce 0.9s var(--ease-in-out) var(--d) 2;
+}
+.login-tour-dots i:nth-child(2) {
+  animation-delay: calc(var(--d) + 0.15s);
+}
+.login-tour-dots i:nth-child(3) {
+  animation-delay: calc(var(--d) + 0.3s);
+}
+.login-tour-only .spinner {
+  animation: spin 0.8s linear var(--d) 3;
+}
+.login-tour-source {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 3px 11px 3px 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.login-tour-source-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.login-tour-source .login-tour-muted::before {
+  content: "· ";
+}
+.login-tour-source-dot {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--tag-red-soft);
+  color: var(--tag-red);
+}
+
+.login-tour-composer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 14px 14px;
+  padding: 6px 6px 6px 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--shadow-composer);
+}
+.login-tour-composer-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+.login-tour-composer-text > * {
+  grid-area: 1 / 1;
+  min-width: 0;
+}
+.login-tour-placeholder {
+  overflow: hidden;
+  color: var(--text-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.login-tour-typed {
+  color: var(--text);
+}
+.login-tour-char,
+.login-tour-word {
+  position: relative;
+}
+.login-tour-char::after,
+.login-tour-word::after {
+  content: "";
+  position: absolute;
+  top: 0.15em;
+  right: -2px;
+  width: 2px;
+  height: 1.1em;
+  border-radius: 1px;
+  background: var(--accent);
+  opacity: 0;
+}
+.login-tour-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+/* ---------- 2. Uploads ---------- */
+.login-tour-files {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+}
+.login-tour-dropzone {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px 7px 8px;
+  border: 1.5px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.login-tour-dropzone u {
+  color: var(--accent-ink);
+  text-underline-offset: 2px;
+}
+.login-tour-dropzone-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+/* Lists that run out of room drop whole rows: a full-width row that doesn't fit wraps into a second, clipped column. */
+.login-tour-file-list,
+.login-tour-shelf {
+  display: flex;
+  flex: 1 1 0;
+  flex-flow: column wrap;
+  align-content: flex-start;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  list-style: none;
+}
+.login-tour-file-list {
+  gap: 5px;
+}
+.login-tour-file-list > li,
+.login-tour-shelf > li {
+  width: 100%;
+}
+.login-tour-file {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 11px;
+  padding: 5px 10px 5px 8px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+}
+.login-tour-files .docs-tag {
+  zoom: 0.8;
+}
+.login-tour-file-name {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  line-height: 1.3;
+}
+.login-tour-file-name b {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.login-tour-file-name small {
+  color: var(--text-3);
+  font-size: 12px;
+}
+.login-tour-status {
+  display: grid;
+  justify-items: end;
+}
+.login-tour-status > * {
+  grid-area: 1 / 1;
+}
+
+/* ---------- 3. A file from chat ---------- */
+.login-tour-file-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  width: min(100%, 380px);
+  padding: 10px 10px 10px 12px;
+}
+.login-tour-file-meta {
+  display: grid;
+  margin-top: 2px;
+}
+.login-tour-file-meta > * {
+  grid-area: 1 / 1;
+}
+.login-tour-file-meta small {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.login-tour-file-meta small > span:first-child::after {
+  content: "·";
+  margin-left: 6px;
+}
+.login-tour-writing {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--info);
+  font-size: 12px;
+  font-weight: 600;
+}
+.login-tour-meter {
+  display: block;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  border-radius: var(--radius-pill);
+  background: var(--surface-3);
+}
+.login-tour-meter-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left center;
+}
+.btn.login-tour-download {
+  cursor: default;
+}
+.login-tour-file-meta small {
+  white-space: nowrap;
+}
+
+/* ---------- 4. An image ---------- */
+.login-tour-image-card {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  width: min(100%, 300px);
+  min-height: 0;
+  overflow: hidden;
+}
+.login-tour-picture {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.login-tour-develop,
+.login-tour-art,
+.login-tour-stripes {
+  position: absolute;
+  inset: 0;
+}
+.login-tour-art {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.login-tour-stripes {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+/* 135° stripes 20px apart repeat every 28.28px across, so sliding by that much loops seamlessly. */
+.login-tour-stripes::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 0 -29px;
+  background: repeating-linear-gradient(
+    135deg,
+    var(--surface-2) 0 10px,
+    color-mix(in srgb, var(--surface-3) 60%, var(--surface-2)) 10px 20px
+  );
+  animation: login-tour-stripes 1.1s linear var(--d) 2;
+}
+.login-tour-stripes > span {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 11px;
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+}
+.login-tour-image-bar {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 6px 6px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+}
+.login-tour-image-bar b {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text);
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.login-tour-image-bar small {
+  flex: none;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.login-tour-icon-btn {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+}
+
+/* ---------- 5. Gmail ---------- */
+.login-tour-draft {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 400px;
+  margin-left: 32px;
+  padding: 8px 10px 9px 12px;
+  box-shadow: var(--shadow);
+}
+.login-tour-draft-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+}
+.login-tour-draft-head svg {
+  flex: none;
+  color: var(--tag-red);
+}
+.login-tour-draft-head b {
+  color: var(--text);
+  font-weight: 650;
+}
+.login-tour-draft p {
+  margin: 0;
+  overflow: hidden;
+  color: var(--text-2);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.login-tour-draft-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.login-tour-draft-actions .btn {
+  height: 24px;
+  cursor: default;
+}
+.login-tour-draft-actions .login-tour-muted {
+  margin-left: 4px;
+  overflow: hidden;
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- 6. Private and shared ---------- */
+.login-tour-spaces {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 16px 18px;
+  padding: 20px 20px 16px;
+}
+.login-tour-space {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+  padding: 13px 13px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+.login-tour-space-mine {
+  transform: rotate(-1.3deg);
+}
+.login-tour-space-team {
+  transform: rotate(1.1deg);
+}
+.login-tour-space-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 9px;
+  align-items: center;
+  line-height: 1.25;
+}
+.login-tour-space-head b {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.login-tour-space-head small {
+  grid-column: 2;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.login-tour-space-icon {
+  display: grid;
+  grid-row: span 2;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+}
+.login-tour-space-mine .login-tour-space-icon {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.login-tour-space-team .login-tour-space-icon {
+  background: var(--tag-blue-soft);
+  color: var(--tag-blue);
+}
+.login-tour-shelf {
+  gap: 8px;
+}
+.login-tour-shelf li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+.login-tour-shelf li > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.login-tour-both {
+  display: inline-flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-self: center;
+  gap: 7px;
+  margin: 0;
+  padding: 5px 13px 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--surface);
+  box-shadow: var(--shadow-xs);
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.login-tour-both svg {
+  color: var(--accent-ink);
+}
+
+/* ---------- Choreography (only while a scene plays) ---------- */
+.login-tour-only {
+  opacity: 0;
+}
+.login-tour-play .login-tour-in {
+  animation: login-tour-in var(--dur-3) var(--ease-out) var(--d) backwards;
+}
+.login-tour-play .login-tour-pop {
+  animation: login-tour-pop 340ms var(--ease-out) var(--d) backwards;
+}
+.login-tour-play .login-tour-land {
+  animation: login-tour-land 460ms var(--ease-out) var(--d) backwards;
+}
+.login-tour-play .login-tour-from-left {
+  animation: login-tour-from-left 520ms var(--ease-out) var(--d) backwards;
+}
+.login-tour-play .login-tour-from-right {
+  animation: login-tour-from-right 520ms var(--ease-out) var(--d) backwards;
+}
+.login-tour-play .login-tour-out {
+  animation: login-tour-out 140ms linear var(--d) forwards;
+}
+.login-tour-play .login-tour-only {
+  animation: login-tour-only calc(var(--to) - var(--d)) linear var(--d);
+}
+.login-tour-play .login-tour-gap {
+  animation: login-tour-gap calc(var(--to) - var(--d)) linear var(--d);
+}
+.login-tour-play .login-tour-char {
+  animation: login-tour-appear 1ms var(--d) backwards;
+}
+.login-tour-play .login-tour-char::after {
+  animation: login-tour-caret calc(var(--to) - var(--d)) steps(1) var(--d);
+}
+.login-tour-play .login-tour-word {
+  animation: login-tour-word 180ms linear var(--d) backwards;
+}
+.login-tour-play .login-tour-word::after {
+  animation: login-tour-caret 90ms steps(1) var(--d);
+}
+.login-tour-play .login-tour-press {
+  animation: login-tour-press 300ms var(--ease-out) var(--d);
+}
+.login-tour-play .login-tour-drag {
+  animation: login-tour-drag calc(var(--to) - var(--d)) var(--ease-in-out) var(--d);
+}
+.login-tour-play .login-tour-meter-fill {
+  animation: login-tour-progress 1s var(--ease-in-out) var(--d) both;
+}
+.login-tour-play .login-tour-develop {
+  animation: login-tour-develop 700ms var(--ease-out) var(--d) backwards;
+}
+
+@keyframes login-tour-progress {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: none;
+  }
+}
+@keyframes login-tour-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes login-tour-text {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+}
+@keyframes login-tour-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes login-tour-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.82);
+  }
+}
+@keyframes login-tour-land {
+  from {
+    opacity: 0;
+    transform: translateY(-18px) rotate(-2.5deg);
+  }
+}
+@keyframes login-tour-from-left {
+  from {
+    opacity: 0;
+    transform: translateX(-16px) rotate(-3deg);
+  }
+}
+@keyframes login-tour-from-right {
+  from {
+    opacity: 0;
+    transform: translateX(16px) rotate(3deg);
+  }
+}
+@keyframes login-tour-out {
+  to {
+    opacity: 0;
+  }
+}
+@keyframes login-tour-only {
+  0% {
+    opacity: 0;
+  }
+  8%,
+  92% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes login-tour-gap {
+  0%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes login-tour-appear {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes login-tour-caret {
+  from,
+  to {
+    opacity: 1;
+  }
+}
+@keyframes login-tour-word {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes login-tour-press {
+  40% {
+    transform: scale(0.86);
+  }
+}
+@keyframes login-tour-drag {
+  15%,
+  85% {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent-soft) 55%, var(--surface));
+  }
+}
+@keyframes login-tour-develop {
+  from {
+    opacity: 0;
+    transform: scale(1.06);
+  }
+}
+@keyframes login-tour-bounce {
+  0%,
+  60%,
+  100% {
+    opacity: 0.45;
+    transform: none;
+  }
+  30% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+@keyframes login-tour-stripes {
+  to {
+    transform: translateX(28.28px);
+  }
+}
+
+/* ---------- Narrower desktops, and smaller windows ---------- */
+@media (max-width: 1279.98px) {
+  .login-tour-title {
+    font-size: 21px;
+  }
+  .login-tour-caption {
+    font-size: 15px;
+  }
+}
+@media (max-height: 799.98px) {
+  .login-tour-text {
+    margin-top: 16px;
+  }
+}
+@container (max-width: 440px) {
+  .login-tour-thread {
+    padding-inline: 14px;
+  }
+  .login-tour-composer {
+    margin-inline: 12px;
+  }
+  .login-tour-download-label {
+    display: none;
+  }
+  .btn.login-tour-download {
+    width: 28px;
+    padding: 0;
+  }
+  .login-tour-spaces {
+    gap: 14px 12px;
+    padding-inline: 14px;
+  }
+  .login-tour-space {
+    padding: 11px 10px 12px;
+  }
+  .login-tour-space-icon {
+    width: 24px;
+    height: 24px;
+    border-radius: 7px;
+  }
+  .login-tour-space-icon svg {
+    width: 13px;
+    height: 13px;
+  }
+  .login-tour-space-head {
+    column-gap: 7px;
+  }
+}
+@container (max-height: 250px) {
+  .login-tour-files {
+    gap: 6px;
+    padding-block: 10px;
+  }
+  .login-tour-dropzone {
+    padding-block: 3px;
+  }
+  .login-tour-file {
+    padding-block: 3px;
+  }
+  .login-tour-file-list {
+    gap: 4px;
+  }
+  .login-tour-files .docs-tag {
+    zoom: 0.7;
+  }
+  .login-tour-thread {
+    padding-top: 12px;
+  }
+  .login-tour-composer {
+    margin-bottom: 10px;
+    padding-block: 4px;
+  }
+  .login-tour-spaces {
+    padding-block: 14px 12px;
+  }
+}
+@container (max-height: 225px) {
+  .login-tour-files .docs-tag {
+    zoom: 0.6;
+  }
+  .login-tour-file-name small {
+    display: none;
+  }
+}
+/* Short windows drop secondary parts whole rather than clip them: first the source pills, then the question. */
+@container (max-height: 278px) {
+  .login-tour-inbox .login-tour-source {
+    display: none;
+  }
+}
+@container (max-height: 236px) {
+  .login-tour-ask .login-tour-source,
+  .login-tour-inbox .login-tour-bubble {
+    display: none;
+  }
+}
+
+/* Reduced motion: slides swap without the fade and the captions without their short delay. */
+@media (prefers-reduced-motion: reduce) {
+  .login-tour-slide[data-active] .login-tour-scene,
+  .login-tour-slide[data-active] .login-tour-text {
+    animation: none;
+  }
+}
+
+/* Windows contrast themes drop fills: the segments get an outline and the progress a system colour. */
+@media (forced-colors: active) {
+  .login-tour-track {
+    border: 1px solid CanvasText;
+  }
+  .login-tour-fill {
+    forced-color-adjust: none;
+    background: Highlight;
+  }
+}

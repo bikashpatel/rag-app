@@ -289,6 +289,13 @@ export const CpuIcon = icon(
 );
 export const PenIcon = icon(<path d="M15.5 4.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4z" />);
 export const StopIcon = icon(<rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none" />);
+export const PauseIcon = icon(
+  <>
+    <rect x="6.5" y="5.5" width="4" height="13" rx="1.2" fill="currentColor" stroke="none" />
+    <rect x="13.5" y="5.5" width="4" height="13" rx="1.2" fill="currentColor" stroke="none" />
+  </>,
+);
+export const PlayIcon = icon(<path d="M8 6.2v11.6a1 1 0 0 0 1.5.9l9.3-5.8a1 1 0 0 0 0-1.8L9.5 5.3A1 1 0 0 0 8 6.2z" fill="currentColor" />);
 
 // Plans and billing (docs/briefs/plans-billing-visual.md 2.2).
 export const CardIcon = icon(

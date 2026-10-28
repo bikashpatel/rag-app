@@ -1319,6 +1319,8 @@ The empty state is centred in the thread (max 620px):
 
 ### 6.28 Login (RESTYLE: the markup and its `login-*` rules in `src/pages/login.css`, imported by `LoginPage.tsx`)
 
+> **Changed on 2026-10-28:** the aside's specimen cards are replaced by an auto-playing product tour (`src/pages/login/ProductTour.tsx`, `tourScenes.tsx`, `product-tour.css`): six scenes in a mock app window with a segmented progress bar (tabs), Pause/Play, pauses on hover, focus and hidden pages, and finished states without auto-play under reduced motion (WAI-ARIA carousel pattern). The form now comes first in the DOM, with the aside placed on the left by the grid; the aside isn't rendered below 800 px. Where this section describes the specimens or an aria-hidden aside, the code wins.
+
 - **Desktop:** a split, `1.08fr | 1fr`, full height.
 - **Aside** (`.login-aside`, the desk with a right hairline, padding 40 56 44, `aria-hidden`):
   - The brand.
