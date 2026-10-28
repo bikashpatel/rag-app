@@ -74,7 +74,7 @@ describe("RequireAuth needsPlan", () => {
     const lapsed = makeMe({ plan: makeLapsedPlanAccess() });
     const view = await renderAt("/", () => lapsed);
     expect(screen.getByRole("heading", { name: "Plans" })).toBeInTheDocument();
-    expect(view.location()).toBe("/plans");
+    await waitFor(() => expect(view.location()).toBe("/plans"));
     view.unmount();
 
     const other = await renderAt("/c/12?settings=billing&x=1#m3", () => makeMe({ plan: makeLapsedPlanAccess("none") }));
