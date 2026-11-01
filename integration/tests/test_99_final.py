@@ -1,10 +1,10 @@
-"""Checks over the whole run: no provider key ever reached the fake, no secret was logged by any service, and the
-live rag-app stack (when this machine runs one) is exactly as it was when the session started."""
+"""Checks over the whole run: no provider key ever reached the fake, no secret was logged by any service or in nginx's
+access logs, and the live rag-app stack (when this machine runs one) is exactly as it was when the session started."""
 
 import httpx
 import pytest
 from conftest import LIVE_BASELINE
-from harness import compose, leaked_secrets, live_containers
+from harness import compose, leaked_secrets, live_containers, web_logs
 
 
 def test_every_model_call_went_to_the_fake_with_the_placeholder_key(fake) -> None:
@@ -15,9 +15,11 @@ def test_every_model_call_went_to_the_fake_with_the_placeholder_key(fake) -> Non
 
 
 def test_no_secret_in_the_service_logs() -> None:
-    """test_14 checks the logs of the containers it replaces before replacing them."""
+    """test_14 checks the logs of the containers and volumes it replaces before replacing them."""
     logs = compose("logs", "--no-color", timeout=120)
-    assert logs
+    access = web_logs()
+    assert logs and access
+    logs += access
     leaked = leaked_secrets(logs)
     assert not leaked, f"secrets found in the stack logs: {leaked}"
 

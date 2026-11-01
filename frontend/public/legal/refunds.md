@@ -47,4 +47,4 @@ Email support@asknuvexusdoc.com with:
 - the receipt number (for example RA/26-27/000001, in Settings → Plan & billing and on the emailed receipt), or the date and amount of the payment;
 - what went wrong.
 
-We reply within 2 working days, and start an approved refund within 7 days [Owner to confirm: reply and refund times]. If you are not satisfied with our answer, you can write to our Grievance Officer (see the end of our [Privacy policy](/privacy)), who acknowledges complaints within 48 hours and resolves them within one month.
+We reply within 2 working days, and start an approved refund within 7 days. If you are not satisfied with our answer, you can write to our Grievance Officer (see the end of our [Privacy policy](/privacy)), who acknowledges complaints within 48 hours and resolves them within one month.

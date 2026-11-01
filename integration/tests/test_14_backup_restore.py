@@ -51,6 +51,7 @@ from harness import (
     wait_document,
     wait_queue_idle,
     wait_until,
+    web_logs,
 )
 from samples import md, txt
 
@@ -488,7 +489,7 @@ def test_the_restore_drill(admin: httpx.Client, user_factory, fake) -> None:
     expected = {collection: {"points": count, "exact": True} for collection, count in points.items()}
     assert manifest["qdrant"]["collections"] == expected
 
-    logs = compose("logs", "--no-color", timeout=120)  # these containers are about to go
+    logs = compose("logs", "--no-color", timeout=120) + web_logs()  # these containers and volumes are about to go
     assert not leaked_secrets(logs), "secrets found in the stack logs"
     compose("down", "-v", "--remove-orphans", timeout=300)
     compose("up", "-d", "--wait", "--wait-timeout", "300", timeout=420)

@@ -56,7 +56,7 @@ Questions about this policy go to support@asknuvexusdoc.com or to our Grievance 
 
 **Email delivery records**: while an email to you waits to be sent, its address and kind; afterwards only a hash of the address. Hashes of addresses whose mail bounced or that reported our mail as spam, so that we stop writing to them.
 
-**Technical data**: our web server logs each request (IP address, time, page and browser) for security and troubleshooting. Cloudflare, which carries all traffic to our site, also sees your IP address and browser details.
+**Technical data**: our web server logs each request (IP address, time, page, the page that linked to it, and browser) for security and troubleshooting, and deletes these logs after 30 days. Its error messages can include an IP address; they stay in the server's own log, which is trimmed by size (the oldest messages go first). Cloudflare, which carries all traffic to our site, also sees your IP address and browser details.
 
 **Messages you send us**: what you write to us, and our replies.
 
@@ -145,10 +145,10 @@ Backups are kept on the same computer, in a folder with restricted access. What 
 | Documents you upload, files and images created in chat, their text and search index | Until you delete them or the account is deleted |
 | Chats | Until you delete them or the account is deleted |
 | Usage records | Until the account is deleted |
-| Accounts without a plan (a plan that ended, or none bought yet) | Nothing is deleted when a plan ends. We delete an account and its data after 12 months with no plan and no sign-in, after emailing you 30 days before [Owner to confirm: retention for accounts without a plan] |
+| Accounts without a plan (a plan that ended, or none bought yet) | Nothing is deleted when a plan ends. We delete an account and its data after 12 months with no plan and no sign-in, after emailing you 30 days before |
 | Continue with Google: Google's account ID, the Google address when it was connected and whether Google had verified it | Until you disconnect Google or the account is deleted |
 | Gmail: the connected address and its tokens | Until you disconnect Gmail or the account is deleted |
-| Billing records: orders, payments, refunds, disputes, receipts | 8 years after the end of the financial year of the payment [Owner to confirm: billing record retention, with your accountant], also after the account is deleted, then with the username and the name and email printed on each receipt |
+| Billing records: orders, payments, refunds, disputes, receipts | 8 years after the end of the financial year of the payment, also after the account is deleted, then with the username and the name and email printed on each receipt |
 | A sign-up not yet confirmed: the address, the password (hashed), a hash of the browser's sign-up cookie, the page to open afterwards, the terms record and an approximate IP address | 7 days at most |
 | An email address waiting for confirmation | 24 hours after the last confirmation email |
 | Hashes of the links in emails and of the addresses they were sent to | A day after they are used or expire |
@@ -159,7 +159,8 @@ Backups are kept on the same computer, in a folder with restricted access. What 
 | The usernames of deleted accounts (nothing else), so they are never given to someone else | Always |
 | Sign-ins: approximate IP address, browser, operating system, device and the way of signing in | The newest 20 |
 | Counters that limit repeated attempts (network prefixes and address hashes) | Their time window, at most a day |
-| Web server logs | 30 days [Owner to confirm: log retention] |
+| Web server logs of each request: IP address, time, page, the page that linked to it, browser | 30 days |
+| Web server error messages, which can include an IP address | In the server's own log, trimmed by size (the oldest go first) |
 | Backups of the database, files and search index | Replaced on a rolling schedule; the oldest is at most about five weeks old |
 | Messages you send us | As long as needed to handle your request and keep a record of it |
 

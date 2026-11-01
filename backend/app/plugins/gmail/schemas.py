@@ -20,7 +20,7 @@ DocumentId = Annotated[int, Field(ge=1, le=MAX_INT)]
 
 class GmailThreadSearch(BaseModel):
     """The Gmail browser's search. A request body, never a URL query: search terms (often addresses and subjects) must
-    not reach the nginx or uvicorn access logs (brief P20)."""
+    not reach nginx's access log (brief P20)."""
 
     q: str | None = Field(None, max_length=500)  # Gmail search syntax; empty or absent: "in:inbox"
     page_token: str | None = Field(None, pattern=r"^[A-Za-z0-9_-]{1,200}$")

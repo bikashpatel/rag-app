@@ -4,6 +4,7 @@
 BACKUP_ROOT=${BACKUP_ROOT:-/backups}
 STATUS_DIR=${STATUS_DIR:-/status}
 UPLOADS=${UPLOADS:-/data/uploads}
+WEBLOGS=${WEBLOGS:-/weblogs} # nginx's access logs (the weblogs volume, frontend/nginx.conf)
 QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
 QDRANT_API_KEY=${QDRANT_API_KEY:-}
 # Where Qdrant keeps snapshots inside its own container (the qdrant image's default)
@@ -22,6 +23,7 @@ UPLOADS_OWNER_FALLBACK=10001:10001 # the backend image's appuser
 HEARTBEAT_SECONDS=300
 HTTP_TIMEOUT=3600
 KEEP_RECENT_SECONDS=172800 # every backup younger than 48 h is kept
+WEBLOG_KEEP_DAYS=30        # the privacy policy's "Web server logs: 30 days", so not a setting
 STAGING=-restoring         # the suffix of the collections a restore prepares
 NAME_PATTERN='^[0-9]{8}T[0-9]{6}Z-(scheduled|startup|manual|pre-restore)$'
 RESPONSE=${TMPDIR:-/tmp}/qdrant.response
@@ -497,6 +499,17 @@ prune() {
   done
 }
 
+# The web server's access logs, one file per UTC day: a file is deleted once it was last written more than
+# WEBLOG_KEEP_DAYS days ago. They are never backed up.
+prune_weblogs() {
+  local file limit
+  limit=$(($(now) - WEBLOG_KEEP_DAYS * 86400))
+  for file in "$WEBLOGS"/*; do
+    [ -f "$file" ] && [ "$(stat -c %Y "$file")" -lt "$limit" ] || continue
+    rm -f "$file" && log "Deleted the web server log $(safe "${file##*/}") (older than $WEBLOG_KEEP_DAYS days)"
+  done
+}
+
 # ---------------- Schedule ----------------
 
 valid_schedule() {
@@ -539,17 +552,20 @@ pause() { # seconds, interruptible by SIGTERM
 }
 
 # Backs up at every BACKUP_SCHEDULE time. At start, when no backup began since the latest scheduled time (none at all,
-# or the stack was down then), a "startup" backup follows BACKUP_START_DELAY_SECONDS later.
+# or the stack was down then), a "startup" backup follows BACKUP_START_DELAY_SECONDS later. The expired web server logs
+# are deleted at start (also with an invalid schedule, as the service restarts) and at every scheduled time.
 schedule() {
   local next due target label left newest
   trap 'log "Stopping"; exit 0' TERM INT
+  prune_weblogs
   if ! valid_schedule; then
     log "BACKUP_SCHEDULE must be HH:MM (UTC), or several separated by commas, e.g. 02:30 or 02:30,14:30"
     exit 2
   fi
   mkdir -p "$BACKUP_ROOT" "$STATUS_DIR" && chmod 700 "$BACKUP_ROOT"
   next=$(slot 1)
-  log "Scheduled daily at $SCHEDULE UTC; next at $(iso "$next"); keeping $KEEP_DAILY daily and $KEEP_WEEKLY weekly"
+  log "Scheduled daily at $SCHEDULE UTC; next at $(iso "$next"); keeping $KEEP_DAILY daily and $KEEP_WEEKLY weekly" \
+    "backups, and web server logs $WEBLOG_KEEP_DAYS days"
   due=0
   if catch_up_needed; then
     due=$(($(now) + START_DELAY))
@@ -569,6 +585,7 @@ schedule() {
       left=$((target - $(now)))
       pause $((left < HEARTBEAT_SECONDS ? (left > 0 ? left : 1) : HEARTBEAT_SECONDS))
     done
+    [ "$label" = scheduled ] && prune_weblogs
     if [ "$label" = scheduled ] || catch_up_needed; then
       run_backup "$label"
     fi

@@ -9,6 +9,9 @@ RUN npm run build
 FROM nginx:1.30.5-alpine@sha256:0985e772fb9f729e6fa0980da05fca5d9c468e870eed43071545afa9d2e27d94
 # The entrypoint renders the template into conf.d/default.conf, substituting only NGINX_* variables.
 ENV NGINX_ENVSUBST_FILTER=^NGINX_
+# The access logs' folder (nginx.conf): nginx's workers create the files. A new weblogs volume mounted here takes this
+# owner and mode from the image.
+RUN mkdir -m 750 /var/log/nginx/access && chown nginx:nginx /var/log/nginx/access
 COPY nginx.conf /etc/nginx/templates/default.conf.template
 COPY --chmod=0755 upload-limit.envsh /docker-entrypoint.d/15-upload-limit.envsh
 COPY --chmod=0755 real-ip.envsh /docker-entrypoint.d/16-real-ip.envsh

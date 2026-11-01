@@ -23,5 +23,6 @@ RUN useradd --create-home --uid 10001 appuser \
 USER appuser
 
 EXPOSE 8000
-# On SIGTERM, open answer streams get 15 s, then uvicorn cancels them (instead of waiting indefinitely).
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-graceful-shutdown", "15"]
+# On SIGTERM, open answer streams get 15 s, then uvicorn cancels them (instead of waiting indefinitely). No access log:
+# nginx keeps one (frontend/nginx.conf, deleted after 30 days), so this one would only hold the same IP addresses again.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*", "--timeout-graceful-shutdown", "15", "--no-access-log"]

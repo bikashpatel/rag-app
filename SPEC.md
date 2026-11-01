@@ -1815,8 +1815,8 @@ waiting for a failed call.
 - `POST /plugins/gmail/threads/search` `GmailThreadSearch` `{q?, page_token?,
   max_results?}` (`q` ≤ 500 chars, empty or absent: `in:inbox`; `max_results`
   1..25, default 20) → `GmailThreadPage` (read). A POST body, never a URL query:
-  search terms must not reach the nginx or uvicorn access logs, which record
-  plugin paths without their query string anyway.
+  search terms must not reach nginx's access log, which records plugin paths
+  without their query string anyway (the backend keeps no access log).
 - `GET /plugins/gmail/threads/{thread_id}` → `GmailThreadDetail` (read).
 - `POST /plugins/gmail/import` `GmailImportRequest` → `GmailImportResult` (read):
   1..`GMAIL_IMPORT_MAX_ITEMS` items (threads with `include_thread` plus
@@ -2946,6 +2946,14 @@ scheduled and start-up backups, the newest of each of the last `BACKUP_KEEP_DAIL
 
 The scheduler backs up at every `BACKUP_SCHEDULE` time (UTC). When it starts and no backup other than a pre-restore one
 began since the latest scheduled time, a `startup` backup follows `BACKUP_START_DELAY_SECONDS` later (`catch_up_at`).
+
+**Web server logs.** nginx writes its access log (the image's `main` format; `path_only` and `off` where
+`frontend/nginx.conf` says) to one file per UTC day, `access-YYYY-MM-DD.log`, on the `weblogs` volume
+(`/var/log/nginx/access` in the frontend, owned by nginx's worker user), and its error log to stderr. The backend keeps
+no access log (uvicorn `--no-access-log`). The backup service, the only other service that mounts `weblogs`
+(read-write, at `/weblogs`), deletes every file there last written more than 30 days ago (`WEBLOG_KEEP_DAYS` in
+`scripts/backup/lib.sh`, the privacy policy's period) when its scheduler starts and at every `BACKUP_SCHEDULE` time.
+The logs are never backed up.
 
 The status file `status.json` holds `updated_at`, `scheduler` (`seen_at`, `schedule`, `next_run_at`, `catch_up_at`),
 `running_since`, `last_success` (`name`, `finished_at`, `size_bytes`, `duration_seconds`), `last_failure` (`at`,

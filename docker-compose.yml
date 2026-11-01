@@ -134,6 +134,9 @@ services:
       NGINX_REAL_IP_HEADER: ${NGINX_REAL_IP_HEADER:-CF-Connecting-IP}
     ports:
       - "127.0.0.1:${APP_PORT:-8080}:80"
+    # The access log, one file per UTC day (frontend/nginx.conf); the error log goes to docker compose logs.
+    volumes:
+      - weblogs:/var/log/nginx/access
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/api/health"]
       interval: 10s
@@ -165,7 +168,8 @@ services:
         condition: service_healthy
 
   # Daily backups at BACKUP_SCHEDULE (UTC) into BACKUP_DIR, plus one shortly after start while there is none
-  # (scripts/README.md). BACKUP_DIR holds personal data: keep it outside every build context and out of git.
+  # (scripts/README.md). BACKUP_DIR holds personal data: keep it outside every build context and out of git. At start
+  # and at every BACKUP_SCHEDULE time it also deletes nginx's access logs last written over 30 days ago (weblogs).
   backup:
     <<: *backup
     restart: unless-stopped
@@ -174,6 +178,7 @@ services:
       - ${BACKUP_DIR:-./backups}:/backups
       - uploads:/data/uploads:ro
       - backupstatus:/status
+      - weblogs:/weblogs
       - ./scripts/backup:/opt/backup:ro
     healthcheck:
       test: ["CMD", "/bin/sh", "/opt/backup/backup.sh", "health"]
@@ -204,3 +209,5 @@ volumes:
   uploads:
   # The backup service's status file (no personal data), read by the backend and the monitor.
   backupstatus:
+  # nginx's access logs (visitors' IP addresses), deleted after 30 days by the backup service.
+  weblogs:

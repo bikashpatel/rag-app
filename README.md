@@ -548,7 +548,7 @@ cd backend
 set -a; source ../.env; set +a
 export POSTGRES_HOST=localhost REDIS_URL=redis://localhost:6379/0 QDRANT_URL=http://localhost:6333 \
        UPLOAD_DIR="$HOME/rag-app-uploads" LITELLM_LOCAL_MODEL_COST_MAP=True
-.venv/bin/uvicorn app.main:app --reload --port 8000
+.venv/bin/uvicorn app.main:app --reload --port 8000 --no-access-log
 
 # Worker: a second terminal in backend/, after the same `set -a …` and `export …` lines
 .venv/bin/python -m app.worker
@@ -819,6 +819,26 @@ After setting a channel, run `docker compose up -d monitor`, then press **Send a
   never a build) and alerts through the same channels. It leaves the stack alone while `.maintenance` exists (a deploy,
   a running restore, an app left stopped on purpose). Install it as a macOS LaunchAgent or a Linux systemd timer
   (`scripts/watchdog/README.md`), then check the channels with `scripts/watchdog/watchdog.sh --test`.
+
+### Web server logs
+
+nginx writes one line per request (the visitor's IP address, the time, the request, the status, the referrer and the
+browser) to a file per UTC day, `access-YYYY-MM-DD.log`, on the `weblogs` volume (`/var/log/nginx/access` in the
+`frontend` container), not to `docker compose logs`. Plugin, Razorpay and Resend requests are logged by path only and
+the OAuth callbacks (Gmail, Google sign-in) not at all (`frontend/nginx.conf`). The backend keeps no access log of its
+own (uvicorn `--no-access-log`).
+
+- **Deleted after 30 days.** The `backup` service deletes every file last written more than 30 days ago when it starts
+  and at every `BACKUP_SCHEDULE` time (`prune_weblogs` in `scripts/backup/lib.sh`). The privacy policy promises 30 days,
+  so it is a constant there, not a setting. The logs are never in a backup.
+- **nginx's error log** (it can hold an IP address) stays on stderr, in `docker compose logs frontend`, which Docker's
+  log driver trims by size.
+
+```bash
+docker compose exec frontend tail -f /var/log/nginx/access/access-$(date -u +%F).log   # today's, live
+docker compose exec frontend ls -l /var/log/nginx/access                               # the days kept
+docker compose logs backup | grep 'web server log'                                     # what was deleted
+```
 
 ### Operations settings
 

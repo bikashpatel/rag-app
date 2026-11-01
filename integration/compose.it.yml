@@ -39,6 +39,7 @@ volumes:
   qdrantdata: {labels: *marker}
   uploads: {labels: *marker}
   backupstatus: {labels: *marker}
+  weblogs: {labels: *marker}
 
 services:
   postgres:

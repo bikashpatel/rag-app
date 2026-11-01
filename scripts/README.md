@@ -55,6 +55,10 @@ Retention keeps every backup younger than 48 hours; manual and pre-restore backu
 scheduled and start-up backups, the newest of each of the last `BACKUP_KEEP_DAILY` (7) days and of the last
 `BACKUP_KEEP_WEEKLY` (4) weeks (Monday to Sunday, UTC) that have one; and always the newest backup.
 
+When it starts and at every scheduled time, the service also deletes the web server's access logs (nginx's files on the
+`weblogs` volume, one per UTC day) last written more than 30 days ago, as the privacy policy promises. They are never
+backed up.
+
 One backup or restore runs at a time. The service writes its status (last success, last failure, size, schedule, free
 disk) to the `backupstatus` volume. The backend and the monitor read it. Admin → System shows it, and the monitor
 alerts when the last good backup is older than `BACKUP_MAX_AGE_HOURS` (26) or the last attempt failed.

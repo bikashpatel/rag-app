@@ -25,6 +25,7 @@ if not re.fullmatch(r"rag-it(-[a-z0-9]+)*", PROJECT):
     raise RuntimeError(f"Refusing the Compose project {PROJECT!r} (only rag-it or rag-it-<suffix>)")
 MARKER = "rag.it.stack"  # the label compose.it.yml puts on everything in the project
 FAKE_API_BASE = "http://fake-llm:8000/v1"
+ACCESS_LOGS = "/var/log/nginx/access"  # nginx's access logs in the frontend (the weblogs volume)
 # Interpolation must come only from the env file: the shell's values would win over it.
 _SHELL_VARIABLES = (
     "POSTGRES_USER",
@@ -246,6 +247,11 @@ def script(name: str, *args: str, timeout: float = 900) -> subprocess.CompletedP
 
 def exec_in(service: str, *command: str, stdin: str | None = None, timeout: float = 60) -> str:
     return compose("exec", "-T", service, *command, stdin=stdin, timeout=timeout)
+
+
+def web_logs() -> str:
+    """Every access log file nginx wrote (frontend/nginx.conf), one after the other."""
+    return exec_in("frontend", "find", ACCESS_LOGS, "-type", "f", "-exec", "cat", "{}", "+")
 
 
 def python_in(service: str, code: str, stdin: str | None = None) -> str:

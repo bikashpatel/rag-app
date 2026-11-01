@@ -5,7 +5,7 @@ Last updated: 1 November 2026
 
 ## How to reach us
 
-Email is the quickest way: write to support@asknuvexusdoc.com. We reply within 1 to 2 working days [Owner to confirm: response time]. Our phone number and postal address are below.
+Email is the quickest way: write to support@asknuvexusdoc.com. We reply within 1 to 2 working days. Our phone number and postal address are below.
 
 ## What to include
 
@@ -27,7 +27,5 @@ Email is the quickest way: write to support@asknuvexusdoc.com. We reply within 1
 If we haven't solved your problem, write to our Grievance Officer, whose details are at the end of our [Privacy policy](/privacy). The Grievance Officer acknowledges every complaint within 48 hours and resolves it within one month.
 
 ## Bank transfers
-
-[Owner to confirm: keep or remove this section]
 
 You can also pay for a plan by bank transfer (NEFT, RTGS or IMPS). Email us first with the plan you want, and we will reply with our bank details and the reference to use. Your plan starts once we have recorded the transfer, and you get a receipt as usual.

@@ -1008,10 +1008,10 @@ smoke and browser run used a fake Google.
   - cards flag recipients the user never typed (by exact address), unnamed attachments, Bcc and the email replied to
     (P24);
   - text the model sends may not hide characters.
-- **Logs** (P20). Plugin paths are logged without their query, by uvicorn's filter and nginx's `path_only` format.
-  nginx doesn't access-log the callback, and logs only `crit` errors there. The `httpx` logger is at WARNING, and the
-  Gmail browser's search goes in a POST body. Tokens, codes, the client secret, search terms, subjects, addresses
-  and email text are never logged.
+- **Logs** (P20). Plugin paths are logged without their query, by nginx's `path_only` format; the backend keeps no
+  access log (uvicorn `--no-access-log`). nginx doesn't access-log the callback, and logs only `crit` errors there.
+  The `httpx` logger is at WARNING, and the Gmail browser's search goes in a POST body. Tokens, codes, the client
+  secret, search terms, subjects, addresses and email text are never logged.
 - **Revoking** (P25). Disconnect, account switch, `no_access` and user deletion revoke the grant at Google unless
   another connection shares the same Google account.
 

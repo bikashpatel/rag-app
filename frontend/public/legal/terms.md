@@ -75,22 +75,22 @@ AskNuvexusDoc runs on a computer we operate, not in a large data centre. We do o
 ## Suspension and termination
 
 - **By you**: you can stop using the service at any time; plans don't renew. To delete your account, email us (the app has no button for this yet). Deleting it removes your data as our privacy policy describes, except the billing records the law requires us to keep. Time left on a paid period isn't refunded, except as our Cancellation and refunds policy says.
-- **By us**: we may suspend or close your account if you break these terms, if the law requires it, or to protect the service or other users. We will tell you why unless the law or security prevents it. If we close an account for a breach of these terms, the time left on its paid period isn't refunded [Owner to confirm: no refund after closure for a breach]. A suspension doesn't pause or extend a paid period.
-- **If we close the service**, we will tell you at least 30 days before, so you can export your data, and refund the unused days of paid periods [Owner to confirm: notice and refund if the service closes].
+- **By us**: we may suspend or close your account if you break these terms, if the law requires it, or to protect the service or other users. We will tell you why unless the law or security prevents it. If we close an account for a breach of these terms, the time left on its paid period isn't refunded. A suspension doesn't pause or extend a paid period.
+- **If we close the service**, we will tell you at least 30 days before, so you can export your data, and refund the unused days of paid periods.
 - After an account is closed, you can't sign in, and its data is deleted as our privacy policy describes. Parts of these terms that by their nature continue (such as liability and the law that applies) still apply.
 
 ## Liability
 
 - We provide the service "as is" and "as available", to the extent the law allows.
 - We are not liable for indirect or consequential losses, such as lost profits, business or data, or for decisions you make based on AI output.
-- Our total liability for all claims about the service is limited to the amount you paid us in the 30 days before the claim arose [Owner to confirm with your adviser: liability cap].
+- Our total liability for all claims about the service is limited to the amount you paid us in the 30 days before the claim arose.
 - Nothing in these terms limits liability that the law doesn't allow us to limit, or your rights as a consumer under the Consumer Protection Act, 2019.
 - You will compensate us for losses caused by claims about content you upload or by your breach of these terms.
 - We keep backups, but we can't guarantee that data can always be recovered. Keep your own copies of important documents.
 
 ## Changes to these terms
 
-We may change these terms. The "Last updated" date at the top identifies each version, and when you create an account we record the version you accepted. We post each new version here. If a change matters for how you use the service, we will email you at least 15 days before it takes effect [Owner to confirm: notice period and how users are told]. If you keep using the service after the change takes effect, the new terms apply; if you don't agree with them, stop using the service and ask us to delete your account.
+We may change these terms. The "Last updated" date at the top identifies each version, and when you create an account we record the version you accepted. We post each new version here. If a change matters for how you use the service, we will email you at least 15 days before it takes effect. If you keep using the service after the change takes effect, the new terms apply; if you don't agree with them, stop using the service and ask us to delete your account.
 
 ## Law and disputes
 

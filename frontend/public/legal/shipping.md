@@ -10,7 +10,7 @@ AskNuvexusDoc is an online service. Nothing is shipped, and there are no deliver
 - Your plan is delivered to your account online. It starts as soon as Razorpay confirms your payment, usually within a few minutes. After paying you come back to our site, which shows your plan, its dates and your receipt number.
 - A renewal, or a switch to another plan paid in advance, starts when your current paid time ends.
 - Now and then a payment needs a check before the plan starts; the page then says so. We start your plan or refund the payment, so please don't pay again.
-- If your plan hasn't started within 24 hours of paying [Owner to confirm: 24 hours], email support@asknuvexusdoc.com with the date and amount of the payment and the payment ID from Razorpay's confirmation email.
+- If your plan hasn't started within 24 hours of paying, email support@asknuvexusdoc.com with the date and amount of the payment and the payment ID from Razorpay's confirmation email.
 
 ## Receipts
 

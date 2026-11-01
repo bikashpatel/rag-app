@@ -4,6 +4,7 @@
 # scripts/restore.sh. The steps are in lib.sh.
 #
 #   backup.sh schedule             back up at BACKUP_SCHEDULE (UTC); at start too when none began since the last time
+#                                  (and delete the web server logs older than 30 days, at start and at those times)
 #   backup.sh once [LABEL]         back up now (LABEL: manual, pre-restore)
 #   backup.sh list | verify NAME | show NAME | prune | health
 #   backup.sh restore NAME         (the restore service only) exit code 0 restored, 1 nothing changed, 3 busy,

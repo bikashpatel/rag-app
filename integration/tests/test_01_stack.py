@@ -90,7 +90,7 @@ def test_project_is_isolated() -> None:
     assert all(info["name"].startswith(f"{PROJECT}-") for info in found.values()), found
     label = f"label=com.docker.compose.project={PROJECT}"
     volumes = docker("volume", "ls", "--filter", label, "--format", "{{.Name}}").split()
-    names = ("pgdata", "redisdata", "qdrantdata", "uploads", "backupstatus")
+    names = ("pgdata", "redisdata", "qdrantdata", "uploads", "backupstatus", "weblogs")
     assert sorted(volumes) == sorted(f"{PROJECT}_{name}" for name in names)
     networks = docker("network", "ls", "--filter", label, "--format", "{{.Name}}").split()
     assert sorted(networks) == [f"{PROJECT}_default", f"{PROJECT}_edge"]
