@@ -1820,15 +1820,17 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
    and `d4eada1`, operations (migrations, backups, monitoring) in `91e20bc` (CI green at `c58622b`), plans and billing
    in `10ecd35`, and the rename to AskNuvexusDoc in `28b7fe5`.
 2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
-3. **Policy pages** (brief 17.1, item 1; the plans brief 14.1): replace the drafts in `frontend/public/legal/*.md`
-   (privacy, terms, about, refunds, shipping, contact, the pricing intro; Claude can draft them for review). The privacy
-   policy covers the sign-up brief's 8.6: what is stored and for how long, the processors (Resend, Cloudflare Turnstile
-   and the tunnel, Google sign-in, Have I Been Pwned's prefix check, Razorpay), what Google sign-in receives (`sub`, the
-   email, whether it is verified, `hd`) and that nothing else is kept, how to ask for deletion (Contact), and the
-   consent notice for India's DPDP Rules (with counsel). The about page describes the app and links the privacy policy
-   (Google's brand check). Remove the draft markers, rebuild the frontend (`docker compose up -d --build frontend`), and
-   set `TERMS_VERSION` to the terms' date (step 10). The plans brief's 14.1 lists the owner's questions these pages
-   answer (refund policy, bank transfers, how long lapsed users' data is kept).
+3. **Policy pages** (`frontend/public/legal/*.md`): drafted on 2026-11-01 from what the app does, with the owner's
+   decisions (refunds only for duplicate or mistaken payments and periods that never started; users 18 and over; no
+   GST; replies within 1 to 2 working days; accounts with no plan and no sign-in deleted after 12 months, with an email
+   30 days before; billing records kept 8 years; web server logs 30 days; liability capped at 30 days' fees; 30 days'
+   notice and a refund of unused days if the service closes; 15 days' notice of important changes to the terms; bank
+   transfers on request). Still open: `[Business legal name]`, `[Registered address]`, `[City]` (courts) and the
+   Grievance Officer's name and email, then remove the `<!-- draft -->` lines, rebuild the frontend
+   (`docker compose up -d --build frontend`) and set `TERMS_VERSION` to the terms' date (step 10). A lawyer's read of
+   the privacy policy and terms is advisable. The app doesn't yet delete accounts with no plan by itself: until it
+   does, check Admin → Users once a month for accounts with no plan and no sign-in for 11 months, email them, and
+   delete them a month later.
 4. **Business details and the contact email** in Admin → Billing → Business & payments (name, address, contact email,
    phone): receipts, the public pages, every email and the error pages show them.
 5. **Razorpay** (`README.md` section 9):
