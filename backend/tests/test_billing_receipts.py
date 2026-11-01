@@ -1,23 +1,38 @@
 """Receipts (docs/briefs/plans-billing.md 9; services/billing/receipts.py): numbering per mode and Indian financial year
 (the IST boundary), counters created when missing and without gaps under concurrency (Postgres), the PDF's text
 (seller, buyer, lines, the credit line, ₹, the test watermark, refunds and lost disputes, no GST), the download
-headers and who may download."""
+headers and who may download. The receipt email (docs/briefs/signup-auth.md S25): through the outbox to the account's
+verified email with the PDF attached, honouring the switch; nothing without an email or the mailer; the buyer email is
+the account's; billing mail goes out when the other classes have used their share of the day."""
 
 import asyncio
 import io
 from datetime import datetime
 
 import pytest
-from billing_support import CreateUser, buy, new_tester, order_row, payments_of
-from conftest import ApiClient
+from billing_support import CreateUser, buy, give_email, new_tester, order_row, payments_of
+from conftest import ApiClient, drain_mail
+from fake_mail import FakeMail
+from fake_mail import text as mail_text
 from fake_razorpay import FakeRazorpay
 from pypdf import PdfReader
 from sqlalchemy import delete, select
 
 from app import db
-from app.models import AppState, BillingOrder, BillingPayment, BillingReceipt, User, UserBillingProfile, utcnow
+from app.config import settings
+from app.models import (
+    AppState,
+    BillingOrder,
+    BillingPayment,
+    BillingReceipt,
+    EmailOutbox,
+    User,
+    UserBillingProfile,
+    utcnow,
+)
 from app.services.billing import disputes, receipts
 from app.services.billing.money import financial_year
+from app.services.mail import outbox
 
 pytestmark = pytest.mark.usefixtures("fake_razorpay")
 
@@ -167,7 +182,7 @@ async def test_the_pdf_holds_the_snapshot_the_credit_and_what_happened_since(
             "upi_limit_paise": 200_000,
         },
     )
-    await erin.put("/api/billing/profile", json={"name": "Erin Example", "email": "erin@example.com"})
+    await erin.put("/api/billing/profile", json={"name": "Erin Example"})
     await buy(erin, fake_razorpay, "starter")
     order = await order_row(await buy(erin, fake_razorpay, "standard", "now"))
     upgrade = next(payment for payment in await payments_of(erin.user_id or 0) if payment.order_id == order.id)
@@ -188,7 +203,7 @@ async def test_the_pdf_holds_the_snapshot_the_credit_and_what_happened_since(
         receipt.number,
         "Erin Example",
         "erin (account)",
-        "erin@example.com",
+        "erin@account.example.test",
         "Standard plan, 1 day",
         "Credit for unused Starter",
         "−₹499.00",
@@ -253,7 +268,7 @@ async def test_the_name_on_the_receipt_is_the_username_without_a_profile(
 
     (receipt,) = await receipt_rows()
 
-    assert receipt.buyer == {"name": "ian", "username": "ian", "email": None}
+    assert receipt.buyer == {"name": "ian", "username": "ian", "email": "ian@account.example.test"}
     assert receipt.seller["name"] == "AskNuvexusDoc" and receipt.lines[0]["description"] == "Starter plan, 1 day"
 
 
@@ -293,3 +308,94 @@ async def test_a_bank_transfer_receipt_names_the_reference(create_user: CreateUs
     for expected in ("Bank reference", "UTR0001", "Bank transfer, ref UTR0001", "PARTIALLY REFUNDED", "₹1,500.00"):
         assert expected in text, expected
     assert "TEST: not a real payment" not in text
+
+
+# ---------------- The receipt email ----------------
+
+
+async def mail_jobs() -> list[EmailOutbox]:
+    async with db.SessionLocal() as session:
+        return list(await session.scalars(select(EmailOutbox).order_by(EmailOutbox.id)))
+
+
+async def test_a_receipt_is_mailed_with_its_pdf_to_the_accounts_email(
+    create_user: CreateUser, fake_razorpay: FakeRazorpay, fake_mail: FakeMail
+) -> None:
+    jan = await new_tester(create_user, "jan")
+    await buy(jan, fake_razorpay, "starter", method="upi")
+    (receipt,) = await receipt_rows()
+
+    assert await drain_mail() == 1
+
+    message = fake_mail.last("jan@account.example.test")
+    assert message["Subject"] == f"Receipt {receipt.number} for your Starter plan"
+    assert message.get_content_type() == "multipart/mixed"
+    body = mail_text(message)
+    assert "Amount: ₹500.00" in body and "Method: UPI" in body and f"Period: {receipt.lines[0]['period']}" in body
+    assert "The receipt is attached and in Settings → Plan & billing." in body
+    assert "Turn receipt emails off in Settings → Plan & billing." in body
+    (attachment,) = list(message.iter_attachments())
+    assert attachment.get_filename() == f"receipt-{receipt.number.replace('/', '-')}.pdf"
+    assert attachment.get_content_type() == "application/pdf"
+    downloaded = await jan.get(f"/api/billing/receipts/{receipt.id}")
+    assert attachment.get_content() == downloaded.content
+    (row,) = await mail_jobs()
+    assert (row.kind, row.mail_class, row.params) == ("receipt", "billing", {"receipt_id": receipt.id})
+
+
+async def test_a_bank_transfer_receipt_is_mailed_too(
+    create_user: CreateUser, admin_client: ApiClient, fake_mail: FakeMail
+) -> None:
+    kim = await create_user("kim", plan=None)
+    await give_email(kim.user_id or 0, "kim@example.org")
+    await offline(admin_client, kim.user_id or 0)
+
+    await drain_mail()
+
+    assert "Method: Bank transfer" in mail_text(fake_mail.last("kim@example.org"))
+
+
+async def test_the_switch_turns_receipt_emails_off(
+    create_user: CreateUser, fake_razorpay: FakeRazorpay, fake_mail: FakeMail
+) -> None:
+    lea = await new_tester(create_user, "lea")
+    response = await lea.patch("/api/me/preferences", json={"email_receipts": False})
+    assert response.status_code == 200, response.text
+    await buy(lea, fake_razorpay, "starter")
+
+    await drain_mail()
+
+    assert fake_mail.sent == []
+    assert [(row.status, row.last_error) for row in await mail_jobs()] == [("cancelled", "pref_off")]
+
+
+async def test_no_receipt_email_without_a_verified_email_or_the_mailer(
+    create_user: CreateUser, admin_client: ApiClient, fake_razorpay: FakeRazorpay
+) -> None:
+    max_ = await create_user("max", plan=None)
+    await offline(admin_client, max_.user_id or 0)  # no email
+    ned = await new_tester(create_user, "ned")
+    await buy(ned, fake_razorpay, "starter")  # no mailer
+
+    assert len(await receipt_rows()) == 2
+    assert await mail_jobs() == []
+
+
+async def test_receipts_go_out_when_the_other_classes_used_their_share(
+    create_user: CreateUser, fake_razorpay: FakeRazorpay, fake_mail: FakeMail, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "mail_daily_limit", 10)
+    async with db.SessionLocal() as session:
+        for number in range(8):
+            await outbox.enqueue(session, "test", to=f"tester{number}@example.org")
+        await session.commit()
+    await drain_mail()
+    async with db.SessionLocal() as session:
+        assert await outbox.available(session, "account") is False
+        assert await outbox.available(session, "billing") is True
+    ola = await new_tester(create_user, "ola")
+
+    await buy(ola, fake_razorpay, "starter")
+    await drain_mail()
+
+    assert fake_mail.last("ola@account.example.test")["Subject"].startswith("Receipt TEST/")

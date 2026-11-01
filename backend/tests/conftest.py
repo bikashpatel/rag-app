@@ -62,10 +62,16 @@ import pytest  # noqa: E402
 from cryptography.fernet import Fernet  # noqa: E402
 from docx import Document as new_docx  # noqa: E402
 from fake_google import CLIENT_ID, CLIENT_SECRET, FakeGoogle, fake_google_app  # noqa: E402
+from fake_hibp import FakeHibp  # noqa: E402
+from fake_mail import FakeMail  # noqa: E402
 from fake_razorpay import API_HOST, FakeRazorpay, fake_razorpay_app  # noqa: E402
+from fake_turnstile import TEST_SECRET, TEST_SITE_KEY, FakeTurnstile, turnstile_token  # noqa: E402
 from fakeredis import FakeServer  # noqa: E402
 from fakeredis.aioredis import FakeRedis  # noqa: E402
 from fastapi import FastAPI  # noqa: E402
+from google_oidc import CLIENT_ID as SIGNIN_CLIENT_ID  # noqa: E402
+from google_oidc import CLIENT_SECRET as SIGNIN_CLIENT_SECRET  # noqa: E402
+from google_oidc import GoogleOidc  # noqa: E402
 from litellm.types.utils import ImageUsage, ImageUsageInputTokensDetails  # noqa: E402
 from openpyxl import Workbook  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
@@ -82,7 +88,9 @@ from app.models import Document, Plan, PlanPeriod, User, utcnow  # noqa: E402
 from app.plugins import connections, intent, registry  # noqa: E402
 from app.plugins import http as plugin_http  # noqa: E402
 from app.redis_client import INGEST_QUEUE, close_redis, get_redis, set_redis  # noqa: E402
+from app.schemas_auth import SignupSettings  # noqa: E402
 from app.services import document_tool, image_tool, ingestion, llm, pdf_images, vision  # noqa: E402
+from app.services.auth import signup_settings  # noqa: E402
 from app.services.billing import entitlements, periods  # noqa: E402
 from app.services.ingestion import process_document  # noqa: E402
 from app.services.vectorstore import close_qdrant  # noqa: E402
@@ -713,6 +721,135 @@ def plugins(monkeypatch: pytest.MonkeyPatch) -> PluginHarness:
 
 async def _no_sleep(seconds: float) -> None:
     return None
+
+
+# ---------------- Sign-up, sign-in and mail (docs/briefs/signup-auth.md 6.8, 7.5 and 15.1) ----------------
+
+# The providers' hosts. A request to one of them through httpx's default transport goes to the fake routed for it, and
+# fails the test without one: no test reaches Google, Cloudflare, Resend or Have I Been Pwned.
+OUTSIDE_HOSTS = frozenset(
+    {
+        "accounts.google.com",
+        "oauth2.googleapis.com",
+        "www.googleapis.com",
+        "openidconnect.googleapis.com",
+        "challenges.cloudflare.com",
+        "api.resend.com",
+        "api.pwnedpasswords.com",
+    }
+)
+TEST_MAIL_FROM = "AskNuvexusDoc <no-reply@example.test>"
+
+
+class OutsideHosts:
+    """The fakes answering for outside hosts: `route(url, handler)` sends every request to that URL's host to
+    `handler(request) -> httpx.Response` (it may raise httpx errors, e.g. a timeout)."""
+
+    def __init__(self) -> None:
+        self.routes: dict[str, Callable[[httpx.Request], httpx.Response]] = {}
+
+    def route(self, url: str, handler: Callable[[httpx.Request], httpx.Response]) -> None:
+        self.routes[httpx.URL(url).host] = handler
+
+
+@pytest.fixture(autouse=True)
+def outside_hosts(monkeypatch: pytest.MonkeyPatch) -> OutsideHosts:
+    hosts = OutsideHosts()
+    network = httpx.AsyncHTTPTransport.handle_async_request
+
+    async def handle(transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
+        handler = hosts.routes.get(request.url.host)
+        if handler is not None:
+            return handler(request)
+        if request.url.host in OUTSIDE_HOSTS:
+            raise AssertionError(f"A test tried to reach {request.url.host}: route it to a fake (conftest.py)")
+        return await network(transport, request)
+
+    monkeypatch.setattr(httpx.AsyncHTTPTransport, "handle_async_request", handle)
+    return hosts
+
+
+@pytest.fixture(autouse=True)
+def fake_hibp(outside_hosts: OutsideHosts) -> FakeHibp:
+    """Have I Been Pwned's range API for every test (the breach check is on by default): no password is breached
+    until the test adds it (`fake_hibp.add(password)`), or makes it fail (`failure = "timeout"` or `"500"`)."""
+    fake = FakeHibp()
+    outside_hosts.route(settings.password_breach_check_url, fake.handle)
+    return fake
+
+
+@pytest.fixture
+def fake_turnstile(monkeypatch: pytest.MonkeyPatch, outside_hosts: OutsideHosts) -> FakeTurnstile:
+    """Turnstile configured with Cloudflare's test keys (action and hostname aren't checked; set
+    fake_turnstile.REAL_SITE_KEY and REAL_SECRET for the production form) and its siteverify answered by the fake.
+    `turnstile_token(action)` makes a token it passes."""
+    fake = FakeTurnstile()
+    monkeypatch.setattr(settings, "turnstile_site_key", TEST_SITE_KEY)
+    monkeypatch.setattr(settings, "turnstile_secret_key", TEST_SECRET)
+    outside_hosts.route(settings.turnstile_siteverify_url, fake.handle)
+    return fake
+
+
+@pytest.fixture
+def google_oidc(monkeypatch: pytest.MonkeyPatch, outside_hosts: OutsideHosts) -> GoogleOidc:
+    """Google sign-in configured (its own test client) with the fake's keys at GOOGLE_SIGNIN_JWKS_URL; mint ID tokens
+    with `google_oidc.id_token(**claims)`."""
+    oidc = GoogleOidc()
+    monkeypatch.setattr(settings, "google_signin_client_id", SIGNIN_CLIENT_ID)
+    monkeypatch.setattr(settings, "google_signin_client_secret", SIGNIN_CLIENT_SECRET)
+    outside_hosts.route(settings.google_signin_jwks_url, oidc.handle)
+    return oidc
+
+
+@pytest.fixture
+def mailer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The mailer configured (MAIL_SMTP_HOST and MAIL_FROM), so requests may enqueue mail; nothing is sent unless the
+    test drains the outbox with `fake_mail`."""
+    monkeypatch.setattr(settings, "mail_smtp_host", "smtp.example.test")
+    monkeypatch.setattr(settings, "mail_from", TEST_MAIL_FROM)
+
+
+@pytest.fixture
+def fake_mail(monkeypatch: pytest.MonkeyPatch, mailer: None) -> FakeMail:
+    """The mailer configured and its SMTP transport (app.services.mail.transport.send_message) replaced by an
+    in-memory sink: run the worker's jobs with drain_mail(), then read `fake_mail.last_link(address)`."""
+    fake = FakeMail()
+    monkeypatch.setattr("app.services.mail.transport.send_message", fake.send)
+    return fake
+
+
+async def drain_mail(limit: int = 100) -> int:
+    """Runs the worker's mail jobs in-process until none is due; returns how many ran. It relies on MAIL's
+    app.services.mail.drain.process_one(): claim, resolve and send the next due job without the loop's pacing (False
+    when none is due)."""
+    from app.services.mail import drain
+
+    ran = 0
+    while ran < limit and await drain.process_one():
+        ran += 1
+    return ran
+
+
+async def open_signup(*, email: bool = True, google: bool = True) -> None:
+    """Sign-up opened in the admin's settings (Admin → Users → Sign-up); it is effective only with the mailer and
+    Turnstile (email) or Google sign-in (google) configured."""
+    async with db.SessionLocal() as session:
+        value = SignupSettings(open=True, email=email, google=google)
+        await signup_settings.save(session, value, actor=f"admin:{ADMIN_USERNAME}")
+        await session.commit()
+
+
+async def signup(client: httpx.AsyncClient, email: str, password: str = USER_PASSWORD, **fields: Any) -> httpx.Response:
+    """POST /api/auth/signup with the terms accepted and a token the fake Turnstile passes (`fake_turnstile`);
+    `fields` add to or replace the body's."""
+    body = {
+        "email": email,
+        "password": password,
+        "accept_terms": True,
+        "turnstile_token": turnstile_token("signup"),
+        **fields,
+    }
+    return await client.post("/api/auth/signup", json=body)
 
 
 @pytest.fixture

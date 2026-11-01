@@ -107,15 +107,29 @@ export function TestBadge() {
   );
 }
 
-/** The avatar and username of a billing record's user; a deleted user keeps the recorded name. */
+/** The avatar and username of a billing record's user, the account's email under it; a deleted user keeps the name. */
 export function UserCell({ user }: { user: UserRef }) {
   return (
     <div className="admin-user-cell">
       <Avatar name={user.username} />
-      <span className="admin-user-name">{user.username}</span>
-      {user.id === null ? <span className="badge badge-neutral">deleted</span> : null}
+      <span className="admin-user-ident">
+        <span className="admin-user-line">
+          <span className="admin-user-name">{user.username}</span>
+          {user.id === null ? <span className="badge badge-neutral">deleted</span> : null}
+        </span>
+        <BuyerEmail email={user.email} />
+      </span>
     </div>
   );
+}
+
+/** A buyer's email as a second line (cut at 30 characters, the whole address in the tooltip). */
+export function BuyerEmail({ email }: { email: string | null | undefined }) {
+  return email ? (
+    <span className="admin-buyer-email" title={email}>
+      {email}
+    </span>
+  ) : null;
 }
 
 /** The IST day access ended: the last valid-through date, else the day before the instant it ended. */

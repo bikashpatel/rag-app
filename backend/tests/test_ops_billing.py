@@ -1,7 +1,8 @@
 """The monitor's `billing` check, "Payments" (docs/briefs/plans-billing.md 11.3; app/ops/checks.py and
 services/billing/summary.problems): ok without keys or problems; a warning, with counts only, for orders to review, a
-stalled reconciler, rejected keys, stuck or failed refunds, bad signatures, failing or silent webhooks and risky key
-setups; unknown when the records can't be read."""
+stalled reconciler, rejected keys, stuck or failed refunds, bad signatures, failing or silent webhooks, risky key
+setups and the unpaid users' payment-link cap (docs/briefs/signup-auth.md 14.1); unknown when the records can't be
+read."""
 
 from datetime import timedelta
 
@@ -122,3 +123,13 @@ async def test_unknown_when_the_records_cant_be_read(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(summary, "problems", broken)
 
     assert await detail() == ("unknown", "The billing records can't be read: failed (RuntimeError)")
+
+
+@pytest.mark.usefixtures("app", "fake_razorpay")
+async def test_the_unpaid_users_payment_link_cap_reached_in_the_last_hour() -> None:
+    await get_redis().set("billing:checkout-unpaid-reached", "1", ex=3600)
+
+    assert await detail() == (
+        "warning",
+        "Unpaid users reached their payment-link cap (CHECKOUT_UNPAID_PER_HOUR) in the last hour",
+    )

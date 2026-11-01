@@ -14,6 +14,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   chat_font_size: "default",
   enter_to_send: true,
   default_model_id: null,
+  email_plan_reminders: true,
+  email_receipts: true,
 };
 
 export const THEMES: readonly { id: ThemePreference; label: string }[] = [
@@ -47,6 +49,10 @@ function pick<T extends string>(value: unknown, allowed: readonly { id: T }[], f
   return allowed.some((option) => option.id === value) ? (value as T) : fallback;
 }
 
+function flag(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback;
+}
+
 /** Validated field by field: a missing or invalid value is its default (as the server reads stored preferences). */
 export function normalizePreferences(value: unknown): Preferences {
   const raw = value !== null && typeof value === "object" ? (value as Record<string, unknown>) : {};
@@ -55,9 +61,11 @@ export function normalizePreferences(value: unknown): Preferences {
     theme: pick(raw.theme, THEMES, DEFAULT_PREFERENCES.theme),
     accent: pick(raw.accent, ACCENTS, DEFAULT_PREFERENCES.accent),
     chat_font_size: pick(raw.chat_font_size, CHAT_FONT_SIZES, DEFAULT_PREFERENCES.chat_font_size),
-    enter_to_send: typeof raw.enter_to_send === "boolean" ? raw.enter_to_send : DEFAULT_PREFERENCES.enter_to_send,
+    enter_to_send: flag(raw.enter_to_send, DEFAULT_PREFERENCES.enter_to_send),
     default_model_id:
       typeof modelId === "number" && Number.isInteger(modelId) && modelId >= 1 && modelId <= MAX_ID ? modelId : null,
+    email_plan_reminders: flag(raw.email_plan_reminders, DEFAULT_PREFERENCES.email_plan_reminders),
+    email_receipts: flag(raw.email_receipts, DEFAULT_PREFERENCES.email_receipts),
   };
 }
 
@@ -67,13 +75,24 @@ export function samePreferences(a: Preferences, b: Preferences): boolean {
     a.accent === b.accent &&
     a.chat_font_size === b.chat_font_size &&
     a.enter_to_send === b.enter_to_send &&
-    a.default_model_id === b.default_model_id
+    a.default_model_id === b.default_model_id &&
+    a.email_plan_reminders === b.email_plan_reminders &&
+    a.email_receipts === b.email_receipts
   );
 }
 
 function serialize(preferences: Preferences): string {
-  const { theme, accent, chat_font_size, enter_to_send, default_model_id } = preferences;
-  return JSON.stringify({ theme, accent, chat_font_size, enter_to_send, default_model_id });
+  const { theme, accent, chat_font_size, enter_to_send, default_model_id, email_plan_reminders, email_receipts } =
+    preferences;
+  return JSON.stringify({
+    theme,
+    accent,
+    chat_font_size,
+    enter_to_send,
+    default_model_id,
+    email_plan_reminders,
+    email_receipts,
+  });
 }
 
 export function readCachedPreferences(): Preferences {

@@ -72,7 +72,7 @@ test.describe("Account", () => {
     await expect(signIns).toHaveCount(2);
     await expect(signIns.filter({ hasText: "This device" })).toHaveCount(1);
     await expect(signIns.first()).toContainText("This device");
-    await expect(dialog.getByRole("definition").first()).toHaveText(user.username);
+    await expect(dialog.getByRole("definition").first()).toContainText(user.username);
     await expect(dialog.getByRole("button", { name: "Change password…" })).toBeVisible();
   });
 
@@ -113,8 +113,7 @@ test.describe("Account", () => {
     await expect(loginHeading(page)).toBeVisible();
     await submitLogin(page, user.username, user.password);
     await expect(page.getByRole("alert")).toHaveText(INVALID_LOGIN);
-    await page.getByLabel("Password", { exact: true }).fill(newPassword);
-    await page.getByRole("button", { name: "Sign in" }).click();
+    await submitLogin(page, user.username, newPassword);
     await expect(composer(page)).toBeVisible();
   });
 

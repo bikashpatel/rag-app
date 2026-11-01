@@ -33,4 +33,24 @@ describe("postLoginPath", () => {
   it("ignores a query or hash that isn't a string", () => {
     expect(postLoginPath({ from: { pathname: "/c/7", search: 1, hash: ["#x"] } })).toBe("/c/7");
   });
+
+  it("goes to the page ?next= names when there is no redirect state (a link from another page)", () => {
+    expect(postLoginPath(null, "?next=/confirm-email")).toBe("/confirm-email");
+    expect(postLoginPath(undefined, "?next=%2Fplans%3Fsettings%3Daccount")).toBe("/plans?settings=account");
+    // The redirect state wins.
+    expect(postLoginPath({ from: { pathname: "/admin" } }, "?next=/plans")).toBe("/admin");
+  });
+
+  it.each([
+    ["an off-site URL", "?next=//evil.example"],
+    ["the API", "?next=/api/auth/me"],
+    ["a signed-out page", "?next=/signup"],
+    ["nothing", ""],
+  ])("falls back to the chat for ?next= naming %s", (_, search) => {
+    expect(postLoginPath(null, search)).toBe("/");
+  });
+
+  it("never returns to a signed-out page from the redirect state", () => {
+    expect(postLoginPath({ from: { pathname: "/forgot-password", search: "", hash: "" } })).toBe("/");
+  });
 });

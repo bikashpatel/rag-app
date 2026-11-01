@@ -30,3 +30,4 @@ fpdf2==2.8.9  # PDF files the chat assistant creates (services/filegen)
 uharfbuzz==0.56.2  # text shaping for fpdf2 (Indian scripts); fpdf2 imports it when shaping is on
 markdown-it-py==4.2.0  # parses the Markdown of the files the chat assistant creates
 httpx==0.28.1  # OAuth and Gmail REST calls (app/plugins); LiteLLM depends on it too
+idna==3.20  # email domains to ASCII (UTS 46; app/services/auth/emails.py); httpx depends on it too

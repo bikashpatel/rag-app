@@ -23,6 +23,8 @@ from app.services.ingestion import (
     requeue_orphans,
     set_vision_phase_listener,
 )
+from app.services.mail import sweeps
+from app.services.mail.drain import MailLoop
 from app.services.vectorstore import close_qdrant
 
 logger = logging.getLogger("app.worker")
@@ -31,11 +33,18 @@ _DB_STARTUP_SECONDS = 60
 _POLL_SECONDS = 5
 _MAX_BACKOFF_SECONDS = 30
 _SHUTDOWN_GRACE_SECONDS = 60
+# How long the loops beside the jobs get to end on their own once shutdown is requested (the mail loop finishes the job
+# it is sending; one it is still sending then is cancelled and queued again). With the jobs' grace and the queue's
+# poll, within Compose's stop_grace_period of 75 s.
+_BACKGROUND_GRACE_SECONDS = 5
 # How often to look for pending documents missing from the queue, and how old they must be.
 _SWEEP_SECONDS = 60
 _ORPHAN_AGE_SECONDS = 10
 # How long a document must have been processing, without a job of this worker running it, to be retried.
 _INTERRUPTED_AGE_SECONDS = 60
+# The sign-up and mail clean-up (services/mail/sweeps.py): first a minute after the start, then hourly.
+_MAIL_SWEEP_DELAY_SECONDS = 60
+_MAIL_SWEEP_SECONDS = 3600
 
 
 class Worker:
@@ -44,7 +53,9 @@ class Worker:
     A job is popped only when a slot is free, so stopping never strands a popped id: running jobs get a
     grace period, and anything still unfinished stays "processing" until recover_pending() on the next start.
     While it takes jobs it refreshes its heartbeat in Redis (app.ops.heartbeat), and removes it when it stops. Beside
-    the jobs runs the billing loop (services/billing/reconcile.py): webhooks, the payment reconciler and reminders.
+    the jobs runs the billing loop (services/billing/reconcile.py): webhooks, the payment reconciler and reminders; the
+    mail loop (services/mail/drain.py) while the mailer is configured; and the hourly sign-up and mail clean-up. On
+    shutdown those loops get a few seconds to end on their own (the mail loop finishes the mail it is sending).
     A job that ends without recording a result (e.g. the database failed its final update) leaves its document
     "processing" too; the periodic sweep retries it. A job reading pages with the vision model (network waits) gives
     its slot back until it leaves that phase.
@@ -71,11 +82,16 @@ class Worker:
         background = [beating]
         if BillingLoop.wanted():
             background.append(asyncio.create_task(BillingLoop(self._stopping).run(), name="worker-billing"))
+        if MailLoop.wanted():
+            background.append(asyncio.create_task(MailLoop(self._stopping).run(), name="worker-mail"))
+        background.append(asyncio.create_task(self._sweep_mail(), name="worker-mail-sweeps"))
         try:
             await self._consume()
             await self._drain()
         finally:
-            for task in background:
+            self._stopping.set()
+            _, running = await asyncio.wait(background, timeout=_BACKGROUND_GRACE_SECONDS)
+            for task in running:
                 task.cancel()
             await asyncio.gather(*background, return_exceptions=True)
             with contextlib.suppress(Exception):
@@ -96,6 +112,22 @@ class Worker:
                 failing = False
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stopping.wait(), ops_settings.worker_heartbeat_seconds)
+
+    async def _sweep_mail(self) -> None:
+        """The sign-up and mail clean-up, hourly until shutdown; a failure is logged and tried again next hour."""
+        delay = _MAIL_SWEEP_DELAY_SECONDS
+        while not self._stopping.is_set():
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(self._stopping.wait(), delay)
+            if self._stopping.is_set():
+                return
+            try:
+                await sweeps.run()
+            except Exception as exc:
+                logger.warning(
+                    "The sign-up and mail clean-up failed (%s); it runs again in an hour", type(exc).__name__
+                )
+            delay = _MAIL_SWEEP_SECONDS
 
     def _vision_phase_changed(self, entering: bool) -> None:
         """Called from inside a job's task when it enters or leaves the vision phase."""

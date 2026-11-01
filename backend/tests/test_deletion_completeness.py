@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import Base, SessionLocal
 from app.models import (
+    AuthEvent,
     BillingOrder,
     BillingPayment,
     BillingReceipt,
@@ -29,15 +30,20 @@ from app.models import (
     Message,
     MessageFile,
     MessagePluginItem,
+    PendingEmail,
     PlanPeriod,
     PluginAuditEvent,
     PluginConnection,
     UserBillingProfile,
+    UserIdentity,
+    UsernameTombstone,
     VisionPage,
     user_allowed_models,
     utcnow,
 )
 from app.services import storage, vectorstore
+from app.services.auth import tokens
+from app.services.mail import outbox
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 Rows = dict[str, set[tuple[Any, ...]]]  # table name -> primary keys
@@ -73,6 +79,9 @@ SET_NULL: set[Key] = {
     ("billing_payments", "order_id"),
     ("billing_events", "order_id"),
     ("billing_events", "payment_id"),
+    # Sign-up (signup-auth 9.1): a finished mail job keeps its counts when its pending sign-up or email goes
+    ("email_outbox", "pending_signup_id"),
+    ("email_outbox", "pending_email_id"),
     *KEPT_FOR_ACCOUNTS,
 }
 
@@ -275,7 +284,36 @@ async def populate(client: ApiClient) -> dict[str, int]:
                 ),
                 PluginAuditEvent(user_id=client.user_id, plugin_id="gmail", action="search", outcome="ok", origin="ui"),
                 pending_send(client.user_id, conversation_id, status="replaced", replaced_by_id=replacement.id),
+                UserIdentity(
+                    user_id=client.user_id,
+                    provider="google",
+                    issuer="https://accounts.google.com",
+                    subject=f"sub-{client.user_id}",
+                    email_at_link=f"{client.username}@gmail.com",
+                    email_kind="gmail",
+                ),
+                AuthEvent(user_id=client.user_id, type="signup.completed", actor="self", detail={}),
             ]
+        )
+        pending_email = PendingEmail(
+            user_id=client.user_id,
+            address=f"{client.username}@new.example",
+            canonical=f"{client.username}@new.example",
+            source="user",
+            expires_at=utcnow() + timedelta(hours=24),
+        )
+        db.add(pending_email)
+        await db.flush()
+        await tokens.mint(
+            db,
+            "email",
+            address_canonical=pending_email.canonical,
+            user_id=client.user_id,
+            pending_email_id=pending_email.id,
+        )
+        await tokens.mint(db, "reset", address_canonical=pending_email.canonical, user_id=client.user_id)
+        await outbox.enqueue(
+            db, "email_confirm", to=pending_email.address, user_id=client.user_id, pending_email_id=pending_email.id
         )
         await db.commit()
     return {"document": document["id"], "conversation": conversation_id, "answer": answer}
@@ -347,6 +385,8 @@ async def test_deleting_a_user_removes_every_row_file_and_vector_of_theirs_and_n
         assert await remaining(db, {"users": {(alice.user_id,)}, **theirs.cascaded}) == {}
         assert await still_pointing(db, outliving(theirs)) == {}
         assert await reachable(db, "users", {bob.user_id}) == others
+        # Her username is never issued again (signup-auth 3.3)
+        assert [row.username for row in await db.scalars(select(UsernameTombstone))] == ["alice"]
     assert not alice_file.exists() and bob_file.is_file()
     assert await vector_count(alices["document"]) == 0 and await vector_count(bobs["document"]) > 0
     assert (await bob.get(f"/api/conversations/{bobs['conversation']}")).status_code == 200

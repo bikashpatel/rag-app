@@ -36,6 +36,8 @@ export type Preferences = {
   chat_font_size: ChatFontSize;
   enter_to_send: boolean; // false: Ctrl/Cmd+Enter sends and Enter adds a new line
   default_model_id: number | null; // the chat model new chats start with; null = the server's default (also when no longer usable)
+  email_plan_reminders: boolean; // plan reminder emails to the verified email (default true)
+  email_receipts: boolean; // a receipt email, PDF attached, for each payment (default true)
 };
 
 /** PATCH /me/preferences: omitted = unchanged; default_model_id null = the server's default. Null elsewhere is a 422. */
@@ -49,6 +51,7 @@ export type Me = {
   usage: UsageSummary;
   preferences: Preferences;
   plan: PlanAccess;
+  email: string | null; // the verified email; the display name when set (else the username)
 };
 
 export type ChatModel = {
@@ -166,7 +169,7 @@ export type PaymentsInfo = {
   mode: "test" | "live" | null; // null when not available to this caller
   contact_email: string | null;
   upi_limit_paise: number; // 0: no limit
-  email_reminders: boolean; // reminder emails can be sent: ask for an email only then
+  email_reminders: boolean; // the mailer is configured: receipts and reminders can be emailed
 };
 
 export type PlanCatalog = { plans: PlanOffer[]; payments: PaymentsInfo };
@@ -232,7 +235,8 @@ export type PeriodView = {
 };
 
 /** The user's own, optional (GET and PUT /billing/profile); blank strings are saved as null. */
-export type BillingProfile = { name: string | null /* ≤ 100 */; email: string | null /* ≤ 254 */ };
+// Receipts and plan reminders go to the account's verified email (Me.email).
+export type BillingProfile = { name: string | null /* ≤ 100 */ };
 export type ComplimentaryView = { plan: PlanRef; reason: string; granted_by: string; granted_at: string };
 
 export type BillingStatus = {
@@ -259,6 +263,7 @@ export type PublicSite = {
 // ---------------- Account (GET /me/account, GET /me/usage) ----------------
 
 export type DeviceType = "desktop" | "mobile" | "tablet" | "unknown";
+export type LoginMethod = "password" | "google";
 
 /** One successful sign-in of the caller (the last 20 are kept). */
 export type LoginEvent = {
@@ -272,6 +277,7 @@ export type LoginEvent = {
   os: string | null; // "macOS", "Windows", "iOS", "Android", "Linux", "ChromeOS", …
   device: DeviceType;
   current: boolean; // the sign-in that started this session ("This device")
+  method: LoginMethod; // "with password" or "with Google"
 };
 
 export type AccountInfo = {
@@ -283,6 +289,16 @@ export type AccountInfo = {
   last_login_at: string | null; // also set for sign-ins from before the history existed
   conversation_count: number;
   recent_logins: LoginEvent[]; // newest first, at most 20
+  email: string | null; // verified; the display name when set
+  email_verified_at: string | null;
+  pending_email: PendingEmailInfo | null; // an address waiting for its confirmation link
+  has_password: boolean;
+  google: GoogleLink | null;
+  signup_source: SignupSource;
+  terms_accepted_at: string | null;
+  // google: a step-up first; not_allowed: the env admin, or no way to re-authenticate
+  email_change_needs: "password" | "google" | "not_allowed";
+  stepup_until: string | null; // this session holds a step-up grant until then
 };
 
 export type UsageAmount = { used: number; limit: number }; // limit 0 = unlimited (always 0 for the admin)
@@ -323,6 +339,143 @@ export type MyUsage = {
 
 /** DELETE /conversations: every conversation of the caller is gone (documents are kept). */
 export type ConversationsDeleted = { deleted: number };
+
+// ---------------- Sign-up, sign-in and the account's email (docs/briefs/signup-auth.md) ----------------
+// Request bodies refuse unknown fields (422). Errors carry a `code` (and for password_rejected a `reason`).
+
+/** The `reason` of a 422 password_rejected. */
+export type PasswordReason = "too_short" | "too_long" | "common" | "context" | "breached";
+
+export type SignupAvailability = { open: boolean /* email || google */; email: boolean; google: boolean };
+
+/** GET /auth/config (public): what the signed-out pages may offer. */
+export type AuthConfig = {
+  signup: SignupAvailability;
+  google_signin: boolean; // Continue with Google works for existing accounts (configured), even with sign-up closed
+  password_reset: boolean; // the mailer and Turnstile are configured
+  turnstile_site_key: string | null;
+  password_min_length: number;
+  password_max_length: number; // 256
+  terms_version: string;
+  contact_email: string | null; // Admin → Billing → Business & payments
+};
+
+/** POST /auth/login: an identifier with "@" is an email (verified addresses only), anything else a username. */
+export type LoginRequest = {
+  identifier: string; // "username" is accepted as an alias (not both)
+  password: string;
+  turnstile_token?: string | null; // after 401 challenge_required
+};
+
+/** POST /auth/signup → 202 Accepted and the rag_signup cookie. */
+export type SignupRequest = {
+  email: string;
+  password: string;
+  accept_terms: true;
+  turnstile_token: string;
+  next?: string | null; // a path on this site, kept through verification
+};
+
+/** POST /auth/signup/resend and POST /auth/password/forgot. */
+export type EmailWithChallenge = { email: string; turnstile_token: string };
+/** 202, the same for every address. */
+export type Accepted = { status: "accepted" };
+export type TokenRequest = { token: string /* 43 characters, base64url, from the link's #t= */ };
+
+/** POST /auth/signup/check. */
+export type SignupCheck = {
+  email: string;
+  expires_at: string;
+  needs_password: boolean; // false when this browser started the sign-up
+  next: string | null;
+};
+/** POST /auth/signup/complete → Me and the session cookie. */
+export type SignupComplete = { token: string; password?: string | null /* required when needs_password */ };
+
+/** POST /auth/password/check. */
+export type PasswordTokenInfo = {
+  email: string;
+  username: string;
+  has_password: boolean;
+  expires_at: string;
+  google: { email: string /* masked */; suggest_disconnect: boolean } | null;
+};
+/** POST /auth/password/reset → 204: every session ends; it never signs in. */
+export type PasswordReset = { token: string; new_password: string; disconnect_google?: boolean /* false */ };
+
+/** POST /auth/email/check. */
+export type EmailTokenInfo = {
+  email: string;
+  account: string; // the asking account: its email masked, or its username
+  signed_in: boolean; // this session is that account's
+};
+/** POST /auth/email/verify (needs the asking account's session). */
+export type EmailConfirmed = { email: string };
+/** POST /auth/email/undo-check. */
+export type UndoInfo = { old_email: string; new_email: string /* masked */ };
+
+/** POST /auth/google/start: signin without a session; link (password required) and reauth with one. */
+export type GoogleStart = {
+  intent: "signin" | "link" | "reauth";
+  next?: string | null; // signin, reauth: a path on this site
+  from?: "login" | "signup" | null; // signin
+  password?: string | null; // link: required
+};
+export type GoogleStarted = { authorize_url: string };
+/** GET /auth/google/pending (the rag_gticket cookie). */
+export type GooglePending = {
+  email: string;
+  email_verified: boolean; // gmail or workspace: confirmed at once
+  from: "login" | "signup";
+  expires_at: string;
+};
+/** POST /auth/google/finish → Me and the session cookie. */
+export type GoogleFinish = { accept_terms: true };
+
+export type SignupSource = "env" | "admin" | "email" | "google";
+export type PendingEmailInfo = {
+  address: string;
+  source: "user" | "google";
+  sent_at: string | null;
+  expires_at: string;
+};
+export type GoogleLink = { email: string /* at link time */; linked_at: string; last_used_at: string | null };
+
+/** POST /me/email → 202 Accepted. */
+export type EmailChange = { email: string; password?: string | null /* required when email_change_needs is "password" */ };
+/** POST /me/password/setup → 204. */
+export type NewPassword = { new_password: string };
+/** DELETE /me/google → 204. */
+export type PasswordConfirm = { password: string };
+
+/** POST /admin/mail/test → 202. */
+export type MailTest = { to: string };
+
+/** The admin's sign-up switches (signup_settings; missing: closed, both methods on). */
+export type SignupSettings = { open: boolean /* false: closed, as deployed */; email: boolean; google: boolean };
+export type SignupWarning = "real_ip" | "payments_not_live" | "mail_webhook_missing" | "admin_password_weak";
+/** GET /admin/signup-settings and PUT /admin/signup-settings (an omitted field takes its default). */
+export type SignupStatus = {
+  settings: SignupSettings;
+  effective: SignupAvailability; // the settings with every prerequisite
+  mail_configured: boolean;
+  mail_webhook_configured: boolean;
+  turnstile_configured: boolean;
+  google_configured: boolean;
+  payments_live: boolean;
+  mail_sent_today: number;
+  mail_queued: number;
+  mail_daily_limit: number;
+  public_mail_left: number; // about how many sign-up emails still fit today
+  public_paused: boolean; // bounces
+  bounces_today: number;
+  complaints_7d: number;
+  mail_last_error: string | null; // our short reason and when, e.g. "SMTP login refused"
+  signups_today: number;
+  signups_7d: number;
+  paid_7d: number; // of the last 7 days' sign-ups, how many have paid
+  warnings: SignupWarning[]; // the policy-draft check is the page's own
+};
 
 export type DocumentStatus = "pending" | "processing" | "ready" | "failed";
 export type DocumentScope = "private" | "shared";
@@ -571,11 +724,20 @@ export type AdminUser = {
   above_plan: (keyof UserLimits)[]; // overrides more generous than the plan's value
   no_models: boolean; // the allowed list and the plan's models don't overlap
   plan: AdminUserPlan;
+  email: string | null; // verified
+  email_verified_at: string | null;
+  pending_email: { address: string; sent_at: string | null } | null;
+  signup_source: SignupSource;
+  has_password: boolean;
+  google_linked: boolean;
+  google_email: string | null; // the linked Google account's address; null when none
+  terms_accepted_at: string | null;
+  terms_version: string | null; // the terms version the user accepted; null for admin-created users
 };
 
 export type AdminUserCreate = {
-  username: string; // 3-64, ^[a-zA-Z0-9_.-]+$, lowercased
-  password: string; // >= 8
+  username: string; // 3-64, ^[a-zA-Z0-9_.-]+$, lowercased; not a retired one (409 username_retired)
+  password: string; // the password policy (422 password_rejected)
   is_active?: boolean;
   restrict_models?: boolean;
   allowed_model_ids?: number[];
@@ -586,7 +748,7 @@ export type AdminUserCreate = {
 };
 
 export type AdminUserUpdate = {
-  password?: string; // = reset
+  password?: string; // = reset; the password policy
   is_active?: boolean;
   restrict_models?: boolean;
   allowed_model_ids?: number[];
@@ -778,7 +940,11 @@ export type PaymentsSetup = {
 
 export type BillingAdminConfig = { settings: BillingSettings; payments: PaymentsSetup; estimate: CostInputs };
 
-export type UserRef = { id: number | null /* null: deleted */; username: string };
+export type UserRef = {
+  id: number | null; // null: deleted
+  username: string;
+  email: string | null; // the account's verified email now
+};
 
 export type AdminOrder = OrderView & {
   id: number;
@@ -1257,7 +1423,8 @@ export type CheckId =
   | "disk_backups"
   | "proxy" // checked by the monitor service
   | "monitor"
-  | "billing"; // "Payments"
+  | "billing" // "Payments"
+  | "mail"; // "Email": the mailer, the outbox, bounces, Turnstile and sign-in failures
 export type AlertChannel = "webhook" | "ntfy" | "email";
 export type AlertKind = "problem" | "reminder" | "recovery" | "test";
 

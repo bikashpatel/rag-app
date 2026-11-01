@@ -77,6 +77,8 @@ DEFAULTS = {
     "chat_font_size": "default",
     "enter_to_send": True,
     "default_model_id": None,
+    "email_plan_reminders": True,
+    "email_receipts": True,
 }
 ACCENTS = ("clay", "ocean", "sage", "plum", "slate")
 GMAIL_TOOLS = {
@@ -282,15 +284,16 @@ async def test_saved_preferences_follow_the_account_to_a_new_session(
     alice = await create_user("alice")
     haiku = (await models_by_name(admin_client))["Claude Haiku 5.5"]["id"]
     wanted = {"theme": "dark", "accent": "ocean", "chat_font_size": "large", "enter_to_send": False}
+    saved = {**DEFAULTS, **wanted, "default_model_id": haiku}
 
     response = await alice.patch("/api/me/preferences", json={**wanted, "default_model_id": haiku})
 
     assert response.status_code == 200, response.text
-    assert response.json() == {**wanted, "default_model_id": haiku}
+    assert response.json() == saved
     laptop = new_client()
     login = await laptop.login("alice", USER_PASSWORD)
-    assert login.json()["preferences"] == {**wanted, "default_model_id": haiku}
-    assert (await laptop.get("/api/auth/me")).json()["preferences"] == {**wanted, "default_model_id": haiku}
+    assert login.json()["preferences"] == saved
+    assert (await laptop.get("/api/auth/me")).json()["preferences"] == saved
 
 
 @pytest.mark.parametrize("accent", ACCENTS)
@@ -857,6 +860,15 @@ async def test_the_account_view(create_user: CreateUser, admin_client: ApiClient
         "last_login_at",
         "conversation_count",
         "recent_logins",
+        "email",
+        "email_verified_at",
+        "pending_email",
+        "has_password",
+        "google",
+        "signup_source",
+        "terms_accepted_at",
+        "email_change_needs",
+        "stepup_until",
     }
     assert (info["id"], info["username"], info["is_admin"], info["password_managed_by_env"]) == (
         alice.user_id,
@@ -867,7 +879,7 @@ async def test_the_account_view(create_user: CreateUser, admin_client: ApiClient
     assert info["conversation_count"] == 2
     assert (info["created_at"], info["last_login_at"]) == (admin_view["created_at"], admin_view["last_login_at"])
     [event] = info["recent_logins"]
-    assert set(event) == {"id", "created_at", "ip", "ip_private", "browser", "os", "device", "current"}
+    assert set(event) == {"id", "created_at", "ip", "ip_private", "browser", "os", "device", "current", "method"}
     last_login = datetime.fromisoformat(info["last_login_at"])
     assert abs(datetime.fromisoformat(event["created_at"]) - last_login) < timedelta(seconds=5)
 

@@ -12,7 +12,7 @@ const review = makeAdminOrder({
   id: 72,
   public_id: "rev123",
   status: "review",
-  user: { id: 9, username: "sam.ortiz" },
+  user: { id: 9, username: "sam.ortiz", email: "sam.ortiz@gmail.com" },
   review_reason: "Amount differs: paid ₹1,999, expected ₹2,000",
   next_check_at: null,
   pay_url: null,
@@ -85,6 +85,8 @@ describe("BillingOrders", () => {
     expect(within(rows[2]).getByText("deleted")).toBeInTheDocument();
     expect(within(rows[2]).getByText("Razorpay didn't answer in time")).toBeInTheDocument();
     expect(within(rows[3]).getByText("Bank transfer")).toBeInTheDocument();
+    expect(within(rows[1]).getByText("sam.ortiz@gmail.com")).toHaveAttribute("title", "sam.ortiz@gmail.com");
+    expect(rows[0].querySelector(".admin-buyer-email")).toBeNull();
 
     const filter = screen.getByRole("radiogroup", { name: "Order status" });
     expect(await within(filter).findByRole("radio", { name: "Review 1" })).toBeInTheDocument();
@@ -146,6 +148,7 @@ describe("BillingOrders", () => {
     await user.click(await screen.findByRole("button", { name: "Open the Standard order of sam.ortiz" }));
     const dialog = await screen.findByRole("dialog", { name: "Standard order of sam.ortiz" });
     expect(await within(dialog).findByText("Amount differs: paid ₹1,999, expected ₹2,000")).toBeInTheDocument();
+    expect(within(dialog).getByText("sam.ortiz@gmail.com")).toBeInTheDocument();
     const events = within(dialog).getByRole("region", { name: "Events" });
     expect(within(events).getByText("amount_paise=200000")).toBeInTheDocument();
     expect(within(events).getByText("Amount differs")).toBeInTheDocument();

@@ -2,7 +2,7 @@ import { createContext, useContext, useEffect, useState, type ReactNode } from "
 import { Link, NavLink } from "react-router-dom";
 import { publicApi } from "../../api/client";
 import type { PublicSite } from "../../api/types";
-import { useAuth } from "../../auth/AuthContext";
+import { useAuth, useAuthConfig } from "../../auth/AuthContext";
 import PolicyLinks from "../../components/billing/PolicyLinks";
 import "./public.css";
 
@@ -34,10 +34,12 @@ export function contactLine(site: PublicSite): string | null {
 
 /**
  * The frame of the public pages (plans-billing.md 10; visual brief 11): a top bar with the business name, the nav and
- * Sign in (Open the app when signed in), the page, and a footer with the contact details and every policy link.
+ * Sign in, with Sign up beside it while sign-up is open (Open the app when signed in), the page, and a footer with the
+ * contact details and every policy link. Sign in and Sign up are full page loads (docs/briefs/signup-auth.md 7.4).
  */
 export default function PublicLayout({ children }: { children: ReactNode }) {
-  const { user } = useAuth();
+  const { user, loading } = useAuth();
+  const { config } = useAuthConfig();
   const [site, setSite] = useState<PublicSite>(FALLBACK_SITE);
 
   useEffect(() => {
@@ -73,9 +75,16 @@ export default function PublicLayout({ children }: { children: ReactNode }) {
                 Open the app
               </Link>
             ) : (
-              <Link className="btn btn-sm" to="/login">
-                Sign in
-              </Link>
+              <span className="public-account">
+                <a className="btn btn-sm" href="/login">
+                  Sign in
+                </a>
+                {!loading && config?.signup.open ? (
+                  <a className="btn btn-sm btn-primary" href="/signup">
+                    Sign up
+                  </a>
+                ) : null}
+              </span>
             )}
           </div>
         </header>

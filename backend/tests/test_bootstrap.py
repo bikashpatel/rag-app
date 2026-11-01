@@ -10,11 +10,11 @@ from conftest import ADMIN_PASSWORD, ADMIN_USERNAME, USER_PASSWORD, ApiClient
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bootstrap import bootstrap
+from app.bootstrap import AdminAccountError, bootstrap
 from app.config import Settings, settings
 from app.db import SessionLocal, init_db
-from app.models import AppState, LLMModel, User
-from app.security import verify_password
+from app.models import AppState, LLMModel, PendingEmail, User, UserIdentity, utcnow
+from app.security import hash_password, verify_password
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
@@ -239,6 +239,127 @@ async def test_existing_user_named_in_env_becomes_the_admin_with_fresh_sessions(
     assert response.status_code == 200
     assert response.json()["is_admin"] is True
     assert await admin_usernames() == ["root"]
+
+
+# ---------------- The env admin and sign-up (docs/briefs/signup-auth.md 3.5) ----------------
+
+
+async def test_the_env_admin_is_marked_as_coming_from_env(tables: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    async with SessionLocal() as session:
+        session.add(User(username="root", password_hash=hash_password(USER_PASSWORD)))
+        await session.commit()
+    await run_bootstrap()
+    assert {user.username: user.signup_source for user in await all_users()} == {"root": "admin", "admin": "env"}
+
+    monkeypatch.setattr(settings, "admin_username", "root")
+    await run_bootstrap()
+
+    root = await get_user("root")
+    assert (root.is_admin, root.signup_source) == (True, "env")
+
+
+async def add_self_service_account(case: str) -> None:
+    """An account named "root" that signs in by email or Google, as `case` says."""
+    now = utcnow()
+    fields: dict[str, object] = {"username": "root", "password_hash": hash_password(USER_PASSWORD)}
+    if case in ("email", "google"):
+        fields["signup_source"] = case
+    if case == "a verified email":
+        fields.update(email="Root@example.com", email_canonical="root@example.com", email_verified_at=now)
+    user = User(**fields)
+    if case == "a Google identity":
+        user.identities = [
+            UserIdentity(
+                provider="google",
+                issuer="https://accounts.google.com",
+                subject="100000000000000000009",
+                email_at_link="root@gmail.com",
+                email_kind="gmail",
+            )
+        ]
+    async with SessionLocal() as session:
+        session.add(user)
+        await session.flush()
+        if case == "a pending email":
+            address = "root@example.com"
+            session.add(
+                PendingEmail(user_id=user.id, address=address, canonical=address, source="user", expires_at=now)
+            )
+        await session.commit()
+
+
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("email", "signed up by email"),
+        ("google", "signed up by google"),
+        ("a verified email", "has an email"),
+        ("a pending email", "has an email waiting for confirmation"),
+        ("a Google identity", "has a Google sign-in"),
+    ],
+)
+async def test_start_up_refuses_an_admin_username_that_names_a_self_service_account(
+    tables: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, case: str, reason: str
+) -> None:
+    await run_bootstrap()
+    await add_self_service_account(case)
+    before = await snapshot()
+    monkeypatch.setattr(settings, "admin_username", "root")
+
+    with caplog.at_level(logging.ERROR, logger="app.bootstrap"), pytest.raises(AdminAccountError) as refused:
+        await run_bootstrap()
+
+    assert str(refused.value) == (
+        f"ADMIN_USERNAME='root' names an account that {reason}: the admin account from .env can't have an email or "
+        "Google sign-in. Choose another ADMIN_USERNAME."
+    )
+    assert str(refused.value) in caplog.text
+    assert await snapshot() == before, "nothing changed: no admin was promoted or demoted"
+
+
+async def test_the_guard_lists_everything_it_found(tables: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    await add_self_service_account("google")
+    async with SessionLocal() as session:
+        await session.execute(
+            update(User).values(email="root@gmail.com", email_canonical="root@gmail.com", email_verified_at=utcnow())
+        )
+        await session.commit()
+    monkeypatch.setattr(settings, "admin_username", "root")
+
+    with pytest.raises(AdminAccountError, match="signed up by google, has an email: "):
+        await run_bootstrap()
+
+
+@pytest.mark.parametrize(
+    ("password", "warned"),
+    [
+        ("admin-password-123", True),  # contains the admin's username
+        ("short-pass-12", True),
+        ("password1234567890", False),
+        ("qazwsxedcrfvtgb", True),  # common
+        ("my nuvexus admin password", True),
+        ("plum-kettle-orbit-91-violet", False),
+    ],
+)
+async def test_a_weak_admin_password_is_warned_about_at_every_start(
+    tables: None, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, password: str, warned: bool
+) -> None:
+    monkeypatch.setattr(settings, "admin_password", password)
+
+    with caplog.at_level(logging.WARNING, logger="app.bootstrap"):
+        await run_bootstrap()
+
+    warnings = [record.getMessage() for record in caplog.records if record.getMessage().startswith("ADMIN_PASSWORD")]
+    assert warnings == (
+        [
+            "ADMIN_PASSWORD is weak: use at least 15 characters, not a common password and not the app's name or the "
+            "admin's username"
+        ]
+        if warned
+        else []
+    )
+    assert password not in caplog.text
+    assert verify_password(password, (await get_user(ADMIN_USERNAME)).password_hash), "it is only a warning"
 
 
 # ---------------- Model catalogue ----------------

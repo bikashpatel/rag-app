@@ -8,6 +8,7 @@ import { ButtonSpinner } from "../ui/Spinner";
 import { AlertCircleIcon, RefreshIcon } from "../ui/icons";
 import { checkOrder, errorMessage, getOrder, ordersPath, PAGE_SIZE, resolveOrder } from "./adminApi";
 import {
+  BuyerEmail,
   Fact,
   istDateTime,
   kindLabel,
@@ -327,6 +328,11 @@ export function OrderDialog({ publicId, onClose, onChanged, onGrant }: OrderDial
           <dl className="admin-billing-facts">
             <Fact term="Order">
               <code className="admin-code">{order.public_id}</code>
+            </Fact>
+            <Fact term="User">
+              {order.user.username}
+              {order.user.id === null ? <span className="admin-subtext"> (deleted)</span> : null}
+              <BuyerEmail email={order.user.email} />
             </Fact>
             <Fact term="Status">
               <span className="admin-badges">

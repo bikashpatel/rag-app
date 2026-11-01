@@ -2,14 +2,11 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { ApiError, publicApi } from "../../api/client";
 import type { PublicPlan } from "../../api/types";
-import { useAuth } from "../../auth/AuthContext";
-import type { LoginRedirectState } from "../../auth/loginRedirect";
+import { useAuth, useAuthConfig } from "../../auth/AuthContext";
 import PlanCard, { PlanGridSkeleton } from "../../components/billing/PlanCard";
 import PlanCompareTable from "../../components/billing/PlanCompareTable";
 import { DraftBand, PageError, PolicyProse, usePageTitle, usePolicyDocument } from "./PolicyPage";
 import { usePublicSite } from "./PublicLayout";
-
-const TO_PLANS: LoginRedirectState = { from: { pathname: "/plans", search: "", hash: "" } };
 
 type PlansState =
   { status: "loading" } | { status: "ready"; plans: PublicPlan[] } | { status: "error"; message: string };
@@ -17,6 +14,7 @@ type PlansState =
 /** /pricing: the intro from legal/pricing.md, the plan cards and the compare table (plans-billing.md 10). */
 export default function PricingPage() {
   const { user } = useAuth();
+  const { config } = useAuthConfig();
   const site = usePublicSite();
   const intro = usePolicyDocument("pricing");
   const [plans, setPlans] = useState<PlansState>({ status: "loading" });
@@ -85,10 +83,19 @@ export default function PricingPage() {
             <Link className="btn btn-primary" to="/plans">
               Choose a plan
             </Link>
+          ) : config?.signup.open ? (
+            <>
+              <a className="btn btn-primary" href="/signup?next=/plans">
+                Create an account to choose a plan
+              </a>
+              <p className="public-signin-line">
+                Already have an account? <a href="/login?next=/plans">Sign in</a>
+              </p>
+            </>
           ) : (
-            <Link className="btn btn-primary" to="/login" state={TO_PLANS}>
+            <a className="btn btn-primary" href="/login?next=/plans">
               Sign in to choose a plan
-            </Link>
+            </a>
           )}
         </div>
       </main>

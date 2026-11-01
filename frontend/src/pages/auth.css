@@ -1,0 +1,233 @@
+/* Sign-up's card states and the task pages' extras (docs/briefs/signup-auth-visual.md 5 and 6). auth- prefix; colours
+   only from the global.css tokens. The sign-up page shares the split layout of login.css (AuthSplit): its content sits
+   in .auth-signup, a column like the card it fills. */
+
+.auth-signup {
+  display: flex;
+  flex-direction: column;
+}
+.auth-signup .login-lede {
+  text-wrap: balance;
+}
+.auth-signup > .ui-notice {
+  margin-top: 24px;
+}
+.auth-signup > .ui-notice + .login-alt {
+  margin-top: 18px;
+}
+.auth-signup .login-form .auth-submit {
+  margin-top: 2px;
+}
+/* Sign-up closed: the notice, then Sign in. */
+.auth-signup-closed {
+  margin-top: 22px;
+}
+/* The sent and closed states drop the picture on phones (AuthSplit compactOnPhone): the brand alone leads. */
+.login-card:has(.auth-signup-short) .login-mobile-hero {
+  margin-bottom: 22px;
+}
+
+/* ---------- "Check your inbox", in the split card: left-aligned, the mark leads ---------- */
+.auth-sent-mark {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 0 22px 7px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent-soft) 45%, transparent);
+  color: var(--accent-ink);
+}
+.auth-sent-text {
+  margin: 12px 0 0;
+  color: var(--text-2);
+  font-size: 16px;
+  line-height: 1.55;
+}
+.auth-sent-text b {
+  color: var(--text);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.auth-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 22px 0 0;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  counter-reset: auth-step;
+  list-style: none;
+}
+.auth-steps li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  color: var(--text-2);
+  font-size: 14.5px;
+  line-height: 1.45;
+  counter-increment: auth-step;
+}
+.auth-steps li::before {
+  content: counter(auth-step);
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  margin-top: -1px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+.auth-steps b {
+  color: var(--text);
+  font-weight: 650;
+}
+.auth-resend {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 22px;
+  padding-top: 20px;
+  border-top: 1px solid var(--border);
+}
+.auth-resend-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+.auth-resend-text {
+  margin: 0;
+  color: var(--text-2);
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+.auth-resend-text b {
+  display: block;
+  color: var(--text);
+  font-weight: 650;
+}
+.auth-resend .ui-notice .auth-google {
+  margin-top: 10px;
+}
+.auth-countdown {
+  color: var(--text-3);
+  font-variant-numeric: tabular-nums;
+}
+.btn .auth-countdown {
+  color: inherit;
+}
+.auth-sent-foot {
+  margin: 18px 0 0;
+  color: var(--text-3);
+  font-size: 14.5px;
+}
+.auth-sent-foot button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.auth-sent-foot button:hover {
+  text-decoration: underline;
+}
+.auth-resend-end {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+}
+.auth-done-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--success);
+  font-size: 14px;
+  font-weight: 600;
+}
+.auth-done-line:not(:empty) {
+  margin-right: 12px;
+}
+
+/* ---------- Form-level refusals (login-error look) and the Google button under one ---------- */
+.auth-refusal {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---------- Task pages (AuthCard) ---------- */
+.auth-links .auth-footer-line {
+  color: var(--text-2);
+}
+.auth-form > .ui-notice {
+  margin: 0;
+}
+/* A text button that reads like the card's footer links ("Use a different Google account"). */
+.auth-link-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.auth-link-button:hover,
+.auth-sent-foot a:hover {
+  text-decoration: underline;
+}
+.auth-link-button.auth-quiet {
+  color: var(--text-2);
+}
+.auth-link-button[aria-busy="true"] {
+  opacity: 0.7;
+}
+.auth-text-small {
+  margin: 8px auto 0;
+  color: var(--text-3);
+  font-size: 13.5px;
+}
+.auth-actions .btn {
+  width: 100%;
+}
+.auth-form > .auth-actions {
+  margin-top: 4px;
+}
+/* The reset page's "Also disconnect Google sign-in" box, in the terms box's look. */
+.auth-check-hint {
+  margin: 4px 0 0 29px;
+  color: var(--text-3);
+  font-size: 13.5px;
+  line-height: 1.4;
+}
+
+@media (max-width: 799.98px) {
+  .auth-sent-mark {
+    width: 50px;
+    height: 50px;
+    margin-bottom: 18px;
+  }
+  .auth-signup > .ui-notice {
+    margin-top: 18px;
+  }
+}
+@media (pointer: coarse) {
+  .auth-sent-foot a,
+  .auth-sent-foot button,
+  .auth-link-button {
+    margin: -8px 0;
+    padding: 8px 0;
+  }
+}

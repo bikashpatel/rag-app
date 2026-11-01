@@ -15,7 +15,8 @@ plus the test, verification and review plans.
 - Containerized with Docker Compose.
 - Backend FastAPI + Postgres + Redis; frontend React with a Vite build; vector DB Qdrant.
 - LiteLLM for chat-model and embedding-model abstraction, so providers can be switched easily.
-- Simple username/password login. Users are created **only** from the admin page.
+- Simple username/password login. Users are created **only** from the admin page. (Superseded on 2026-10-28: the
+  owner asked for self-service sign-up, see below; the admin can still create users.)
 - Dedicated admin page: manage users, manage models (enable/disable), per-user usage
   controls. Admin credentials come from `.env`.
 - Single tenant (no multitenancy).
@@ -31,11 +32,21 @@ Decisions the user made when asked:
   user, upload limits** (max file size, max documents, max total storage). Since plans (2026-10-27) these
   come from the user's plan, per period, with optional per-user overrides set by the admin (the allowed-models
   list only narrows the plan's models).
+- Sign-up (2026-10-28, `docs/briefs/signup-auth.md`): anyone can sign up with email + password (verified by an emailed
+  link) or "Continue with Google"; a new account has no plan until it pays; Cloudflare Turnstile guards the signed-out
+  forms; transactional email goes through Resend. Only self-sign-ups accept the terms. Sign-up stays closed until the
+  owner opens it in Admin → Users.
 
 ## Key design decisions (keep unless there's a strong reason)
 
-- Session = signed JWT in an httpOnly, SameSite=Strict cookie (Bearer header also accepted);
-  `users.token_version` invalidates sessions on password change or deactivation.
+- Session = signed JWT in an httpOnly, SameSite=Strict cookie (`__Host-rag_session` with `COOKIE_SECURE`; Bearer
+  header also accepted); `users.token_version` invalidates sessions on password change, reset or deactivation.
+- Sign-up and email: an email sign-up stays a `pending_signups` row until its link (and the chosen password) are
+  presented; links carry single-use tokens stored hashed (`auth_tokens`); Google is OIDC in its own Google project
+  (`user_identities`, keyed on `iss`+`sub`), separate from the Gmail plugin's. Sign-up, resend and reset answer the
+  same whether or not an account exists. Turnstile's script and CSP exist only on `/login`, `/signup` and
+  `/forgot-password`. Mail is never sent in a request: `outbox.enqueue` writes `email_outbox` rows and the worker's
+  mail loop sends them within the daily cap and its class shares; addresses are never logged.
 - The one admin is defined by `ADMIN_USERNAME`/`ADMIN_PASSWORD` and synced on every start.
   The admin bypasses usage limits.
 - Ingestion runs in a separate `worker` container (same image) fed by a Redis list

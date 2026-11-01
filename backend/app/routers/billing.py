@@ -130,7 +130,7 @@ async def save_profile(
     if row is None:
         row = UserBillingProfile(user_id=user.id)
         db.add(row)
-    row.name, row.email, row.updated_at = body.name, body.email, utcnow()
+    row.name, row.updated_at = body.name, utcnow()
     await db.commit()
     return await summary.profile(db, user.id)
 

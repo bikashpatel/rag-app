@@ -10,8 +10,16 @@ export const ADMIN_SESSION_ENV = "E2E_ADMIN_SESSION";
 /** Set by global-setup.ts for the workers: this run's id, part of every test user's name. Internal as well. */
 export const RUN_ID_ENV = "E2E_RUN_ID";
 
-/** The session cookie the backend sets (`COOKIE_NAME`, backend/app/config.py). */
-export const SESSION_COOKIE = "rag_session";
+/** The session cookie the backend sets: `COOKIE_NAME` (backend/app/config.py), `__Host-rag_session` with `COOKIE_SECURE`. */
+export const SESSION_COOKIES: readonly string[] = ["rag_session", "__Host-rag_session"];
+
+/** Set by global-setup.ts for the workers: the name of the admin's session cookie. Internal as well. */
+export const ADMIN_SESSION_NAME_ENV = "E2E_ADMIN_SESSION_NAME";
+
+/** The session cookie's name on the stack under test (as global-setup.ts found it). */
+export function sessionCookieName(): string {
+  return process.env[ADMIN_SESSION_NAME_ENV] ?? SESSION_COOKIES[0];
+}
 
 export const LIVE = process.env.E2E_LIVE === "1";
 

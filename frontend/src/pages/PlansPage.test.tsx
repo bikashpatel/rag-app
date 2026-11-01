@@ -306,4 +306,22 @@ describe("PlansPage", () => {
       "/admin#plans",
     );
   });
+
+  it("asks for a verified email before paying, opening Settings → Account", async () => {
+    const { user, view } = await setup(makeMe({ plan: makeLapsedPlanAccess("none") }));
+    const notice = (await screen.findByText("Add your email before you pay.")).closest(".ui-notice") as HTMLElement;
+    expect(notice).toHaveTextContent("Add your email before you pay. Your receipt goes there.");
+    await user.click(within(notice).getByRole("button", { name: "Add email" }));
+    expect(view.location()).toBe("/plans?settings=account");
+  });
+
+  it("doesn't ask for an email with one confirmed, or of the admin", async () => {
+    const first = await setup(makeMe({ email: "maya@example.com", plan: makeLapsedPlanAccess("none") }));
+    await screen.findByRole("list", { name: "Plans" });
+    expect(screen.queryByText("Add your email before you pay.")).not.toBeInTheDocument();
+    first.view.unmount();
+    await setup(makeAdminMe());
+    await screen.findByRole("list", { name: "Plans" });
+    expect(screen.queryByText("Add your email before you pay.")).not.toBeInTheDocument();
+  });
 });

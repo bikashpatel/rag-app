@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
 import type { AdminStats } from "../api/types";
 import { formatNumber } from "../lib/format";
+import { makeShippedSignupStatus } from "../test/adminSignup";
 import {
   makeActivityReport,
   makeAdminPlugin,
@@ -36,6 +37,7 @@ function adminRoutes(stats: AdminStats | Route = makeAdminStats(), extra: Record
     "GET /admin/billing/payments": { items: [], total: 0 },
     "GET /admin/billing/orders": { items: [], total: 0 },
     "GET /admin/billing/users/7": makeUserBilling(),
+    "GET /admin/signup-settings": makeShippedSignupStatus(),
     ...extra,
   };
 }

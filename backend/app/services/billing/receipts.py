@@ -1,6 +1,8 @@
 """Receipts (docs/briefs/plans-billing.md 9; the layout of plans-billing-visual.md 10): one per applied payment,
 numbered per mode and Indian financial year without gaps, kept as an immutable snapshot and rendered to PDF on demand
-(fpdf2 with the bundled Noto Sans, which has ₹). No GST line: version 1 is built for a seller without a GSTIN."""
+(fpdf2 with the bundled Noto Sans, which has ₹). No GST line: version 1 is built for a seller without a GSTIN. Each is
+also emailed, PDF attached, to the account's verified email (docs/briefs/signup-auth.md S25: an outbox `receipt` job;
+the worker checks the user's switch when it sends)."""
 
 import asyncio
 from dataclasses import dataclass
@@ -22,6 +24,7 @@ from app.models import (
     BillingReceipt,
     BillingRefund,
     PlanPeriod,
+    User,
     UserBillingProfile,
 )
 from app.schemas_billing import PlanSnapshot
@@ -35,6 +38,7 @@ from app.services.billing.money import (
     ist_date,
     receipt_seq_key,
 )
+from app.services.mail import outbox
 
 TEST_PREFIX: Final = "TEST"
 FONTS = Path(__file__).resolve().parents[2] / "fonts"
@@ -133,6 +137,7 @@ async def issue(
     seller = await business.get_settings(db)
     prefix = TEST_PREFIX if series == "test" else seller.receipt_prefix
     profile = await db.get(UserBillingProfile, order.user_id) if order.user_id is not None else None
+    user = await db.get(User, order.user_id) if order.user_id is not None else None
     seq = await _next_number(db, series, year)
     receipt = BillingReceipt(
         number=f"{prefix}/{year}/{seq:06d}",
@@ -151,7 +156,7 @@ async def issue(
         buyer={
             "name": (profile.name if profile and profile.name else None) or order.username,
             "username": order.username,
-            "email": profile.email if profile else None,
+            "email": user.email if user else None,
         },
         lines=await _lines(db, order, payment, period),
         amount_paise=payment.amount_paise,
@@ -159,7 +164,44 @@ async def issue(
     )
     db.add(receipt)
     await db.flush()
+    if user is not None and user.email and outbox.configured():
+        await outbox.enqueue(
+            db,
+            "receipt",
+            to=user.email,
+            canonical=user.email_canonical,
+            user_id=user.id,
+            params={"receipt_id": receipt.id},
+        )
     return receipt
+
+
+@dataclass(frozen=True)
+class Facts:
+    """What the receipt email says beside the number."""
+
+    plan: str
+    amount: str
+    period: str | None
+    method: str | None
+
+
+async def facts(db: AsyncSession, receipt: BillingReceipt) -> Facts:
+    payment = await db.get(BillingPayment, receipt.payment_id)
+    order = await db.get(BillingOrder, payment.order_id) if payment is not None and payment.order_id else None
+    plan = (
+        PlanSnapshot.model_validate(order.plan_snapshot).name
+        if order is not None
+        else business.default_settings().business_name
+    )
+    period = next((line["period"] for line in receipt.lines if line.get("period")), None)
+    method = receipt.method or ""
+    return Facts(
+        plan=plan,
+        amount=money(receipt.amount_paise),
+        period=period,
+        method=_METHODS.get(method, method.replace("_", " ").capitalize()) or None,
+    )
 
 
 # ---------------- The PDF ----------------
@@ -336,9 +378,14 @@ def _pdf(doc: _Document) -> bytes:
     return bytes(pdf.output())
 
 
-async def pdf_response(db: AsyncSession, receipt: BillingReceipt) -> Response:
+async def pdf_file(db: AsyncSession, receipt: BillingReceipt) -> tuple[str, bytes]:
+    """The receipt's PDF and its file name."""
     data = await asyncio.to_thread(_pdf, await _document(db, receipt))
-    filename = f"receipt-{receipt.number.replace('/', '-')}.pdf"
+    return f"receipt-{receipt.number.replace('/', '-')}.pdf", data
+
+
+async def pdf_response(db: AsyncSession, receipt: BillingReceipt) -> Response:
+    filename, data = await pdf_file(db, receipt)
     return Response(
         content=data,
         media_type="application/pdf",

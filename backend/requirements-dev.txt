@@ -1386,6 +1386,7 @@ idna==3.20 \
     --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c
     # via
     #   -c requirements.txt
+    #   -r requirements.in
     #   anyio
     #   httpx
     #   requests

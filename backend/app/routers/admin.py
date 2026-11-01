@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import get_db
 from app.deps import get_current_admin
+from app.errors import AppError
 from app.models import (
     Conversation,
     Document,
@@ -23,6 +24,7 @@ from app.models import (
     LoginEvent,
     Message,
     MessagePluginItem,
+    PendingEmail,
     Plan,
     PluginAuditEvent,
     PluginConnection,
@@ -59,9 +61,11 @@ from app.schemas_admin import (
     UsageTotals,
     UserUsage,
 )
+from app.schemas_auth import PendingEmailRef
 from app.schemas_billing import PlanRef
 from app.security import hash_password_async
-from app.services import image_tool, llm, vectorstore
+from app.services import account, image_tool, llm, vectorstore
+from app.services.auth import login, passwords, throttle, tokens, usernames
 from app.services.billing import audit, entitlements, periods
 from app.services.billing.entitlements import Entitlements, Limits
 from app.services.billing.periods import LIMIT_NAMES
@@ -90,6 +94,7 @@ Id = Annotated[int, Path(ge=1, le=MAX_INT)]
 
 _ENV_ADMIN = "The admin account is managed in .env"
 _USERNAME_TAKEN = "This username is already taken"
+_USERNAME_RETIRED = "That username belonged to a deleted account. Choose another."
 _ACTIVE_EMBEDDING = "This is the active embedding model. Make another embedding model the default first."
 
 _CHAT_TOKENS = func.coalesce(func.sum(case((UsageEvent.kind == "chat", UsageEvent.total_tokens))), 0)
@@ -307,10 +312,16 @@ async def _admin_users(db: AsyncSession, users: Sequence[User]) -> list[AdminUse
     codes = dict((await db.execute(select(Plan.id, Plan.code))).tuples().all())
     usage = await _usage_in_windows(db, {user.id: usage_window(loaded[user.id], now) for user in users})
     documents = await _documents_by_owner(db, users[0].id if len(users) == 1 else None)
+    pending = {
+        row.user_id: row
+        for row in await db.scalars(select(PendingEmail).where(PendingEmail.user_id.in_([user.id for user in users])))
+    }
     found = []
     for user in users:
         ent = loaded[user.id]
         document_count, storage_bytes = documents.get(user.id, (0, 0))
+        waiting = pending.get(user.id)
+        identity = account.google_identity(user)
         found.append(
             AdminUser(
                 id=user.id,
@@ -330,6 +341,15 @@ async def _admin_users(db: AsyncSession, users: Sequence[User]) -> list[AdminUse
                 above_plan=[] if user.is_admin else _above_plan(user, planned[user.id].limits),
                 no_models=ent.access and user.restrict_models and not user.is_admin and not ent.chat_model_ids,
                 plan=_user_plan(user, ent, codes, now),
+                email=user.email,
+                email_verified_at=user.email_verified_at,
+                pending_email=PendingEmailRef(address=waiting.address, sent_at=waiting.sent_at) if waiting else None,
+                signup_source=user.signup_source,  # type: ignore[arg-type]
+                has_password=user.password_hash is not None,
+                google_linked=identity is not None,
+                google_email=identity.email_at_link if identity is not None else None,
+                terms_accepted_at=user.terms_accepted_at,
+                terms_version=user.terms_version,
             )
         )
     return found
@@ -349,9 +369,12 @@ async def create_user(
     _confirmed(body)
     if await db.scalar(select(User.id).where(User.username == body.username)) is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=_USERNAME_TAKEN)
+    if await usernames.retired(db, body.username):
+        raise AppError(409, _USERNAME_RETIRED, "username_retired")
     plan = await db.get(Plan, body.grant.plan_id) if body.grant is not None else None
     if body.grant is not None and plan is None:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unknown plan.")
+    await passwords.check(body.password, context=(body.username,))
     user = User(
         username=body.username,
         password_hash=await hash_password_async(body.password),
@@ -359,7 +382,9 @@ async def create_user(
         is_active=body.is_active,
         restrict_models=body.restrict_models,
         billing_tester=body.billing_tester,
+        signup_source="admin",
         allowed_models=await _chat_models(db, body.allowed_model_ids),
+        identities=[],
         **(body.overrides.changes() if body.overrides is not None else {}),
     )
     db.add(user)
@@ -386,8 +411,12 @@ async def update_user(
     with the values before and after."""
     _confirmed(body)
     changes = body.model_dump(exclude_none=True, exclude={"overrides", "confirm_unlimited"})
-    # Hashed before the row is locked, so the lock isn't held while hashing.
-    password_hash = await hash_password_async(changes.pop("password")) if "password" in changes else None
+    password_hash = None
+    if "password" in changes:
+        # Checked and hashed before the row is locked, so the lock isn't held meanwhile.
+        target = _editable_user(await _get_user(db, user_id))
+        await passwords.check(changes["password"], context=login.password_context(target))
+        password_hash = await hash_password_async(changes.pop("password"))
     # Locked: token_version and password_hash are read-modify-write, and change-password writes them too.
     user = _editable_user(await _get_user(db, user_id, lock=True))
     before = _audited(user)
@@ -397,6 +426,7 @@ async def update_user(
         user.token_version += 1
     if password_hash is not None:
         user.password_hash = password_hash
+        await tokens.revoke(db, ["reset"], user_id=user.id)
     for field, value in {**changes, **(body.overrides.changes() if body.overrides is not None else {})}.items():
         setattr(user, field, value)
     after = _audited(user)
@@ -406,6 +436,8 @@ async def update_user(
             db, source="admin", type="user.updated", actor=admin.username, user_id=user.id, detail=changed
         )
     await db.commit()
+    if password_hash is not None:
+        await throttle.forget_login_failures(throttle.account_key(user.id))
     return (await _admin_users(db, [user]))[0]
 
 
@@ -434,6 +466,7 @@ async def delete_user(user_id: Id, db: AsyncSession = Depends(get_db)) -> None:
     await db.execute(delete(PluginAuditEvent).where(PluginAuditEvent.user_id == user.id))
     await db.execute(delete(UserPreference).where(UserPreference.user_id == user.id))
     await db.execute(delete(LoginEvent).where(LoginEvent.user_id == user.id))
+    await usernames.tombstone(db, user.username)
     await db.delete(user)
     await db.commit()
     for doc in documents:

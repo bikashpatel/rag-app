@@ -9,8 +9,8 @@
 #   secrets and fake provider keys.
 # - The project name gives every container, volume and network a `rag-it_` prefix, apart from the live `rag-app` stack.
 # - The default network is internal: postgres, redis, qdrant, backend and worker can't reach the internet, so no real
-#   model provider, Google or Razorpay endpoint can ever be called. Only the frontend and the fakes join `edge`, for the
-#   ports published on 127.0.0.1.
+#   model provider, Google, Razorpay, Cloudflare, Resend or Have I Been Pwned endpoint can ever be called. Only the
+#   frontend and the fakes join `edge`, for the ports published on 127.0.0.1.
 # - Nothing restarts on its own: a stack left behind by an interrupted run stays down after a Docker restart.
 # - Every container, volume and network carries the marker label: stack.sh and harness.py refuse to touch a project
 #   holding anything without it.
@@ -24,6 +24,14 @@ networks:
     labels: *marker
   edge:
     labels: *marker
+
+# nginx's per-address request limits (frontend/nginx.conf) in dry-run mode: every request of the suite comes from
+# Docker's one address, so the sign-in backstop (30 a minute) would refuse most of its logins. The backend's own
+# limits stay; the limits are logged, not applied.
+configs:
+  nginx_limits_dry_run:
+    content: |
+      limit_req_dry_run on;
 
 volumes:
   pgdata: {labels: *marker}
@@ -75,6 +83,9 @@ services:
   frontend:
     restart: "no"
     labels: *marker
+    configs:
+      - source: nginx_limits_dry_run
+        target: /etc/nginx/conf.d/00-it-limits-dry-run.conf
     networks: [default, edge]
     ports: !override
       - "127.0.0.1:${APP_PORT:?APP_PORT must come from the generated env file}:80"
@@ -96,8 +107,9 @@ services:
       timeout: 5s
       retries: 20
 
-  # The backend tests' fake Google (OAuth and Gmail) plus a state route (integration/fake_google/server.py).
-  # The browser-facing consent URL is published on 127.0.0.1; the backend uses http://fake-google:8099.
+  # The backend tests' fake Google (OAuth and Gmail, and Google sign-in's OpenID Connect) plus a state route
+  # (integration/fake_google/server.py). The browser-facing consent URL is published on 127.0.0.1; the backend uses
+  # http://fake-google:8099 (tokens and the sign-in keys).
   fake-google:
     build: ./backend
     restart: "no"
@@ -108,6 +120,7 @@ services:
       - --host=0.0.0.0
       - --port=8099
       - --redirect-uri=http://127.0.0.1:${APP_PORT:?}/api/plugins/gmail/oauth/callback
+      - --signin-redirect-uri=http://127.0.0.1:${APP_PORT:?}/api/auth/google/callback
     volumes:
       - ./integration/fake_google:/fake_google:ro
       - ./backend/tests:/fake_google_src:ro
@@ -160,6 +173,42 @@ services:
       - "127.0.0.1:${IT_FAKE_RAZORPAY_PORT:?}:8000"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/_state', timeout=3)"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+
+  # The SMTP sink the backend and the worker send user mail to (MAIL_SMTP_HOST=fake-mail, port 2525, no TLS), with an
+  # HTTP side on 8025 (published) for the tests: the messages, failure modes and Resend's signed webhook events, which it
+  # posts to nginx (integration/fake_mail; its own image, standard library only).
+  fake-mail:
+    build: ./integration/fake_mail
+    restart: "no"
+    labels: *marker
+    environment:
+      FAKE_MAIL_USERNAME: ${MAIL_SMTP_USERNAME:?}
+      FAKE_MAIL_PASSWORD: ${MAIL_SMTP_PASSWORD:?}
+      FAKE_MAIL_WEBHOOK_URL: http://frontend/api/mail/resend-events
+      FAKE_MAIL_WEBHOOK_SECRET: ${MAIL_WEBHOOK_SECRET:?}
+    networks: [default, edge]
+    ports:
+      - "127.0.0.1:${IT_FAKE_MAIL_PORT:?}:8025"
+
+  # Cloudflare Turnstile's siteverify and Have I Been Pwned's range API (integration/fake_turnstile/server.py), run with
+  # the backend image: TURNSTILE_SITEVERIFY_URL and PASSWORD_BREACH_CHECK_URL point here.
+  fake-turnstile:
+    build: ./backend
+    restart: "no"
+    labels: *marker
+    command: ["python", "/fake_turnstile/server.py", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      FAKE_TURNSTILE_SECRET: ${TURNSTILE_SECRET_KEY:?}
+    volumes:
+      - ./integration/fake_turnstile:/fake_turnstile:ro
+    networks: [default, edge]
+    ports:
+      - "127.0.0.1:${IT_FAKE_TURNSTILE_PORT:?}:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
       interval: 3s
       timeout: 5s
       retries: 20

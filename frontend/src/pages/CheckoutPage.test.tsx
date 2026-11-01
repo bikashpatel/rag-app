@@ -1,4 +1,4 @@
-import { act, screen, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,7 +22,7 @@ function catalogWith(options: CheckoutOption[], overrides: Partial<PlanCatalog> 
 
 async function setup(
   {
-    me = makeMe({ plan: makeLapsedPlanAccess("none") }),
+    me = makeMe({ email: "maya@example.com", plan: makeLapsedPlanAccess("none") }),
     catalog = makeCatalog() as Reply,
     route = "/plans/checkout/standard?kind=period",
   } = {},
@@ -31,7 +31,7 @@ async function setup(
   const calls = stubFetch({
     "GET /auth/me": me,
     "GET /billing/plans": catalog,
-    "GET /billing/profile": { name: null, email: null },
+    "GET /billing/profile": { name: null },
     "PUT /billing/profile": (call: FetchCall) => call.body as object,
     "POST /billing/checkout": () => jsonResponse(STARTED, { status: 201 }),
     ...routes,
@@ -110,36 +110,83 @@ describe("CheckoutPage", () => {
   });
 
   it("saves changed receipt details before paying, from a collapsed block", async () => {
-    const { calls, user } = await setup({
-      catalog: makeCatalog({ payments: makePaymentsInfo({ email_reminders: true }) }),
-    });
+    const { calls, user } = await setup();
     const toggle = screen.getByRole("button", { name: "Receipt details (optional)" });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     await user.click(toggle);
     expect(screen.getByText("Saved to your account for next time.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email for reminders")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("Name on the receipt"), "Maya Chen");
-    await user.type(screen.getByLabelText("Email for reminders"), "maya@example.com");
-    expect(screen.getByLabelText("Email for reminders")).toHaveAccessibleDescription(
-      "Used only to remind you before your plan ends.",
-    );
     await user.click(payIn(summary(), "₹2,000"));
     const sent = calls.filter((call) => call.method !== "GET").map((call) => [call.method, call.path, call.body]);
     expect(sent).toEqual([
-      ["PUT", "/billing/profile", { name: "Maya Chen", email: "maya@example.com" }],
+      ["PUT", "/billing/profile", { name: "Maya Chen" }],
       ["POST", "/billing/checkout", { plan_id: 2, kind: "period", accept_terms: true }],
     ]);
   });
 
-  it("asks for no email when reminder emails can't be sent, and stops on a refused profile", async () => {
+  it("stops on a refused profile", async () => {
     const { calls, user } = await setup({}, { "PUT /billing/profile": () => errorResponse(422, "name: too long") });
     await user.click(screen.getByRole("button", { name: "Receipt details (optional)" }));
-    expect(screen.queryByLabelText("Email for reminders")).not.toBeInTheDocument();
     await user.type(screen.getByLabelText("Name on the receipt"), "Maya");
     await user.click(payIn(summary(), "₹2,000"));
     const error = await screen.findByRole("alert");
     expect(error).toHaveTextContent("Couldn't save your receipt details. name: too long");
     expect(error).toHaveFocus();
     expect(calls.some((call) => call.path === "/billing/checkout")).toBe(false);
+  });
+
+  it("without a verified email, asks for one in the summary and brings it back when Pay is refused", async () => {
+    const message = "Add and confirm your email in Settings → Account first. Your receipt goes there.";
+    const { calls, user, view } = await setup(
+      { me: makeMe({ plan: makeLapsedPlanAccess("none") }) },
+      { "POST /billing/checkout": () => jsonResponse({ detail: message, code: "email_required" }, { status: 409 }) },
+    );
+    const notice = within(summary()).getByText("Add your email before you pay.").closest(".ui-notice") as HTMLElement;
+    expect(notice).toHaveTextContent("Add your email before you pay. Your receipt goes there.");
+    const addEmail = within(notice).getByRole("button", { name: "Add email" });
+    expect(addEmail).toHaveAccessibleDescription("Add your email before you pay. Your receipt goes there.");
+    const scrolled = vi.spyOn(addEmail, "scrollIntoView");
+
+    const pays = screen.getAllByRole("button", { name: "Pay ₹2,000" });
+    for (const pay of pays) {
+      await user.click(pay);
+      await waitFor(() => expect(addEmail).toHaveFocus());
+      addEmail.blur();
+    }
+    expect(calls.filter((call) => call.path === "/billing/checkout")).toHaveLength(pays.length);
+    expect(scrolled).toHaveBeenCalledTimes(pays.length);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Add email" })).toHaveLength(1);
+    expect(payIn(summary(), "₹2,000")).toHaveAccessibleDescription(expect.stringContaining("By paying you agree"));
+
+    await user.click(addEmail);
+    expect(view.location()).toBe("/plans/checkout/standard?kind=period&settings=account");
+  });
+
+  it("shows the refusal under Pay when the page thought the email was there", async () => {
+    const message = "Add and confirm your email in Settings → Account first. Your receipt goes there.";
+    const { user, view } = await setup(
+      {},
+      { "POST /billing/checkout": () => jsonResponse({ detail: message, code: "email_required" }, { status: 409 }) },
+    );
+    expect(screen.queryByText("Add your email before you pay.")).not.toBeInTheDocument();
+    await user.click(payIn(summary(), "₹2,000"));
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent(message);
+    expect(error).toHaveFocus();
+    await user.click(within(error).getByRole("button", { name: "Add email" }));
+    expect(view.location()).toBe("/plans/checkout/standard?kind=period&settings=account");
+  });
+
+  it("says when checkout is busy", async () => {
+    const { user } = await setup({}, {
+      "POST /billing/checkout": () =>
+        jsonResponse({ detail: "Checkout is busy. Try again in a few minutes.", code: "checkout_busy" }, { status: 503 }),
+    });
+    await user.click(payIn(summary(), "₹2,000"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Checkout is busy. Try again in a few minutes.");
   });
 
   it("shows an upgrade's credit, the new period starting now and what changes", async () => {

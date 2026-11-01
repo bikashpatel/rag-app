@@ -22,13 +22,16 @@ logger = logging.getLogger("app")
 # httpx logs every request's full URL at INFO, which would put Gmail search queries in the log.
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-_PLUGIN_QUERY = re.compile(r"^(/api/plugins(?:/[^?]*)?|/api/billing/razorpay/return)\?.*$", re.DOTALL)
+_PLUGIN_QUERY = re.compile(
+    r"^(/api/plugins(?:/[^?]*)?|/api/billing/razorpay/return|/api/auth/google/callback)\?.*$", re.DOTALL
+)
 
 
 class _RedactPluginQuery(logging.Filter):
-    """uvicorn's access log line of any plugin path, and of the return from Razorpay, without its query: an OAuth
-    callback's holds a one-time code and the state, no plugin request may put search terms, addresses or subjects in
-    the log (brief P20), and Razorpay's return carries payment ids and a signature (plans-billing 6.12)."""
+    """uvicorn's access log line of any plugin path, of the return from Razorpay and of Google sign-in's callback,
+    without its query: an OAuth callback's holds a one-time code and the state, no plugin request may put search terms,
+    addresses or subjects in the log (brief P20), and Razorpay's return carries payment ids and a signature
+    (plans-billing 6.12)."""
 
     def filter(self, record: logging.LogRecord) -> bool:
         args = record.args
@@ -91,13 +94,18 @@ def create_app() -> FastAPI:
     from app.plugins.base import PluginError
     from app.routers import (
         admin,
+        admin_auth,
         admin_billing,
         admin_plugins,
         auth,
+        auth_email,
+        auth_google,
+        auth_signup,
         billing,
         chat,
         conversations,
         documents,
+        mail_events,
         me,
         models,
         plugins,
@@ -107,17 +115,22 @@ def create_app() -> FastAPI:
 
     for module in (
         auth,
+        auth_signup,
+        auth_google,
+        auth_email,
         me,
         models,
         documents,
         conversations,
         chat,
         admin,
+        admin_auth,
         admin_plugins,
         admin_billing,
         plugins,
         billing,
         public,
+        mail_events,
         system,
     ):
         app.include_router(module.router, prefix="/api")

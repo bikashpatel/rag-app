@@ -178,7 +178,7 @@ async def summary(db: AsyncSession, month: str | None) -> BillingSummary:
         if ent.access:
             entry = current.setdefault(ent.plan_name or "", [0, 0])
             entry[1 if ent.complimentary else 0] += 1
-        ref = UserRef(id=user.id, username=user.username)
+        ref = UserRef(id=user.id, username=user.username, email=user.email)
         if (
             ent.access
             and not ent.open_ended
@@ -517,7 +517,7 @@ async def _complimentary(db: AsyncSession, user: User) -> ComplimentaryView | No
 
 async def profile(db: AsyncSession, user_id: int) -> BillingProfile:
     row = await db.get(UserBillingProfile, user_id)
-    return BillingProfile(name=row.name if row else None, email=row.email if row else None)
+    return BillingProfile(name=row.name if row else None)
 
 
 async def billing_status(db: AsyncSession, user: User) -> BillingStatus:
@@ -678,4 +678,6 @@ async def problems(now: datetime | None = None) -> list[str]:
         found.append("live keys run without RAZORPAY_WEBHOOK_SECRET")
     if mode == "test" and business.public_https_origin():
         found.append("test keys run on a public https address")
+    if await checkout.unpaid_cap_reached():
+        found.append("unpaid users reached their payment-link cap (CHECKOUT_UNPAID_PER_HOUR) in the last hour")
     return [problem[0].upper() + problem[1:] for problem in found]

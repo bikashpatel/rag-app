@@ -1,14 +1,27 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes, useNavigate } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import App, { RequireAuth } from "./App";
 import type { Me } from "./api/types";
-import { useAuth } from "./auth/AuthContext";
+import { forgetAuthConfig, useAuth } from "./auth/AuthContext";
+import { leaveForApp, turnstileAllowed } from "./lib/authDocument";
+import { makeAuthConfig } from "./test/auth";
 import { makeAdminMe, makeLapsedPlanAccess, makeMe, makePaidPlanAccess } from "./test/fixtures";
 import { makeCatalog, makeOrder } from "./test/billing";
 import { errorResponse, stubFetch } from "./test/http";
 import { renderWithAuth } from "./test/render";
+
+vi.mock("./lib/authDocument", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./lib/authDocument")>()),
+  turnstileAllowed: vi.fn(),
+  leaveForApp: vi.fn(),
+}));
+
+beforeEach(() => {
+  forgetAuthConfig();
+  vi.mocked(turnstileAllowed).mockReturnValue(false);
+});
 
 /** The chat routes' stand-in: the navigations the chat page makes. */
 function Chat() {
@@ -79,6 +92,13 @@ describe("RequireAuth needsPlan", () => {
 
     const other = await renderAt("/c/12?settings=billing&x=1#m3", () => makeMe({ plan: makeLapsedPlanAccess("none") }));
     await waitFor(() => expect(other.location()).toBe("/plans?settings=billing"));
+  });
+
+  it("keeps Google's return to Settings → Account on the way to /plans", async () => {
+    const view = await renderAt("/?settings=account&google=reauth_ok&change=email&x=1", () =>
+      makeMe({ plan: makeLapsedPlanAccess("none") }),
+    );
+    await waitFor(() => expect(view.location()).toBe("/plans?settings=account&google=reauth_ok&change=email"));
   });
 
   it("lets a user with a plan and the admin in", async () => {
@@ -152,5 +172,34 @@ describe("App routes", () => {
     expect(await screen.findByRole("heading", { name: "Your Standard plan has ended" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Plan & billing" })).toBeInTheDocument();
     expect(window.location.pathname + window.location.search).toBe("/plans?settings=billing");
+  });
+
+  it("serves the signed-out pages to a signed-out visitor, the configuration asked for beside the session", async () => {
+    const calls = stubFetch({
+      "GET /auth/me": () => errorResponse(401, "Not authenticated"),
+      "GET /auth/config": makeAuthConfig(),
+    });
+    window.history.replaceState(null, "", "/signup");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Create your account" })).toBeInTheDocument();
+    expect(calls.map((call) => call.path).slice(0, 2).sort()).toEqual(["/auth/config", "/auth/me"]);
+  });
+
+  it("sends a signed-in visitor from a signed-out page into the app", async () => {
+    await renderApp("/forgot-password", makeMe());
+    await waitFor(() => expect(window.location.pathname).toBe("/"));
+    expect(leaveForApp).not.toHaveBeenCalled();
+  });
+
+  it("leaves a document that allows Cloudflare's script with a full page load", async () => {
+    vi.mocked(turnstileAllowed).mockReturnValue(true);
+    await renderApp("/login?next=/plans", makeMe());
+    await waitFor(() => expect(leaveForApp).toHaveBeenCalledWith("/plans"));
+    expect(window.location.pathname).toBe("/login");
+  });
+
+  it("serves the emailed links with or without a session", async () => {
+    await renderApp("/verify-email", makeMe());
+    expect(await screen.findByRole("heading", { name: "This link is incomplete" })).toBeInTheDocument();
   });
 });

@@ -5,6 +5,7 @@ import type { BillingProfile, BillingStatus, Me, PaymentView, PlanAccess, PlanOf
 import { useAuth } from "../../auth/AuthContext";
 import { formatInr, formatIstDate, formatIstRange } from "../../lib/billing";
 import { formatNumber } from "../../lib/format";
+import { useOpenSettings } from "../../lib/settingsLink";
 import "../billing/billing.css";
 import { PendingCheckoutNotice } from "../billing/PendingCheckoutBanner";
 import {
@@ -18,8 +19,18 @@ import {
   renewPath,
 } from "../billing/planText";
 import PolicyLinks from "../billing/PolicyLinks";
-import { AlertIcon, CalendarIcon, CheckCircleIcon, DownloadIcon, FlaskIcon, GiftIcon, TagIcon } from "../ui/icons";
+import {
+  AlertIcon,
+  CalendarIcon,
+  CheckCircleIcon,
+  DownloadIcon,
+  FlaskIcon,
+  GiftIcon,
+  MailIcon,
+  TagIcon,
+} from "../ui/icons";
 import { ButtonSpinner } from "../ui/Spinner";
+import Switch from "../ui/Switch";
 import { PanelError, PanelHead } from "./PanelParts";
 import { useLoad } from "./useLoad";
 
@@ -327,19 +338,77 @@ function ComingUp({ status }: { status: BillingStatus }) {
   );
 }
 
+/** Where receipts and plan reminders go, and their switches (functional 13.8, visual 8); only with a mailer. */
+function Emails({ user }: { user: Me }) {
+  const { preferences, updatePreferences } = useAuth();
+  const openSettings = useOpenSettings();
+  const [error, setError] = useState<string | null>(null);
+
+  function change(update: { email_receipts?: boolean; email_plan_reminders?: boolean }) {
+    setError(null);
+    updatePreferences(update).catch((err: unknown) => {
+      setError(err instanceof ApiError ? err.message : "Couldn't save the setting. Please try again.");
+    });
+  }
+
+  return (
+    <>
+      <h3 className="settings-sub">Emails</h3>
+      {user.email ? (
+        <>
+          <p className="settings-desc">
+            Receipts and plan reminders go to <b className="settings-mail-address">{user.email}</b>.{" "}
+            <button type="button" className="settings-link" onClick={() => openSettings("account")}>
+              Change it in Account
+            </button>
+          </p>
+          <div className="settings-mail-switches">
+            <Switch
+              checked={preferences.email_receipts}
+              onChange={(checked) => change({ email_receipts: checked })}
+              label="Email me a receipt for each payment"
+              description="The PDF receipt is attached; it is also listed below."
+            />
+            <Switch
+              checked={preferences.email_plan_reminders}
+              onChange={(checked) => change({ email_plan_reminders: checked })}
+              label="Email me before my plan ends"
+              description="5 days before, the day before, and when it ends."
+            />
+          </div>
+          {error ? (
+            <p className="error-text settings-error" role="alert">
+              <AlertIcon size={13} />
+              {error}
+            </p>
+          ) : null}
+        </>
+      ) : (
+        <div className="ui-notice settings-mail-none">
+          <MailIcon size={18} />
+          <span className="ui-notice-text">
+            Add an email in <b>Settings → Account</b> to get receipts and reminders by email.
+          </span>
+          <button type="button" className="btn btn-sm" onClick={() => openSettings("account")}>
+            Add email
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 type DetailsProps = { status: BillingStatus; username: string; onSaved: () => void };
 
-/** Name on receipts and, when reminder emails can be sent, the email for them (visual 8.3). */
+/** The name on receipts (visual 8.3). */
 function ReceiptDetails({ status, username, onSaved }: DetailsProps) {
   const id = useId();
-  const reminders = status.payments.email_reminders;
   const [saved, setSaved] = useState<BillingProfile>(status.profile);
   const [name, setName] = useState(status.profile.name ?? "");
-  const [email, setEmail] = useState(status.profile.email ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const next: BillingProfile = { name: name.trim() || null, email: reminders ? email.trim() || null : saved.email };
-  const changed = next.name !== saved.name || next.email !== saved.email;
+  const next: BillingProfile = { name: name.trim() || null };
+  const changed = next.name !== saved.name;
 
   async function save(event: FormEvent) {
     event.preventDefault();
@@ -350,7 +419,6 @@ function ReceiptDetails({ status, username, onSaved }: DetailsProps) {
       const result = await billingApi.saveProfile(next);
       setSaved(result);
       setName(result.name ?? "");
-      setEmail(result.email ?? "");
       onSaved();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Couldn't save your receipt details. Please try again.");
@@ -359,22 +427,12 @@ function ReceiptDetails({ status, username, onSaved }: DetailsProps) {
     }
   }
 
-  const channel = !reminders
-    ? "Plan reminders: in the app."
-    : saved.email
-      ? "Plan reminders: in the app and by email."
-      : "Plan reminders: in the app. Add an email to get them by email too.";
-
   return (
     <>
       <h3 className="settings-sub" id={`${id}-title`}>
         Receipt details
       </h3>
-      <p className="settings-desc">
-        {reminders
-          ? "Optional. Shown on your receipts; the email is used only for reminders before your plan ends."
-          : "Optional. Shown on your receipts."}
-      </p>
+      <p className="settings-desc">Optional. Shown on your receipts.</p>
       <form className="billing-form" aria-labelledby={`${id}-title`} onSubmit={(event) => void save(event)} noValidate>
         <div className="field">
           <label className="field-label" htmlFor={`${id}-name`}>
@@ -387,27 +445,10 @@ function ReceiptDetails({ status, username, onSaved }: DetailsProps) {
             maxLength={100}
             autoComplete="name"
             placeholder={username}
+            aria-invalid={error ? true : undefined}
             onChange={(event) => setName(event.target.value)}
           />
         </div>
-        {reminders ? (
-          <div className="field">
-            <label className="field-label" htmlFor={`${id}-email`}>
-              Email for reminders
-            </label>
-            <input
-              id={`${id}-email`}
-              className="input"
-              type="email"
-              value={email}
-              maxLength={254}
-              autoComplete="email"
-              placeholder="you@example.com"
-              aria-invalid={error ? true : undefined}
-              onChange={(event) => setEmail(event.target.value)}
-            />
-          </div>
-        ) : null}
         <div className="billing-form-actions">
           {/* aria-disabled, not disabled: once saved the button keeps the focus instead of dropping it to the page. */}
           <button
@@ -419,7 +460,6 @@ function ReceiptDetails({ status, username, onSaved }: DetailsProps) {
             {saving ? <ButtonSpinner size={12} /> : null}
             Save
           </button>
-          <p>{channel}</p>
         </div>
         {error ? (
           <p className="error-text settings-error" role="alert">
@@ -580,6 +620,7 @@ export default function PlanBillingTab({ user, onClose }: { user: Me; onClose: (
         ) : null}
         <CurrentPlan user={user} status={status} offer={offer} upgradable={upgradable} />
         <ComingUp status={status} />
+        {status.payments.email_reminders ? <Emails user={user} /> : null}
         <ReceiptDetails
           status={status}
           username={user.username}

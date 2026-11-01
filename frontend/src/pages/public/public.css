@@ -229,6 +229,21 @@
   max-width: 60ch;
   margin: 0;
 }
+/* Sign-up open: "Already have an account? Sign in", 10 px under the button. */
+.public-pricing-foot .public-signin-line {
+  margin-top: -6px;
+}
+.public-signin-line a {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+/* Signed out: Sign in, and Sign up while sign-up is open. */
+.public-account {
+  display: flex;
+  flex: none;
+  gap: 8px;
+}
 
 /* ---------- Footer ---------- */
 .public-footer {

@@ -2282,3 +2282,303 @@
     border: 2px solid CanvasText;
   }
 }
+
+/* ---------- Admin → Users: the Sign-up card, the email and "Signed up" columns, the dialog and the facts ---------- */
+.admin-signup {
+  margin-bottom: 20px;
+}
+.admin-signup .admin-card-header {
+  padding-bottom: 6px;
+  border-bottom: 0;
+}
+.admin-signup-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+}
+.admin-signup-facts {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+  padding: 8px 20px 18px;
+}
+.admin-signup-facts > div {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+}
+.admin-signup-facts dt {
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 600;
+}
+.admin-signup-facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 3px 0 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+}
+.admin-signup-facts dd > svg {
+  flex: none;
+}
+.admin-signup-facts dd small {
+  flex-basis: 100%;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 400;
+}
+.admin-signup-recent {
+  text-align: left;
+}
+.admin-signup-checks {
+  font-size: 14px;
+  font-weight: 600;
+}
+.admin-signup-facts .admin-signup-checks {
+  gap: 4px 14px;
+}
+.admin-signup-checks > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.admin-signup-checks svg {
+  flex: none;
+}
+.admin-check-warn {
+  flex: none;
+  color: var(--warning);
+}
+.admin-signup .admin-card-footnote {
+  display: grid;
+  gap: 8px;
+  padding: 0 20px 18px;
+  border-top: 0;
+  background: none;
+}
+
+.admin-user-ident {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.admin-user-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+.admin-user-email {
+  position: relative; /* containing block for the sr-only "Confirmed:" */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 30ch;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 13px;
+  white-space: nowrap;
+}
+.admin-user-email svg {
+  flex: none;
+}
+.admin-user-email-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.admin-user-email-ok svg {
+  color: var(--success);
+}
+.admin-user-email-pending svg {
+  color: var(--warning);
+}
+.admin-source {
+  display: flex;
+  flex-direction: column;
+  white-space: nowrap;
+}
+.admin-source b {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+  font-weight: 600;
+}
+.admin-buyer-email {
+  display: block;
+  max-width: 30ch;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 400;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.admin-user-search {
+  position: relative;
+  flex: 0 1 260px;
+  min-width: 220px;
+}
+.admin-user-search > svg {
+  position: absolute;
+  top: 50%;
+  left: 11px;
+  color: var(--text-3);
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+.admin-user-search .input {
+  height: 34px;
+  padding-left: 33px;
+  font-size: 14px;
+}
+.admin-toolbar .admin-source-filter {
+  width: auto;
+  min-width: 160px;
+  height: 34px;
+  font-size: 14px;
+}
+.admin-table td.admin-empty-row {
+  padding-top: 24px;
+  padding-bottom: 24px;
+  color: var(--text-3);
+}
+/* Stays in view while the wide, empty table scrolls sideways (phones). */
+.admin-empty-row-text {
+  position: sticky;
+  left: 20px;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.admin-sort .admin-sort-idle {
+  opacity: 0.45;
+}
+
+.admin-signup-form .admin-checklist-rows {
+  padding: 0;
+}
+.admin-signup-form .admin-check-row {
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+}
+.admin-signup-form .admin-check-row:last-child {
+  border-bottom: 0;
+}
+.admin-check-row .admin-check-text {
+  flex: 1;
+}
+.admin-check-row > .btn {
+  flex: none;
+  margin: -2px 0;
+}
+.admin-open-warning {
+  margin-top: 12px;
+}
+.admin-open-warning ul {
+  margin: 6px 0 10px;
+  padding-left: 18px;
+}
+.admin-test-mail {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+}
+.admin-test-mail-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.admin-test-mail-row .input {
+  flex: 1 1 220px;
+  width: auto;
+  height: 34px;
+  font-size: 14px;
+}
+.admin-test-mail-sent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--success);
+  font-size: 13.5px;
+}
+.admin-test-mail-sent:empty {
+  display: none;
+}
+
+.admin-signin-facts {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px 18px;
+  margin: 4px 0 0;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-size: 14px;
+}
+.admin-signin-facts dt {
+  color: var(--text-3);
+}
+.admin-signin-facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.admin-signin-facts dd small {
+  flex-basis: 100%;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.admin-signin-facts .admin-user-email-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 939.98px) {
+  .admin-signup-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 799.98px) {
+  .admin-signup-facts {
+    gap: 8px;
+    padding: 4px 16px 16px;
+  }
+  .admin-signup .admin-card-footnote {
+    padding: 0 16px 16px;
+  }
+  .admin-user-search {
+    flex-basis: 100%;
+    min-width: 0;
+  }
+  .admin-empty-row-text {
+    left: 16px;
+  }
+  .admin-signin-facts {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 2px;
+  }
+  .admin-signin-facts dd {
+    margin-bottom: 8px;
+  }
+  .admin-signin-facts dd:last-child {
+    margin-bottom: 0;
+  }
+}

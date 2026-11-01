@@ -331,3 +331,25 @@ export const FlaskIcon = icon(
     <path d="M7.3 14.5h9.4" />
   </>,
 );
+
+// Sign-up and sign-in (docs/briefs/signup-auth-visual.md 2.2).
+export const MailCheckIcon = icon(
+  <>
+    <path d="M20.5 12.5V7a2 2 0 0 0-2-2h-13a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h7" />
+    <path d="m3.8 6.4 8.2 6.1 8.2-6.1" />
+    <path d="m15.5 18 2 2 3.5-3.6" />
+  </>,
+);
+export const LinkBrokenIcon = icon(
+  <>
+    <path d="M9.5 14.5 7.7 16.3a3 3 0 0 1-4.2-4.2L6.5 9.1a3 3 0 0 1 4.2 0" />
+    <path d="m14.5 9.5 1.8-1.8a3 3 0 0 1 4.2 4.2l-3 3a3 3 0 0 1-4.2 0" />
+    <path d="M4 4l2 2M20 20l-2-2M9 3.5V5M15 20.5V19" />
+  </>,
+);
+export const AtSignIcon = icon(
+  <>
+    <circle cx="12" cy="12" r="3.6" />
+    <path d="M15.6 12v1.4a2.5 2.5 0 0 0 5 0V12a8.6 8.6 0 1 0-3.4 6.9" />
+  </>,
+);

@@ -85,6 +85,15 @@ ADMIN_USER_KEYS = {
     "above_plan",
     "no_models",
     "plan",
+    "email",
+    "email_verified_at",
+    "pending_email",
+    "signup_source",
+    "has_password",
+    "google_linked",
+    "google_email",
+    "terms_accepted_at",
+    "terms_version",
 }
 LIMIT_NAMES = (
     "monthly_token_limit",
@@ -198,6 +207,9 @@ ADMIN_ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
     ("POST", "/api/admin/billing/users/{user_id}/end-complimentary", {"reason": "R"}),
     ("POST", "/api/admin/billing/users/{user_id}/change-plan", {"plan_id": 1, "reason": "R"}),
     ("POST", "/api/admin/billing/periods/{period_id}/revoke", {"reason": "R"}),
+    ("GET", "/api/admin/signup-settings", None),
+    ("PUT", "/api/admin/signup-settings", {"open": True}),
+    ("POST", "/api/admin/mail/test", {"to": "intruder@example.com"}),
 ]
 
 
@@ -491,6 +503,15 @@ async def test_create_user_applies_the_defaults(admin_client: ApiClient, new_cli
         "above_plan": [],
         "no_models": False,
         "plan": NO_PLAN,
+        "email": None,
+        "email_verified_at": None,
+        "pending_email": None,
+        "signup_source": "admin",
+        "has_password": True,
+        "google_linked": False,
+        "google_email": None,
+        "terms_accepted_at": None,
+        "terms_version": None,
     }
     assert created["created_at"].endswith("Z")
     assert await admin_user(admin_client, created["id"]) == created
@@ -627,8 +648,8 @@ async def test_concurrent_creates_of_one_username_make_one_user_and_a_409(
         ("username", "émile"),
         ("username", 12345),
         ("password", MISSING),
-        ("password", "seven77"),
-        ("password", "x" * 257),
+        ("password", ""),
+        ("password", "x" * 1025),  # the policy's refusals are in test_admin_signup.py
         ("is_active", "sometimes"),
         ("restrict_models", "maybe"),
         ("allowed_model_ids", [0]),
@@ -858,8 +879,8 @@ async def test_update_user_replaces_and_clears_allowed_models(
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("password", "short"),
-        ("password", "x" * 257),
+        ("password", "x" * 1025),
+        ("password", ["a-list-of-words"]),
         ("is_active", "nope"),
         ("billing_tester", "nope"),
         ("allowed_model_ids", [-1]),
@@ -942,7 +963,7 @@ async def test_deactivating_a_user_ends_their_sessions_and_blocks_login(
     assert (await load(User, user.user_id)).token_version == 1
     assert (await user.get("/api/auth/me")).status_code == 401
     blocked = await new_client().login("liam", USER_PASSWORD)
-    assert (blocked.status_code, blocked.json()) == (401, {"detail": "Invalid username or password"})
+    assert (blocked.status_code, blocked.json()) == (401, {"detail": "Incorrect email, username or password."})
 
     reactivated = await admin_client.patch(url, json={"is_active": True})
 

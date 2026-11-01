@@ -1,24 +1,39 @@
 // Minimal fetch wrapper. Auth is an httpOnly cookie, so requests just need same-origin credentials.
 
 import type {
+  Accepted,
   AccountInfo,
   AdminPlugin,
   AdminPluginUpdate,
+  AuthConfig,
   BillingProfile,
   BillingStatus,
   CheckoutRequest,
   CheckoutStarted,
   ConversationsDeleted,
+  EmailChange,
+  EmailConfirmed,
+  EmailTokenInfo,
+  EmailWithChallenge,
   GeneratedImageDetails,
   GmailImportRequest,
   GmailImportResult,
   GmailThreadDetail,
   GmailThreadPage,
   GmailThreadSearch,
+  GoogleFinish,
+  GooglePending,
+  GoogleStart,
+  GoogleStarted,
   Me,
   MyUsage,
+  NewPassword,
   OrderView,
   PageSlug,
+  PasswordConfirm,
+  PasswordReason,
+  PasswordReset,
+  PasswordTokenInfo,
   PaymentView,
   PendingSend,
   PendingSendConfirm,
@@ -36,16 +51,27 @@ import type {
   PublicSite,
   RequestCheckTest,
   RequestCheckTestResult,
+  SignupCheck,
+  SignupComplete,
+  SignupRequest,
+  TokenRequest,
+  UndoInfo,
 } from "./types";
 
 /** The machine-readable part of an error body (SPEC 6, error codes): `plan_required`, `feature_not_in_plan`, … */
-export type ErrorDetails = { code?: string | null; feature?: string | null; plan?: string | null };
+export type ErrorDetails = {
+  code?: string | null;
+  feature?: string | null;
+  plan?: string | null;
+  reason?: string | null; // password_rejected: a PasswordReason
+};
 
 export class ApiError extends Error {
   status: number;
   code: string | null;
   feature: string | null;
   plan: string | null;
+  reason: string | null;
   constructor(status: number, message: string, details: ErrorDetails = {}) {
     super(message);
     this.name = "ApiError";
@@ -53,6 +79,7 @@ export class ApiError extends Error {
     this.code = details.code ?? null;
     this.feature = details.feature ?? null;
     this.plan = details.plan ?? null;
+    this.reason = details.reason ?? null;
   }
 }
 
@@ -90,7 +117,7 @@ export function isPlanRequired(error: unknown): boolean {
   return error instanceof ApiError && error.status === 402 && PLAN_REQUIRED_CODES.has(error.code ?? "");
 }
 
-type ErrorBody = { detail?: unknown; code?: unknown; feature?: unknown; plan?: unknown };
+type ErrorBody = { detail?: unknown; code?: unknown; feature?: unknown; plan?: unknown; reason?: unknown };
 
 /** Turn a FastAPI error body (`{detail: string}` or validation list) into a readable message. */
 export function errorMessageFromBody(status: number, body: unknown): string {
@@ -105,19 +132,21 @@ export function errorMessageFromBody(status: number, body: unknown): string {
       .join("; ");
   }
   if (status === 413) return "The file is too large.";
+  if (status === 429) return "Too many attempts. Wait a minute and try again.";
   if (status >= 500) return "The server ran into a problem. Please try again.";
   return `Request failed (${status})`;
 }
 
 const stringOrNull = (value: unknown): string | null => (typeof value === "string" && value ? value : null);
 
-/** An ApiError from a parsed error body: the readable message plus `code`, `feature` and `plan` when present. */
+/** An ApiError from a parsed error body: the readable message plus `code`, `feature`, `plan` and `reason` if set. */
 export function apiErrorFromBody(status: number, body: unknown): ApiError {
   const fields = (body !== null && typeof body === "object" ? body : {}) as ErrorBody;
   return new ApiError(status, errorMessageFromBody(status, body), {
     code: stringOrNull(fields.code),
     feature: stringOrNull(fields.feature),
     plan: stringOrNull(fields.plan),
+    reason: stringOrNull(fields.reason),
   });
 }
 
@@ -316,6 +345,90 @@ export function saveBlob(blob: Blob, filename: string): void {
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), BLOB_URL_LIFETIME_MS);
 }
+
+// ---------------- Sign-up, sign-in and the account's email (SPEC section 6; docs/briefs/signup-auth.md 11) ----------------
+
+/** The `code`s of the sign-up, sign-in, reset and account-email errors (SPEC 6, the error tables). */
+const AUTH_ERROR_CODES = [
+  "challenge_required",
+  "challenge_failed",
+  "challenge_unavailable",
+  "too_many_attempts",
+  "signup_closed",
+  "password_rejected",
+  "mail_unavailable",
+  "link_invalid",
+  "wrong_password",
+  "signup_reset",
+  "email_taken",
+  "wrong_account",
+  "google_unavailable",
+  "reauth_required",
+  "last_sign_in_method",
+  "no_password",
+  "has_password",
+  "username_retired",
+  "email_required",
+  "checkout_busy",
+] as const;
+export type AuthErrorCode = (typeof AUTH_ERROR_CODES)[number];
+
+const PASSWORD_REASONS: readonly string[] = [
+  "too_short",
+  "too_long",
+  "common",
+  "context",
+  "breached",
+] satisfies PasswordReason[];
+
+/** The error's sign-up or sign-in `code`, or null (another code, none, or not an ApiError). */
+export function authErrorCode(error: unknown): AuthErrorCode | null {
+  const code = error instanceof ApiError ? error.code : null;
+  return code !== null && (AUTH_ERROR_CODES as readonly string[]).includes(code) ? (code as AuthErrorCode) : null;
+}
+
+/** A 422 password_rejected as PasswordRules shows it (the server's sentence in place of the rule it broke), or null. */
+export function passwordRefusal(error: unknown): { reason: PasswordReason; message: string } | null {
+  if (authErrorCode(error) !== "password_rejected") return null;
+  const { reason, message } = error as ApiError;
+  return reason !== null && PASSWORD_REASONS.includes(reason) ? { reason: reason as PasswordReason, message } : null;
+}
+
+const token = (value: string): TokenRequest => ({ token: value });
+
+/** No session needed (Google's link and reauth intents, and confirming an email, need one). */
+export const authApi = {
+  config: () => api.get<AuthConfig>("/auth/config"),
+  signup: (body: SignupRequest) => api.post<Accepted>("/auth/signup", body),
+  resend: (body: EmailWithChallenge) => api.post<Accepted>("/auth/signup/resend", body),
+  checkSignup: (value: string) => api.post<SignupCheck>("/auth/signup/check", token(value)),
+  /** Signs in: Me and a new session cookie. */
+  completeSignup: (body: SignupComplete) => api.post<Me>("/auth/signup/complete", body),
+  forgot: (body: EmailWithChallenge) => api.post<Accepted>("/auth/password/forgot", body),
+  checkPasswordToken: (value: string) => api.post<PasswordTokenInfo>("/auth/password/check", token(value)),
+  /** Ends every session, this one included; never signs in. */
+  resetPassword: (body: PasswordReset) => api.post<void>("/auth/password/reset", body),
+  checkEmailToken: (value: string) => api.post<EmailTokenInfo>("/auth/email/check", token(value)),
+  /** Needs the session of the account that asked for the change. */
+  confirmEmail: (value: string) => api.post<EmailConfirmed>("/auth/email/verify", token(value)),
+  checkUndo: (value: string) => api.post<UndoInfo>("/auth/email/undo-check", token(value)),
+  /** Ends every session and removes the password. */
+  undoEmail: (value: string) => api.post<void>("/auth/email/undo", token(value)),
+  googleStart: (body: GoogleStart) => api.post<GoogleStarted>("/auth/google/start", body),
+  googlePending: () => api.get<GooglePending>("/auth/google/pending"),
+  /** Signs in: Me and a new session cookie. */
+  googleFinish: (body: GoogleFinish) => api.post<Me>("/auth/google/finish", body),
+  googleCancel: () => api.post<void>("/auth/google/cancel"),
+};
+
+/** The caller's own email, first password and Google sign-in (the env admin gets 400 on each). */
+export const accountEmailApi = {
+  change: (body: EmailChange) => api.post<Accepted>("/me/email", body),
+  resend: () => api.post<Accepted>("/me/email/resend"),
+  cancel: () => api.del<void>("/me/email/pending"),
+  setupPassword: (body: NewPassword) => api.post<void>("/me/password/setup", body),
+  unlinkGoogle: (body: PasswordConfirm) => request<void>("DELETE", "/me/google", body),
+};
 
 // ---------------- Billing and public pages (SPEC section 6, "Billing"; docs/briefs/plans-billing.md 7.2) ----------------
 

@@ -272,7 +272,7 @@ class PaymentsInfo(BaseModel):
     mode: PaymentsMode | None  # None when not available to this caller
     contact_email: str | None
     upi_limit_paise: int  # 0: no limit
-    email_reminders: bool  # SMTP and BILLING_EMAIL_FROM are set
+    email_reminders: bool  # the mailer is configured: receipts and reminders can be emailed
 
 
 class PlanCatalog(BaseModel):
@@ -348,7 +348,8 @@ class PeriodView(BaseModel):
 
 
 class BillingProfile(BaseModel):
-    """The user's own, optional (GET and PUT /billing/profile): blank strings become None."""
+    """The user's own, optional (GET and PUT /billing/profile): the name on receipts; a blank one becomes None.
+    Receipts and reminders go to the account's verified email (docs/briefs/signup-auth.md S25)."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -356,7 +357,6 @@ class BillingProfile(BaseModel):
         Annotated[str, StringConstraints(max_length=100), AfterValidator(_printable)] | None,
         BeforeValidator(_blank_to_none),
     ]
-    email: Annotated[Email | None, BeforeValidator(_blank_to_none)]
 
 
 class ComplimentaryView(BaseModel):
@@ -537,7 +537,7 @@ class PaymentsSetup(BaseModel):
     last_error: str | None  # e.g. the keys were rejected
     paused_orders: int  # of the other mode
     testers: int
-    email_reminders: bool
+    email_reminders: bool  # the mailer is configured
 
 
 class BillingAdminConfig(BaseModel):
@@ -552,6 +552,7 @@ class BillingAdminConfig(BaseModel):
 class UserRef(BaseModel):
     id: int | None  # None: deleted
     username: str
+    email: str | None = None  # the account's verified email now (None: none, or deleted)
 
 
 class AdminOrder(OrderView):

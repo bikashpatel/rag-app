@@ -1,7 +1,14 @@
 import { randomBytes } from "node:crypto";
 import { request } from "@playwright/test";
 import { AdminApi } from "./support/admin-api";
-import { ADMIN_SESSION_ENV, BASE_URL, RUN_ID_ENV, SESSION_COOKIE, adminCredentials } from "./support/env";
+import {
+  ADMIN_SESSION_ENV,
+  ADMIN_SESSION_NAME_ENV,
+  BASE_URL,
+  RUN_ID_ENV,
+  SESSION_COOKIES,
+  adminCredentials,
+} from "./support/env";
 
 const HEALTH_TIMEOUT_MS = Number(process.env.E2E_WAIT_SECONDS ?? "120") * 1000;
 
@@ -34,9 +41,10 @@ export default async function globalSetup(): Promise<void> {
   try {
     const res = await context.post("/api/auth/login", { data: { username, password } });
     if (!res.ok()) throw new Error(`The admin sign-in failed (HTTP ${res.status()}). Check the admin credentials.`);
-    const session = (await context.storageState()).cookies.find((cookie) => cookie.name === SESSION_COOKIE)?.value;
+    const session = (await context.storageState()).cookies.find((cookie) => SESSION_COOKIES.includes(cookie.name));
     if (!session) throw new Error("The admin sign-in set no session cookie.");
-    process.env[ADMIN_SESSION_ENV] = session;
+    process.env[ADMIN_SESSION_ENV] = session.value;
+    process.env[ADMIN_SESSION_NAME_ENV] = session.name;
   } finally {
     await context.dispose();
   }

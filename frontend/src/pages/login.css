@@ -464,3 +464,100 @@
 .login-about + .login-credit {
   margin-top: 36px;
 }
+
+/* ---------- Sign-up, Google and the robot check in the card (docs/briefs/signup-auth-visual.md 4) ---------- */
+/* "New to AskNuvexusDoc? Create an account" under the lede, while sign-up is open. */
+.login-new {
+  margin: 10px 0 0;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.5;
+}
+.login-new a {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+/* A ?google= result: 24 px under the lede (or the line). */
+.login-card > .ui-notice {
+  margin-top: 24px;
+}
+/* Continue with Google, where the form used to start; then the "or" rule and the form. */
+.login-alt {
+  margin-top: 28px;
+}
+.login-card > .ui-notice + .login-alt {
+  margin-top: 18px;
+}
+.login-alt + .auth-or + .login-form {
+  margin-top: 0;
+}
+/* The Password label row: the label and, at its right end, "Forgot password?". */
+.login-label-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.login-forgot {
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+/* The 401 carries the two static hints under its sentence, quieter, in the same block. */
+.login-error-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.login-hints {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  color: var(--text-2);
+  font-size: 13.5px;
+  font-weight: 400;
+  list-style: none;
+}
+.login-hints a {
+  color: var(--danger);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+@media (max-width: 799.98px) {
+  .login-alt {
+    margin-top: 22px;
+  }
+  .login-card > .ui-notice {
+    margin-top: 18px;
+  }
+}
+/* A bigger target for the small links on touch, without moving the rows. */
+@media (pointer: coarse) {
+  .login-forgot,
+  .login-new a {
+    margin: -8px 0;
+    padding: 8px 0;
+  }
+}
+.login-alt .error-text {
+  margin-top: 8px;
+}
+/* Narrow phones (360 px): a little less air while sign-up is open, so Sign in stays on the first screen. */
+@media (max-width: 379.98px) {
+  .login-card:has(.login-new) .login-mobile-hero {
+    margin-bottom: 22px;
+  }
+  .login-new {
+    margin-top: 6px;
+  }
+  .login-alt {
+    margin-top: 18px;
+  }
+  .login-alt + .auth-or {
+    margin: 14px 0;
+  }
+}

@@ -1,4 +1,4 @@
-import { act, screen, within } from "@testing-library/react";
+import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrderView } from "../api/types";
@@ -173,47 +173,36 @@ describe("BillingReturnPage", () => {
     expect(title()).toHaveTextContent("Payment received");
   });
 
-  it("asks once for an email for reminders when they can be sent", async () => {
-    const { calls, user } = await setup(makePaidOrder(), {
+  it("without a verified email, says where to add one when receipts and reminders can be emailed", async () => {
+    const { user, view } = await setup(makePaidOrder(), {
       routes: {
         "GET /billing/status": makeBillingStatus({
           plan: makePaidPlanAccess(),
           payments: makePaymentsInfo({ email_reminders: true }),
-          profile: { name: "Maya Chen", email: null },
         }),
-        "PUT /billing/profile": (call: FetchCall) => call.body as object,
       },
     });
-    const ask = await screen.findByLabelText("Remind me before my plan ends");
-    await user.type(ask, "maya@example.com");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(calls.find((call) => call.method === "PUT")?.body).toEqual({ name: "Maya Chen", email: "maya@example.com" });
-    expect(await screen.findByText("We'll email you before 19 Nov.")).toBeInTheDocument();
+    const line = await screen.findByText(/to get receipts and reminders by email/);
+    expect(line).toHaveTextContent("Add an email in Settings → Account to get receipts and reminders by email.");
+    await user.click(screen.getByRole("button", { name: "Settings → Account" }));
+    expect(view.location()).toBe("/billing/return?order=q3Zx8LmP0aB2cD4eF6gH&settings=account");
+    expect(screen.queryByLabelText("Remind me before my plan ends")).not.toBeInTheDocument();
   });
 
-  it("lets the reminder ask be dismissed, and doesn't ask without reminder emails", async () => {
-    const first = await setup(makePaidOrder(), {
-      routes: { "GET /billing/status": makeBillingStatus({ payments: makePaymentsInfo({ email_reminders: true }) }) },
+  it("says nothing about email with one confirmed, or without a mailer", async () => {
+    const withEmail = await setup(makePaidOrder(), {
+      routes: {
+        "GET /auth/me": makeMe({ email: "maya@example.com", plan: makePaidPlanAccess() }),
+        "GET /billing/status": makeBillingStatus({ payments: makePaymentsInfo({ email_reminders: true }) }),
+      },
     });
-    const form = (await screen.findByLabelText("Remind me before my plan ends")).closest("form") as HTMLElement;
-    await first.user.click(within(form).getByRole("button", { name: "Not now" }));
-    expect(screen.queryByLabelText("Remind me before my plan ends")).not.toBeInTheDocument();
-    first.view.unmount();
+    await act(async () => {});
+    expect(screen.queryByText(/to get receipts and reminders by email/)).not.toBeInTheDocument();
+    expect(withEmail.calls.some((call) => call.path === "/billing/status")).toBe(false);
+    withEmail.view.unmount();
 
     await setup(makePaidOrder());
     await act(async () => {});
-    expect(screen.queryByLabelText("Remind me before my plan ends")).not.toBeInTheDocument();
-  });
-
-  it("shows a refused reminder email", async () => {
-    const { user } = await setup(makePaidOrder(), {
-      routes: {
-        "GET /billing/status": makeBillingStatus({ payments: makePaymentsInfo({ email_reminders: true }) }),
-        "PUT /billing/profile": () => errorResponse(422, "email: not a valid address"),
-      },
-    });
-    await user.type(await screen.findByLabelText("Remind me before my plan ends"), "maya@");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("email: not a valid address");
+    expect(screen.queryByText(/to get receipts and reminders by email/)).not.toBeInTheDocument();
   });
 });

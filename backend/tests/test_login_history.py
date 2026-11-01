@@ -328,14 +328,25 @@ async def test_the_account_view(create_user: CreateUser, admin_client: ApiClient
         "last_login_at",
         "conversation_count",
         "recent_logins",
+        "email",
+        "email_verified_at",
+        "pending_email",
+        "has_password",
+        "google",
+        "signup_source",
+        "terms_accepted_at",
+        "email_change_needs",
+        "stepup_until",
     }
     assert (info["id"], info["username"], info["is_admin"]) == (alice.user_id, "alice", False)
+    assert (info["signup_source"], info["has_password"], info["email_change_needs"]) == ("admin", True, "password")
+    assert (info["email"], info["pending_email"], info["google"], info["stepup_until"]) == (None, None, None, None)
     assert (info["password_managed_by_env"], info["conversation_count"]) == (False, 2)
     created = datetime.fromisoformat(info["created_at"])
     last_login = datetime.fromisoformat(info["last_login_at"])
     assert created <= last_login <= datetime.now(timezone.utc) and last_login - created < timedelta(minutes=1)
     [entry] = info["recent_logins"]
-    assert set(entry) == {"id", "created_at", "ip", "ip_private", "browser", "os", "device", "current"}
+    assert set(entry) == {"id", "created_at", "ip", "ip_private", "browser", "os", "device", "current", "method"}
     assert (entry["ip"], entry["ip_private"], entry["browser"], entry["device"]) == (
         "127.0.0.x",
         True,
@@ -344,6 +355,7 @@ async def test_the_account_view(create_user: CreateUser, admin_client: ApiClient
     )
     assert (admin["username"], admin["is_admin"], admin["password_managed_by_env"]) == (ADMIN_USERNAME, True, True)
     assert admin["conversation_count"] == 0
+    assert (admin["signup_source"], admin["email_change_needs"]) == ("env", "not_allowed")
 
 
 async def test_nobody_sees_another_users_sign_ins(create_user: CreateUser, admin_client: ApiClient) -> None:

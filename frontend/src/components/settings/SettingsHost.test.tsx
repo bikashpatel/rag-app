@@ -29,6 +29,12 @@ describe("SettingsHost", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("names the account by its verified email beside the tabs", async () => {
+    await renderHost("/?settings=usage", { "GET /auth/me": makeMe({ email: "maya@example.com" }) });
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(within(dialog).getByText("maya@example.com", { selector: "strong" })).toBeInTheDocument();
+  });
+
   it("shows nothing while signed out", async () => {
     await renderHost("/?settings=general", { "GET /auth/me": errorResponse(401, "Not authenticated") });
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();

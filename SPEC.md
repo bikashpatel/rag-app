@@ -16,9 +16,24 @@ volume names, `rag_*`/`rag:`/`rag.` keys, the `rag_session` cookie, environment 
 - **LLM access:** everything goes through **LiteLLM** (`litellm.acompletion`,
   `litellm.aembedding`, `litellm.aimage_generation`). Provider keys come from env (`OPENAI_API_KEY`,
   `ANTHROPIC_API_KEY`, and any other key LiteLLM understands).
-- **Auth:** username + password, argon2 hashes, JWT in an **httpOnly,
-  SameSite=Strict cookie** (`rag_session`). A `Authorization: Bearer <jwt>`
-  header is also accepted (for scripts). Only the admin creates users.
+- **Auth** (brief `docs/briefs/signup-auth.md`): sign-in with an email or a
+  username and a password (argon2 hashes of the NFC form), or **Continue with
+  Google** (OpenID Connect, in a Google project separate from Gmail's). JWT in an
+  **httpOnly, SameSite=Strict cookie** (`rag_session`; `__Host-rag_session` with
+  `COOKIE_SECURE`). A `Authorization: Bearer <jwt>` header is also accepted (for
+  scripts). Accounts are created by the admin (Admin → Users) or, once the admin
+  opens sign-up (**closed** until then), by **self-service sign-up**: email +
+  password with email verification, or Google. A new account has no plan until
+  it pays. `users.email` only ever holds a verified address; an unproven one
+  waits in `pending_signups` or `pending_emails`. Cloudflare Turnstile guards
+  sign-up, resend and forgot password, and sign-in after repeated failures.
+- **Email** (brief `docs/briefs/signup-auth.md` section 6): one transactional
+  mailer (Resend's free tier over SMTP, behind provider-neutral `MAIL_*`
+  settings) sends every user email (verification, reset, security notices,
+  receipts and plan reminders) from a durable outbox the worker drains, within
+  a daily cap shared by classes. Alerts keep their own channels. Without the
+  `MAIL_*` settings nothing is mailed to users, and sign-up and password reset
+  stay unavailable.
 - **Admin:** exactly one admin, credentials from `.env`
   (`ADMIN_USERNAME`/`ADMIN_PASSWORD`), synced on every backend start.
 - **Documents:** private per user + a shared knowledge base (admin uploads
@@ -73,9 +88,11 @@ volume names, `rag_*`/`rag:`/`rag.` keys, the `rag_session` cookie, environment 
   explicit request, and **propose** emails that only the user's click on Send
   sends (section 6, Plugins and Chat; brief `docs/briefs/plugins-gmail.md`).
 - **Account and settings:** each user's preferences (theme Light / Dark /
-  System, accent colour, chat font size, default chat model, Enter to send) are
-  saved in their account and applied without a reload; Settings also shows the
-  account (sign-in history, password, "log out of all other sessions"), this
+  System, accent colour, chat font size, default chat model, Enter to send, the
+  receipt and plan-reminder email switches) are saved in their account and
+  applied without a reload; Settings also shows the account (the verified
+  email and its changes, sign-in methods: password and Google, sign-in history,
+  "log out of all other sessions"), this
   month's usage against the limits, plugins, a data export and "delete all my
   chats" (section 6, Account; brief `docs/briefs/ui-shell-settings.md`).
 
@@ -122,15 +139,26 @@ rag-app/
         image_tool.py       CHAT        create_image tool: schema, validation, the monthly limit's reservation, generating, storing the image as a document, the image model Test
         filegen/            CHAT        Markdown / sheets -> PDF (fpdf2), DOCX, XLSX, MD bytes, and image validation (images.py) (pure, no app imports; run by filegen/child.py in a time- and memory-limited child process)
         account.py          ACCOUNT     preferences read/write, User-Agent parsing, approximate IPs, the caller's usage report
+        auth/               SIGNUP      emails (parse, canonical form, delivery key, mask), passwords (the policy, the
+                                        breach check), tokens, throttle (networks, limits, the sign-in challenge),
+                                        turnstile, usernames (random handles, tombstones), stepup, cookies, audit,
+                                        signup_settings; the flows: login, signup, google, identities, reset,
+                                        email_change, undo
+        mail/               SIGNUP      outbox (enqueue, classes, the daily cap, suppressions), transport (SMTP, shared
+                                        with the alert channel), templates, jobs (what each kind resolves to), drain
+                                        (the worker's MailLoop), webhook (Resend's bounces and complaints), sweeps
         export.py           ACCOUNT     the caller's data export (ZIP)
         billing/            BILLING     entitlements (what a user may do: the one source for every check), money,
                                         periods, locks, audit, plans, business, razorpay (client and signatures),
                                         checkout, payments (apply once), webhooks, reconcile (the worker's billing
-                                        loop), refunds, disputes, receipts (PDF), reminders, summary, csv_export
+                                        loop), refunds, disputes, receipts (PDF), reminders, summary, csv_export,
+                                        paid (has_paid, payments_live)
+      data/common-passwords.txt  SIGNUP the bundled common-password blocklist (its source and licence in the header)
       fonts/                CHAT        Noto Sans TTFs for generated PDFs (SIL OFL 1.1, fonts/OFL.txt)
       schemas_plugins.py    PLUGINS     plugin API shapes (the Gmail ones are in plugins/gmail/schemas.py)
       schemas_account.py    ACCOUNT     the caller's account shapes (Preferences itself is in schemas.py, with Me)
       schemas_billing.py    BILLING     plan, billing, public and admin-billing shapes (Me.plan's PlanAccess included)
+      schemas_auth.py       SIGNUP      sign-up, sign-in, Google, reset, account-email and sign-up-settings shapes
       errors.py             BILLING     AppError: an HTTP error with a machine-readable code (section 6)
       plugins/              PLUGINS     framework: base (interfaces), registry, crypto (token encryption), http, oauth,
                                         connections (tokens, refresh, revoke), audit, intent (request check), answer
@@ -139,8 +167,13 @@ rag-app/
         gmail/              GMAIL       plugin, client (REST), mime, links, render, tools (chat), sends, importer, router
       routers/
         __init__.py
-        auth.py             AUTH-ADMIN  /api/auth/*
-        me.py               ACCOUNT     /api/me/* (preferences, account, usage, export)
+        auth.py             AUTH-ADMIN  /api/auth/login, logout, me, config, upload-allowed, change-password, logout-others
+        auth_signup.py      SIGNUP      /api/auth/signup*, /api/auth/password/* (forgot, check, reset)
+        auth_google.py      SIGNUP      /api/auth/google/* (start, callback, pending, finish, cancel)
+        auth_email.py       SIGNUP      /api/auth/email/* (check, verify, undo-check, undo)
+        admin_auth.py       SIGNUP      /api/admin/signup-settings, /api/admin/mail/test
+        mail_events.py      SIGNUP      /api/mail/resend-events (Resend's signed webhook)
+        me.py               ACCOUNT     /api/me/* (preferences, account, usage, export; email, password setup, Google)
         models.py           AUTH-ADMIN  /api/models
         admin.py            AUTH-ADMIN  /api/admin/*
         admin_plugins.py    PLUGINS     /api/admin/plugins/*
@@ -169,7 +202,14 @@ rag-app/
       lib/settingsLink.ts, lib/appEvents.ts    FOUNDATION (Settings URL helpers; app-wide events)
       components/ui/*                          FOUNDATION (Modal, Spinner, ErrorBoundary, FullPageState, Menu, Avatar, SegmentedControl,
                                                Switch, Meter, PasswordInput, icons)
-      pages/LoginPage.tsx, pages/login.css     FOUNDATION (CSS prefix login-)
+      pages/LoginPage.tsx, pages/login.css     FOUNDATION (CSS prefix login-); pages/login/AuthSplit.tsx: the split
+                                               layout /login and /signup share
+      lib/authDocument.ts, lib/emailTypos.ts   SIGNUP (the Turnstile document rules, safe next paths, fragment tokens,
+                                               in-app browsers, the tab's stash; "Did you mean …?")
+      components/auth/*                        SIGNUP (Turnstile, GoogleButton, AuthCard, PasswordRules, IdentityRow,
+                                               TermsCheck, EmailField; auth-components.css, CSS prefix auth-)
+      pages/{SignupPage,VerifyEmailPage,GoogleSignupPage,ForgotPasswordPage,ResetPasswordPage,ConfirmEmailPage,
+        UndoEmailPage}.tsx, pages/auth.css     SIGNUP (auth- prefix)
       pages/ChatPage.tsx + components/chat/*   FE-CHAT (top bar, model, Plugins and avatar menus, composer and its "+" menu)
       components/documents/*                   FE-DOCS
       pages/AdminPage.tsx + components/admin/* FE-ADMIN
@@ -183,7 +223,9 @@ rag-app/
   integration/              full-stack tests (section 9): run.sh, stack.sh, gen_env.py, compose.it.yml,
                             fake_llm/ (a fake OpenAI-compatible server), fake_google/ (serves the fakes in
                             backend/tests), fake_alerts/ (a webhook and ntfy receiver for the monitor),
-                            fake_razorpay/ (payment links, payments, refunds, disputes, signed webhooks), tests/
+                            fake_razorpay/ (payment links, payments, refunds, disputes, signed webhooks),
+                            fake_mail/ (an SMTP sink with an HTTP side), fake_turnstile/ (siteverify and the breach
+                            check's range route), tests/; fake_google/ also serves Google sign-in (OIDC)
   scripts/                  OPS (section 10): backup.sh, restore.sh, backup/backup.sh (run by the backup and restore
                             services), watchdog/ (an optional host watchdog: launchd and systemd), README.md
   e2e/                      Playwright browser tests against the running stack (section 9)
@@ -203,16 +245,20 @@ See `backend/app/config.py` for defaults. Important ones:
 | Var | Meaning |
 |---|---|
 | `SECRET_KEY` | JWT signing key, ≥ 32 chars, required |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | admin login (password ≥ 8 chars) |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | admin login (password ≥ 8 chars; the password policy doesn't apply). The env admin has no email, Google identity or reset. Start-up refuses an `ADMIN_USERNAME` naming a user who signed up themselves or has an email, a pending email or a Google identity; a password under 15 characters, in the blocklist or containing the app's name is logged as a warning (and shown on the Sign-up card) |
+| `ADMIN_SIGNIN_FROM` (`any`) | `local`: the env admin's password sign-in is refused (the generic 401) unless the request is local (section 6, Sign-up) |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` | provider keys read by LiteLLM |
 | `POSTGRES_USER/PASSWORD/DB/HOST/PORT` or `DATABASE_URL` | database |
 | `REDIS_URL`, `QDRANT_URL`, `QDRANT_API_KEY` | infra (`QDRANT_URL=:memory:` = in-process, tests only) |
 | `UPLOAD_DIR` | where uploaded files live (shared volume between backend and worker) |
-| `COOKIE_SECURE` | set `true` behind HTTPS |
+| `COOKIE_SECURE` | set `true` behind HTTPS; it also picks the cookie names: `__Host-<COOKIE_NAME>` for the session, `__Secure-rag_signup`, `__Secure-rag_gsignin` and `__Secure-rag_gticket` for sign-up and Google sign-in (without it, no prefix) |
+| `COOKIE_NAME` (`rag_session`) | the session cookie's base name |
+| `NGINX_REAL_IP_FROM` (empty; Compose only) | the tunnel's addresses nginx takes `CF-Connecting-IP` from; required before sign-up opens, since every per-network limit is otherwise one global limit |
 | Removed with plans: `DEFAULT_MONTHLY_TOKEN_LIMIT`, `DEFAULT_RATE_LIMIT_PER_MIN`, `DEFAULT_MAX_UPLOAD_MB`, `DEFAULT_MAX_DOCUMENTS`, `DEFAULT_MAX_STORAGE_MB`, `DEFAULT_MONTHLY_IMAGE_LIMIT`, `VISION_MONTHLY_TOKEN_LIMIT` | limits are set per plan in Admin → Plans; a value still in `.env` is ignored with one warning at start-up naming it |
 | `MAX_UPLOAD_MB_HARD` | absolute per-file cap. nginx accepts this + 10 MB only on `POST /api/documents` (after an auth check) and 1 MB on every other request |
 | `RAG_TOP_K`, `CHUNK_SIZE`, `CHUNK_OVERLAP`, `HISTORY_MESSAGES` | RAG tuning |
-| `LOGIN_MAX_ATTEMPTS` (10), `LOGIN_MAX_ATTEMPTS_PER_IP` (100), `LOGIN_WINDOW_SECONDS` (900) | login throttle |
+| `LOGIN_MAX_ATTEMPTS` (10), `LOGIN_MAX_ATTEMPTS_PER_IP` (100), `LOGIN_WINDOW_SECONDS` (900) | login throttle: failures per account (or unknown identifier) and per network (four times as many per wide network) |
+| `LOGIN_CHALLENGE_AFTER` (3, 1 to `LOGIN_MAX_ATTEMPTS`), `LOGIN_CHALLENGE_AFTER_PER_IP` (10, 1 to `LOGIN_MAX_ATTEMPTS_PER_IP`), `LOGIN_SITE_CHALLENGE_AFTER` (50, 10 to 10,000) | the sign-in challenge (Turnstile configured, requests that aren't local): failures for the identifier from one network, failures of the network, failures site-wide in 5 minutes |
 | `VISION_MAX_PAGES` (50) | PDF pages per document read with the vision model (section 7, step 4) |
 | `VISION_CONCURRENCY` (3), `VISION_MAX_IN_FLIGHT` (4) | vision calls in flight per document, and in the whole worker |
 | `VISION_TIMEOUT_SECONDS` (1800) | time a document may spend reading pages with the vision model; no call starts after it |
@@ -231,7 +277,7 @@ See `backend/app/config.py` for defaults. Important ones:
 | `IMAGE_OUTPUT_FORMAT` (png) | format asked of the image model: `png`, `jpeg` or `webp`; the image is stored as returned |
 | `IMAGE_TIMEOUT_SECONDS` (180) | one image call, waiting for an image slot and quick provider retries included; the call is abandoned after it |
 | `IMAGE_CONCURRENCY` (3) | image calls at once in one backend process |
-| `PUBLIC_BASE_URLS` (`http://localhost:8080`) | comma-separated origins the app is opened at; OAuth redirect URIs are `<origin>/api/plugins/<id>/oauth/callback` for these only, chosen by matching the request's `Origin` header (never `Host`) |
+| `PUBLIC_BASE_URLS` (`http://localhost:8080`) | comma-separated origins the app is opened at; OAuth redirect URIs are `<origin>/api/plugins/<id>/oauth/callback` (Gmail) and `<origin>/api/auth/google/callback` (Google sign-in) for these only, chosen by matching the request's `Origin` header (never `Host`); links in emails use the first `https` entry (else the first entry). Drop `www` once Cloudflare redirects it |
 | `TOKEN_ENCRYPTION_KEY` | comma-separated Fernet keys encrypting users' OAuth tokens (the first encrypts, all decrypt; every start re-encrypts rows under the first key); independent of `SECRET_KEY`; empty or invalid: OAuth plugins are not configured. Remove an old key only when Admin → Plugins shows 0 connections on an older key |
 | `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET` | Gmail's Google "Web application" OAuth client; either empty: Gmail is not configured |
 | `GOOGLE_OAUTH_TESTING_MODE` (true) | the Google app is in "Testing": only its test users can connect, and Google ends refresh tokens after 7 days (connections older than that read as reconnect needed; shown to users) |
@@ -264,15 +310,43 @@ See `backend/app/config.py` for defaults. Important ones:
 | `BILLING_REMINDER_DAYS` (5, 1 to 14) | the "ends soon" banner and the first reminder email, this many days before the paid time ends |
 | `BILLING_RECONCILE_SECONDS` (30, 2 to 300) | the tick of the worker's billing loop (checkouts, refunds, reminders) |
 | `BILLING_USD_INR` (88, 1 to 1000) | rupees per dollar, for the plan cost estimates only |
-| `BILLING_EMAIL_FROM` (empty) | with the `ALERT_SMTP_*` server settings: plan reminder emails |
+| Removed with sign-up: `BILLING_EMAIL_FROM` | receipts and plan reminders use `MAIL_FROM` and the `MAIL_SMTP_*` settings; a value still in `.env` is ignored with one warning at start-up |
+| `MAIL_SMTP_HOST` (empty), `MAIL_SMTP_PORT` (465), `MAIL_SMTP_SECURITY` (`ssl`; `ssl`, `starttls` or `none`), `MAIL_SMTP_USERNAME`, `MAIL_SMTP_PASSWORD` | the mailer's SMTP server (Resend: `smtp.resend.com`, user `resend`, a sending-only API key); never logged or shown |
+| `MAIL_FROM` (empty) | `Name <address>` or an address: the From of every user email; with `MAIL_SMTP_HOST`, the mailer is configured |
+| `MAIL_REPLY_TO` (empty) | an address; also adds "Questions? Reply to this email." to every mail |
+| `MAIL_DAILY_LIMIT` (80, 1 to 100,000) | mails per UTC day, shared by classes (section 6, Sign-up: the outbox) |
+| `MAIL_IDEMPOTENCY_HEADER` (`Resend-Idempotency-Key`) | a header name set to `mail-<public_id>` on every message; empty: none |
+| `MAIL_WEBHOOK_SECRET` (empty) | `whsec_` and base64: the Resend webhook's signing secret; empty: `POST /mail/resend-events` answers 404 |
+| `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY` (empty) | both or neither: Turnstile is configured |
+| `TURNSTILE_SITEVERIFY_URL` (`https://challenges.cloudflare.com/turnstile/v0/siteverify`) | another value only for a fake (tests) |
+| `GOOGLE_SIGNIN_CLIENT_ID`, `GOOGLE_SIGNIN_CLIENT_SECRET` (empty) | both or neither: Google sign-in is configured (a separate client and project from `GOOGLE_OAUTH_*`) |
+| `GOOGLE_SIGNIN_AUTHORIZE_URL`, `GOOGLE_SIGNIN_TOKEN_URL`, `GOOGLE_SIGNIN_JWKS_URL` | Google's endpoints by default; other values only for a fake (tests) |
+| `PASSWORD_MIN_LENGTH` (8, 8 to 64) | the password policy's minimum (section 6, Sign-up) |
+| `PASSWORD_BREACH_CHECK` (true), `PASSWORD_BREACH_CHECK_URL` (`https://api.pwnedpasswords.com/range/`) | the Have I Been Pwned range check of new passwords (fails open); another URL only for a fake |
+| `CHECKOUT_UNPAID_PER_HOUR` (30, 1 to 1,000) | payment links per hour for all unpaid users together; beyond it checkout answers 503 `checkout_busy` |
+| `TERMS_VERSION` (`2026-11-01`; 1 to 32 of `A-Za-z0-9._-`) | recorded with each sign-up's acceptance; change it when the terms change |
 | `EXPORT_TIMEOUT_SECONDS` (80, 10 to 90) | time from the request to the end of the build of one data export (nothing is sent before the build ends); conversations not reached are left out the same way. At most 90: the Cloudflare tunnel drops a response that sends nothing for about 100 s |
+
+Out-of-range values stop the backend at start-up, and so do test keys and test endpoints on the public site: when
+`PUBLIC_BASE_URLS` holds a public `https` origin, a Turnstile test secret (`1x…`, `2x…`, `3x…`), a sitekey without a
+secret, a non-default `TURNSTILE_SITEVERIFY_URL`, `GOOGLE_SIGNIN_*_URL` or `PASSWORD_BREACH_CHECK_URL`, or
+`MAIL_SMTP_SECURITY=none` is refused. `.env.example` has an "Accounts and sign-up" block and an "Email" block.
 
 ## 4. Data model (SQLAlchemy, `app/models.py`)
 
 All timestamps are timezone-aware UTC. Integer primary keys.
 
-- **users**: `id, username (unique, stored lowercase), password_hash,
-  is_admin, is_active, token_version, monthly_token_limit, rate_limit_per_min,
+- **users**: `id, username` (unique, stored lowercase, `^[a-z0-9_.-]+$`, 3 to
+  64 characters, never `@`; a self sign-up gets a random `user-` + 8 base32
+  characters; never one in `username_tombstones`), `password_hash` (NULL: no
+  password: a Google-only account, or after an undo; it never matches), `email`
+  (the **verified** address as given, local part as typed and the domain in
+  lowercase ASCII, ≤ 254; NULL: none), `email_canonical` (the address
+  lowercased; unique `uq_users_email_canonical`: the key for sign-in,
+  uniqueness and linking), `email_verified_at` (set whenever `email` is),
+  `signup_source` ("env"|"admin"|"email"|"google"; server default `'admin'`),
+  `terms_version, terms_accepted_at` (a self sign-up's consent; NULL for `env`
+  and `admin` users), `is_admin, is_active, token_version, monthly_token_limit, rate_limit_per_min,
   max_upload_mb, max_documents, max_storage_mb, monthly_image_limit,
   vision_monthly_token_limit` (the seven limit **overrides**, all nullable:
   NULL = the plan's value, 0 = unlimited), `restrict_models, billing_tester`
@@ -282,7 +356,10 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   `allowed_models` (M2M via `user_allowed_models`). If `restrict_models` is
   false the user may use every chat model of their plan; if true only those
   that are also in `allowed_models` (the list only narrows the plan's).
-  Bumping `token_version` invalidates all of the user's sessions.
+  Bumping `token_version` invalidates all of the user's sessions. After the
+  account is created, `users.email` is written only by a confirmed change, an
+  undo, or a Google link of an account that has none (section 6, Sign-up).
+  Relationship `identities` (`user_identities`).
 - **llm_models**: `id, display_name, litellm_model (e.g. "openai/gpt-5.4-mini",
   "anthropic/claude-sonnet-5-5", "ollama/llama3.1"), kind ("chat"|"embedding"|"vision"|"image"),
   enabled, is_default, api_base, api_key_env, max_output_tokens, temperature,
@@ -337,7 +414,8 @@ All timestamps are timezone-aware UTC. Integer primary keys.
 - **app_state**: `key (primary key), value, updated_at`. Server flags and
   settings, e.g. `vision_seeded`, `image_seeded`, `plans_seeded`,
   `plans_rollout` (section 6, Admin), `billing_settings` (JSON
-  `BillingSettings`) and `receipt_seq:<mode>:<financial year>` (the last receipt
+  `BillingSettings`), `signup_settings` (JSON `SignupSettings`; missing: closed,
+  both methods on) and `receipt_seq:<mode>:<financial year>` (the last receipt
   number of a series, section 6, Billing).
 - **message_files**: `id, message_id → messages (CASCADE), document_id →
   documents (SET NULL), filename, format ("pdf"|"docx"|"xlsx"|"md"|"png"|"jpeg"|"webp"),
@@ -393,7 +471,7 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   details emptied); id, status and times stay for the daily cap. Startup scrubs
   rows left without a conversation.
 - **user_preferences**: `user_id` (primary key) `→ users (CASCADE), data` (JSON
-  object: the `Preferences` fields; unknown keys are kept on write), `updated_at`.
+  object: the `Preferences` fields, the email switches included; unknown keys are kept on write), `updated_at`.
   No row: every default. Read leniently (an invalid stored value reads as its
   default), written strictly (`PATCH /me/preferences`).
 - **login_events**: `id, user_id → users (CASCADE), created_at, ip` (approximate:
@@ -401,8 +479,64 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   from the User-Agent, which isn't stored), `device` ("desktop"|"mobile"|"tablet"|
   "unknown"); index `(user_id, created_at)`. Whether the address is public is
   derived from `ip` on read (`LoginEvent.ip_private`). One row per successful
-  `POST /auth/login`; the newest 20 per user are kept (older rows are deleted when
-  one is added). Shown only to the user (`GET /me/account`) and in their export.
+  `POST /auth/login`, sign-up completion, Google sign-in and Google sign-up
+  finish, with `method` ("password"|"google"; server default `'password'`); the
+  newest 20 per user are kept (older rows are deleted when one is added). Shown
+  only to the user (`GET /me/account`) and in their export.
+- **user_identities**: `id, user_id → users (CASCADE), provider` ("google"),
+  `issuer` (`https://accounts.google.com`; the `accounts.google.com` form is
+  normalized to it), `subject` (Google's `sub`, ≤ 255, case-sensitive),
+  `email_at_link, email_kind` ("gmail": an `@gmail.com` address Google
+  verified; "workspace": verified with a non-empty `hd`; "unverified":
+  anything else, as the claims said at link time), `created_at, last_used_at`;
+  unique `(issuer, subject)` and `(user_id, provider)`: one Google identity per
+  user. Informational address: an account's address is `users.email` alone.
+- **pending_signups**: `id, address, canonical, password_hash` (argon2 of the
+  chosen password), `browser_sha256` (SHA-256 of the browser's `rag_signup`
+  cookie), `next_path, terms_version, terms_accepted_at, password_failures`
+  (wrong passwords at completion; the 5th deletes the row), `ip`
+  (approximate), `created_at, expires_at` (7 days after creation); indexes
+  `(canonical, created_at)` and `expires_at`. One per sign-up attempt, at most
+  three live rows per canonical address (a fourth deletes the oldest). Never a
+  user: it signs in nowhere and reserves nothing.
+- **pending_emails**: `id, user_id → users (CASCADE, unique), address,
+  canonical` (indexed), `source` ("user"|"google"), `created_at, sent_at` (the
+  last confirmation mail), `expires_at` (24 h after the last mail). An
+  account's unconfirmed address; only that account can confirm it.
+- **auth_tokens**: `id, purpose` ("signup"|"email"|"reset"|"email_undo"),
+  `token_sha256` (unique; the token itself is never stored), `address_sha256`
+  (SHA-256 of the canonical address it was mailed to), `user_id → users
+  (CASCADE), pending_signup_id → pending_signups (CASCADE), pending_email_id →
+  pending_emails (CASCADE)` (each nullable), `created_at, expires_at, used_at`;
+  indexes `(user_id, purpose)` and `expires_at`. Minted by the worker when it
+  sends; lifetimes `signup` 24 h, `email` 24 h, `reset` 30 min, `email_undo` 7
+  days; single use.
+- **email_outbox**: `id, public_id` (unique: the idempotency key), `kind,
+  priority, mail_class` ("public"|"reset"|"account"|"billing"), `to_address,
+  canonical` (cleared when the job finishes), `recipient_sha256, user_id →
+  users (CASCADE), pending_signup_id → pending_signups (SET NULL),
+  pending_email_id → pending_emails (SET NULL), params` (JSON: never a token,
+  link or secret), `status` ("queued"|"sending"|"sent"|"failed"|"cancelled"|
+  "expired"), `attempts, next_attempt_at, not_after, last_error` (our short
+  reason, ≤ 200), `created_at, sent_at, finished_at`; indexes `(status,
+  next_attempt_at)`, `(mail_class, created_at)` and `sent_at`. Deleted 48 hours
+  after it finishes.
+- **auth_events**: `id, created_at, user_id → users (CASCADE, nullable), type`
+  (e.g. `signup.completed`, `email.changed`, `password.reset`,
+  `google.linked`, `signup.settings`), `actor` ("self", "admin:<username>",
+  "system"), `ip` (approximate; cleared after 90 days), `detail` (JSON, masked
+  addresses only, but for `email.changed`'s `restore`: the old address an undo
+  puts back, encrypted with a key derived from `SECRET_KEY`, dropped 8 days on,
+  once no undo link can use it, and never exported); indexes `(user_id,
+  created_at)` and `(type, created_at)`. Deleted after 365 days or with the
+  user; in the user's export.
+- **mail_suppressions**: `recipient_sha256` (primary key), `reason`
+  ("bounce"|"complaint"), `source` ("webhook"|"smtp"), `created_at,
+  expires_at` (a bounce: 30 days; a complaint: NULL, until a user confirms that
+  address again). The worker never mails a suppressed address.
+- **username_tombstones**: `username` (primary key), `deleted_at`. Every
+  deleted user's username, never reissued (also those kept on billing records
+  of users deleted before revision 0004).
 - **plans**: `id, code` (unique, `^[a-z][a-z0-9_-]{1,31}$`, never changed),
   `name, description, price_paise` (BIGINT, whole rupees: the charge for one
   period), `rank` (unique; a higher rank is a higher plan), `status`
@@ -481,11 +615,15 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   error`. The audit trail of every change that grants or removes value, the
   webhook inbox and its dedupe.
 - **user_billing_profiles**: `user_id` (primary key) `→ users (CASCADE), name,
-  email, updated_at`. Optional, the user's own: the name on receipts and the
-  address for plan reminders.
+  updated_at`. Optional, the user's own: the name on receipts (its `email`
+  column was dropped by revision 0004: receipts and reminders go to the
+  verified `users.email`).
 - Billing records outlive their user: orders, payments, receipts and events
   keep the username and get `user_id` NULL; periods and the billing profile go
-  with the user.
+  with the user. Deleting a user also deletes their identities, pending email,
+  tokens, outbox rows and auth events, and inserts their username into
+  `username_tombstones`; the address and Google account can sign up again at
+  once.
 - The schema is managed by Alembic (`backend/migrations/`, README there):
   `init_db` runs `upgrade head` at start-up, in one transaction under the schema's
   advisory lock (on SQLite with foreign keys off, then `PRAGMA foreign_key_check`
@@ -502,7 +640,15 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   (the plan's value), drops `user_image_limits` (folded into
   `users.monthly_image_limit`), backfills `allowance_tokens` of chat events with
   their `total_tokens`, and on Postgres adds the exclusion constraint (with the
-  `btree_gist` extension). Up to revision 0002 the schema is exactly what `create_all`
+  `btree_gist` extension). Revision 0004 (sign-up) creates `pending_signups`,
+  `pending_emails`, `auth_tokens`, `user_identities`, `email_outbox`,
+  `auth_events`, `mail_suppressions` and `username_tombstones`; adds the
+  `users` columns above (`password_hash` becomes nullable) and
+  `login_events.method`; sets `signup_source = 'env'` for the admin; tombstones
+  the usernames on billing records of already-deleted users (skipping names a
+  current user has); and drops `user_billing_profiles.email` (its log line
+  counts the dropped values, never an address). It imports no app module and
+  invents no email. Up to revision 0002 the schema is exactly what `create_all`
   made; releases up to `c1da1d0` predate migrations, ignore `alembic_version` and
   start on any schema, so go back to one only with a database at 0002 or from
   before migrations. Rolling back past plugins needs the SQL in
@@ -533,10 +679,11 @@ vectors (rows and files are kept; retrying is safe), or Redis is unreachable
 (`{"detail": "A required service is temporarily unavailable. Try again shortly."}`;
 login, chat rate limits and admin stats need it).
 
-Some errors also carry a machine-readable `code` and, where useful, `feature`
-and `plan`: `{"detail": "…", "code": "plan_expired", "plan": "Standard"}`
-(`app/errors.py`, `AppError`). Clients branch on `code`, never on the text;
-dates in messages are IST dates written "25 Nov 2026".
+Some errors also carry a machine-readable `code` and, where useful, `feature`,
+`plan` and `reason`: `{"detail": "…", "code": "plan_expired", "plan": "Standard"}`
+(`app/errors.py`, `AppError`; a field is left out when unset). Clients branch
+on `code` (and `reason`), never on the text; dates in messages are IST dates
+written "25 Nov 2026".
 
 | Status | `code` | `feature` / `plan` | `detail` (examples) |
 |---|---|---|---|
@@ -550,6 +697,33 @@ dates in messages are IST dates written "25 Nov 2026".
 | 429 | `too_many_checkouts` | – | "Too many payment attempts. Try again in an hour." / "…tomorrow." (`Retry-After`) |
 | 503 | `payments_unavailable` | – | "Online payment isn't set up yet. Contact <business email>." |
 | 502 | `payment_provider_error` | – | "The payment service didn't answer. Try again in a minute." |
+| 409 | `email_required` | – | "Add and confirm your email in Settings → Account first. Your receipt goes there." |
+| 503 | `checkout_busy` | – | "Checkout is busy. Try again in a few minutes." |
+
+Sign-up, sign-in, reset and the account's email (section 6, Sign-up) add:
+
+| Status | `code` | `reason` | `detail` (examples) |
+|---|---|---|---|
+| 401 | `challenge_required` | – | "Confirm you're not a robot to continue." |
+| 400 | `challenge_failed` | – | "The check expired or failed. Try again." |
+| 503 | `challenge_unavailable` | – | "We couldn't check that you're not a robot. Try again in a minute." |
+| 429 | `too_many_attempts` | – | "Too many attempts. Try again in 40 minutes." (`Retry-After`) |
+| 403 | `signup_closed` | – | "New sign-ups are closed right now." |
+| 422 | `password_rejected` | `too_short`, `too_long`, `common`, `context`, `breached` | "Use at least 8 characters.", "Use at most 256 characters.", "This password is too common. Choose one that's harder to guess.", "Don't use the app's name, your username or your email in the password.", "This password has appeared in a data breach. Choose a different one." |
+| 503 | `mail_unavailable` | – | "We can't send emails right now. Try again later, or continue with Google." |
+| 400 | `link_invalid` | – | "This link has expired or was already used." |
+| 400 | `wrong_password` | – | "That isn't the password you chose when you signed up." / "Your password is incorrect." |
+| 400 | `signup_reset` | – | "Too many wrong passwords. Sign up again to choose a new one." |
+| 409 | `email_taken` | – | "This address already has an account. Sign in instead." (Google finish: "… Sign in with your password, then connect Google in Settings."; undo: "That address is now used by another account. Contact us.") |
+| 403 | `wrong_account` | – | "Sign in to the account that asked for this change." |
+| 503 | `google_unavailable` | – | "Google sign-in isn't set up." |
+| 403 | `reauth_required` | – | "Confirm it's you with Google first." |
+| 409 | `last_sign_in_method` | – | "Set a password and confirm an email first, so you can still sign in." |
+| 400 | `no_password` | – | "You don't have a password yet. Use Set a password." |
+| 409 | `has_password` | – | "You already have a password. Use Change password." |
+| 409 | `username_retired` | – | "That username belonged to a deleted account. Choose another." |
+
+An address that doesn't parse answers 422 `{"detail": "Enter a valid email address."}` (no `code`).
 
 Timestamps are ISO 8601 strings; billing dates (`valid_through` and the like)
 are IST dates `YYYY-MM-DD`; money is integer paise (₹1 = 100). Shapes use
@@ -573,10 +747,13 @@ type ChatFontSize = "small"|"default"|"large"
 type Preferences = { theme: ThemePreference /* default "system" */; accent: AccentColor /* "clay" */;
   chat_font_size: ChatFontSize /* "default" */; enter_to_send: boolean /* true; false: Ctrl/Cmd+Enter sends */;
   default_model_id: number|null /* the chat model new chats start with; null: unset, or no longer one the user
-    may use (then the server's default) */ }
+    may use (then the server's default) */;
+  email_plan_reminders: boolean /* true: plan reminder emails to the verified email */;
+  email_receipts: boolean /* true: a receipt email, PDF attached, for each payment */ }
 type Me = { id: number; username: string; is_admin: boolean;
   limits: UserLimits /* the plan's, merged with the user's overrides */; usage: UsageSummary;
-  preferences: Preferences; plan: PlanAccess }
+  preferences: Preferences; plan: PlanAccess;
+  email: string|null /* the verified email; the display name when set (else the username) */ }
 type ChatModel = { id: number; display_name: string; provider: string; is_default: boolean;
   can_create_files: boolean /* CHAT_FILE_TOOLS is on and LiteLLM says the model supports function calling */;
   can_create_images: boolean /* CHAT_IMAGE_TOOLS is on, a usable image model is active and the model gets tools */;
@@ -679,6 +856,11 @@ entitlements (`billing.entitlements.load`, the one source of every plan check)
 | `GET /health`, `/health/ready`, `/public/*` | 200 | 200 | 200 | 200 |
 | `GET /billing/razorpay/return`, `POST /billing/razorpay/webhook` | signature only | – | – | – |
 | `POST /auth/login`, `/auth/logout` | as before | as before | as before | as before |
+| `GET /auth/config`; `POST /auth/signup`, `/auth/signup/resend`, `/auth/signup/check`, `/auth/signup/complete`, `/auth/password/forgot`, `/auth/password/check`, `/auth/password/reset`, `/auth/email/check`, `/auth/email/undo-check`, `/auth/email/undo`, `/auth/google/start` (intent `signin`), `/auth/google/finish`, `/auth/google/cancel`; `GET /auth/google/callback`, `/auth/google/pending` | no session needed (a session is ignored; `email/check` only says whether it is the asking account's) | – | – | – |
+| `POST /auth/email/verify` | 401 | 200 for the asking account's session (403 `wrong_account` otherwise) | 200 (likewise) | 403 `wrong_account` |
+| `POST /auth/google/start` (intents `link`, `reauth`) | 401 | 200 | 200 | 400 |
+| `POST /mail/resend-events` | signature only (404 without `MAIL_WEBHOOK_SECRET`) | – | – | – |
+| `POST /me/email`, `/me/email/resend`, `DELETE /me/email/pending`, `POST /me/password/setup`, `DELETE /me/google` | 401 | 200 | 200 | 400 ("The admin account is managed in .env") |
 | `GET /auth/me`, `POST /auth/change-password`, `/auth/logout-others` | 401 | 200 | 200 | 200 |
 | `GET /auth/upload-allowed` (nginx only) | 401 | 403 | 204 | 204 |
 | `/me/preferences`, `/me/account`, `/me/usage`, `POST /me/export` | 401 | 200 | 200 | 200 |
@@ -690,7 +872,7 @@ entitlements (`billing.entitlements.load`, the one source of every plan check)
 | `GET /models`, `POST /chat/stream`, `GET`/`PATCH /conversations/{id}` | 401 | **402** | 200 | 200 |
 | `GET /documents/config`, `POST /documents`, `POST /documents/{id}/reprocess`, `GET /documents/{id}/image/details` | 401 | **402** | 200 | 200 |
 | `POST /plugins/{id}/connect`, the Gmail routes (`/plugins/gmail/threads/*`, `/import`, `GET /sends/{id}`, `/send`, `/revise`) | 401 | **402** | 200, or **402** `feature_not_in_plan` without the plugin | 200 |
-| `/admin/*` | 401 | 403 | 403 | 200 |
+| `/admin/*` (`/admin/signup-settings` and `/admin/mail/test` included) | 401 | 403 | 403 | 200 |
 
 Features add a condition and never turn anything on: files need `CHAT_FILE_TOOLS`
 **and** the plan's `files`; images need an active image model **and**
@@ -710,25 +892,47 @@ unused.
   checks; `Cache-Control: no-store`.
 
 ### Auth — `routers/auth.py`
-- `POST /auth/login` `{username, password}` → `Me` (with `plan`: a client sends a user without access to
-  `/plans`); sets the cookie. Throttled
-  via Redis per username (`LOGIN_MAX_ATTEMPTS` failures) and per client IP
-  (`LOGIN_MAX_ATTEMPTS_PER_IP` failures; larger, because every client behind a
-  reverse proxy or Docker's port publishing shares one IP) per
-  `LOGIN_WINDOW_SECONDS` → 429. Inactive users get 401 with the same message
-  as bad credentials ("Invalid username or password"). Updates `last_login_at`
-  and records a `login_events` row (approximate IP from the client address nginx
-  saw, browser, OS and device parsed from `User-Agent`; failed and refused logins
-  record nothing). The session token carries `sid`, that row's id, so the history
-  can mark the caller's own sign-in; tokens without `sid` stay valid.
+- `POST /auth/login` `LoginRequest` (`username` is accepted as an alias of
+  `identifier`, not both) → `Me` (with `plan`: a client sends a user without
+  access to `/plans`); sets the cookie. The identifier is trimmed (NUL dropped);
+  one with `@` is parsed as an email and finds the user whose `email_canonical`
+  matches (verified addresses only; an invalid address finds nobody), anything
+  else is the lowercased username. In order: the **hard limits** in Redis per
+  `LOGIN_WINDOW_SECONDS`, over `LOGIN_MAX_ATTEMPTS` failures for the identifier
+  key (`acct:<user id>` when the identifier found a user, so its email and
+  username share one counter; else the email's hash or the username),
+  `LOGIN_MAX_ATTEMPTS_PER_IP` for the network or four times that for the wide
+  network (Sign-up below: networks) → 429 with `Retry-After`; then, only with
+  Turnstile configured and for a request that isn't local, the **challenge**:
+  once the identifier key's failures from this network reach
+  `LOGIN_CHALLENGE_AFTER`, the network's reach `LOGIN_CHALLENGE_AFTER_PER_IP`,
+  or the whole site's in the last 5 minutes exceed `LOGIN_SITE_CHALLENGE_AFTER`,
+  a request without `turnstile_token` answers 401 `challenge_required` without
+  checking the password or counting; with one, Turnstile (action `login`):
+  `challenge_failed` → 400, `challenge_unavailable` → carry on without the
+  challenge (counted for the monitor). Counters exist for unknown identifiers
+  too. Then the attempt is counted and the password verified: an unknown
+  identifier, a wrong password, an account without a password, an inactive user
+  and, with `ADMIN_SIGNIN_FROM=local`, the env admin from a request that isn't
+  local all get 401 "Incorrect email, username or password." (the dummy hash
+  runs when no hash is checked). Success clears the identifier's counters,
+  updates `last_login_at` and records a `login_events` row with `method`
+  `password` (approximate IP from the client address nginx saw, browser, OS
+  and device parsed from `User-Agent`; failed and refused logins record
+  nothing). The session token carries `sid`, that row's id, so the history can
+  mark the caller's own sign-in; tokens without `sid` stay valid.
 - `POST /auth/logout` → 204; clears the cookie.
-- `GET /auth/me` → `Me`.
+- `GET /auth/me` → `Me` (with `email`).
+- `GET /auth/config` → `AuthConfig` (public; `Cache-Control: no-store`).
 - `GET /auth/upload-allowed` → 204 when the session may upload now (an active plan, or the admin), else 403; 401
   without a session. nginx asks it before reading an upload's body and turns the 403 into a 402 `plan_required`.
-- `POST /auth/change-password` `{current_password, new_password}` (new ≥ 8
-  chars) → 204; bumps `token_version` and re-issues the cookie (same `sid`). The env admin
-  gets 400 ("The admin password is managed in .env"); a wrong current password
-  gets 400 and counts toward the login throttle for that username (429).
+- `POST /auth/change-password` `{current_password, new_password}` → 204: the
+  new password must pass the password policy (422 `password_rejected`); an
+  account without a password gets 400 `no_password`; bumps `token_version`,
+  re-issues the cookie (same `sid`), revokes the user's `reset` tokens and
+  enqueues a `password_changed` notice. The env admin gets 400 ("The admin
+  password is managed in .env"); a wrong current password gets 400 and counts
+  toward the login throttle for that account (429).
 - `POST /auth/logout-others` (no body) → 204: bumps `token_version` (under the
   same row lock as change-password; 401 if the session ended meanwhile) and
   re-issues the caller's cookie with the same `sid` and the same expiry (the
@@ -737,6 +941,349 @@ unused.
   other browsers and devices, and every Bearer token, the caller's included
   (tabs of the same browser share the cookie and stay signed in). Allowed for the
   env admin; not throttled; plugin connections are untouched.
+
+### Sign-up, Google sign-in, password reset and email — `routers/auth_signup.py`, `auth_google.py`, `auth_email.py`, `mail_events.py`
+
+Brief `docs/briefs/signup-auth.md` sections 3 to 8 hold the rules in full;
+`app/schemas_auth.py` holds these shapes. Every request body refuses unknown
+fields (422); an address field holds 1 to 320 characters before it is parsed,
+a password 1 to 1,024, a Turnstile token 1 to 2,048, `next` at most 512.
+
+```ts
+type PasswordReason = "too_short"|"too_long"|"common"|"context"|"breached"   // the reason of 422 password_rejected
+type SignupAvailability = { open: boolean /* email || google */; email: boolean; google: boolean }
+type AuthConfig = { signup: SignupAvailability;
+  google_signin: boolean /* Continue with Google works for existing accounts (configured), even with sign-up closed */;
+  password_reset: boolean /* the mailer and Turnstile are configured */;
+  turnstile_site_key: string|null; password_min_length: number; password_max_length: number /* 256 */;
+  terms_version: string; contact_email: string|null /* Admin → Billing → Business & payments */ }
+type LoginRequest = { identifier: string /* email or username; "username" accepted as an alias */; password: string;
+  turnstile_token?: string|null }
+type SignupRequest = { email: string; password: string; accept_terms: true; turnstile_token: string;
+  next?: string|null /* a path on this site, kept through verification */ }
+type EmailWithChallenge = { email: string; turnstile_token: string }      // resend and forgot
+type Accepted = { status: "accepted" }                                     // 202, the same for every address
+type TokenRequest = { token: string /* 43 characters, base64url; any other string answers link_invalid */ }
+type SignupCheck = { email: string; expires_at: string;
+  needs_password: boolean /* false when this browser started the sign-up */; next: string|null }
+type SignupComplete = { token: string; password?: string|null /* required when needs_password */ }
+type PasswordTokenInfo = { email: string; username: string; has_password: boolean; expires_at: string;
+  google: { email: string /* masked */; suggest_disconnect: boolean } | null }
+type PasswordReset = { token: string; new_password: string; disconnect_google?: boolean /* false */ }
+type EmailTokenInfo = { email: string; account: string /* the asking account: its email masked, or its username */;
+  signed_in: boolean /* this session is that account's */ }
+type EmailConfirmed = { email: string }
+type UndoInfo = { old_email: string; new_email: string /* masked */ }
+type GoogleStart = { intent: "signin"|"link"|"reauth"; next?: string|null /* signin, reauth: a path on this site */;
+  from?: "login"|"signup"|null /* signin */; password?: string|null /* link: required */ }
+type GoogleStarted = { authorize_url: string }
+type GooglePending = { email: string; email_verified: boolean /* gmail or workspace: confirmed at once */;
+  from: "login"|"signup"; expires_at: string }
+type GoogleFinish = { accept_terms: true }
+```
+
+**Common rules.**
+
+- **Availability** (`signup_settings.availability`): email sign-up needs the
+  admin's settings (open, email on), the mailer and Turnstile configured;
+  Google sign-up needs open, google on and Google sign-in configured;
+  `signup.open` is either. Password reset needs the mailer and Turnstile.
+- **Addresses** (`services/auth/emails.parse`): trimmed, at most 254
+  characters, NFC; one `@`; a local part of 1 to 64 ASCII characters of
+  ``A-Za-z0-9.!#$%&'*+/=?^_`{|}~-`` with no leading, trailing or doubled dot; the
+  domain through `idna` (UTS 46) to lowercase ASCII with at least two labels
+  and an alphabetic top-level label, no IP literals. The canonical form is the
+  whole address lowercased; the **delivery key** (throttles only) also drops a
+  `+tag` and, for `gmail.com` and `googlemail.com`, the dots (written
+  `gmail.com`). Redis keys and finished outbox rows hold SHA-256 hashes, never
+  addresses; logs mask them (`j***@example.com`).
+- **Tokens**: 32 random bytes (43 base64url characters), minted by the worker
+  when it sends a mail, stored only as SHA-256 with the hash of the address
+  they were mailed to, carried in the link's fragment
+  (`<base>/verify-email#t=…`, `/confirm-email#t=`, `/reset-password#t=`,
+  `/undo-email#t=`; `<base>` the first `https` entry of `PUBLIC_BASE_URLS`)
+  and spent by a POST from that page. Single use; a `signup`, `email` or
+  `reset` token is spent only while its address hash still matches the pending
+  row's or the account's address. Every write to `users.email` or to a pending
+  email revokes the user's other `reset` and `email` tokens; a password change
+  revokes `reset` tokens. At most one `email_undo` token per user is live
+  (minted at the first change of a chain), and only an undo or its expiry ends
+  it. A missing, used, expired, unknown or mismatched token answers 400
+  `link_invalid`.
+- **Cookies** (HttpOnly; `__Secure-` with `COOKIE_SECURE`): `rag_signup`
+  (SameSite=Strict, Path `/api/auth/signup`, 7 days: the sign-up browser's
+  binding; a request's value is reused when it is 43 base64url characters,
+  else a new one is minted, and it is set on every sign-up answer),
+  `rag_gsignin` (SameSite=Lax so Google's redirect carries it, Path
+  `/api/auth/google/callback`, 600 s: the state's browser binding),
+  `rag_gticket` (SameSite=Strict, Path `/api/auth/google/`, 900 s: the
+  pending Google sign-up).
+- **`next`** (`safe_next`): a path starting with `/`, not `//` or `/api/`, with
+  no backslash or control character; anything else is null.
+- **Networks**: the client address after nginx's real-IP handling; an IPv4
+  address itself or an IPv6 address's /64 (IPv4-mapped counts as IPv4); the
+  **wide network** is the IPv4 /24 or the IPv6 /48, and every network limit
+  also applies to it at four times the number. A request is **local** when its
+  client address is loopback or private **and** its `Host` names a
+  `PUBLIC_BASE_URLS` entry that isn't `https`.
+- **Limits** (Redis fixed windows; 429 `too_many_attempts` with `Retry-After`
+  unless silent):
+
+  | Key | Limit |
+  |---|---|
+  | `signup` per network (sign-up, Google finish, email changes of unpaid accounts) | 20 an hour, 50 a day |
+  | `resend`, `forgot` per network | 10 an hour each |
+  | `token` per network (`signup/check`, `signup/complete`, `password/check`, `password/reset`, `email/check`, `email/verify`, `email/undo-check`, `email/undo`, `google/pending`) | 30 an hour |
+  | `google_start` per network | 20 a minute |
+  | mails per recipient **and kind** (`signup`: sign-up and resend; `reset`: forgot; `confirm`: email changes, their resends and a Google sign-up's unverified address), by `sha256(delivery key)` | 1 a minute, 3 an hour, 6 a day each; **silent**: the request answers as usual and enqueues nothing |
+  | security notices per account (`password_changed`, `password_added`, `google_linked`, `google_unlinked`) | 3 an hour, 10 a day; **silent**: the change goes ahead without its notice (as when the notice's class has no room today) |
+  | email changes per user | 5 a day; 3 for an unpaid account |
+  | admin test mail | 5 an hour |
+
+- **Enumeration**: sign-up, resend and forgot do the same work in the request
+  whatever the address (validation, the network limit, Turnstile, the password
+  hash on sign-up, at most one outbox row; `users` is never read) and answer
+  202 `Accepted` with the same body and headers; the worker decides what to
+  send. Sign-in has one 401 message.
+- **Turnstile** (`services/auth/turnstile.verify`): `POST
+  TURNSTILE_SITEVERIFY_URL` (`secret`, `response`, `remoteip`, a fresh
+  `idempotency_key`; 10 s); `internal-error`, a timeout or a 5xx is retried
+  once with the same key, then 503 `challenge_unavailable`; `success` false
+  (any error code) → 400 `challenge_failed`; success needs the expected
+  `action` and a `hostname` of a `PUBLIC_BASE_URLS` entry (both skipped with a
+  test secret). The token is never stored or logged. Always on sign-up
+  (`signup`), resend (`resend`) and forgot (`reset`), failing closed; at
+  sign-in (`login`) only as the challenge above.
+- **The password policy** (`services/auth/passwords.check`; wherever a password
+  is set: sign-up, reset, a first password, change-password, the admin's
+  create and reset; never at sign-in): `PASSWORD_MIN_LENGTH` to 256 code
+  points after NFC (`too_short`, `too_long`); any characters, never trimmed;
+  not in the bundled blocklist, lowercased (`common`); not equal, lowercased
+  with everything but letters removed, to `asknuvexusdoc`, `nuvexus`,
+  `nuvexusdoc`, the username, the email or its local part (each of 4 characters
+  or more; `context`); with `PASSWORD_BREACH_CHECK`, not in Have I Been Pwned's
+  range answer (`GET <PASSWORD_BREACH_CHECK_URL><first 5 hex of SHA-1>`,
+  `Add-Padding: true`, 2 s; a count above 0 rejects, any failure allows;
+  `breached`). Passwords are hashed and verified in their NFC form.
+- **Sessions**: completing an email sign-up, finishing a Google sign-up and a
+  Google sign-in each start a new session (a `login_events` row, method
+  `password` or `google`, a fresh `sid`); a reset and an undo end every session
+  (`token_version`) and don't sign in; linking, unlinking, step-ups, email
+  changes and setting a first password keep the current session.
+- **Audit**: `auth_events` rows (`signup.completed` with `method`,
+  `email.confirmed`, `email.changed`, `email.change_undone`, `email.pending`,
+  `password.reset`, `password.set`, `password.changed`, `google.linked` with
+  `auto` or `manual`, `google.unlinked` with `self` or `reset`,
+  `google.reauth`, `signup.settings`), masked addresses only.
+
+**Email sign-up** (no session needed; a session is ignored):
+
+- `POST /auth/signup` `SignupRequest` → 202 `Accepted` and `rag_signup`. In
+  order: validation (`accept_terms` must be true: 422 "Accept the terms to
+  create an account."); email sign-up available, else 403 `signup_closed`;
+  the network limit `signup`; Turnstile (`signup`); parse the address (422);
+  the password policy with the address and its local part as context (422
+  `password_rejected`); `available("public")`, else 503 `mail_unavailable`;
+  hash the password (always); the cookie; then, within the silent per-address
+  limit (kind `signup`), in one transaction: a `pending_signups` row (the hash,
+  `browser_sha256`, `safe_next(next)`, the terms record, the approximate IP),
+  the oldest live rows for the address beyond three deleted, and one outbox
+  job `signup`. The worker sends the "already have an account" mail when a
+  user holds the verified address (and deletes that row), else a verification
+  link for the row.
+- `POST /auth/signup/resend` `EmailWithChallenge` → 202 `Accepted`: the same
+  checks with the network bucket `resend` and Turnstile action `resend`, the
+  silent per-address limit (kind `signup`), one select of the newest live
+  pending row for the address whose `browser_sha256` matches the request's
+  cookie, and one `signup` job with that row's id or none. Earlier links stay
+  valid.
+- `POST /auth/signup/check` `TokenRequest` → `SignupCheck` (network limit
+  `token`; 400 `link_invalid`). `needs_password` is false when the request's
+  `rag_signup` cookie hashes to the row's `browser_sha256`.
+- `POST /auth/signup/complete` `SignupComplete` → `Me` and the session cookie:
+  network limit `token`; the token and its pending row locked (else
+  `link_invalid`); the binding: the same browser's cookie, or else the chosen
+  password (wrong or missing: 400 `wrong_password` "That isn't the password you
+  chose when you signed up."; a missing one isn't counted; the 5th wrong one
+  deletes the row and its tokens: 400 `signup_reset`); sign-up still open
+  (403 `signup_closed`); the address not held by a user (else every pending
+  row for it is deleted: 409 `email_taken`); then the user is created (a
+  generated username, the row's hash, the verified email, `signup_source`
+  `email`, the terms record), every pending row for the address deleted,
+  `signup.completed` and a sign-in recorded; `rag_signup` cleared. `Me.plan`
+  is `none`.
+
+**Password reset** (no session needed):
+
+- `POST /auth/password/forgot` `EmailWithChallenge` → 202 `Accepted`: password
+  reset available (else 503 `mail_unavailable`); network limit `forgot`;
+  Turnstile (`reset`); parse (422); `available("reset")`; the silent
+  per-address limit (kind `reset`); one `password_reset` job. The worker mints
+  a `reset` token (30 minutes) for an active non-admin user with that verified
+  address; else a live pending sign-up for the address gets a fresh
+  verification ("finish creating your account"); else nothing. A username isn't
+  accepted.
+- `POST /auth/password/check` `TokenRequest` → `PasswordTokenInfo` (network
+  limit `token`; 400 `link_invalid`); `google` is the linked identity's masked
+  address at link time and whether its canonical form differs from the
+  account's email.
+- `POST /auth/password/reset` `PasswordReset` → 204: network limit `token`; the
+  token (its address hash equal to the user's current `email_canonical`) and
+  the user (active, non-admin) locked, else `link_invalid`; the password policy
+  (422); then the hash set, the token spent and the user's other `reset`
+  tokens revoked (an `email_undo` token survives), `token_version` bumped
+  (every session ends, the caller's included), a pending email deleted, the
+  login-failure counters cleared, with `disconnect_google` the identity deleted
+  (`google.unlinked`, `reset`); `password.reset` recorded and
+  `password_changed` enqueued. It never signs in.
+
+**Confirming and undoing an email** (`auth_email.py`):
+
+- `POST /auth/email/check` `TokenRequest` → `EmailTokenInfo` (network limit
+  `token`; 400 `link_invalid`).
+- `POST /auth/email/verify` `TokenRequest` → `EmailConfirmed` (network limit
+  `token`; **the session is required**, 401 without one): the token (purpose
+  `email`, its address hash equal to the pending row's) and its pending row
+  locked; the session's user must be the row's (403 `wrong_account`); the
+  address held by another user → the pending row deleted, 409 `email_taken`;
+  else `email`, `email_canonical` and `email_verified_at` set, the pending row
+  and every `pending_signups` row for the address deleted, the user's `reset`
+  tokens revoked, a suppression of the address deleted, `email.confirmed` (or
+  `email.changed`) recorded and `email_changed` enqueued to the old address when
+  there was one. Sessions are kept.
+- `POST /auth/email/undo-check` `TokenRequest` → `UndoInfo` (network limit
+  `token`; 400 `link_invalid`).
+- `POST /auth/email/undo` `TokenRequest` → 204 (no session needed): the token
+  (purpose `email_undo`) and the user (active, non-admin) locked; the token's
+  address now held by another user → 409 `email_taken`; else in one
+  transaction the email back to that address (verified now), the pending email
+  deleted, `password_hash` NULL, `token_version` bumped, every `reset`, `email`
+  and `email_undo` token of the user revoked, `email.change_undone` recorded,
+  `password_reset` enqueued for the user (a reset link to the restored
+  address) and `email_undone` to the address it replaced.
+
+**Google sign-in** (`auth_google.py`; scope `openid email`, the
+authorization-code flow with PKCE S256, `state`, `nonce` and the `rag_gsignin`
+binding; no Google JavaScript; no Google token is kept; users are keyed on
+(issuer, subject)). It is separate from the Gmail plugin, whose Google project,
+client (`GOOGLE_OAUTH_*`), callback, cookie and Redis keys are unchanged:
+signing in with Google never grants Gmail access, and connecting Gmail never
+links a sign-in identity.
+
+- `POST /auth/google/start` `GoogleStart` → `GoogleStarted` and `rag_gsignin`:
+  Google sign-in configured (else 503 `google_unavailable`); network limit
+  `google_start`; `link` needs a session and its password (checked under the
+  login counter for that account: 400 `wrong_password`, 429 past the limit; not
+  for an account without a password); `reauth` needs a session with a `sid` and
+  a linked identity (else 400); the env admin gets 400. The request's `Origin`
+  must be one of `PUBLIC_BASE_URLS` (else 400 "Use <first https origin> to
+  sign in with Google."); `next` through `safe_next` (default `/`;
+  `/?settings=account` for `reauth`). The state (`auth:google:<sha256(state)>`,
+  600 s) holds the intent, `from`, the user, `token_version` and `sid` for
+  `link` and `reauth`, the PKCE verifier, the nonce, the binding's hash, the
+  redirect URI (`<origin>/api/auth/google/callback`), `next`. The URL has
+  `response_type=code`, `scope=openid email`, `prompt=select_account`, and for
+  `reauth` also `login_hint=<the linked sub>` and `max_age=0`; never
+  `access_type=offline`.
+- `GET /auth/google/callback?code&state` (or `?error&state`) → always **303**,
+  never an error page, and `rag_gsignin` cleared. The state is taken once
+  (missing: `/login?google=expired`); the cookie must match its binding
+  (`?google=error`); `access_denied` → `?google=denied`; the code exchange (10 s;
+  only the `id_token` is kept) and the ID token's checks (RS256 by `kid` from
+  `GOOGLE_SIGNIN_JWKS_URL`, cached 5 minutes to 24 hours and refetched once for
+  an unknown `kid`; `iss`; `aud` and `azp`; `exp`; `iat` at most 10 minutes
+  ahead; `nonce`; `sub` 1 to 255 characters; a parseable `email`;
+  `email_verified` true or `"true"`) → `?google=error` on failure. The kind:
+  `gmail` (`@gmail.com`, verified), `workspace` (verified with `hd`), else
+  `unverified`. Intent `signin`:
+
+  | Case | Result |
+  |---|---|
+  | the identity is linked to an active non-admin user | sign in (`last_used_at`, `login_events` method `google`, the session cookie), 303 `<base><next>` |
+  | … to an inactive user | 303 `/login?google=unavailable` |
+  | no identity; `gmail`; a user holds this verified address, has no Google identity, is active and isn't the admin | link (`google.linked`, `auto`; a `google_linked` notice), then sign in |
+  | no identity; `gmail` or `workspace`; a user holds the address but another condition fails | 303 `/login?google=link_required` |
+  | no identity, nobody holds the address (`unverified` addresses are never looked up); Google sign-up closed | 303 `/login?google=signup_closed` |
+  | otherwise | a ticket (`auth:gticket:<sha256(ticket)>`, 900 s: issuer, subject, email, kind, `next`, `from`), `rag_gticket`, 303 `/signup/google` |
+
+  Intent `link`: the state's user must still exist, be active and have the same
+  `token_version` → 303 `/?settings=account&google=<result>`: `linked` (a
+  `google_linked` notice, `google.linked` `manual`), `in_use` (another user's
+  identity), `already_linked`, `denied`, `error` or `expired`; linking never
+  replaces `users.email`, but an account
+  without one gets a `gmail` or `workspace` address nobody holds as its
+  verified email. Intent `reauth` (the **step-up**): the same user checks, the
+  token's identity must be the user's linked one (else
+  `/?settings=account&google=reauth_mismatch`), an `auth_time` at most 5
+  minutes old (else `expired`); then a grant `auth:stepup:<user_id>:<sid>` for
+  300 s, `google.reauth`, and 303 `<base><next>` with `google=reauth_ok` added.
+  A grant works only in the session that asked and is spent by the action it
+  was for.
+- `GET /auth/google/pending` → `GooglePending` (the `rag_gticket` cookie; network
+  limit `token`; 400 `link_invalid` without a live ticket).
+- `POST /auth/google/finish` `GoogleFinish` → `Me` and the session cookie
+  (network limit `signup`): the ticket taken once and everything checked again
+  in one transaction (the identity unused; for `gmail` and `workspace`, the
+  address not held by a user, else 409 `email_taken`; sign-up open, else 403
+  `signup_closed`); the user (a generated username, no password,
+  `signup_source` `google`, the terms record) and the identity are created; for
+  `gmail` and `workspace` the email is verified at once and every pending
+  sign-up for it deleted; for `unverified` a `pending_emails` row (`source`
+  `google`) and, while `available("public")` and within the silent
+  per-address limit (`confirm`), an `email_confirm` job (else Settings →
+  Account resends it). `signup.completed` (`google`) and a sign-in recorded;
+  `rag_gticket` cleared.
+- `POST /auth/google/cancel` → 204: drops the ticket and its cookie.
+
+**The outbox and mail** (`services/mail/`): the request path only inserts an
+`email_outbox` row in the caller's transaction (`outbox.enqueue`, never
+committing) and wakes the worker after the commit (`rag:mail_wake`). The
+worker's `MailLoop` sends one job at a time over SMTP (`MAIL_*`), retrying
+temporary failures (and a job that couldn't be prepared) after 1 min, 5 min,
+30 min, 2 h and 6 h, then `failed`; past its `not_after` a job is `expired`; a
+refused SMTP login pauses every job for 15 minutes; a finished job's address is
+cleared. A stopping worker lets the mail being sent finish (a few seconds) or
+puts its job back in the queue; a job a stopped worker left `sending` for over
+2 minutes is queued again, at start-up and every minute (the hourly clean-up
+expires one past its `not_after`). `public` and `reset` jobs take at least 2 s
+of the loop's time whether sent or cancelled. Each message
+has `MAIL_FROM`, `MAIL_REPLY_TO` when set, one `To`, `Auto-Submitted:
+auto-generated`, plain text then HTML, and the idempotency header.
+
+| Kind | Class (priority) | `not_after` | Sent to |
+|---|---|---|---|
+| `signup` | public (1) | 6 h | the address: "already have an account" when a user holds it (active with a password, Google-only, or turned off), else a verification link for the pending row (or the newest live one); else nothing |
+| `password_reset` | reset (0) | 6 h | an active non-admin user with the verified address (or an undo's user): a reset link; else a pending sign-up's fresh verification; else nothing |
+| `email_confirm` | public; account once paid (0) | 6 h | the pending email: a confirmation link |
+| `email_changed`, `email_undone` | public; account once paid (0) | 3 days | the old address (with an undo link when the user has no live one) / the address the undo replaced |
+| `password_changed`, `password_added`, `google_linked`, `google_unlinked` | public; account once paid (0) | 3 days | the verified email (none: nothing) |
+| `receipt` | billing (2) | 3 days | the verified email, with `email_receipts`: the receipt mail with its PDF |
+| `plan_reminder` | billing (2) | 1 day | the verified email, with `email_plan_reminders` |
+| `test` | account (2) | 1 h | the admin's typed address |
+
+"Paid" means at least one live or offline payment applied. `MAIL_DAILY_LIMIT`
+per UTC day is shared: `public` (counted when created, whatever it became, and
+an earlier day's job again on the day it is sent or due) up to 40%, `reset`
+(likewise) up to 30%, `public`, `reset` and `account` together up to 80%,
+`billing` up to 100%. What a class has past its share is held, so it takes no
+other class's room: `billing` always keeps 20%. `outbox.available(cls)` is what
+sign-up, resend, forgot and an email change check (503 `mail_unavailable`), and
+a security notice (skipped without room); the worker holds a job past its
+class's share until the next UTC day. No welcome email.
+
+- `POST /mail/resend-events` (Resend's webhook; no session; 404 without
+  `MAIL_WEBHOOK_SECRET`; body at most 64 KB) → 200: the Svix headers
+  (`svix-id`, `svix-timestamp` within 5 minutes, `svix-signature` with one or
+  more `v1,<base64>` HMAC-SHA256 of `<id>.<timestamp>.<body>` under the
+  base64-decoded secret after `whsec_`) → else 401; a repeated `svix-id` (24 h)
+  → 200 and nothing; `email.bounced` (permanent bounces) and
+  `email.complained` add each address's hash to `mail_suppressions`; other
+  types → 200 and nothing. An SMTP 550 to 553 for the recipient suppresses it
+  too. A suppressed address gets no mail, except one opt-in a day (a sign-up's
+  verification or an `email_confirm`, which someone just asked for with that
+  address); confirming the address, or finishing a sign-up with its link, lifts
+  the suppression. When today's bounces reach 3 and at least 2% of today's sent
+  mails, the `public` class pauses until 00:00 UTC.
 
 ### Account — `routers/me.py` (the caller's own; every route needs a session)
 
@@ -750,11 +1297,23 @@ type LoginEvent = { id: number; created_at: string;
   ip_private: boolean /* ip isn't a public address (private, loopback, link-local, shared): through this machine,
     Docker, a local network or a proxy; false when ip is null */;
   browser: string|null /* e.g. "Chrome 141", "Safari 26", "curl" */; os: string|null /* "macOS", "Windows", "iOS", … */;
-  device: DeviceType; current: boolean /* the sign-in of the session making the request */ }
+  device: DeviceType; current: boolean /* the sign-in of the session making the request */;
+  method: "password"|"google" }
+type SignupSource = "env"|"admin"|"email"|"google"
+type PendingEmailInfo = { address: string; source: "user"|"google"; sent_at: string|null; expires_at: string }
+type GoogleLink = { email: string /* at link time */; linked_at: string; last_used_at: string|null }
 type AccountInfo = { id: number; username: string; is_admin: boolean;
   password_managed_by_env: boolean /* the env admin: change-password answers 400 */;
   created_at: string; last_login_at: string|null; conversation_count: number;
-  recent_logins: LoginEvent[] /* newest first, at most 20 */ }
+  recent_logins: LoginEvent[] /* newest first, at most 20 */;
+  email: string|null; email_verified_at: string|null; pending_email: PendingEmailInfo|null;
+  has_password: boolean; google: GoogleLink|null; signup_source: SignupSource; terms_accepted_at: string|null;
+  email_change_needs: "password"|"google"|"not_allowed" /* google: a step-up; not_allowed: the env admin, or no way
+    to re-authenticate */;
+  stepup_until: string|null /* this session holds a step-up grant until then */ }
+type EmailChange = { email: string; password?: string|null /* required when email_change_needs is "password" */ }
+type NewPassword = { new_password: string }
+type PasswordConfirm = { password: string }
 type UsageAmount = { used: number; limit: number /* 0 = unlimited; always 0 for the admin */ }
 type MyUsage = { month: string /* "YYYY-MM" of period_start */;
   period_start: string; resets_at: string /* the allowance window's start and end (the period, or the UTC month) */;
@@ -777,7 +1336,37 @@ type MyUsage = { month: string /* "YYYY-MM" of period_start */;
   access any id but null), else 422
   "That model isn't available to you."; on read, a stored default that is no
   longer usable is reported as null (and comes back if the model does).
+  `email_plan_reminders` and `email_receipts` (default true) are the switches
+  of Settings → Plan & billing.
 - `GET /me/account` → `AccountInfo`.
+
+The account's email, password and Google sign-in (Sign-up above; the env admin
+gets 400 "The admin account is managed in .env" on each):
+
+- `POST /me/email` `EmailChange` → 202 `Accepted`. Re-authentication: an
+  account with a password sends it (checked under the login counter; wrong →
+  400 `wrong_password`, 429 past the limit); one without spends the session's
+  step-up grant (else 403 `reauth_required` "Confirm it's you with Google
+  first."). Then the address is parsed (422), the same as the current email →
+  422 "That's already your email.", the per-user limit (5 a day; 3 for an
+  unpaid account, which also counts in the network `signup` bucket) → 429,
+  `available` for the job's class → 503 `mail_unavailable`; the user's
+  `pending_emails` row is replaced (`source` `user`, its `email` tokens
+  revoked) and `email_confirm` enqueued (within the silent per-address limit,
+  kind `confirm`). Whether another account holds the
+  address is decided at confirmation (`POST /auth/email/verify`).
+- `POST /me/email/resend` → 202 `Accepted` (the per-user limit and the silent
+  per-address limit, kind `confirm`); `DELETE /me/email/pending` → 204 (its
+  tokens revoked).
+- `POST /me/password/setup` `NewPassword` → 204: the step-up grant is spent
+  (else 403 `reauth_required`); the account must have no password (409
+  `has_password`); the password policy (422); the hash set, the login-failure
+  counters cleared, `password.set` recorded, `password_added` enqueued. No
+  session ends.
+- `DELETE /me/google` `PasswordConfirm` → 204: only with a password (checked as
+  above) and a verified email remaining (409 `last_sign_in_method`); the
+  identity deleted, `google_unlinked` enqueued, `google.unlinked` (`self`).
+  Connecting Google is `POST /auth/google/start` with intent `link`.
 - `GET /me/usage` → `MyUsage` for the allowance window (the current period, or
   the UTC calendar month for an open-ended plan, the admin and a user without
   access): the same counts the limits use (`allowance_tokens` of chat events for
@@ -787,7 +1376,9 @@ type MyUsage = { month: string /* "YYYY-MM" of period_start */;
 - `POST /me/export` (no body; a POST so nginx's cross-site check applies) →
   `200 application/zip` (a download): `README.txt`,
   `account.json` (profile, preferences, limits, the usage of the allowance
-  window, plugin connections without tokens, sign-ins, and the counts of included
+  window, plugin connections without tokens, sign-ins, `email`, `pending_email`,
+  `google` (the linked address and date), `terms` (version and time) and
+  `security_events` (the user's `auth_events`), and the counts of included
   and omitted conversations), `documents.json` (metadata of the documents the
   caller owns; no file bytes), `billing.json` (the caller's periods, orders,
   payments and receipt numbers), `conversations/index.json`, and per conversation
@@ -1283,7 +1874,7 @@ type PlanOffer = { id: number; code: string; name: string; description: string; 
   options: CheckoutOption[] /* what the caller can buy now; empty for the admin */ }
 type PaymentsInfo = { available: boolean /* for this caller: keys set, and a tester under test keys */;
   mode: "test"|"live"|null /* null when not available to this caller */; contact_email: string|null;
-  upi_limit_paise: number /* 0: no limit */; email_reminders: boolean /* SMTP and BILLING_EMAIL_FROM are set */ }
+  upi_limit_paise: number /* 0: no limit */; email_reminders: boolean /* the mailer is configured */ }
 type PlanCatalog = { plans: PlanOffer[]; payments: PaymentsInfo }
 type OrderStatus = "pending"|"paid"|"expired"|"cancelled"|"review"
 type ReceiptRef = { id: number; number: string }
@@ -1303,7 +1894,7 @@ type PaymentView = { id: number; paid_at: string; plan: PlanRef|null; kind: Chec
 type PeriodSource = "payment"|"comp"
 type PeriodView = { id: number; plan: PlanRef|null; plan_name: string; starts_at: string; ends_at: string;
   valid_through: string; source: PeriodSource; current: boolean; test_mode: boolean; reason: string|null /* comps */ }
-type BillingProfile = { name: string|null /* ≤ 100 */; email: string|null /* ≤ 254, ^[^@\s]+@[^@\s]+\.[^@\s]+$ */ }
+type BillingProfile = { name: string|null /* ≤ 100 */ }   // receipts and reminders go to the verified users.email
 type ComplimentaryView = { plan: PlanRef; reason: string; granted_by: string; granted_at: string }
 type BillingStatus = { plan: PlanAccess; periods: PeriodView[] /* unexpired, in order */;
   complimentary: ComplimentaryView|null /* the open-ended plan */; open_order: OrderView|null;
@@ -1326,9 +1917,10 @@ of time left, 1 − the largest used share of its limited allowances))`, at leas
 Labels: "Choose <plan>" ("Renew <plan>" for the last plan when expired), "Renew",
 "Switch on <date>", "Upgrade now · ₹X", "Start a new period now · ₹X". Reasons
 when unavailable: "You already have a period paid ahead.", "This plan is no
-longer offered.", "Online payment isn't set up yet.", "You're already on this
-plan or a higher one." The server recomputes everything at checkout; nothing
-about the amount comes from the client.
+longer offered.", "Online payment isn't set up yet." (for a non-tester while
+payments aren't live: "Paid plans open soon. Check back in a few days."), "You're
+already on this plan or a higher one." The server recomputes everything at
+checkout; nothing about the amount comes from the client.
 
 User endpoints (session required; open to users without access):
 
@@ -1346,10 +1938,13 @@ User endpoints (session required; open to users without access):
   at the same time. Open the plans page to see the one to pay."). `pay_url` is always `https://rzp.io/…` or a `razorpay.com`
   subdomain (any `https` origin only under test keys with a non-default
   `RAZORPAY_API_BASE`). Errors: 403 `admin_exempt`; 404 unknown plan; 409
-  `checkout_unavailable`; 422 (also without `accept_terms: true`); 429
-  `too_many_checkouts` (5 links in any 60 minutes, 15 per IST day); 502
-  `payment_provider_error`; 503 `payments_unavailable` (no keys, or test keys
-  and the caller isn't a tester).
+  `checkout_unavailable`; 409 `email_required` (no verified email); 422 (also
+  without `accept_terms: true`); 429 `too_many_checkouts` (5 links in any 60
+  minutes, 15 per IST day; for an unpaid user, one without a live or offline
+  payment applied yet: 3 and 6); 502 `payment_provider_error`; 503
+  `payments_unavailable` (no keys, or test keys and the caller isn't a tester);
+  503 `checkout_busy` (unpaid users together made `CHECKOUT_UNPAID_PER_HOUR`
+  links in the last hour).
 - `GET /billing/orders/{public_id}` (`?refresh=true` checks with Razorpay first
   when no other check of that order runs, at most once every 10 s per order and
   30 times an hour per user; otherwise the stored order) → `OrderView`; 404 when
@@ -1364,8 +1959,7 @@ User endpoints (session required; open to users without access):
   filename="receipt-RA-26-27-000001.pdf"`, `Cache-Control: private, no-store`,
   `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox`.
 - `GET /billing/profile` → `BillingProfile`; `PUT /billing/profile`
-  `BillingProfile` → `BillingProfile` (blank strings become null; 422 for an
-  invalid email).
+  `BillingProfile` → `BillingProfile` (blank strings become null).
 
 Razorpay endpoints (no session; nginx rate-limits both and logs the path only):
 
@@ -1417,7 +2011,10 @@ numbered `<prefix>/<yy>-<yy+1>/<seq:06d>` per Indian financial year (1 April to
 (with a watermark); live and offline payments share the live series, with no
 gaps. The row is a snapshot (seller, buyer, lines, amount, method); the PDF
 (fpdf2, Noto Sans) is rendered on demand and shows refunds and lost disputes. No
-GST line.
+GST line. The receipt is also emailed, PDF attached, to the account's verified
+email when `email_receipts` is on (an outbox `receipt` job; the buyer email on
+the row is the account's email at the time), and plan reminders go the same way
+when `email_plan_reminders` is on; without a verified email nothing is mailed.
 
 Public endpoints (`routers/public.py`; no session; `Cache-Control: public,
 max-age=60`):
@@ -1438,12 +2035,17 @@ type AdminUser = { id: number; username: string; is_admin: boolean; is_active: b
   billing_tester: boolean /* may check out while test keys run */;
   limits: UserLimits /* effective: the plan's merged with the overrides */; overrides: LimitOverrides;
   above_plan: (keyof UserLimits)[] /* overrides more generous than the plan's value */;
-  no_models: boolean /* the allowed list and the plan's models don't overlap */; plan: AdminUserPlan }
-type AdminUserCreate = { username: string /* 3-64, ^[a-zA-Z0-9_.-]+$, lowercased */;
-  password: string /* >= 8 */; is_active?: boolean; restrict_models?: boolean; allowed_model_ids?: number[];
+  no_models: boolean /* the allowed list and the plan's models don't overlap */; plan: AdminUserPlan;
+  email: string|null /* verified */; email_verified_at: string|null;
+  pending_email: { address: string; sent_at: string|null } | null;
+  signup_source: SignupSource; has_password: boolean; google_linked: boolean;
+  google_email: string|null /* the linked Google account's address; null when none */; terms_accepted_at: string|null;
+  terms_version: string|null /* the terms version the user accepted; null for admin-created users */ }
+type AdminUserCreate = { username: string /* 3-64, ^[a-zA-Z0-9_.-]+$, lowercased; not a retired one */;
+  password: string /* the password policy */; is_active?: boolean; restrict_models?: boolean; allowed_model_ids?: number[];
   billing_tester?: boolean; overrides?: Partial<LimitOverrides>;
   grant?: Omit<GrantRequest, "start"> /* a complimentary plan from now */; confirm_unlimited?: boolean }
-type AdminUserUpdate = { password?: string /* = reset */; is_active?: boolean; restrict_models?: boolean;
+type AdminUserUpdate = { password?: string /* = reset; the password policy */; is_active?: boolean; restrict_models?: boolean;
   allowed_model_ids?: number[]; billing_tester?: boolean;
   overrides?: Partial<LimitOverrides> /* a key present sets it, null clears it; absent keys stay */;
   confirm_unlimited?: boolean /* required when an override sets monthly_token_limit to 0 */ }
@@ -1477,12 +2079,18 @@ Endpoints:
 - `GET /admin/config` → `AdminConfig`
 - `GET /admin/stats` → `AdminStats`
 - `GET /admin/users` → `AdminUser[]` · `POST /admin/users` → 201 `AdminUser`
-  (409 if username taken) · `PATCH /admin/users/{id}` → `AdminUser` ·
+  (409 if username taken; 409 `username_retired` for a deleted user's
+  username) · `PATCH /admin/users/{id}` → `AdminUser` ·
   `DELETE /admin/users/{id}` → 204 (deletes their documents completely:
-  vectors, rows and files; 503 if the vectors can't be removed). The env
+  vectors, rows and files; 503 if the vectors can't be removed; tombstones the
+  username). The env
   admin account cannot be changed or deleted here (400 "The admin account is
-  managed in .env"). Changing a password or deactivating bumps
-  `token_version`. `allowed_model_ids` must reference existing chat models
+  managed in .env"). A password on create or reset must pass the password
+  policy (422 `password_rejected` with its `reason`); a reset also revokes the
+  user's `reset` tokens and clears their login-failure counters. Changing a
+  password or deactivating bumps `token_version`. Users created here have
+  `signup_source` `admin`, no email (they add one in Settings → Account) and
+  no terms record. `allowed_model_ids` must reference existing chat models
   (422 otherwise). Overrides are stored in the user's limit columns (null = the
   plan's value); an override of 0 for `monthly_token_limit` needs
   `confirm_unlimited: true` (else 422 "Confirm an unlimited chat allowance.").
@@ -1555,6 +2163,35 @@ Endpoints:
   `image` is always null there: prompts are the owner's private content).
   `DELETE /admin/documents/{id}` → 204 (any document).
 
+Sign-up — `routers/admin_auth.py` (brief `docs/briefs/signup-auth.md` 13.9):
+
+```ts
+type SignupSettings = { open: boolean /* false: closed, as deployed */; email: boolean /* true */; google: boolean /* true */ }
+type SignupWarning = "real_ip" | "payments_not_live" | "mail_webhook_missing" | "admin_password_weak"
+type SignupStatus = { settings: SignupSettings; effective: SignupAvailability;
+  mail_configured: boolean; mail_webhook_configured: boolean; turnstile_configured: boolean;
+  google_configured: boolean; payments_live: boolean;
+  mail_sent_today: number; mail_queued: number; mail_daily_limit: number;
+  public_mail_left: number /* about how many sign-up emails still fit today */; public_paused: boolean /* bounces */;
+  bounces_today: number; complaints_7d: number;
+  mail_last_error: string|null /* our short reason and when, e.g. "SMTP login refused" */;
+  signups_today: number; signups_7d: number; paid_7d: number /* of the last 7 days' sign-ups, how many have paid */;
+  warnings: SignupWarning[] /* the policy-draft check is the page's own */ }
+type MailTest = { to: string }
+```
+- `GET /admin/signup-settings` → `SignupStatus` · `PUT /admin/signup-settings`
+  `SignupSettings` (an omitted field takes its default) → `SignupStatus` (an
+  `auth_events` `signup.settings` row with the values before and after).
+  `effective` is the settings with every prerequisite (Sign-up above:
+  availability). Warnings: `real_ip` (the admin's request reached a public host
+  from a private address: `NGINX_REAL_IP_FROM` unset), `payments_not_live` (no
+  live Razorpay keys, or rejected), `mail_webhook_missing` (sign-up open
+  without `MAIL_WEBHOOK_SECRET`), `admin_password_weak` (`ADMIN_PASSWORD` under
+  15 characters, common or with a context word, or found by the breach check,
+  run at most once a day). Closing sign-up leaves existing accounts working.
+- `POST /admin/mail/test` `MailTest` → 202 `Accepted` (a `test` job to that
+  address; 503 when the mailer isn't configured; 5 an hour → 429).
+
 Plans and billing — `routers/admin_billing.py` (every write takes the user's row
 lock where a user is involved and writes a `billing_events` row with the admin as
 `actor`):
@@ -1585,9 +2222,10 @@ type PaymentsSetup = { configured: boolean; mode: "test"|"live"|null; key_id_hin
   webhook_secret_set: boolean; previous_webhook_secret_set: boolean; last_webhook_at: string|null;
   webhook_url: string /* to register */; webhook_events: string[]; test_links_created: number;
   reconciler_last_run_at: string|null; last_error: string|null /* e.g. keys rejected */;
-  paused_orders: number /* of the other mode */; testers: number; email_reminders: boolean }
+  paused_orders: number /* of the other mode */; testers: number; email_reminders: boolean /* the mailer is configured */ }
 type BillingAdminConfig = { settings: BillingSettings; payments: PaymentsSetup; estimate: CostInputs }
-type UserRef = { id: number|null /* null: deleted */; username: string }
+type UserRef = { id: number|null /* null: deleted */; username: string;
+  email: string|null /* the account's verified email now */ }
 type AdminOrder = OrderView & { id: number; user: UserRef; mode: "test"|"live"|"offline";
   razorpay_link_id: string|null; razorpay_order_id: string|null; review_reason: string|null;
   review_note: string|null; checks: number; last_checked_at: string|null; next_check_at: string|null;
@@ -1740,7 +2378,7 @@ System — `routers/system.py` (section 10):
 ```ts
 type CheckStatus = "ok"|"warning"|"critical"|"unknown"
 type CheckId = "postgres"|"redis"|"qdrant"|"worker"|"queue"|"backup"|"disk_uploads"|"disk_backups"|"proxy"|"monitor"|
-  "billing" /* "Payments" */
+  "billing" /* "Payments" */|"mail" /* "Email" */
 type AlertChannel = "webhook"|"ntfy"|"email"
 type SystemCheck = { id: CheckId; label: string; status: CheckStatus; detail: string }
 type SystemAlert = { at: string; kind: "problem"|"reminder"|"recovery"|"test"; title: string; lines: string[];
@@ -1904,7 +2542,11 @@ type AlertTestQueued = { queued_at: string }
   "Admin · AskNuvexusDoc", "<page> · AskNuvexusDoc" on the plan pages and "<page> · <business name>" on the public
   pages. The brand mark is the italic serif letter "N" in a `--brand` tile, followed by "AskNuvexusDoc" in the chat
   sidebar and the admin and plan top bars and by the business name on the public pages (alone on full-page states).
-- Routes: `/login` (public), `/` chat and `/c/:conversationId` (signed in
+- Routes: `/login`, `/signup` and `/forgot-password` (signed out: a session
+  goes to the app), `/verify-email`, `/confirm-email`, `/reset-password`,
+  `/undo-email` (the emailed links; the token is in the fragment `#t=…`, read
+  once and removed from the address bar) and `/signup/google` (with or without a
+  session), `/` chat and `/c/:conversationId` (signed in
   **with access**: without it `<Navigate to="/plans" replace>` when the route is
   entered, never when `Me` changes on a page already shown; the admin always
   passes), `/plans`, `/plans/checkout/:code?kind=period|now` and
@@ -1913,11 +2555,45 @@ type AlertTestQueued = { queued_at: string }
   `/about`, `/shipping` (everyone), `/admin` (admin only; others redirected to
   `/`), `/settings` and `/settings/:tab` (redirect to `/?settings=<tab>`).
   `AuthContext` loads `/api/auth/me` on boot. `api/client.ts`: `ApiError` has
-  `code`, `feature` and `plan` from the error body; a 402 `plan_required` or
+  `code`, `feature`, `plan` and `reason` from the error body; a 402 `plan_required` or
   `plan_expired` calls the plan handler (`setPlanRequiredHandler`, one shared
   refresh of `Me`); after `Me.plan.paid_through` passes in an open tab, a timer
   refreshes `Me`. Money is shown with `formatInr` ("₹2,000", en-IN grouping) and
   billing dates as IST dates ("25 Nov 2026"; `src/lib/billing.ts`).
+- **Sign-up and sign-in** (brief `docs/briefs/signup-auth.md` section 13, looks
+  in `docs/briefs/signup-auth-visual.md`): `GET /auth/config` decides what the
+  signed-out pages offer. `/login` keeps its split layout (the card, then the
+  aside with the hero, copy and tour), shared with `/signup` through
+  `pages/login/AuthSplit.tsx`; it gains "New to AskNuvexusDoc? **Create an
+  account**" under the lede while sign-up is open, **Continue with Google**
+  first (when `google_signin`), one **Email or username** field, **Forgot
+  password?** (when `password_reset`), the `?google=<result>` notices, the 401
+  block "Incorrect email, username or password." with its two hints, and the
+  challenge (the Turnstile widget above **Sign in** after
+  `challenge_required`); the foot note "Accounts are created by your
+  administrator…" shows only while sign-up is closed. Submit buttons stay
+  enabled and explain what is missing on submit; email fields suggest "Did you
+  mean …?" for common domain typos; inside in-app browsers (Instagram,
+  Facebook, LinkedIn and the like) the Google button becomes a notice with
+  **Copy link**. The display name is `Me.email` when set, else the username
+  (the avatar menu, the Settings header and profile). While sign-up is open the
+  public top bar has **Sign up** beside Sign in, and `/pricing`'s button reads
+  "Create an account to choose a plan" (`/signup?next=/plans`).
+- **Turnstile and page loads** (`lib/authDocument.ts`): nginx gives only
+  `/login`, `/signup` and `/forgot-password` a CSP that also allows
+  `https://challenges.cloudflare.com` (`script-src`, `frame-src`); the widget
+  loads `https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit`
+  only in a document loaded at one of those paths and only after `/auth/me`
+  answered 401 in it (`AuthContext` status `signed-out`), in the app's resolved
+  theme; a page needing it in another document reloads itself once. Leaving an
+  auth page for the app (after sign-in, sign-up completion, Google finish) is a
+  full page load to a same-site path (`leaveForApp`, `safeNextPath`: "/" unless
+  a path not starting with `//` or `/api/`), and links between signed-out pages
+  are plain `<a href>`. The token pages send `Referrer-Policy: no-referrer`;
+  every response carries `Strict-Transport-Security: max-age=31536000`; nginx
+  adds coarse per-address zones on the public auth endpoints (`auth_public`),
+  `POST /api/billing/checkout` and the mail webhook, and never logs the Google
+  callback's query.
 - **Plans** (brief section 8, looks in `docs/briefs/plans-billing-visual.md`):
   the plan page (`/plans`: intro by state, notices, one card per plan with
   features, limits shown as answers and the options as actions, at most one
@@ -1932,6 +2608,9 @@ type AlertTestQueued = { queued_at: string }
   top bar (an open checkout, then "ends in N days", dismissible for the day);
   when access ends on an open chat page, the composer becomes a "plan ended"
   panel and the unsent text is kept in `sessionStorage["rag.planDraft"]`.
+  Without a verified email, `/plans` and checkout show the `email_required`
+  sentence with a link to Settings → Account above the options, and the return
+  page one line linking there (its reminder-email ask is gone).
   Locked features stay visible as one row each ("Included in <plan>", leading to
   `/plans`); the model menu shows a model's `allowance_rate` when it isn't 1 and
   its Files and Images tags only when the plan includes them. Public pages use
@@ -1946,9 +2625,15 @@ type AlertTestQueued = { queued_at: string }
   underneath (a new chat getting `/c/<id>`, a deleted one going to `/`) keep it
   open; a full-screen sheet under 800px.
   Tabs: General (theme, accent, chat font size, default chat model, Enter to
-  send), Account (profile, sign-ins, change password unless the env admin, log
-  out other sessions), Plan & billing (the current plan, an open checkout, the
-  periods coming up, receipt details, payment history with receipts), Usage
+  send), Account (profile with the display name, the sign-up source, the
+  username and the email's state; Email: add, change (password or a Google
+  step-up), the pending address with Resend and Cancel; Sign-in methods:
+  change or set a password, connect or disconnect Google, the
+  `?google=<result>` messages; sign-ins "with Google" or "with password"; log
+  out other sessions; for the env admin today's content and "The admin account
+  is managed in .env"), Plan & billing (the current plan, an open checkout, the
+  periods coming up, receipt details (the name only), the Emails section with
+  the receipt and reminder switches, payment history with receipts), Usage
   (`GET /me/usage` for the allowance window, "this period", with a CSS/SVG daily
   chart and a table), Plugins & data (connection cards, export, delete all chats
   with a typed confirmation; for a user without access also "Your data": their
@@ -2096,8 +2781,15 @@ type AlertTestQueued = { queued_at: string }
   server does). Admin → **Billing** (`#billing/overview|payments|orders|business`):
   needs-attention items, the month's tiles and lists, payments with refunds,
   bank transfers, orders, business details and the payments setup with the
-  going-live checklist. Admin → **Users**: a Plan column and filters, the user's
-  plan with grants, change plan and revoke, "Can make test payments", and the
+  going-live checklist (each user's email under the username wherever a
+  `UserRef` is shown). Admin → **Users**: the **Sign-up** card above the list
+  (Open or Closed, the Methods, Sign-ups, Email today and Checks tiles, the
+  warnings, **Edit…** with the dialog: open sign-up (a second click while a
+  warning stands), the two methods, the checks, **Send a test email…**), a
+  search box (username or email), the email as the user cell's second line, a
+  Signed up column and a sign-up filter, a Plan column and filters, the user's
+  plan with grants, change plan and revoke, "Can make test payments", the
+  read-only sign-in facts, and the
   limits as overrides of the plan's values ("Custom", "Above plan", an inline
   confirmation for an unlimited chat allowance).
   Admin → **System** (`#system`, `components/admin/SystemTab.tsx`, CSS prefix `admin-system-`; refreshed every 15 s
@@ -2118,9 +2810,10 @@ type AlertTestQueued = { queued_at: string }
   prefix). Each feature group adds its own
   CSS file next to its components (`chat.css`, `documents.css`, `admin.css`,
   `connections.css`, `settings.css`, `pages/login.css`, `billing/plan-card.css`,
-  `billing/billing.css`, `pages/plans.css`, `pages/public/public.css`)
+  `billing/billing.css`, `pages/plans.css`, `pages/public/public.css`,
+  `components/auth/auth-components.css`, `pages/auth.css`)
   using only its own class prefix (`chat-`, `docs-`, `admin-`, `conn-`,
-  `settings-`, `login-`, `plans-`, `billing-`, `public-`). Light and dark themes, five accents and three chat font sizes are
+  `settings-`, `login-`, `plans-`, `billing-`, `public-`, `auth-`). Light and dark themes, five accents and three chat font sizes are
   token sets selected by the `<html>` attributes of the theme engine
   (`:root[data-theme="dark"]`, `:root[data-accent="…"]`,
   `:root[data-chat-font="…"]`); no CSS reads `prefers-color-scheme`. Every text
@@ -2152,7 +2845,12 @@ standalone for Docker smoke runs, and one test runs the real LiteLLM for the
 request check with the HTTP layer replaced and checks the request bodies;
 Razorpay is never called: `fake_razorpay` replaces its HTTP transport, and
 `conftest.create_user` gives each user an open-ended complimentary Professional
-plan unless a test asks for another or none).
+plan unless a test asks for another or none; Google sign-in, Cloudflare
+Turnstile, Resend and Have I Been Pwned are never called either: `fake_mail`
+replaces the SMTP transport with a sink that records each message (and can
+fail on demand), `fake_turnstile` and `fake_hibp` answer siteverify and the
+range check, `google_oidc` signs ID tokens with a test RSA key and serves its
+JWKS, and `svix_sign` builds the mail webhook's headers).
 Models therefore stick to portable column types (`JSON`, not `JSONB`).
 Run with `pytest` from `backend/` (see `backend/tests/README.md`). The
 Postgres database must be a throwaway one: its name must contain `test` or
@@ -2168,7 +2866,8 @@ checked over every table those keys reach.
 isolated Compose project (`rag-it`: its own volumes, an internal network, a
 generated throwaway env file; the repository's `.env` is never read), runs
 pytest from the host against it and tears it down. Ports on 127.0.0.1 come from
-`IT_APP_PORT`, `IT_FAKE_LLM_PORT` and `IT_FAKE_GOOGLE_PORT` (defaults in
+`IT_APP_PORT` and one `IT_FAKE_<NAME>_PORT` per fake the tests reach from the
+host (`LLM`, `GOOGLE`, `RAZORPAY`, `MAIL`, `TURNSTILE`; defaults in
 `integration/README.md`). Every enabled model points at `fake_llm/` (an
 OpenAI-compatible chat, embedding, vision and image server), Razorpay at
 `fake_razorpay/` (payment links with a hosted page that pays, fails or pays
@@ -2177,7 +2876,12 @@ and `BILLING_RECONCILE_SECONDS=2`) and Google at
 `fake_google/`, which runs `backend/tests/fake_google.py`, `fake_gmail.py` and
 `fake_google_server.py` (mounted read-only from `backend/tests`), so changes to
 those fakes must keep both suites passing. Real providers, Razorpay and Google
-are never reached. The monitor alerts `fake_alerts/` (a webhook and an ntfy topic), and backups go to
+are never reached. User mail goes to `fake_mail/` (an SMTP server written in the repo, `MAIL_SMTP_SECURITY=none`,
+with an HTTP side to read the messages, make the next sends fail and post signed Resend events), Turnstile and the
+breach check to `fake_turnstile/` (tokens `pass-*` succeed, `fail-*` fail, a reused one is a duplicate), and Google
+sign-in to `fake_google/`'s OIDC side (an authorize page that returns at once for the account a test chose, a token
+endpoint with an RS256 ID token, `/oauth2/v3/certs`); the stack opens sign-up through the admin API. The monitor alerts
+`fake_alerts/` (a webhook and an ntfy topic), and backups go to
 `integration/.run/backups`. `test_14_backup_restore.py` is the restore drill (section 10), and
 `test_15_monitoring.py` stops Qdrant, the worker and nginx and checks readiness and the alerts.
 
@@ -2187,7 +2891,11 @@ stack (`http://localhost:8080` by default). It creates and deletes its own
 unless a test needs a user without one), route-mocks the payment side (no
 request leaves for Razorpay), answers chat with canned
 SSE, and blocks model, Google, upload and re-index calls (and, in the admin's
-browser context, every write except to its own test users); the one `@live`
+browser context, every write except to its own test users); the sign-up pages
+run against route mocks of every endpoint that would send mail or call
+Cloudflare or Google (an unmocked one fails the test) and a stub of Turnstile's
+`api.js`, so no request leaves for `challenges.cloudflare.com`,
+`accounts.google.com` or Resend; the one `@live`
 test (a real model call) is skipped unless `E2E_LIVE=1`. See `e2e/README.md`.
 
 `frontend/src/**/*.test.ts(x)` are Vitest tests (Testing Library, jsdom) with
@@ -2228,7 +2936,8 @@ backup or restore runs at a time (`flock` on the status volume). `.env` is never
 manager, since without the same `TOKEN_ENCRYPTION_KEY` users must reconnect Gmail
 and without the Razorpay keys and webhook secret no payment can be checked.
 Billing rows are in the dump like every table, and receipts are rendered from
-them. A backup taken before revision 0003 restores with `--migrate`; the first
+them. So are the sign-up tables; they hold no live link, token or finished
+job's address (tokens are stored only as hashes, minted when the mail is sent). A backup taken before revision 0003 restores with `--migrate`; the first
 start then seeds the plans and runs the rollout for that data.
 
 Retention keeps every backup younger than 48 hours; manual and pre-restore backups for `BACKUP_KEEP_DAILY` days; of the
@@ -2288,7 +2997,8 @@ alert states and its last 50 alerts in `rag:monitor:status`. The checks:
 | `backup` | the last attempt failed: `critical`; no success yet, the last success older than `BACKUP_MAX_AGE_HOURS`, or the scheduler silent for 30 minutes outside a running backup: `warning`. No success yet or an old one is `unknown` (no alert) while a backup runs or a start-up backup is due (until 10 minutes after `catch_up_at`), and while the status file is missing in the monitor's first 10 minutes |
 | `disk_uploads`, `disk_backups` | free space under `ALERT_DISK_MIN_FREE_PERCENT`: `warning`; under half of it: `critical` |
 | `proxy` | the app doesn't answer 200 through nginx: `critical` |
-| `billing` ("Payments") | `ok` when payments aren't set up or nothing below holds. `warning`: orders in `review`; a dispute needing action whose response is due within 3 days; the reconciler stalled (a due order of the current mode over 15 minutes late); rejected keys; a refund pending or creating for over 7 days, or failed; 20 or more bad webhook or callback signatures in the last hour; a webhook event that failed 3 times; webhooks set up but a payment of the last 24 hours that no webhook reported; live keys without `RAZORPAY_WEBHOOK_SECRET`; test keys while `PUBLIC_BASE_URLS` holds a public `https` origin. `unknown`: the database can't be read. Counts only, never usernames or amounts |
+| `billing` ("Payments") | `ok` when payments aren't set up or nothing below holds. `warning`: orders in `review`; a dispute needing action whose response is due within 3 days; the reconciler stalled (a due order of the current mode over 15 minutes late); rejected keys; a refund pending or creating for over 7 days, or failed; 20 or more bad webhook or callback signatures in the last hour; a webhook event that failed 3 times; webhooks set up but a payment of the last 24 hours that no webhook reported; live keys without `RAZORPAY_WEBHOOK_SECRET`; test keys while `PUBLIC_BASE_URLS` holds a public `https` origin; the unpaid users' payment-link cap (`CHECKOUT_UNPAID_PER_HOUR`) reached in the last hour. `unknown`: the database can't be read. Counts only, never usernames or amounts |
+| `mail` ("Email") | `ok`: "Email not set up" while sign-up is closed and no billing mail is due, or nothing below holds. `warning`: a job `failed` in the last 24 h; a due job waiting over 10 minutes; a job that couldn't be prepared, created over 10 minutes ago and still retried; sending paused after a refused SMTP login; today's count at or above 80% of `MAIL_DAILY_LIMIT`; the `public` class paused by bounces; 3 or more bounces today; a complaint in the last 7 days; 10 or more Turnstile verification errors (`challenge_unavailable`) in the last hour; the site-wide sign-in challenge turned on in the last hour; sign-up open while the mailer or Turnstile isn't configured, or without the mail webhook. `unknown`: the database can't be read. Counts only, never addresses |
 
 **Alerts** (`app.ops.alerts`):
 

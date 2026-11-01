@@ -1,7 +1,10 @@
+import base64
+import binascii
 import logging
 import os
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -10,6 +13,14 @@ from sqlalchemy import URL
 logger = logging.getLogger(__name__)
 
 RAZORPAY_API_BASE = "https://api.razorpay.com"
+TURNSTILE_SITEVERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
+GOOGLE_SIGNIN_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_SIGNIN_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_SIGNIN_JWKS_URL = "https://www.googleapis.com/oauth2/v3/certs"
+PASSWORD_BREACH_CHECK_URL = "https://api.pwnedpasswords.com/range/"
+TURNSTILE_TEST_SECRETS = ("1x", "2x", "3x")  # Cloudflare's test secrets start so; real ones start with 0x
+_URL = r"^https?://[^\s]+$"
+_ADDRESS = r"[^@\s<>]+@[^@\s<>]+\.[^@\s<>]+"
 
 
 class Settings(BaseSettings):
@@ -131,7 +142,40 @@ class Settings(BaseSettings):
     billing_reminder_days: int = Field(default=5, ge=1, le=14)  # the "ends soon" banner and first reminder email
     billing_reconcile_seconds: int = Field(default=30, ge=2, le=300)  # the worker's billing loop
     billing_usd_inr: float = Field(default=88, ge=1, le=1000)  # rupees per dollar, for cost estimates only
-    billing_email_from: str = Field(default="", pattern=r"^$|^[^@\s]+@[^@\s]+\.[^@\s]+$")  # plan reminder emails
+    checkout_unpaid_per_hour: int = Field(default=30, ge=1, le=1000)  # payment links of all unpaid users together
+
+    # --- Accounts and sign-up (docs/briefs/signup-auth.md, section 10) ---
+    # The sign-in challenge (Turnstile configured, requests that aren't local): failures for the identifier from one
+    # network and failures of the network (each at most its hard limit above), failures site-wide in 5 minutes
+    login_challenge_after: int = Field(default=3, ge=1)
+    login_challenge_after_per_ip: int = Field(default=10, ge=1)
+    login_site_challenge_after: int = Field(default=50, ge=10, le=10_000)
+    admin_signin_from: Literal["any", "local"] = "any"  # local: the env admin signs in only from this machine
+    password_min_length: int = Field(default=8, ge=8, le=64)
+    password_breach_check: bool = True  # Have I Been Pwned's range check of new passwords (fails open)
+    password_breach_check_url: str = Field(default=PASSWORD_BREACH_CHECK_URL, pattern=_URL)
+    terms_version: str = Field(default="2026-11-01", pattern=r"^[A-Za-z0-9._-]{1,32}$")  # recorded with each consent
+    # Both or neither; other endpoints only for fakes in tests (refused on the public site, see _public_site_keys)
+    turnstile_site_key: str = ""
+    turnstile_secret_key: str = ""
+    turnstile_siteverify_url: str = Field(default=TURNSTILE_SITEVERIFY_URL, pattern=_URL)
+    google_signin_client_id: str = ""  # a client of its own Google project, not GOOGLE_OAUTH_* (Gmail's)
+    google_signin_client_secret: str = ""
+    google_signin_authorize_url: str = Field(default=GOOGLE_SIGNIN_AUTHORIZE_URL, pattern=_URL)
+    google_signin_token_url: str = Field(default=GOOGLE_SIGNIN_TOKEN_URL, pattern=_URL)
+    google_signin_jwks_url: str = Field(default=GOOGLE_SIGNIN_JWKS_URL, pattern=_URL)
+
+    # --- Email to users (app/services/mail; alerts keep their ALERT_SMTP_* channel) ---
+    mail_smtp_host: str = ""  # with MAIL_FROM: the mailer is configured
+    mail_smtp_port: int = Field(default=465, ge=1, le=65535)
+    mail_smtp_security: Literal["ssl", "starttls", "none"] = "ssl"
+    mail_smtp_username: str = ""
+    mail_smtp_password: str = ""  # never logged or shown
+    mail_from: str = Field(default="", pattern=rf"^$|^{_ADDRESS}$|^[^<>\r\n]*<{_ADDRESS}>$")  # "Name <address>"
+    mail_reply_to: str = Field(default="", pattern=rf"^$|^{_ADDRESS}$")
+    mail_daily_limit: int = Field(default=80, ge=1, le=100_000)  # per UTC day, shared by classes
+    mail_idempotency_header: str = Field(default="Resend-Idempotency-Key", pattern=r"^$|^[A-Za-z0-9-]{1,64}$")
+    mail_webhook_secret: str = ""  # "whsec_" and base64: Resend's webhook signing secret; empty: no webhook
 
     @field_validator("admin_username")
     @classmethod
@@ -143,6 +187,56 @@ class Settings(BaseSettings):
         if self.razorpay_key_id.startswith("rzp_live_") and self.razorpay_api_base != RAZORPAY_API_BASE:
             raise ValueError(f"With a live RAZORPAY_KEY_ID, RAZORPAY_API_BASE must be {RAZORPAY_API_BASE}")
         return self
+
+    @model_validator(mode="after")
+    def _signup_settings(self) -> "Settings":
+        if self.login_challenge_after > self.login_max_attempts:
+            raise ValueError("LOGIN_CHALLENGE_AFTER must be at most LOGIN_MAX_ATTEMPTS")
+        if self.login_challenge_after_per_ip > self.login_max_attempts_per_ip:
+            raise ValueError("LOGIN_CHALLENGE_AFTER_PER_IP must be at most LOGIN_MAX_ATTEMPTS_PER_IP")
+        if bool(self.turnstile_site_key) != bool(self.turnstile_secret_key):
+            raise ValueError("Set both TURNSTILE_SITE_KEY and TURNSTILE_SECRET_KEY, or neither")
+        if bool(self.google_signin_client_id) != bool(self.google_signin_client_secret):
+            raise ValueError("Set both GOOGLE_SIGNIN_CLIENT_ID and GOOGLE_SIGNIN_CLIENT_SECRET, or neither")
+        if self.mail_webhook_secret and not _webhook_secret(self.mail_webhook_secret):
+            raise ValueError("MAIL_WEBHOOK_SECRET must be whsec_ followed by base64 (as Resend shows it), or empty")
+        if _public_https_origin(self.public_base_urls):
+            self._public_site_keys()
+        return self
+
+    def _public_site_keys(self) -> None:
+        """Test keys and test endpoints never run on the public site (S39)."""
+        test_endpoints = {
+            "TURNSTILE_SITEVERIFY_URL": (self.turnstile_siteverify_url, TURNSTILE_SITEVERIFY_URL),
+            "GOOGLE_SIGNIN_AUTHORIZE_URL": (self.google_signin_authorize_url, GOOGLE_SIGNIN_AUTHORIZE_URL),
+            "GOOGLE_SIGNIN_TOKEN_URL": (self.google_signin_token_url, GOOGLE_SIGNIN_TOKEN_URL),
+            "GOOGLE_SIGNIN_JWKS_URL": (self.google_signin_jwks_url, GOOGLE_SIGNIN_JWKS_URL),
+            "PASSWORD_BREACH_CHECK_URL": (self.password_breach_check_url, PASSWORD_BREACH_CHECK_URL),
+        }
+        refused = [f"{name} must be {default}" for name, (value, default) in test_endpoints.items() if value != default]
+        if self.turnstile_test_secret:
+            refused.append("TURNSTILE_SECRET_KEY must be a real secret, not one of Cloudflare's test secrets")
+        if self.mail_smtp_security == "none":
+            refused.append("MAIL_SMTP_SECURITY must be ssl or starttls")
+        if refused:
+            raise ValueError(f"PUBLIC_BASE_URLS holds a public https origin, so {'; '.join(refused)}")
+
+    @property
+    def mail_configured(self) -> bool:
+        return bool(self.mail_smtp_host and self.mail_from)
+
+    @property
+    def turnstile_configured(self) -> bool:
+        return bool(self.turnstile_site_key and self.turnstile_secret_key)
+
+    @property
+    def turnstile_test_secret(self) -> bool:
+        """A Cloudflare test secret: its answers carry the hostname example.com and no action to compare."""
+        return self.turnstile_secret_key.startswith(TURNSTILE_TEST_SECRETS)
+
+    @property
+    def google_signin_configured(self) -> bool:
+        return bool(self.google_signin_client_id and self.google_signin_client_secret)
 
     @property
     def razorpay_mode(self) -> Literal["test", "live"] | None:
@@ -168,16 +262,40 @@ class Settings(BaseSettings):
         )
 
 
-# Ignored since plans set every limit (docs/briefs/plans-billing.md 6.10): Admin → Plans, and per-user overrides.
-REMOVED_SETTINGS = (
-    "DEFAULT_MONTHLY_TOKEN_LIMIT",
-    "DEFAULT_RATE_LIMIT_PER_MIN",
-    "DEFAULT_MAX_UPLOAD_MB",
-    "DEFAULT_MAX_DOCUMENTS",
-    "DEFAULT_MAX_STORAGE_MB",
-    "DEFAULT_MONTHLY_IMAGE_LIMIT",
-    "VISION_MONTHLY_TOKEN_LIMIT",
-)
+def _public_https_origin(value: str) -> bool:
+    """PUBLIC_BASE_URLS holds an https origin that isn't localhost (as billing.business.public_https_origin)."""
+    for part in value.split(","):
+        try:
+            parts = urlsplit(part.strip())
+            host = parts.hostname
+        except ValueError:
+            continue
+        if parts.scheme.lower() == "https" and host and host not in ("localhost", "127.0.0.1", "::1"):
+            return True
+    return False
+
+
+def _webhook_secret(value: str) -> bool:
+    prefix, _, encoded = value.partition("_")
+    try:
+        return prefix == "whsec" and bool(base64.b64decode(encoded, validate=True))
+    except binascii.Error:
+        return False
+
+
+_PLANS = "it is now set per plan in Admin → Plans."
+# Ignored with one warning each: limits set per plan (docs/briefs/plans-billing.md 6.10), and the reminders' sender
+# (docs/briefs/signup-auth.md 6.2).
+REMOVED_SETTINGS = {
+    "DEFAULT_MONTHLY_TOKEN_LIMIT": _PLANS,
+    "DEFAULT_RATE_LIMIT_PER_MIN": _PLANS,
+    "DEFAULT_MAX_UPLOAD_MB": _PLANS,
+    "DEFAULT_MAX_DOCUMENTS": _PLANS,
+    "DEFAULT_MAX_STORAGE_MB": _PLANS,
+    "DEFAULT_MONTHLY_IMAGE_LIMIT": _PLANS,
+    "VISION_MONTHLY_TOKEN_LIMIT": _PLANS,
+    "BILLING_EMAIL_FROM": "plan reminders and receipts now use MAIL_FROM and the MAIL_SMTP_ settings",
+}
 
 
 def warn_removed_settings() -> list[str]:
@@ -185,7 +303,7 @@ def warn_removed_settings() -> list[str]:
     present = {name.upper() for name in os.environ}
     found = [name for name in REMOVED_SETTINGS if name in present]
     for name in found:
-        logger.warning("%s is ignored: it is now set per plan in Admin → Plans.", name)
+        logger.warning("%s is ignored: %s", name, REMOVED_SETTINGS[name])
     return found
 
 

@@ -12,12 +12,13 @@ import {
 import {
   api,
   ApiError,
+  authApi,
   getSessionUser,
   patchPreferences,
   setPlanRequiredHandler,
   setUnauthorizedHandler,
 } from "../api/client";
-import type { Me, Preferences, PreferencesUpdate } from "../api/types";
+import type { AuthConfig, LoginRequest, Me, Preferences, PreferencesUpdate } from "../api/types";
 import { announceUserChanged } from "../lib/appEvents";
 import {
   applyAppearance,
@@ -27,8 +28,12 @@ import {
   samePreferences,
 } from "../theme/appearance";
 
+/** The session check's state: signed-out is a 401 from /auth/me in this document (Turnstile may load only then). */
+export type AuthStatus = "loading" | "signed-in" | "signed-out" | "unavailable";
+
 type AuthContextValue = {
   user: Me | null;
+  status: AuthStatus;
   loading: boolean;
   /**
    * Set when the session check on boot failed for a reason other than 401 (server unreachable, 5xx). The session
@@ -39,7 +44,12 @@ type AuthContextValue = {
   retry: () => void;
   /** True after an explicit logout: the login page then doesn't send the next sign-in back to the previous page. */
   signedOut: boolean;
-  login: (username: string, password: string) => Promise<void>;
+  /**
+   * POST /auth/login: the browser is signed in (the session cookie) and Me comes back. This document's state stays as
+   * it is: the caller leaves for the app with a full page load (leaveForApp), so no app page runs in a signed-out
+   * document (docs/briefs/signup-auth.md 7.4).
+   */
+  login: (identifier: string, password: string, turnstileToken?: string | null) => Promise<Me>;
   /** Rejects (and keeps the user signed in) when the server couldn't clear the session cookie. */
   logout: () => Promise<void>;
   /** Re-fetch /auth/me (e.g. to update the usage meter after a chat, or when a plan ends). */
@@ -55,6 +65,64 @@ type AuthContextValue = {
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+/** GET /auth/config, once per document (a failure is asked again by the next caller). */
+let authConfig: { promise: Promise<AuthConfig>; value: AuthConfig | null } | null = null;
+
+export function loadAuthConfig(): Promise<AuthConfig> {
+  if (authConfig) return authConfig.promise;
+  const entry: { promise: Promise<AuthConfig>; value: AuthConfig | null } = {
+    value: null,
+    promise: authApi.config().then(
+      (config) => {
+        entry.value = config;
+        return config;
+      },
+      (err: unknown) => {
+        if (authConfig === entry) authConfig = null;
+        throw err;
+      },
+    ),
+  };
+  authConfig = entry;
+  return entry.promise;
+}
+
+/** For tests: the next caller fetches the configuration afresh. */
+export function forgetAuthConfig(): void {
+  authConfig = null;
+}
+
+/**
+ * What the signed-out pages may offer (GET /auth/config): null while it loads; `failed` when it couldn't be loaded
+ * (`retry` asks again). Shared by every caller in the document.
+ */
+export function useAuthConfig(): { config: AuthConfig | null; failed: boolean; retry: () => void } {
+  const [state, setState] = useState<{ config: AuthConfig | null; failed: boolean }>(() => ({
+    config: authConfig?.value ?? null,
+    failed: false,
+  }));
+  const [round, setRound] = useState(0);
+  useEffect(() => {
+    let live = true;
+    loadAuthConfig().then(
+      (config) => {
+        if (live) setState({ config, failed: false });
+      },
+      () => {
+        if (live) setState((current) => ({ config: current.config, failed: current.config === null }));
+      },
+    );
+    return () => {
+      live = false;
+    };
+  }, [round]);
+  const retry = useCallback(() => {
+    setState((current) => ({ ...current, failed: false }));
+    setRound((value) => value + 1);
+  }, []);
+  return { ...state, retry };
+}
 
 type Waiter = { resolve: (preferences: Preferences) => void; reject: (err: unknown) => void };
 /** Preference changes saved by one PATCH, and the updatePreferences calls waiting for it. */
@@ -260,17 +328,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     announceUserChanged(userId);
   }, [userId]);
 
-  const login = useCallback(
-    async (username: string, password: string) => {
-      const me = await api.post<Me>("/auth/login", { username, password });
-      session.current += 1;
-      dropPending();
-      setBootError(null);
-      setSignedOut(false);
-      receiveMe(me, saves.current);
-    },
-    [dropPending, receiveMe],
-  );
+  const login = useCallback((identifier: string, password: string, turnstileToken?: string | null) => {
+    const body: LoginRequest = { identifier, password };
+    if (turnstileToken) body.turnstile_token = turnstileToken;
+    return api.post<Me>("/auth/login", body);
+  }, []);
 
   const logout = useCallback(async () => {
     // The session is an httpOnly cookie only the server can clear: if the request fails (network error, 5xx) the
@@ -333,9 +395,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [flush, optimistic, show],
   );
 
+  let status: AuthStatus = "signed-out";
+  if (loading) status = "loading";
+  else if (user) status = "signed-in";
+  else if (bootError) status = "unavailable";
+
   const value = useMemo(
     () => ({
       user,
+      status,
       loading,
       bootError,
       retry: boot,
@@ -346,7 +414,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       preferences,
       updatePreferences,
     }),
-    [user, loading, bootError, boot, signedOut, login, logout, refresh, preferences, updatePreferences],
+    [user, status, loading, bootError, boot, signedOut, login, logout, refresh, preferences, updatePreferences],
   );
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }

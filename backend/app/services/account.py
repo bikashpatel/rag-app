@@ -15,12 +15,23 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Conversation, LLMModel, LoginEvent, UsageEvent, User, UserPreference, utcnow
+from app.models import (
+    Conversation,
+    LLMModel,
+    LoginEvent,
+    PendingEmail,
+    UsageEvent,
+    User,
+    UserIdentity,
+    UserPreference,
+    utcnow,
+)
 from app.schemas import MAX_INT, Preferences
 from app.schemas_account import (
     AccountInfo,
     DeviceType,
     DocumentUsage,
+    LoginMethod,
     MyUsage,
     MyUsageDay,
     MyUsageModel,
@@ -29,7 +40,9 @@ from app.schemas_account import (
     UsageCosts,
 )
 from app.schemas_account import LoginEvent as LoginEventInfo
+from app.schemas_auth import EmailChangeNeeds, GoogleLink, PendingEmailInfo
 from app.services import storage, usage
+from app.services.auth import stepup
 from app.services.billing.entitlements import Entitlements, allows_model
 
 LOGIN_HISTORY_LIMIT = 20  # sign-ins kept per user
@@ -76,7 +89,7 @@ def _stored_values(data: object) -> tuple[dict[str, Any], int | None]:
     model id when it is a valid id."""
     stored = data if isinstance(data, dict) else {}
     values: dict[str, Any] = {}
-    for name in ("theme", "accent", "chat_font_size", "enter_to_send"):
+    for name in ("theme", "accent", "chat_font_size", "enter_to_send", "email_plan_reminders", "email_receipts"):
         if name in stored:
             try:
                 values[name] = getattr(Preferences.model_validate({name: stored[name]}, strict=True), name)
@@ -207,12 +220,20 @@ def parse_user_agent(user_agent: str | None) -> tuple[str | None, str | None, De
     return label, os_name, device
 
 
-async def record_login(db: AsyncSession, user: User, host: str | None, user_agent: str | None) -> LoginEvent:
+async def record_login(
+    db: AsyncSession, user: User, host: str | None, user_agent: str | None, *, method: LoginMethod = "password"
+) -> LoginEvent:
     """Add the sign-in to the user's history (flushed, so it has its id) and delete their rows beyond the newest
     LOGIN_HISTORY_LIMIT, in the caller's transaction."""
     browser, os_name, device = parse_user_agent(user_agent)
     event = LoginEvent(
-        user_id=user.id, created_at=utcnow(), ip=approximate_ip(host), browser=browser, os=os_name, device=device
+        user_id=user.id,
+        created_at=utcnow(),
+        ip=approximate_ip(host),
+        browser=browser,
+        os=os_name,
+        device=device,
+        method=method,
     )
     db.add(event)
     await db.flush()
@@ -240,6 +261,7 @@ def login_event_info(event: LoginEvent, session_id: int | None) -> LoginEventInf
         os=event.os,
         device=next((device for device in _DEVICES if device == event.device), "unknown"),
         current=session_id is not None and event.id == session_id,
+        method="google" if event.method == "google" else "password",
     )
 
 
@@ -254,8 +276,25 @@ async def recent_logins(db: AsyncSession, user: User, session_id: int | None) ->
     return [login_event_info(row, session_id) for row in rows]
 
 
+def google_identity(user: User) -> UserIdentity | None:
+    """The user's linked Google sign-in (at most one)."""
+    return next((identity for identity in user.identities if identity.provider == "google"), None)
+
+
+def email_change_needs(user: User) -> EmailChangeNeeds:
+    """How the user re-authenticates to change their email: the password, else a Google step-up; the env admin and
+    an account with neither can't."""
+    if user.is_admin:
+        return "not_allowed"
+    if user.password_hash is not None:
+        return "password"
+    return "google" if google_identity(user) is not None else "not_allowed"
+
+
 async def account_info(db: AsyncSession, user: User, session_id: int | None) -> AccountInfo:
     conversations = await db.scalar(select(func.count(Conversation.id)).where(Conversation.user_id == user.id))
+    pending = await db.scalar(select(PendingEmail).where(PendingEmail.user_id == user.id))
+    identity = google_identity(user)
     return AccountInfo(
         id=user.id,
         username=user.username,
@@ -265,6 +304,26 @@ async def account_info(db: AsyncSession, user: User, session_id: int | None) -> 
         last_login_at=user.last_login_at,
         conversation_count=int(conversations or 0),
         recent_logins=await recent_logins(db, user, session_id),
+        email=user.email,
+        email_verified_at=user.email_verified_at,
+        pending_email=PendingEmailInfo(
+            address=pending.address,
+            source="google" if pending.source == "google" else "user",
+            sent_at=pending.sent_at,
+            expires_at=pending.expires_at,
+        )
+        if pending is not None
+        else None,
+        has_password=user.password_hash is not None,
+        google=GoogleLink(
+            email=identity.email_at_link, linked_at=identity.created_at, last_used_at=identity.last_used_at
+        )
+        if identity is not None
+        else None,
+        signup_source=user.signup_source,  # type: ignore[arg-type]
+        terms_accepted_at=user.terms_accepted_at,
+        email_change_needs=email_change_needs(user),
+        stepup_until=None if user.is_admin else await stepup.until(user.id, session_id),
     )
 
 

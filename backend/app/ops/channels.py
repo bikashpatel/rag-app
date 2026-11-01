@@ -1,9 +1,8 @@
-"""Alert channels of the monitor (SPEC.md section 10): a JSON webhook, an ntfy topic and SMTP email. Each is optional;
-`send` raises ChannelError with a short reason that never holds the channel's URL, address or credentials."""
+"""Alert channels of the monitor (SPEC.md section 10): a JSON webhook, an ntfy topic and SMTP email (through the
+mailer's transport, with the ALERT_SMTP_* server). Each is optional; `send` raises ChannelError with a short reason
+that never holds the channel's URL, address or credentials."""
 
 import asyncio
-import smtplib
-import ssl
 from email.message import EmailMessage
 from email.utils import formatdate, make_msgid
 from typing import Protocol
@@ -13,6 +12,7 @@ import httpx
 from app.ops.alerts import Notification
 from app.ops.checks import describe_error
 from app.ops.settings import AlertChannelName, AlertSettings
+from app.services.mail import transport
 
 SEND_TIMEOUT_SECONDS = 15.0
 _NTFY_PRIORITY = {"problem": "high", "reminder": "default", "recovery": "default", "test": "default"}
@@ -90,7 +90,7 @@ class EmailChannel:
         *,
         username: str = "",
         password: str = "",
-        security: str = "starttls",
+        security: transport.Security = "starttls",
     ) -> None:
         self.host = host
         self.port = port
@@ -110,29 +110,19 @@ class EmailChannel:
         message.set_content(notification.text + "\n")
         return message
 
-    def _send(self, message: EmailMessage) -> None:
-        context = ssl.create_default_context()
-        client: smtplib.SMTP
-        if self.security == "ssl":
-            client = smtplib.SMTP_SSL(self.host, self.port, timeout=SEND_TIMEOUT_SECONDS, context=context)
-        else:
-            client = smtplib.SMTP(self.host, self.port, timeout=SEND_TIMEOUT_SECONDS)
-        with client:
-            if self.security == "starttls":
-                client.starttls(context=context)
-            if self.username:
-                client.login(self.username, self.password)
-            client.send_message(message)
+    def smtp(self) -> transport.SmtpConfig:
+        return transport.SmtpConfig(
+            self.host, self.port, self.security, self.username, self.password, timeout=SEND_TIMEOUT_SECONDS
+        )
 
     async def send(self, notification: Notification) -> None:
+        message = self.message(notification)
         try:
-            await asyncio.wait_for(asyncio.to_thread(self._send, self.message(notification)), SEND_TIMEOUT_SECONDS * 2)
-        except smtplib.SMTPAuthenticationError:
-            raise ChannelError("SMTP login refused") from None
-        except smtplib.SMTPRecipientsRefused:
-            raise ChannelError("recipients refused") from None
-        except smtplib.SMTPException as exc:
-            raise ChannelError(f"SMTP error ({type(exc).__name__})") from None
+            await asyncio.wait_for(
+                asyncio.to_thread(transport.send_message, message, self.smtp()), SEND_TIMEOUT_SECONDS * 2
+            )
+        except transport.MailError as exc:
+            raise ChannelError(exc.reason) from None
         except Exception as exc:
             raise ChannelError(describe_error(exc)) from None
 

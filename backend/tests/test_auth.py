@@ -1,4 +1,5 @@
-"""Auth API: login and its throttle, sessions (cookie and Bearer), /auth/me, logout and password changes."""
+"""Auth API: login by username and its throttle, sessions (cookie and Bearer), /auth/me, logout and password changes.
+Sign-in by email and the challenge are in test_login_identifier.py."""
 
 import asyncio
 import base64
@@ -12,17 +13,21 @@ import httpx
 import jwt
 import pytest
 from argon2 import PasswordHasher
-from conftest import ADMIN_PASSWORD, ADMIN_USERNAME, USER_PASSWORD, ApiClient
+from conftest import ADMIN_PASSWORD, ADMIN_USERNAME, USER_PASSWORD, ApiClient, drain_mail
+from fake_mail import FakeMail
 from fastapi import FastAPI
 from redis.asyncio import Redis
 from sqlalchemy import select, update
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import UsageEvent, User
+from app.deps import session_cookie_name
+from app.models import AuthEvent, EmailOutbox, UsageEvent, User
 from app.redis_client import get_redis, set_redis
-from app.routers import auth as auth_router
 from app.security import needs_rehash, verify_password
+from app.services.auth import throttle, tokens
+from app.services.mail import jobs as mail_jobs
+from app.services.mail import outbox, templates
 from app.services.usage import month_start
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
@@ -31,7 +36,7 @@ ClientAt = Callable[[str], httpx.AsyncClient]
 NEW_PASSWORD = "a-brand-new-password"
 WRONG_PASSWORD = "not-the-password"
 OTHER_IP = "203.0.113.7"
-INVALID_LOGIN = {"detail": "Invalid username or password"}
+INVALID_LOGIN = {"detail": "Incorrect email, username or password."}
 NOT_AUTHENTICATED = {"detail": "Not authenticated"}
 
 
@@ -77,12 +82,12 @@ def set_cookies(response: httpx.Response) -> SimpleCookie:
 
 def session_cookie(response: httpx.Response) -> Morsel[str]:
     cookies = set_cookies(response)
-    assert settings.cookie_name in cookies, response.headers.get_list("set-cookie")
-    return cookies[settings.cookie_name]
+    assert session_cookie_name() in cookies, response.headers.get_list("set-cookie")
+    return cookies[session_cookie_name()]
 
 
 def session_token(client: httpx.AsyncClient) -> str:
-    token = client.cookies.get(settings.cookie_name)
+    token = client.cookies.get(session_cookie_name())
     assert token
     return token
 
@@ -118,6 +123,8 @@ DEFAULT_PREFERENCES = {
     "chat_font_size": "default",
     "enter_to_send": True,
     "default_model_id": None,
+    "email_plan_reminders": True,
+    "email_receipts": True,
 }
 
 
@@ -175,6 +182,7 @@ async def test_login_returns_me_sets_the_session_cookie_and_records_the_login(
         "usage": zero_usage(5000),
         "preferences": DEFAULT_PREFERENCES,
         "plan": body["plan"],
+        "email": None,
     }
     assert (body["plan"]["state"], body["plan"]["access"], body["plan"]["open_ended"]) == ("active", True, True)
     assert body["plan"]["plan"]["code"] == "professional"
@@ -187,7 +195,7 @@ async def test_login_returns_me_sets_the_session_cookie_and_records_the_login(
     token = jwt.decode(cookie.value, settings.secret_key, algorithms=["HS256"])
     assert (token["sub"], token["tv"]) == (str(alice.user_id), 0)
     assert token["exp"] - token["iat"] == settings.access_token_expire_minutes * 60
-    assert client.cookies.get(settings.cookie_name) == cookie.value
+    assert client.cookies.get(session_cookie_name()) == cookie.value
     last_login_at = (await get_user("alice")).last_login_at
     assert last_login_at is not None
     assert started <= last_login_at <= datetime.now(timezone.utc)
@@ -196,13 +204,16 @@ async def test_login_returns_me_sets_the_session_cookie_and_records_the_login(
     assert me.json() == response.json()
 
 
-async def test_session_cookie_is_secure_when_configured(client: ApiClient, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_session_cookie_is_secure_and_host_only_when_configured(
+    client: ApiClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(settings, "cookie_secure", True)
 
     response = await client.login(ADMIN_USERNAME, ADMIN_PASSWORD)
 
     assert response.status_code == 200
-    assert session_cookie(response)["secure"] is True
+    cookie = set_cookies(response)[f"__Host-{settings.cookie_name}"]
+    assert (cookie["secure"], cookie["path"], cookie["domain"]) == (True, "/", "")
 
 
 async def test_login_username_is_trimmed_and_case_insensitive(create_user: CreateUser, client: ApiClient) -> None:
@@ -228,7 +239,7 @@ async def test_bad_credentials_get_401_and_no_session(
 
     assert response.status_code == 401
     assert response.json() == INVALID_LOGIN
-    assert settings.cookie_name not in set_cookies(response)
+    assert session_cookie_name() not in set_cookies(response)
     assert (await client.get("/api/auth/me")).status_code == 401
     assert (await get_user("alice")).last_login_at is None
 
@@ -240,7 +251,7 @@ async def test_inactive_user_gets_the_bad_credentials_401(create_user: CreateUse
 
     assert response.status_code == 401
     assert response.json() == INVALID_LOGIN
-    assert settings.cookie_name not in set_cookies(response)
+    assert session_cookie_name() not in set_cookies(response)
     assert (await get_user("carol")).last_login_at is None
 
 
@@ -252,7 +263,9 @@ async def test_inactive_user_gets_the_bad_credentials_401(create_user: CreateUse
         {"password": USER_PASSWORD},
         {"username": "", "password": USER_PASSWORD},
         {"username": "   ", "password": USER_PASSWORD},
-        {"username": "a" * 65, "password": USER_PASSWORD},
+        {"username": "a" * 321, "password": USER_PASSWORD},
+        {"username": "alice", "identifier": "alice", "password": USER_PASSWORD},
+        {"username": "alice", "password": USER_PASSWORD, "remember": True},
         {"username": "alice", "password": ""},
         {"username": "alice", "password": "x" * 1025},
         {"username": ["alice"], "password": USER_PASSWORD},
@@ -263,7 +276,7 @@ async def test_malformed_login_requests_get_422(body: dict[str, Any], client: Ap
 
     assert response.status_code == 422
     assert isinstance(response.json()["detail"], list)
-    assert settings.cookie_name not in set_cookies(response)
+    assert session_cookie_name() not in set_cookies(response)
 
 
 @pytest.mark.parametrize(
@@ -337,9 +350,9 @@ async def test_failed_logins_throttle_the_username_in_every_spelling(
     throttled = await login(elsewhere, "Alice", USER_PASSWORD)
 
     assert throttled.status_code == 429
-    assert throttled.json() == {"detail": "Too many failed login attempts. Try again in 10 minutes."}
+    assert throttled.json() == {"detail": "Too many attempts. Try again in 10 minutes.", "code": "too_many_attempts"}
     assert 0 < int(throttled.headers["retry-after"]) <= 600
-    assert settings.cookie_name not in set_cookies(throttled)
+    assert session_cookie_name() not in set_cookies(throttled)
     assert (await login(elsewhere, "bob", USER_PASSWORD)).status_code == 200
 
 
@@ -355,9 +368,9 @@ async def test_failed_logins_throttle_the_client_ip_for_every_username(
     throttled = await client.login("alice", USER_PASSWORD)
 
     assert throttled.status_code == 429
-    assert throttled.json()["detail"].startswith("Too many failed login attempts.")
+    assert throttled.json()["code"] == "too_many_attempts"
     assert int(throttled.headers["retry-after"]) > 0
-    assert settings.cookie_name not in set_cookies(throttled)
+    assert session_cookie_name() not in set_cookies(throttled)
     assert (await login(client_at(OTHER_IP), "alice", USER_PASSWORD)).status_code == 200
 
 
@@ -398,10 +411,10 @@ async def test_failure_counters_use_a_fixed_window(
     create_user: CreateUser, client_at: ClientAt, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "login_window_seconds", 600)
-    await create_user("alice", login=False)
+    alice = await create_user("alice", login=False)
     client = client_at(OTHER_IP)
     redis = get_redis()
-    keys = ("login:fail:user:alice", f"login:fail:ip:{OTHER_IP}")
+    keys = (f"auth:login:id:acct:{alice.user_id}", f"auth:login:net:{OTHER_IP}", "auth:login:wide:203.0.113.0/24")
 
     await login(client, "Alice", WRONG_PASSWORD)
 
@@ -428,16 +441,17 @@ async def test_throttle_reports_the_longest_wait_and_does_not_count_rejected_att
     monkeypatch.setattr(settings, "login_max_attempts_per_ip", 1)
     assert (await client.login("ghost", WRONG_PASSWORD)).status_code == 401
     redis = get_redis()
-    await redis.expire("login:fail:user:ghost", user_ttl)
-    await redis.expire("login:fail:ip:127.0.0.1", ip_ttl)
+    user_key, ip_key = "auth:login:id:user:ghost", "auth:login:net:127.0.0.1"
+    await redis.expire(user_key, user_ttl)
+    await redis.expire(ip_key, ip_ttl)
 
     response = await client.login("Ghost", WRONG_PASSWORD)
 
     assert response.status_code == 429
-    assert response.json() == {"detail": f"Too many failed login attempts. Try again in {wait}."}
+    assert response.json() == {"detail": f"Too many attempts. Try again in {wait}.", "code": "too_many_attempts"}
     longest = max(user_ttl, ip_ttl)
     assert longest - 1 <= int(response.headers["retry-after"]) <= longest
-    assert await redis.mget(["login:fail:user:ghost", "login:fail:ip:127.0.0.1"]) == ["1", "1"]
+    assert await redis.mget([user_key, ip_key]) == ["1", "1"]
 
 
 async def test_successful_logins_do_not_count_against_the_ip(
@@ -549,6 +563,7 @@ async def test_me_reports_the_users_limits_and_this_months_usage(create_user: Cr
         },
         "preferences": DEFAULT_PREFERENCES,
         "plan": body["plan"],
+        "email": None,
     }
     assert body["usage"]["cost_usd"] == pytest.approx(0.78)  # every kind
     assert body["usage"]["monthly_token_limit"] == 5000
@@ -574,6 +589,7 @@ async def test_me_reports_the_admin_as_unlimited(admin_client: ApiClient) -> Non
         "usage": zero_usage(0),
         "preferences": DEFAULT_PREFERENCES,
         "plan": response.json()["plan"],
+        "email": None,
     }
     plan = response.json()["plan"]
     assert (plan["state"], plan["access"], plan["plan"]) == ("exempt", True, None)
@@ -635,7 +651,7 @@ async def test_tampered_expired_and_stale_tokens_are_rejected(
     }
 
     for name, token in {"forged with the app key": valid, **bad_tokens}.items():
-        by_cookie = await client.get("/api/auth/me", headers={"Cookie": f"{settings.cookie_name}={token}"})
+        by_cookie = await client.get("/api/auth/me", headers={"Cookie": f"{session_cookie_name()}={token}"})
         by_header = await client.get("/api/auth/me", headers=bearer(token))
         expected = 200 if token is valid else 401
         assert (by_cookie.status_code, by_header.status_code) == (expected, expected), name
@@ -704,7 +720,7 @@ async def test_logout_clears_the_session_cookie(create_user: CreateUser) -> None
     assert cookie["httponly"] is True
     assert cookie["samesite"].lower() == "strict"
     assert cookie["path"] == "/"
-    assert alice.cookies.get(settings.cookie_name) is None
+    assert alice.cookies.get(session_cookie_name()) is None
     assert (await alice.get("/api/auth/me")).status_code == 401
 
 
@@ -759,20 +775,20 @@ async def test_change_password_racing_the_admin_cannot_undo_a_reset_or_deactivat
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     alice = await create_user("alice")
-    count_attempt = auth_router._count_attempt
+    count_attempt = throttle.login_failed
 
     async def admin_acts_meanwhile(*args: Any) -> None:
         await count_attempt(*args)
         response = await admin_client.patch(f"/api/admin/users/{alice.user_id}", json=admin_change)
         assert response.status_code == 200
 
-    monkeypatch.setattr(auth_router, "_count_attempt", admin_acts_meanwhile)
+    monkeypatch.setattr(throttle, "login_failed", admin_acts_meanwhile)
     response = await alice.post(
         "/api/auth/change-password", json={"current_password": USER_PASSWORD, "new_password": NEW_PASSWORD}
     )
 
     assert response.status_code == 401
-    assert settings.cookie_name not in set_cookies(response)
+    assert session_cookie_name() not in set_cookies(response)
     stored = await get_user("alice")
     assert stored.token_version == 1  # only the admin's change counted
     assert not verify_password(NEW_PASSWORD, stored.password_hash)
@@ -792,7 +808,7 @@ async def test_change_password_with_the_wrong_current_password_changes_nothing(
 
     assert response.status_code == 400
     assert response.json() == {"detail": "Current password is incorrect"}
-    assert settings.cookie_name not in set_cookies(response)
+    assert session_cookie_name() not in set_cookies(response)
     after = await get_user("alice")
     assert (after.token_version, after.password_hash) == (before.token_version, before.password_hash)
     assert (await alice.get("/api/auth/me")).status_code == 200
@@ -802,13 +818,12 @@ async def test_change_password_with_the_wrong_current_password_changes_nothing(
 @pytest.mark.parametrize(
     "body",
     [
-        {"current_password": USER_PASSWORD, "new_password": "short12"},
-        {"current_password": USER_PASSWORD, "new_password": "x" * 257},
+        {"current_password": USER_PASSWORD, "new_password": "x" * 1025},
         {"current_password": USER_PASSWORD},
         {"new_password": NEW_PASSWORD},
         {"current_password": "", "new_password": NEW_PASSWORD},
     ],
-    ids=["new too short", "new too long", "new missing", "current missing", "current empty"],
+    ids=["new over the typed limit", "new missing", "current missing", "current empty"],
 )
 async def test_invalid_change_password_requests_get_422(body: dict[str, Any], create_user: CreateUser) -> None:
     alice = await create_user("alice")
@@ -880,3 +895,118 @@ async def test_successful_password_change_clears_earlier_failures(
     assert changed.status_code == 204
     for _ in range(2):
         assert (await alice.post("/api/auth/change-password", json=wrong)).status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("new_password", "reason"),
+    [("short12", "too_short"), ("x" * 257, "too_long"), ("password123", "common"), ("Alice-2026-07!", "context")],
+)
+async def test_change_password_applies_the_password_policy(
+    new_password: str, reason: str, create_user: CreateUser
+) -> None:
+    alice = await create_user("alice")
+    before = await get_user("alice")
+
+    response = await alice.post(
+        "/api/auth/change-password", json={"current_password": USER_PASSWORD, "new_password": new_password}
+    )
+
+    assert response.status_code == 422
+    assert (response.json()["code"], response.json()["reason"]) == ("password_rejected", reason)
+    after = await get_user("alice")
+    assert (after.token_version, after.password_hash) == (before.token_version, before.password_hash)
+
+
+async def test_change_password_needs_a_password_to_change(create_user: CreateUser) -> None:
+    alice = await create_user("alice")
+    await set_user_columns("alice", password_hash=None)
+
+    response = await alice.post(
+        "/api/auth/change-password", json={"current_password": USER_PASSWORD, "new_password": NEW_PASSWORD}
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "You don't have a password yet. Use Set a password.", "code": "no_password"}
+    assert (await get_user("alice")).password_hash is None
+
+
+async def test_change_password_revokes_reset_links_and_mails_a_notice(create_user: CreateUser, mailer: None) -> None:
+    alice = await create_user("alice")
+    assert alice.user_id is not None
+    await set_user_columns("alice", email="alice@example.com", email_canonical="alice@example.com")
+    async with SessionLocal() as session:
+        link = await tokens.mint(session, "reset", address_canonical="alice@example.com", user_id=alice.user_id)
+        await session.commit()
+
+    response = await alice.post(
+        "/api/auth/change-password", json={"current_password": USER_PASSWORD, "new_password": NEW_PASSWORD}
+    )
+
+    assert response.status_code == 204
+    async with SessionLocal() as session:
+        assert await tokens.find(session, ["reset"], link) is None
+        jobs = list(await session.scalars(select(EmailOutbox)))
+        events = list(await session.scalars(select(AuthEvent.type).where(AuthEvent.user_id == alice.user_id)))
+    assert [(job.kind, job.to_address, job.user_id) for job in jobs] == [
+        ("password_changed", "alice@example.com", alice.user_id)
+    ]
+    assert events == ["password.changed"]
+
+
+async def test_change_password_refuses_the_whole_email_address(create_user: CreateUser) -> None:
+    alice = await create_user("alice")
+    await set_user_columns("alice", email="alice.w@example.com", email_canonical="alice.w@example.com")
+
+    response = await alice.post(
+        "/api/auth/change-password", json={"current_password": USER_PASSWORD, "new_password": "Alice.W@example.com"}
+    )
+
+    assert response.status_code == 422
+    assert (response.json()["code"], response.json()["reason"]) == ("password_rejected", "context")
+
+
+async def test_one_account_changing_its_password_again_and_again_starves_no_one(
+    create_user: CreateUser, fake_mail: FakeMail, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "mail_daily_limit", 10)  # public 4, reset 3, billing at least 2
+
+    async def receipt(db: Any, job: EmailOutbox, here: templates.Site) -> mail_jobs.Outgoing:
+        return mail_jobs.Outgoing("payer@example.com", templates.admin_test(here))
+
+    monkeypatch.setitem(mail_jobs._KINDS, "receipt", receipt)
+    mallory = await create_user("mallory", plan=None)  # never paid: her notices are `public`
+    await set_user_columns("mallory", email="mallory@example.com", email_canonical="mallory@example.com")
+    payer = await create_user("payer")
+    passwords = (USER_PASSWORD, NEW_PASSWORD)
+
+    for number in range(100):
+        response = await mallory.post(
+            "/api/auth/change-password",
+            json={"current_password": passwords[number % 2], "new_password": passwords[(number + 1) % 2]},
+        )
+        assert response.status_code == 204, response.text
+    async with SessionLocal() as session:
+        await outbox.enqueue(
+            session, "receipt", to="payer@example.com", user_id=payer.user_id, params={"receipt_id": 1}
+        )
+        await session.commit()
+    await drain_mail()
+
+    async with SessionLocal() as session:
+        kinds = list(await session.scalars(select(EmailOutbox.kind).where(EmailOutbox.status == "sent")))
+        rooms = {cls: await outbox.available(session, cls) for cls in ("public", "reset", "billing")}
+    assert kinds.count("password_changed") == 3  # 3 notices an hour
+    assert kinds.count("receipt") == 1 and len(fake_mail.to("payer@example.com")) == 1  # the same day
+    assert rooms == {"public": True, "reset": True, "billing": True}
+
+
+async def test_change_password_without_an_email_or_a_mailer_queues_nothing(create_user: CreateUser) -> None:
+    alice = await create_user("alice")
+
+    response = await alice.post(
+        "/api/auth/change-password", json={"current_password": USER_PASSWORD, "new_password": NEW_PASSWORD}
+    )
+
+    assert response.status_code == 204
+    async with SessionLocal() as session:
+        assert list(await session.scalars(select(EmailOutbox))) == []

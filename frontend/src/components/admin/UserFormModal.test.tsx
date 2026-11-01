@@ -6,7 +6,7 @@ import type { AdminModel, AdminUser, AdminUserCreate, AdminUserUpdate } from "..
 import { makeAdminUserPlan, makeSeededAdminPlans } from "../../test/adminTabs";
 import { makeUserBilling } from "../../test/billing";
 import { makeAdminConfig, makeAdminModel, makeAdminUser, makeLimits } from "../../test/fixtures";
-import { deferred, errorResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
+import { deferred, errorResponse, jsonResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
 import UserFormModal from "./UserFormModal";
 
 const chatModels: AdminModel[] = [
@@ -23,22 +23,36 @@ const plans = makeSeededAdminPlans();
 
 type Props = ComponentProps<typeof UserFormModal>;
 
-function renderForm(overrides: Partial<Props> = {}) {
-  const props: Props = {
+function defaultProps(): Props {
+  return {
     user: null,
     config: makeAdminConfig(),
     chatModels,
     modelsError: null,
     plans,
     paymentsOpen: true,
+    passwordMin: 8,
     onClose: vi.fn(),
     onSaved: vi.fn(),
     onPlanChanged: vi.fn(),
     onNavigate: vi.fn(),
-    ...overrides,
   };
+}
+
+function renderForm(overrides: Partial<Props> = {}) {
+  const props: Props = { ...defaultProps(), ...overrides };
   render(<UserFormModal {...props} />);
   return props;
+}
+
+/** The read-only sign-in facts as term → text. */
+function facts(): Record<string, string> {
+  const list = screen.getByText("Signed up").closest("dl") as HTMLElement;
+  return Object.fromEntries(
+    within(list)
+      .getAllByRole("term")
+      .map((term) => [term.textContent, term.nextElementSibling?.textContent?.trim() ?? ""]),
+  );
 }
 
 // Typing speed doesn't matter to the form: no delay between keystrokes keeps the long fields fast on a busy machine.
@@ -46,6 +60,9 @@ const setupUser = () => userEvent.setup({ delay: null });
 const field = (name: string) => screen.getByRole("textbox", { name });
 const passwordField = (label = "Password") => screen.getByLabelText(label);
 const CHAT = "Chat allowance (standard tokens)";
+
+const refused = (reason: string, detail: string) =>
+  jsonResponse({ detail, code: "password_rejected", reason }, { status: 422 });
 
 function sent(calls: FetchCall[], method: string): unknown[] {
   return calls.filter((call) => call.method === method).map((call) => call.body);
@@ -124,6 +141,68 @@ describe("UserFormModal: creating", () => {
     await user.click(screen.getByRole("button", { name: "Create user" }));
     await waitFor(() => expect(calls).toHaveLength(1));
     expect(sent(calls, "POST")).toEqual([expect.objectContaining({ password: "12345678" })]);
+  });
+
+  it("checks the password against the configured minimum", async () => {
+    const calls = stubFetch({});
+    const user = setupUser();
+    renderForm({ passwordMin: 12 });
+
+    expect(passwordField()).toHaveAccessibleDescription("At least 12 characters, not a common or leaked password.");
+    await user.type(field("Username"), "maya.chen");
+    await user.type(passwordField(), "eleven-char");
+    await user.click(screen.getByRole("button", { name: "Create user" }));
+    expect(passwordField()).toHaveAccessibleDescription(expect.stringContaining("Use at least 12 characters."));
+    expect(calls).toHaveLength(0);
+  });
+
+  it("shows the server's password refusal under the field", async () => {
+    stubFetch({
+      "POST /admin/users": () =>
+        refused("common", "This password is too common. Choose one that's harder to guess."),
+    });
+    const user = setupUser();
+    const props = renderForm();
+
+    await fillAccount(user);
+    await user.click(screen.getByRole("button", { name: "Create user" }));
+
+    await waitFor(() =>
+      expect(passwordField()).toHaveAccessibleDescription(
+        expect.stringContaining("This password is too common. Choose one that's harder to guess."),
+      ),
+    );
+    expect(passwordField()).toHaveAttribute("aria-invalid", "true");
+    expect(passwordField()).toHaveFocus();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(props.onSaved).not.toHaveBeenCalled();
+  });
+
+  it("shows a retired username under the field", async () => {
+    stubFetch({
+      "POST /admin/users": () =>
+        jsonResponse(
+          { detail: "That username belonged to a deleted account. Choose another.", code: "username_retired" },
+          { status: 409 },
+        ),
+    });
+    const user = setupUser();
+    renderForm();
+
+    await fillAccount(user);
+    await user.click(screen.getByRole("button", { name: "Create user" }));
+
+    await waitFor(() =>
+      expect(field("Username")).toHaveAccessibleDescription(
+        expect.stringContaining("That username belonged to a deleted account. Choose another."),
+      ),
+    );
+    expect(field("Username")).toHaveFocus();
+  });
+
+  it("has no sign-in facts for a new user", () => {
+    renderForm();
+    expect(screen.queryByText("Signed up")).not.toBeInTheDocument();
   });
 
   it("validates the overrides and clears a field's error once it is edited", async () => {
@@ -300,6 +379,7 @@ describe("UserFormModal: creating", () => {
         modelsError={null}
         plans={null}
         paymentsOpen
+        passwordMin={8}
         onClose={() => {}}
         onSaved={() => {}}
         onPlanChanged={() => {}}
@@ -467,6 +547,91 @@ describe("UserFormModal: editing", () => {
     await user.click(screen.getByRole("button", { name: "Save changes" }));
     await waitFor(() => expect(props.onSaved).toHaveBeenCalled());
     expect(sent(calls, "PATCH")).toEqual([expect.objectContaining({ password: "short-but-longer" })]);
+  });
+
+  it("shows a refused new password under the field", async () => {
+    stubEdit({
+      "PATCH /admin/users/7": () =>
+        refused("breached", "This password has appeared in a data breach. Choose a different one."),
+    });
+    const user = setupUser();
+    renderForm({ user: existing });
+
+    await user.type(passwordField("Set new password"), "password123456");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() =>
+      expect(passwordField("Set new password")).toHaveAccessibleDescription(
+        expect.stringContaining("This password has appeared in a data breach. Choose a different one."),
+      ),
+    );
+    expect(passwordField("Set new password")).toHaveFocus();
+  });
+
+  it("shows how an email sign-up signs in, read only", () => {
+    stubEdit();
+    renderForm({
+      user: makeAdminUser({
+        signup_source: "email",
+        created_at: "2026-10-30T08:32:00Z",
+        terms_accepted_at: "2026-10-30T08:32:00Z",
+        terms_version: "2026-11-01",
+        email: "maya@example.com",
+        email_verified_at: "2026-10-30T08:32:00Z",
+        google_linked: true,
+        google_email: "maya.chen@gmail.com",
+        plan: makeAdminUserPlan(),
+      }),
+    });
+    expect(facts()).toEqual({
+      "Signed up": "With email on 30 Oct 2026Accepted the terms of 2026-11-01 on 30 Oct 2026, 08:32",
+      Email: "maya@example.comConfirmed",
+      Google: "Connected as maya.chen@gmail.com",
+      Password: "Set",
+    });
+    expect(screen.queryByRole("textbox", { name: /email/i })).not.toBeInTheDocument();
+  });
+
+  it("shows a pending address, a change in progress and a Google-only account", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-31T10:00:00Z"));
+    stubEdit();
+    const pending = { address: "maya.chen@studio-nine.in", sent_at: "2026-10-31T09:57:00Z" };
+    const first = render(
+      <UserFormModal
+        {...defaultProps()}
+        user={makeAdminUser({
+          signup_source: "google",
+          has_password: false,
+          pending_email: pending,
+          google_linked: true,
+          google_email: "maya.chen@gmail.com",
+        })}
+      />,
+    );
+    expect(facts()).toEqual({
+      "Signed up": "With Google on 2 Sept 2026",
+      Email: "Pending: maya.chen@studio-nine.in, sent 3 minutes ago",
+      Google: "Connected as maya.chen@gmail.com",
+      Password: "Not set",
+    });
+    expect(passwordField("Set new password")).toHaveAccessibleDescription(
+      "The user has no password and signs in with Google. Leave blank to keep it that way.",
+    );
+    first.unmount();
+
+    render(
+      <UserFormModal
+        {...defaultProps()}
+        user={makeAdminUser({ email: "maya@example.com", pending_email: { ...pending, sent_at: null } })}
+      />,
+    );
+    expect(facts()).toEqual({
+      "Signed up": "Created by the admin on 2 Sept 2026",
+      Email: "maya@example.comConfirmedChanging to maya.chen@studio-nine.in, not sent yet",
+      Google: "Not connected",
+      Password: "Set",
+    });
+    vi.useRealTimers();
   });
 
   it("shows a 409 while editing as an alert, not as a username error", async () => {

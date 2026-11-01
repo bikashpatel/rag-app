@@ -1,6 +1,6 @@
 import type { BrowserContext, Page } from "@playwright/test";
 import { INVALID_LOGIN, composer, loginHeading, openAvatarMenu, openChat, submitLogin } from "../support/app";
-import { ADMIN_SESSION_ENV, BASE_URL, SESSION_COOKIE } from "../support/env";
+import { ADMIN_SESSION_ENV, BASE_URL, sessionCookieName } from "../support/env";
 import { expect, guardAdminContext, randomPassword, randomUsername, signIn, test as base } from "../support/fixtures";
 
 // The admin's pages show every account, so this file records no traces or screenshots, and closes the admin's page
@@ -8,8 +8,19 @@ import { expect, guardAdminContext, randomPassword, randomUsername, signIn, test
 // signed in with the session global-setup.ts made through the API; the UI only ever acts on e2e-… users, and the
 // admin guard blocks any other write.
 async function useAdminSession(context: BrowserContext): Promise<void> {
+  const name = sessionCookieName();
   await context.addCookies([
-    { name: SESSION_COOKIE, value: process.env[ADMIN_SESSION_ENV] ?? "", url: BASE_URL, httpOnly: true, sameSite: "Strict" },
+    {
+      name,
+      value: process.env[ADMIN_SESSION_ENV] ?? "",
+      // A url with secure: true is refused by Chromium on http://localhost; a host-only domain with path "/" is what
+      // the __Host- prefix needs anyway.
+      domain: new URL(BASE_URL).hostname,
+      path: "/",
+      httpOnly: true,
+      sameSite: "Strict",
+      secure: name.startsWith("__Host-"),
+    },
   ]);
 }
 

@@ -1,7 +1,7 @@
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { BillingStatus, Me, PaymentView, PlanOffer } from "../../api/types";
+import type { Me, PaymentView, PlanOffer } from "../../api/types";
 import {
   makeBillingStatus,
   makeCatalog,
@@ -20,6 +20,7 @@ import {
   makeMe,
   makePaidPlanAccess,
   makePlanAccess,
+  makePreferences,
   NOW,
 } from "../../test/fixtures";
 import { errorResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
@@ -268,46 +269,86 @@ describe("PlanBillingTab", () => {
     expect(screen.getByRole("navigation", { name: "Policies" })).toBeInTheDocument();
   });
 
-  it("saves the name on receipts once changed, and says the reminders come in the app", async () => {
+  it("saves the name on receipts once changed", async () => {
     const { calls, user } = await setup();
     const save = await screen.findByRole("button", { name: "Save" });
     expect(save).toHaveAttribute("aria-disabled", "true");
     expect(screen.queryByLabelText("Email for reminders")).not.toBeInTheDocument();
-    expect(screen.getByText("Plan reminders: in the app.")).toBeInTheDocument();
     await user.click(save);
     expect(calls.some((call) => call.method === "PUT")).toBe(false);
     await user.type(screen.getByLabelText("Name on receipts"), "  Maya Chen ");
     expect(save).not.toHaveAttribute("aria-disabled");
     await user.click(save);
-    expect(calls.find((call) => call.method === "PUT")?.body).toEqual({ name: "Maya Chen", email: null });
+    expect(calls.find((call) => call.method === "PUT")?.body).toEqual({ name: "Maya Chen" });
     expect(await screen.findByRole("status")).toHaveTextContent("Saved");
     // Nothing left to save, and the focus stays on the button instead of falling to the page.
     expect(save).toHaveAttribute("aria-disabled", "true");
     expect(save).toHaveFocus();
   });
 
-  it("asks for the reminder email only when reminder emails can be sent, and reports a refusal", async () => {
-    const status: BillingStatus = makeBillingStatus({ payments: makePaymentsInfo({ email_reminders: true }) });
-    const { user } = await setup(status, {
-      "PUT /billing/profile": () => errorResponse(422, "email: not a valid address"),
+  it("reports a refused name", async () => {
+    const { user } = await setup(makeBillingStatus(), {
+      "PUT /billing/profile": () => errorResponse(422, "name: too long"),
     });
-    expect(
-      await screen.findByText("Plan reminders: in the app. Add an email to get them by email too."),
-    ).toBeInTheDocument();
-    await user.type(screen.getByLabelText("Email for reminders"), "maya@");
+    await user.type(await screen.findByLabelText("Name on receipts"), "Maya");
     await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent("email: not a valid address");
+    expect(await screen.findByRole("alert")).toHaveTextContent("name: too long");
   });
 
-  it("says reminders also come by email when an email was given", async () => {
-    await setup(
-      makeBillingStatus({
-        payments: makePaymentsInfo({ email_reminders: true }),
-        profile: { name: "Maya Chen", email: "maya@example.com" },
-      }),
+  it("has no Emails section without a mailer", async () => {
+    await setup(makeBillingStatus(), {}, makeMe({ email: "maya@example.com" }));
+    await screen.findByLabelText("Name on receipts");
+    expect(screen.queryByRole("heading", { name: "Emails" })).not.toBeInTheDocument();
+  });
+
+  it("says where receipts and reminders go, with their two switches saved to the preferences", async () => {
+    const me = makeMe({ email: "maya@example.com", preferences: makePreferences({ email_receipts: true, email_plan_reminders: true }) });
+    const replies: Route[] = [
+      () => errorResponse(503, "Try later."),
+      ({ body }: FetchCall) => ({ ...makePreferences(), ...(body as object) }),
+    ];
+    const { calls, user, view } = await setup(
+      makeBillingStatus({ payments: makePaymentsInfo({ email_reminders: true }) }),
+      {
+        "PATCH /me/preferences": (call: FetchCall) => {
+          const reply = replies.shift();
+          return typeof reply === "function" ? reply(call) : reply;
+        },
+      },
+      me,
     );
-    expect(await screen.findByText("Plan reminders: in the app and by email.")).toBeInTheDocument();
-    expect(screen.getByLabelText("Email for reminders")).toHaveValue("maya@example.com");
+    expect(await screen.findByRole("heading", { name: "Emails" })).toBeInTheDocument();
+    expect(screen.getByText(/Receipts and plan reminders go to/)).toHaveTextContent(
+      "Receipts and plan reminders go to maya@example.com. Change it in Account",
+    );
+    const receipts = screen.getByRole("switch", { name: "Email me a receipt for each payment" });
+    const reminders = screen.getByRole("switch", { name: "Email me before my plan ends" });
+    expect(receipts).toBeChecked();
+    expect(receipts).toHaveAccessibleDescription("The PDF receipt is attached; it is also listed below.");
+    expect(reminders).toHaveAccessibleDescription("5 days before, the day before, and when it ends.");
+
+    await user.click(reminders);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Try later.");
+    expect(reminders).toBeChecked();
+    await user.click(receipts);
+    await screen.findByRole("switch", { name: "Email me a receipt for each payment", checked: false });
+    expect(calls.filter((call) => call.method === "PATCH").map((call) => call.body)).toEqual([
+      { email_plan_reminders: false },
+      { email_receipts: false },
+    ]);
+
+    await user.click(screen.getByRole("button", { name: "Change it in Account" }));
+    expect(view.location()).toBe("/?settings=account");
+  });
+
+  it("asks for an email to get receipts and reminders by email", async () => {
+    const { user, view } = await setup(makeBillingStatus({ payments: makePaymentsInfo({ email_reminders: true }) }));
+    expect(
+      await screen.findByText(/to get receipts and reminders by email\./),
+    ).toHaveTextContent("Add an email in Settings → Account to get receipts and reminders by email.");
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Add email" }));
+    expect(view.location()).toBe("/?settings=account");
   });
 
   it("shows an open checkout with Check status and Cancel, which reloads the tab", async () => {

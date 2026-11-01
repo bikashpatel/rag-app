@@ -1,6 +1,6 @@
 """Helpers of the payment tests (test_billing_*.py): a tester checking out through the fake Razorpay (the conftest
 fixture `fake_razorpay`), paying and coming back, webhooks as Razorpay sends them, the worker's processing, and reading
-the billing rows."""
+the billing rows. Testers get a verified email, which checkout needs (docs/briefs/signup-auth.md 4.12)."""
 
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -11,7 +11,7 @@ from fake_razorpay import FakeRazorpay
 from sqlalchemy import select
 
 from app import db
-from app.models import BillingEvent, BillingOrder, BillingPayment, Plan, PlanPeriod
+from app.models import BillingEvent, BillingOrder, BillingPayment, Plan, PlanPeriod, User, utcnow
 from app.redis_client import get_redis
 from app.services.billing import business, webhooks
 
@@ -27,11 +27,22 @@ async def plan_id(code: str) -> int:
     return found
 
 
+async def give_email(user_id: int, address: str) -> None:
+    """The account's verified email, as a confirmed change would set it."""
+    async with db.SessionLocal() as session:
+        user = await session.get(User, user_id)
+        assert user is not None, user_id
+        user.email, user.email_canonical, user.email_verified_at = address, address.lower(), utcnow()
+        await session.commit()
+
+
 async def new_tester(create_user: CreateUser, name: str, *, plan: str | None = None) -> ApiClient:
-    """A user who may pay under test keys, without a plan unless given."""
+    """A user who may pay under test keys, with a verified email (<username>@account.example.test) and without a plan
+    unless given."""
     client = await create_user(name, plan=plan)
     assert client.user_id is not None
     await make_tester(client.user_id)
+    await give_email(client.user_id, f"{client.username}@account.example.test")
     return client
 
 

@@ -186,9 +186,9 @@ export default function SettingsModal({
           </div>
         </div>
         <p className="settings-nav-foot">
-          <Avatar name={user.username} />
+          <Avatar name={user.email ?? user.username} />
           <span>
-            <strong>{user.username}</strong>
+            <strong>{user.email ?? user.username}</strong>
             Saved to your account
           </span>
         </p>

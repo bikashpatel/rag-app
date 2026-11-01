@@ -2,7 +2,9 @@
 docs/briefs/plans-billing.md 4.3 to 4.5 and 6.3): options, labels, changes and reasons; amounts and the credit computed
 on the server; testers only under test keys; reusing an open checkout; the new link before the old one is cancelled;
 the caps; a create that times out or answers an error; the pay_url check; the admin; no keys; refreshes throttled;
-checkouts at once and a checkout replaced while its link is made; the credit checked again when an upgrade applies."""
+checkouts at once and a checkout replaced while its link is made; the credit checked again when an upgrade applies.
+Since sign-up (docs/briefs/signup-auth.md 4.12): a verified email first, the smaller caps of unpaid users and theirs
+together (503 checkout_busy, the billing check's warning), the non-tester's sentence, UserRef.email in admin lists."""
 
 import asyncio
 from datetime import datetime, timedelta
@@ -27,7 +29,7 @@ from fake_razorpay import FakeRazorpay
 from sqlalchemy import select, update
 
 from app import db
-from app.models import BillingEvent, BillingOrder, Document, Plan, UsageEvent, User, utcnow
+from app.models import BillingEvent, BillingOrder, BillingPayment, Document, Plan, UsageEvent, User, utcnow
 from app.redis_client import get_redis
 from app.services.billing import business, periods, razorpay, reconcile
 from app.services.billing import checkout as checkout_service
@@ -84,10 +86,25 @@ async def test_someone_who_isnt_a_tester_cant_pay_with_test_keys(create_user: Cr
         "email_reminders": False,
     }
     assert {item["unavailable_reason"] for item in offer(found, "starter")["options"]} == {
-        "Online payment isn't set up yet."
+        "Paid plans open soon. Check back in a few days."
     }
     assert response.status_code == 503
     assert response.json() == {"detail": "Online payment isn't set up yet.", "code": "payments_unavailable"}
+
+
+async def test_a_tester_without_keys_reads_that_payment_isnt_set_up(
+    create_user: CreateUser, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "razorpay_key_id", "")
+    cat = await new_tester(create_user, "cat")
+
+    found = await catalog(cat)
+
+    assert {item["unavailable_reason"] for item in offer(found, "starter")["options"]} == {
+        "Online payment isn't set up yet."
+    }
 
 
 async def test_the_admin_sees_plans_without_options_and_cant_buy(admin_client: ApiClient) -> None:
@@ -461,8 +478,26 @@ async def test_without_keys_nobody_can_pay(create_user: CreateUser, monkeypatch:
 # ---------------- Caps ----------------
 
 
+async def mark_paid(user_id: int) -> None:
+    """The user has paid before (a bank transfer applied): the larger caps apply."""
+    async with db.SessionLocal() as session:
+        session.add(
+            BillingPayment(
+                user_id=user_id,
+                username="paid",
+                status="captured",
+                amount_paise=50_000,
+                currency="INR",
+                mode="offline",
+                applied_at=utcnow(),
+            )
+        )
+        await session.commit()
+
+
 async def test_five_links_an_hour_counted_only_when_one_is_made(create_user: CreateUser) -> None:
     wes = await new_tester(create_user, "wes")
+    await mark_paid(wes.user_id or 0)
     for code in ("starter", "standard", "professional", "starter"):
         await started(wes, code)
     assert (await checkout(wes, "starter")).status_code == 201  # reused: not counted
@@ -479,13 +514,100 @@ async def test_five_links_an_hour_counted_only_when_one_is_made(create_user: Cre
 
 async def test_fifteen_links_an_ist_day(create_user: CreateUser) -> None:
     xia = await new_tester(create_user, "xia")
-    await get_redis().set(f"rl:checkout-day:{xia.user_id}:{ist_date(utcnow()).isoformat()}", "15")
+    await mark_paid(xia.user_id or 0)
+    day = f"rl:checkout-day:{xia.user_id}:{ist_date(utcnow()).isoformat()}"
+    await get_redis().set(day, "14")
 
-    response = await checkout(xia, "starter")
+    assert (await checkout(xia, "starter")).status_code == 201
+    response = await checkout(xia, "standard")
 
     assert response.status_code == 429
     assert response.json()["detail"] == "Too many payment attempts. Try again tomorrow."
     assert 0 < int(response.headers["retry-after"]) <= 86_400
+
+
+async def test_an_unpaid_user_gets_three_links_an_hour(create_user: CreateUser) -> None:
+    yan = await new_tester(create_user, "yan")
+    for code in ("starter", "standard", "professional"):
+        await started(yan, code)
+
+    response = await checkout(yan, "starter")
+
+    assert response.status_code == 429 and response.json()["code"] == "too_many_checkouts"
+    assert response.json()["detail"] == "Too many payment attempts. Try again in an hour."
+
+
+async def test_an_unpaid_user_gets_six_links_an_ist_day(create_user: CreateUser) -> None:
+    zoe = await new_tester(create_user, "zoe")
+    day = f"rl:checkout-day:{zoe.user_id}:{ist_date(utcnow()).isoformat()}"
+    await get_redis().set(day, "5")
+
+    assert (await checkout(zoe, "starter")).status_code == 201
+    response = await checkout(zoe, "standard")
+
+    assert response.status_code == 429
+    assert response.json()["detail"] == "Too many payment attempts. Try again tomorrow."
+    assert await get_redis().get(day) == "6"
+
+
+async def test_all_unpaid_users_together_share_a_cap_and_the_billing_check_warns(
+    create_user: CreateUser, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.config import settings
+    from app.services.billing import summary
+
+    monkeypatch.setattr(settings, "checkout_unpaid_per_hour", 2)
+    first, second, third, paid = [await new_tester(create_user, name) for name in ("ada", "ben", "cyd", "dee")]
+    await mark_paid(paid.user_id or 0)
+    await started(first, "starter")
+    assert await checkout_service.unpaid_cap_reached() is False
+    await started(second, "starter")
+    assert await checkout_service.unpaid_cap_reached() is True
+
+    busy = await checkout(third, "starter")
+
+    assert busy.status_code == 503
+    assert busy.json() == {"detail": "Checkout is busy. Try again in a few minutes.", "code": "checkout_busy"}
+    assert int(busy.headers["retry-after"]) > 0
+    assert await get_redis().zcard(f"rl:checkout:{third.user_id}") == 0  # its own caps taken back
+    assert (await checkout(paid, "starter")).status_code == 201  # paid users aren't in that cap
+    assert "Unpaid users reached their payment-link cap (CHECKOUT_UNPAID_PER_HOUR) in the last hour" in (
+        await summary.problems()
+    )
+
+
+async def test_checkout_needs_a_verified_email(create_user: CreateUser) -> None:
+    from conftest import make_tester
+
+    eli = await create_user("eli", plan=None)
+    await make_tester(eli.user_id or 0)
+
+    response = await checkout(eli, "starter")
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "detail": "Add and confirm your email in Settings → Account first. Your receipt goes there.",
+        "code": "email_required",
+    }
+    assert await get_redis().get(f"rl:checkout-day:{eli.user_id}:{ist_date(utcnow()).isoformat()}") is None
+
+
+async def test_admin_lists_carry_the_accounts_email(
+    create_user: CreateUser, admin_client: ApiClient, fake_razorpay: FakeRazorpay
+) -> None:
+    fin = await new_tester(create_user, "fin")
+    public_id = await buy(fin, fake_razorpay, "starter")
+
+    orders = (await admin_client.get("/api/admin/billing/orders")).json()["items"]
+    payments = (await admin_client.get("/api/admin/billing/payments")).json()["items"]
+    detail = (await admin_client.get(f"/api/admin/billing/orders/{public_id}")).json()
+    await admin_client.delete(f"/api/admin/users/{fin.user_id}")
+    after = (await admin_client.get("/api/admin/billing/orders")).json()["items"]
+
+    ref = {"id": fin.user_id, "username": "fin", "email": "fin@account.example.test"}
+    assert [item["user"] for item in orders] == [ref] and [item["user"] for item in payments] == [ref]
+    assert detail["user"] == ref
+    assert [item["user"] for item in after] == [{"id": None, "username": "fin", "email": None}]
 
 
 # ---------------- Orders ----------------
@@ -581,9 +703,7 @@ async def test_checkouts_at_once_keep_to_the_caps_and_leave_one_live_link(
 
     monkeypatch.setattr(razorpay, "create_link", slow)
 
-    responses = await asyncio.gather(
-        *(checkout(max_, code) for code in ("starter", "standard", "professional") * 4)
-    )
+    responses = await asyncio.gather(*(checkout(max_, code) for code in ("starter", "standard", "professional") * 4))
 
     assert {response.status_code for response in responses} <= {201, 409, 429}
     assert len(fake_razorpay.links) <= checkout_service.HOUR_CAP

@@ -120,12 +120,12 @@ async def test_change_plan_and_revoke(admin_client: ApiClient, create_user: Crea
 
 async def test_a_users_billing_page(admin_client: ApiClient, create_user: CreateUser) -> None:
     eve = await create_user("eve", plan=None)
-    await eve.put("/api/billing/profile", json={"name": " Eve E ", "email": ""})
+    await eve.put("/api/billing/profile", json={"name": " Eve E "})
 
     body = (await admin_client.get(f"/api/admin/billing/users/{eve.user_id}")).json()
 
     assert body["plan"]["state"] == "none" and body["periods"] == [] and body["orders"] == []
-    assert body["profile"] == {"name": "Eve E", "email": None}
+    assert body["profile"] == {"name": "Eve E"}
     assert (await eve.get(f"/api/admin/billing/users/{eve.user_id}")).status_code == 403
 
 
@@ -251,7 +251,8 @@ async def test_orders_and_payments_lists(
     assert [item["public_id"] for item in waiting["items"]] == [pending]
     assert [item["public_id"] for item in hals["items"]] == [paid]
     assert [event["type"] for event in detail["events"]][:1] == ["order.created"]
-    assert detail["user"] == {"id": hal.user_id, "username": "hal"} and detail["mode"] == "test"
+    hal_ref = {"id": hal.user_id, "username": "hal", "email": "hal@account.example.test"}
+    assert detail["user"] == hal_ref and detail["mode"] == "test"
     assert checked.status_code == 200 and checked.json()["checks"] == 1
     assert payments["total"] == 1 and payments["items"][0]["razorpay_payment_id"].startswith("pay_")
     assert in_month["total"] == 1 and refunded["total"] == 0

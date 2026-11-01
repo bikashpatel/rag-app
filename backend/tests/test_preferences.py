@@ -23,6 +23,8 @@ DEFAULTS = {
     "chat_font_size": "default",
     "enter_to_send": True,
     "default_model_id": None,
+    "email_plan_reminders": True,
+    "email_receipts": True,
 }
 UNAVAILABLE = {"detail": "That model isn't available to you."}
 

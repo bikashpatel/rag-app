@@ -1,8 +1,10 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 import App from "../../App";
+import { forgetAuthConfig } from "../../auth/AuthContext";
 import { markdownResponse } from "../../test/adminTabs";
+import { makeAuthConfig, makeClosedAuthConfig } from "../../test/auth";
 import { makePublicPlan, makePublicSite, makeSeededOffers } from "../../test/billing";
 import { makeMe } from "../../test/fixtures";
 import { errorResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
@@ -27,9 +29,12 @@ _Last updated 26 Oct 2026_
 `;
 const publicPlans = makeSeededOffers().map(({ id, status, current, options, ...plan }) => plan);
 
+beforeEach(() => forgetAuthConfig());
+
 function openPage(path: string, routes: Record<string, Route> = {}): FetchCall[] {
   const calls = stubFetch({
     "GET /auth/me": signedOut,
+    "GET /auth/config": makeClosedAuthConfig(),
     "GET /public/site": makePublicSite({ contact_phone: "+91 98765 43210", address: "12 MG Road\nBengaluru" }),
     "GET /public/plans": publicPlans,
     "GET /legal/refunds.md": () => markdownResponse(REFUNDS),
@@ -137,7 +142,12 @@ describe("public pages", () => {
     expect(within(cards).queryByRole("button")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Compare plans" })).toBeInTheDocument();
     expect(screen.getByText(/plans don't renew automatically/)).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Sign in to choose a plan" })).toHaveAttribute("href", "/login");
+    expect(await screen.findByRole("link", { name: "Sign in to choose a plan" })).toHaveAttribute(
+      "href",
+      "/login?next=/plans",
+    );
+    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
+    expect(screen.queryByRole("link", { name: "Sign up" })).not.toBeInTheDocument();
     expect(document.title).toBe("Pricing · AskNuvexusDoc");
   });
 
@@ -165,13 +175,20 @@ describe("public pages", () => {
     );
   });
 
-  it("goes to the login form with the plans as the place to return to", async () => {
-    openPage("/pricing");
-    const user = userEvent.setup();
-    await user.click(await screen.findByRole("link", { name: "Sign in to choose a plan" }));
-    await waitFor(() => expect(window.location.pathname).toBe("/login"));
-    expect((window.history.state as { usr?: unknown }).usr).toEqual({
-      from: { pathname: "/plans", search: "", hash: "" },
-    });
+  it("while sign-up is open, offers Sign up in the top bar and an account to choose a plan", async () => {
+    openPage("/pricing", { "GET /auth/config": makeAuthConfig() });
+    const signUp = await screen.findByRole("link", { name: "Sign up" });
+    expect(signUp).toHaveAttribute("href", "/signup");
+    expect(signUp).toHaveClass("btn-primary");
+    expect(screen.getByRole("link", { name: "Create an account to choose a plan" })).toHaveAttribute(
+      "href",
+      "/signup?next=/plans",
+    );
+    expect(screen.getByText(/Already have an account\?/)).toHaveTextContent("Already have an account? Sign in");
+    expect(screen.getAllByRole("link", { name: "Sign in" }).map((link) => link.getAttribute("href"))).toEqual([
+      "/login",
+      "/login?next=/plans",
+    ]);
+    expect(screen.queryByRole("link", { name: "Sign in to choose a plan" })).not.toBeInTheDocument();
   });
 });

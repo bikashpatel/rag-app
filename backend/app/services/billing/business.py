@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import AppState, BillingEvent, BillingOrder, User, utcnow
-from app.ops.settings import AlertSettings, load
 from app.redis_client import get_redis
 from app.schemas_billing import BillingSettings, PaymentsInfo, PaymentsSetup, PublicSite
 from app.services.billing import audit
@@ -114,8 +113,8 @@ def can_pay(user: User) -> bool:
 
 
 def email_reminders() -> bool:
-    """Reminder emails can be sent: the monitor's SMTP server and BILLING_EMAIL_FROM are set."""
-    return bool(settings.billing_email_from and load(AlertSettings).alert_smtp_host)
+    """Receipt and reminder emails can be sent: the mailer is configured (MAIL_SMTP_HOST and MAIL_FROM)."""
+    return settings.mail_configured
 
 
 async def payments_info(db: AsyncSession, user: User) -> PaymentsInfo:

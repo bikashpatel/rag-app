@@ -14,7 +14,7 @@ import Avatar from "../ui/Avatar";
 import { AlertCircleIcon, AlertIcon, BankIcon, DownloadIcon, FlaskIcon, InfoIcon } from "../ui/icons";
 import { billingExportUrl, billingSummaryPath, paymentsPath } from "./adminApi";
 import { PaymentDialog, PaymentsTable } from "./BillingPayments";
-import { plural, shortIstDate, TEST_LINK_CAP } from "./billingUi";
+import { BuyerEmail, plural, shortIstDate, TEST_LINK_CAP } from "./billingUi";
 import FlashMessage from "./FlashMessage";
 import { useFlash, useResource, type Resource } from "./hooks";
 import { monthLabel } from "./MonthPicker";
@@ -431,6 +431,7 @@ function UserListRow({ row, onNavigate }: { row: UserPlanRow; onNavigate: (hash:
       <Avatar name={user.username} />
       <span className="admin-expiring-text">
         <b>{user.username}</b>
+        <BuyerEmail email={user.email} />
         <span className="admin-subtext">
           {row.plan ?? "No plan"} · {shortIstDate(row.date)} ·{" "}
           {row.last_payment_at ? `last paid ${shortIstDate(row.last_payment_at)}` : "never paid"}

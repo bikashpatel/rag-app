@@ -1,5 +1,6 @@
 import { api, ApiError } from "../../api/client";
 import type {
+  Accepted,
   AdminOrder,
   AdminOrderDetail,
   AdminPayment,
@@ -15,10 +16,13 @@ import type {
   PlanCreate,
   PlanSaved,
   PlanUpdate,
+  MailTest,
   ReconcileResult,
   RefundRequest,
   ResolveRequest,
   RevokeRequest,
+  SignupSettings,
+  SignupStatus,
   UserBilling,
 } from "../../api/types";
 
@@ -49,6 +53,13 @@ export function queuedMessage(queued: number): string {
   if (queued === 0) return "Nothing needed re-indexing.";
   return `Queued ${queued} document${queued === 1 ? "" : "s"} for re-indexing.`;
 }
+
+// ---------------- Sign-up (SPEC section 6, "Sign-up") ----------------
+
+export const SIGNUP_SETTINGS_PATH = "/admin/signup-settings";
+export const saveSignupSettings = (body: SignupSettings) => api.put<SignupStatus>(SIGNUP_SETTINGS_PATH, body);
+/** Queues a `test` mail to that address (503 without a mailer, 5 an hour). */
+export const sendTestEmail = (body: MailTest) => api.post<Accepted>("/admin/mail/test", body);
 
 // ---------------- Plans and billing (SPEC section 6, "Plans and billing") ----------------
 

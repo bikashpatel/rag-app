@@ -34,7 +34,9 @@ npx vitest run src/components/chat   # a folder or file
 | `chatStream.ts` | SSE events as the backend writes them and `liveStream()`, a chat response the test feeds event by event |
 | `fixtures.ts`, `adminTabs.ts` | `make…` builders typed with `src/api/types.ts`; `makeMe()` has an open-ended complimentary Professional plan (every feature), like the backend tests' default user, and `makePaidPlanAccess`/`makeLapsedPlanAccess` give the other states |
 | `adminTabs.ts` (plans and billing) | `makeSeededChatModels` and `makeSeededAdminPlans` (the seeded models and plans as Admin → Plans loads them), `makeAdminUserPlan`, and `markdownResponse` for the `/legal/*.md` pages |
-| `billing.ts` | plans and billing builders with the seeded plans' values: `makeCatalog` (Starter, Standard, Professional), `makePlanOffer`, orders, payments, periods, `makeBillingStatus`, and the admin's plans, payments, orders and summary |
+| `billing.ts` | plans and billing builders with the seeded plans' values: `makeCatalog` (Starter, Standard, Professional), `makePlanOffer`, orders, payments, periods, `makeBillingStatus`, and the admin's plans, payments, orders and summary (`makeUserRef`; their `user` overrides may leave out `email`) |
+| `auth.ts` | sign-up, sign-in and account-email builders: `makeAuthConfig` (everything configured, sign-up open) and `makeClosedAuthConfig` (as the app ships), the token pages' answers (`makeSignupCheck`, `makePasswordTokenInfo`, `makeEmailTokenInfo`, `makeUndoInfo`), `makeGooglePending`, `makePendingEmailInfo`, `makeGoogleLink` |
+| `adminSignup.ts` | Admin → Users → Sign-up: `makeSignupStatus` (everything configured, sign-up open, no warnings) and `makeShippedSignupStatus` (as the app ships: closed, nothing configured, test payment keys) |
 | `documents.ts` | `controlUploads` (a `vi.mock`ed upload the test settles), `settle` and `makeFile` |
 | `browser.ts` | what jsdom lacks (`matchMedia`, `ResizeObserver`, scrolling, one-pixel client rects) and `setMediaQueries` for the phone and tablet layouts |
 

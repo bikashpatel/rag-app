@@ -1386,3 +1386,189 @@
     color: inherit;
   }
 }
+
+/* ---------- Account: the email, the sign-in methods (docs/briefs/signup-auth-visual.md 7) ---------- */
+/* The display name is the email when there is one: it wraps rather than being cut. */
+.settings-profile-name.settings-profile-email {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+/* The profile's Email fact: its state ("Confirmed" since …, or "No email"). */
+.settings-email-value {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+}
+.settings-email-none {
+  color: var(--text-3);
+  font-weight: 400;
+}
+.settings-fact-note {
+  display: block;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 400;
+}
+/* An unconfirmed address under the Email row: in progress, so the info tone. */
+.settings-pending {
+  margin-top: 14px;
+}
+.settings-pending .ui-notice-text b {
+  color: var(--text);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.settings-pending small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 13.5px;
+}
+.settings-pending-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  margin: -2px -2px -2px 0;
+}
+.settings-inline-note {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+
+/* Sign-in methods: the sign-ins list look, with each method's action at the end of its row. */
+.settings-methods {
+  margin: 14px 0 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  list-style: none;
+}
+.settings-method {
+  border-bottom: 1px solid var(--border);
+}
+.settings-method:last-child {
+  border-bottom: 0;
+}
+.settings-method-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+}
+.settings-method-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--surface-2);
+  color: var(--text-2);
+}
+.settings-method-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.settings-method-text b {
+  font-size: 15px;
+  font-weight: 600;
+}
+.settings-method-text > span {
+  color: var(--text-3);
+  font-size: 13.5px;
+  overflow-wrap: anywhere;
+}
+.settings-method-end {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+/* Why an action is unavailable, or an inline step (password, then Google), under the row's text. */
+.settings-method-more {
+  margin: -4px 0 0;
+  padding: 0 16px 14px 66px;
+  color: var(--text-3);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.settings-method-more > p {
+  margin: 0;
+}
+.settings-method-more .settings-inline-form,
+.settings-method-more .settings-confirm,
+.settings-method-more .settings-result {
+  margin-top: 4px;
+}
+.settings-method-more .settings-confirm {
+  color: var(--text);
+}
+.settings-reauth {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+.settings-reauth > p {
+  margin: 0;
+}
+
+/* Plan & billing: where receipts and reminders go, and their switches. */
+.settings-mail-switches {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+.settings-mail-address {
+  color: var(--text);
+  font-weight: 650;
+  overflow-wrap: anywhere;
+}
+.settings-mail-none {
+  align-items: center;
+  flex-wrap: wrap;
+}
+/* A text button that reads as a link inside a description ("Change it in Account"). */
+.settings-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.settings-link:hover {
+  text-decoration: underline;
+}
+
+@container settings-panel (max-width: 520px) {
+  .settings-method-row {
+    flex-wrap: wrap;
+    padding: 12px 14px;
+  }
+  .settings-method-end {
+    flex-basis: 100%;
+    justify-content: flex-start;
+    padding-left: 50px;
+  }
+  .settings-method-more {
+    padding: 0 14px 14px;
+  }
+  .settings-pending {
+    flex-wrap: wrap;
+  }
+  .settings-pending-actions {
+    flex-basis: 100%;
+    margin: 4px 0 0 25px;
+  }
+}

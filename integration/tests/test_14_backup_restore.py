@@ -773,6 +773,19 @@ def stored_names_of(doc_ids: list[int]) -> dict[int, str]:
     return {int(doc_id): name for doc_id, name in sql(f"select id, stored_name from documents where id in ({ids})")}
 
 
+# Migration 0004 (sign-up and mail) undone, as the schema was at 0003: its tables and columns dropped, the password
+# hash back to NOT NULL and the billing profile's email back.
+UNDO_0004 = (
+    "DROP TABLE auth_tokens, email_outbox, pending_emails, pending_signups, user_identities, auth_events, "
+    "mail_suppressions, username_tombstones CASCADE; "
+    "ALTER TABLE users DROP COLUMN email, DROP COLUMN email_canonical, DROP COLUMN email_verified_at, "
+    "DROP COLUMN signup_source, DROP COLUMN terms_version, DROP COLUMN terms_accepted_at, "
+    "ALTER COLUMN password_hash SET NOT NULL; "
+    "ALTER TABLE login_events DROP COLUMN method; "
+    "ALTER TABLE user_billing_profiles ADD COLUMN email varchar(254); "
+    "DELETE FROM app_state WHERE key = 'signup_settings'; "
+    "UPDATE alembic_version SET version_num = '0003'; "
+)
 # Migration 0003 (plans and billing) undone, as the schema was at 0001 and 0002 (0002 only aligns databases made before
 # migrations): its tables and columns dropped, the limits back to NOT NULL and user_image_limits back.
 UNDO_0003 = (
@@ -803,7 +816,7 @@ psql -X -q -v ON_ERROR_STOP=1 -d scratch_old -c "{undo}" &&
 pg_dump --format=custom --file=$d/postgres.dump scratch_old && psql -X -q -d postgres -c 'DROP DATABASE scratch_old' &&
 (. /opt/backup/lib.sh && count_rows $d/postgres.dump $d/postgres.rows) &&
 sed -i 's/^  "alembic_revision": .*,$/  "alembic_revision": "0001",/' $d/manifest.json && reseal $d
-""".replace("{undo}", UNDO_0003)
+""".replace("{undo}", UNDO_0004 + UNDO_0003)
 
 
 @pytest.mark.deadline(600)

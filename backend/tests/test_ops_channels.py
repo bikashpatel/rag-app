@@ -1,14 +1,14 @@
-"""The monitor's alert channels (app.ops.channels): what each sends, and failures that name no URL or credential."""
+"""The monitor's alert channels (app.ops.channels): what each sends, and failures that name no URL or credential. The
+email channel sends through the mailer's SMTP transport (test_mail_transport.py covers it in detail)."""
 
 import functools
 import json
 import smtplib
 from collections.abc import Callable
-from email.message import EmailMessage
-from typing import Any
 
 import httpx
 import pytest
+from test_mail_transport import FakeSMTP, install_fake_smtp
 
 from app.ops import channels
 from app.ops.alerts import Notification
@@ -88,48 +88,9 @@ async def test_http_failures_name_no_url(
     assert raised.value.__cause__ is None
 
 
-class FakeSMTP:
-    """Records an SMTP session; `fail` makes the named step raise."""
-
-    instances: list["FakeSMTP"] = []
-    fail: dict[str, Exception] = {}
-
-    def __init__(self, host: str, port: int, timeout: float = 0, context: Any = None) -> None:
-        self.address = (host, port)
-        self.ssl_context = context
-        self.steps: list[str] = []
-        self.messages: list[EmailMessage] = []
-        FakeSMTP.instances.append(self)
-
-    def __enter__(self) -> "FakeSMTP":
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.steps.append("quit")
-
-    def _step(self, name: str) -> None:
-        self.steps.append(name)
-        if name in FakeSMTP.fail:
-            raise FakeSMTP.fail[name]
-
-    def starttls(self, context: Any = None) -> None:
-        self._step("starttls")
-
-    def login(self, username: str, password: str) -> None:
-        self._step(f"login {username}")
-
-    def send_message(self, message: EmailMessage) -> None:
-        self._step("send")
-        self.messages.append(message)
-
-
 @pytest.fixture
 def smtp(monkeypatch: pytest.MonkeyPatch) -> type[FakeSMTP]:
-    FakeSMTP.instances = []
-    FakeSMTP.fail = {}
-    monkeypatch.setattr(smtplib, "SMTP", FakeSMTP)
-    monkeypatch.setattr(smtplib, "SMTP_SSL", FakeSMTP)
-    return FakeSMTP
+    return install_fake_smtp(monkeypatch)
 
 
 def email(security: str = "starttls", username: str = "alerts@example.com") -> EmailChannel:
@@ -175,7 +136,7 @@ async def test_email_over_ssl_or_plain_without_login(smtp: type[FakeSMTP]) -> No
             smtplib.SMTPAuthenticationError(535, b"bad smtp-password-secret"),
             "SMTP login refused",
         ),
-        ("send", smtplib.SMTPRecipientsRefused({"ops@example.com": (550, b"no")}), "recipients refused"),
+        ("send", smtplib.SMTPRecipientsRefused({"ops@example.com": (550, b"no")}), "recipient refused (550)"),
         ("starttls", smtplib.SMTPNotSupportedError("STARTTLS not supported"), "SMTP error (SMTPNotSupportedError)"),
         ("send", ConnectionRefusedError("refused smtp.example.com"), "connection refused"),
     ],

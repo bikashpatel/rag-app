@@ -44,7 +44,7 @@ def test_deactivation_ends_sessions_and_blocks_login(make_user, admin) -> None:
     assert _me(user.client) == 401
     assert user.client.get("/api/documents").status_code == 401
     refused = client().post("/api/auth/login", json={"username": user.username, "password": user.password})
-    assert refused.status_code == 401 and refused.json()["detail"] == "Invalid username or password"
+    assert refused.status_code == 401 and refused.json()["detail"] == "Incorrect email, username or password."
     check(admin.patch(f"/api/admin/users/{user.id}", json={"is_active": True}))
     assert _me(user.client) == 401, "an old session stays ended after reactivation"
     assert _me(user.login_again()) == 200

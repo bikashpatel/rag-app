@@ -7,6 +7,7 @@ from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Fie
 
 from app.config import settings
 from app.schemas import MAX_INT, UserLimits
+from app.schemas_auth import SIGNIN_PASSWORD_MAX_LENGTH, PendingEmailRef, SignupSource
 from app.schemas_billing import PlanRef, PlanState, UserGrant
 
 # Largest Postgres BIGINT: bigger values would make the driver fail with a 500.
@@ -54,7 +55,8 @@ def _not_reserved(value: str) -> str:
 Username = Annotated[
     str, StringConstraints(min_length=3, max_length=64, pattern=r"^[a-z0-9_.-]+$"), BeforeValidator(_strip_lower)
 ]
-Password = Annotated[str, Field(min_length=8, max_length=256)]
+# As typed; the password policy (app.services.auth.passwords) answers 422 password_rejected with its reason.
+Password = Annotated[str, Field(min_length=1, max_length=SIGNIN_PASSWORD_MAX_LENGTH)]
 Count = Annotated[int, Field(ge=0, le=MAX_INT)]
 TokenLimit = Annotated[int, Field(ge=0, le=MAX_BIGINT)]
 UploadMb = Annotated[int, Field(ge=1, le=settings.max_upload_mb_hard)]
@@ -164,6 +166,15 @@ class AdminUser(BaseModel):
     above_plan: list[LimitName]  # overrides more generous than the plan's value
     no_models: bool  # the allowed list and the plan's models don't overlap
     plan: AdminUserPlan
+    email: str | None  # verified
+    email_verified_at: datetime | None
+    pending_email: PendingEmailRef | None
+    signup_source: SignupSource
+    has_password: bool
+    google_linked: bool
+    google_email: str | None  # the linked Google account's address; None when none
+    terms_accepted_at: datetime | None
+    terms_version: str | None  # the terms version the user accepted; None for admin-created users
 
 
 class AdminUserCreate(BaseModel):

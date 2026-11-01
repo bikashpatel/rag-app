@@ -1,4 +1,14 @@
-import { INVALID_LOGIN, avatarButton, composer, loginHeading, openAvatarMenu, openChat, settingsDialog, submitLogin } from "../support/app";
+import {
+  INVALID_LOGIN,
+  avatarButton,
+  composer,
+  identifierField,
+  loginHeading,
+  openAvatarMenu,
+  openChat,
+  settingsDialog,
+  submitLogin,
+} from "../support/app";
 import { expect, signIn, test } from "../support/fixtures";
 
 test.describe("sign-in", () => {
@@ -10,12 +20,22 @@ test.describe("sign-in", () => {
     await expect(page.getByRole("alert")).toHaveText(INVALID_LOGIN);
     await expect(page).toHaveURL(/\/login$/);
     // The fields are described by the error, for screen readers.
-    await expect(page.getByLabel("Username")).toHaveAccessibleDescription(INVALID_LOGIN);
+    await expect(identifierField(page)).toHaveAccessibleDescription(INVALID_LOGIN);
+  });
+
+  test("Sign in stays enabled and says what is missing", async ({ page }) => {
+    await page.goto("/login");
+    const signIn = page.getByRole("button", { name: "Sign in" });
+    await expect(signIn).toBeEnabled();
+    await signIn.click();
+    await expect(page.getByText("Enter your email or username.")).toBeVisible();
+    await expect(page.getByText("Enter your password.")).toBeVisible();
+    await expect(identifierField(page)).toBeFocused();
+    await expect(page).toHaveURL(/\/login$/);
   });
 
   test("the right password lands on the chat", async ({ page, user }) => {
     await page.goto("/login");
-    await expect(page.getByRole("button", { name: "Sign in" })).toBeDisabled();
     await submitLogin(page, user.username, user.password);
     await expect(page).toHaveURL(/\/$/);
     await expect(page.getByRole("heading", { name: `How can I help, ${user.username}?` })).toBeVisible();

@@ -1,18 +1,26 @@
-import { lazy, Suspense, useState, type ReactNode } from "react";
+import { lazy, Suspense, useEffect, useState, type ReactNode } from "react";
 import { BrowserRouter, Navigate, Route, Routes, useLocation, useNavigationType, useParams } from "react-router-dom";
 import type { Me } from "./api/types";
-import { AuthProvider, useAuth } from "./auth/AuthContext";
+import { AuthProvider, loadAuthConfig, useAuth } from "./auth/AuthContext";
 import { loginRedirectState, postLoginPath } from "./auth/loginRedirect";
 import SettingsHost from "./components/settings/SettingsHost";
 import ErrorBoundary from "./components/ui/ErrorBoundary";
 import { FullPageMessage, FullPageSpinner } from "./components/ui/FullPageState";
+import { leaveForApp, turnstileAllowed } from "./lib/authDocument";
 import { parseSettingsTab, SETTINGS_PARAM, withSettingsTab } from "./lib/settingsLink";
 import BillingReturnPage from "./pages/BillingReturnPage";
 import ChatPage from "./pages/ChatPage";
 import CheckoutPage from "./pages/CheckoutPage";
+import ConfirmEmailPage from "./pages/ConfirmEmailPage";
+import ForgotPasswordPage from "./pages/ForgotPasswordPage";
+import GoogleSignupPage from "./pages/GoogleSignupPage";
 import LoginPage from "./pages/LoginPage";
 import PlansPage from "./pages/PlansPage";
 import { publicRoutes } from "./pages/public/routes";
+import ResetPasswordPage from "./pages/ResetPasswordPage";
+import SignupPage from "./pages/SignupPage";
+import UndoEmailPage from "./pages/UndoEmailPage";
+import VerifyEmailPage from "./pages/VerifyEmailPage";
 
 const CHUNK_RELOAD_KEY = "rag.chunkReload";
 
@@ -66,10 +74,26 @@ function SettingsRedirect() {
   return <Navigate to={`/${withSettingsTab("", parseSettingsTab(tab ?? "general"))}`} replace />;
 }
 
+/** The parameters of a return to Settings → Account (Google's link and step-up results) that /plans keeps too. */
+const ACCOUNT_RETURN_PARAMS = ["google", "change", "setup"] as const;
+
+/** `?settings=<tab>` and the account-return parameters of `search`, for the redirect to /plans. */
+function plansSearch(search: string): string {
+  const params = new URLSearchParams(search);
+  const kept = new URLSearchParams(withSettingsTab("", parseSettingsTab(params.get(SETTINGS_PARAM))));
+  for (const name of ACCOUNT_RETURN_PARAMS) {
+    const value = params.get(name);
+    if (value !== null) kept.set(name, value);
+  }
+  const query = kept.toString();
+  return query ? `?${query}` : "";
+}
+
 /**
- * Without access (no plan, or it ended) the chat goes to /plans, keeping an open Settings tab. Decided when the route
- * is entered (a page load, or a navigation to another path), not when Me changes on the page already shown, so a plan
- * that ends there doesn't move the user (8.1, 8.7). The chat page's own replace navigations keep the decision.
+ * Without access (no plan, or it ended) the chat goes to /plans, keeping an open Settings tab (and a return from
+ * Google to Settings → Account). Decided when the route is entered (a page load, or a navigation to another path),
+ * not when Me changes on the page already shown, so a plan that ends there doesn't move the user (8.1, 8.7). The chat
+ * page's own replace navigations keep the decision.
  */
 function PlanGate({ user, children }: { user: Me; children: ReactNode }) {
   const { pathname, search } = useLocation();
@@ -82,8 +106,7 @@ function PlanGate({ user, children }: { user: Me; children: ReactNode }) {
     setEntry(current);
   }
   if (current.allowed) return <>{children}</>;
-  const tab = parseSettingsTab(new URLSearchParams(search).get(SETTINGS_PARAM));
-  return <Navigate to={{ pathname: "/plans", search: withSettingsTab("", tab) }} replace />;
+  return <Navigate to={{ pathname: "/plans", search: plansSearch(search) }} replace />;
 }
 
 export function RequireAuth({
@@ -107,13 +130,33 @@ export function RequireAuth({
   return <>{children}</>;
 }
 
+/** A full page load into the app (a document whose CSP allowed Cloudflare's script never runs an app page). */
+function LeaveForApp({ path }: { path: string }) {
+  useEffect(() => leaveForApp(path), [path]);
+  return <FullPageSpinner />;
+}
+
+/**
+ * The signed-out pages (/login, /signup, /forgot-password): a session goes to the app, the place sign-in would have
+ * gone to. The sign-up configuration is asked for at once, beside the session check.
+ */
 function PublicOnly({ children }: { children: ReactNode }) {
   const { user, loading } = useAuth();
   const location = useLocation();
+  useEffect(() => {
+    loadAuthConfig().catch(() => undefined);
+  }, []);
   if (loading) return <FullPageSpinner />;
-  // Same target as LoginPage's own redirect, so whichever runs first after sign-in goes to the same place.
-  if (user) return <Navigate to={postLoginPath(location.state)} replace />;
+  if (user) {
+    const path = postLoginPath(location.state, location.search);
+    return turnstileAllowed() ? <LeaveForApp path={path} /> : <Navigate to={path} replace />;
+  }
   return <>{children}</>;
+}
+
+/** A signed-out page at `path`. */
+function publicOnly(path: string, page: ReactNode) {
+  return <Route path={path} element={<PublicOnly>{page}</PublicOnly>} />;
 }
 
 export default function App() {
@@ -122,14 +165,15 @@ export default function App() {
       <BrowserRouter>
         <AuthProvider>
           <Routes>
-            <Route
-              path="/login"
-              element={
-                <PublicOnly>
-                  <LoginPage />
-                </PublicOnly>
-              }
-            />
+            {publicOnly("/login", <LoginPage />)}
+            {publicOnly("/signup", <SignupPage />)}
+            {publicOnly("/forgot-password", <ForgotPasswordPage />)}
+            {/* The emailed links and Google's return: with or without a session. */}
+            <Route path="/verify-email" element={<VerifyEmailPage />} />
+            <Route path="/signup/google" element={<GoogleSignupPage />} />
+            <Route path="/reset-password" element={<ResetPasswordPage />} />
+            <Route path="/confirm-email" element={<ConfirmEmailPage />} />
+            <Route path="/undo-email" element={<UndoEmailPage />} />
             <Route
               path="/"
               element={

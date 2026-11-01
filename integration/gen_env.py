@@ -1,10 +1,12 @@
 """Write integration/.run/it.env: the only environment the test stack gets (see compose.it.yml).
 
 Random SECRET_KEY, ADMIN_PASSWORD, POSTGRES_PASSWORD and TOKEN_ENCRYPTION_KEY on every run; fake provider keys, so
-nothing can be billed; Google and Razorpay pointed at the fakes (random Razorpay test keys and webhook secrets); backups
-in integration/.run/backups; alerts to the fake receiver. Ports come from IT_APP_PORT (18090), IT_FAKE_LLM_PORT
-(18091), IT_FAKE_GOOGLE_PORT (18092) and IT_FAKE_RAZORPAY_PORT (18093). The file is git-ignored and readable only by
-its owner.
+nothing can be billed; Google (the Gmail plugin and Google sign-in) and Razorpay pointed at the fakes (random Razorpay
+test keys and webhook secrets); user mail to the fake SMTP server (a random login and webhook secret), Turnstile and the
+breached-password check to their fake (Cloudflare's always-passing test keys); backups in integration/.run/backups;
+alerts to the fake receiver. Ports come from IT_APP_PORT (18090), IT_FAKE_LLM_PORT (18091), IT_FAKE_GOOGLE_PORT
+(18092), IT_FAKE_RAZORPAY_PORT (18093), IT_FAKE_MAIL_PORT (18094) and IT_FAKE_TURNSTILE_PORT (18095). The file is
+git-ignored and readable only by its owner.
 """
 
 import base64
@@ -36,8 +38,14 @@ def main() -> None:
     llm_port = _port("IT_FAKE_LLM_PORT", 18091)
     google_port = _port("IT_FAKE_GOOGLE_PORT", 18092)
     razorpay_port = _port("IT_FAKE_RAZORPAY_PORT", 18093)
-    if len({app_port, llm_port, google_port, razorpay_port}) != 4:
-        sys.exit("IT_APP_PORT, IT_FAKE_LLM_PORT, IT_FAKE_GOOGLE_PORT and IT_FAKE_RAZORPAY_PORT must differ")
+    mail_port = _port("IT_FAKE_MAIL_PORT", 18094)
+    turnstile_port = _port("IT_FAKE_TURNSTILE_PORT", 18095)
+    ports = (app_port, llm_port, google_port, razorpay_port, mail_port, turnstile_port)
+    if len(set(ports)) != len(ports):
+        sys.exit(
+            "IT_APP_PORT, IT_FAKE_LLM_PORT, IT_FAKE_GOOGLE_PORT, IT_FAKE_RAZORPAY_PORT, IT_FAKE_MAIL_PORT and "
+            "IT_FAKE_TURNSTILE_PORT must differ"
+        )
     values = {
         "IT_STACK": "rag-it",
         "SECRET_KEY": secrets.token_urlsafe(48),
@@ -50,8 +58,13 @@ def main() -> None:
         "IT_FAKE_LLM_PORT": str(llm_port),
         "IT_FAKE_GOOGLE_PORT": str(google_port),
         "IT_FAKE_RAZORPAY_PORT": str(razorpay_port),
+        "IT_FAKE_MAIL_PORT": str(mail_port),
+        "IT_FAKE_TURNSTILE_PORT": str(turnstile_port),
         "WORKER_MEM_LIMIT": "2g",
         "PUBLIC_BASE_URLS": f"http://127.0.0.1:{app_port}",
+        # nginx takes CF-Connecting-IP from any client (the ports are published on 127.0.0.1 only), so the sign-up tests
+        # can come from several networks; without the header every request keeps Docker's address
+        "NGINX_REAL_IP_FROM": "0.0.0.0/0,::/0",
         "TOKEN_ENCRYPTION_KEY": base64.urlsafe_b64encode(os.urandom(32)).decode(),
         "GOOGLE_OAUTH_CLIENT_ID": "fake-client-id.apps.googleusercontent.com",
         "GOOGLE_OAUTH_CLIENT_SECRET": "fake-client-secret",
@@ -59,6 +72,28 @@ def main() -> None:
         "GOOGLE_OAUTH_TOKEN_URL": "http://fake-google:8099/token",
         "GOOGLE_OAUTH_REVOKE_URL": "http://fake-google:8099/revoke",
         "GMAIL_API_BASE_URL": "http://fake-google:8099",
+        # Google sign-in (its own client) against the fake's OpenID Connect side; the consent page is browser-facing
+        "GOOGLE_SIGNIN_CLIENT_ID": "fake-signin-client.apps.googleusercontent.com",
+        "GOOGLE_SIGNIN_CLIENT_SECRET": "fake-signin-secret",
+        "GOOGLE_SIGNIN_AUTHORIZE_URL": f"http://127.0.0.1:{google_port}/o/oauth2/v2/auth",
+        "GOOGLE_SIGNIN_TOKEN_URL": "http://fake-google:8099/token",
+        "GOOGLE_SIGNIN_JWKS_URL": "http://fake-google:8099/oauth2/v3/certs",
+        # User mail to the fake SMTP server (no TLS on the internal network), its bounce webhook signed with this secret
+        "MAIL_SMTP_HOST": "fake-mail",
+        "MAIL_SMTP_PORT": "2525",
+        "MAIL_SMTP_SECURITY": "none",
+        "MAIL_SMTP_USERNAME": "it-mailer",
+        "MAIL_SMTP_PASSWORD": secrets.token_urlsafe(18),
+        "MAIL_FROM": "AskNuvexusDoc <no-reply@it.example.test>",
+        "MAIL_REPLY_TO": "support@it.example.test",
+        "MAIL_WEBHOOK_SECRET": "whsec_" + base64.b64encode(os.urandom(24)).decode(),
+        # The suite's sign-ups alone send more than the default day's `public` share (40% of 80)
+        "MAIL_DAILY_LIMIT": "400",
+        # Cloudflare's always-passing test keys (the fake checks the secret) and the breached-password check's fake
+        "TURNSTILE_SITE_KEY": "1x00000000000000000000AA",
+        "TURNSTILE_SECRET_KEY": "1x0000000000000000000000000000000AA",
+        "TURNSTILE_SITEVERIFY_URL": "http://fake-turnstile:8000/turnstile/v0/siteverify",
+        "PASSWORD_BREACH_CHECK_URL": "http://fake-turnstile:8000/range/",
         # Payments in test mode against the fake Razorpay, its webhooks signed with these secrets, a fast reconciler
         "RAZORPAY_KEY_ID": f"rzp_test_it{secrets.token_hex(6)}",
         "RAZORPAY_KEY_SECRET": secrets.token_urlsafe(18),

@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { ApiError, publicApi } from "../../api/client";
-import type { BillingAdminConfig, BillingSettings, PageSlug } from "../../api/types";
-import { DRAFT_MARKER, formatInr } from "../../lib/billing";
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from "react";
+import type { BillingAdminConfig, BillingSettings } from "../../api/types";
+import { formatInr } from "../../lib/billing";
 import { formatNumber, formatRelativeTime } from "../../lib/format";
 import { ButtonSpinner } from "../ui/Spinner";
 import { AlertCircleIcon, CheckCircleIcon, InfoIcon, RefreshIcon } from "../ui/icons";
@@ -11,49 +10,11 @@ import { Field } from "./Field";
 import FlashMessage from "./FlashMessage";
 import { FormValidator, type FieldErrors } from "./form";
 import { useFlash, type Resource } from "./hooks";
+import { POLICY_PAGES, usePolicyPages, type PageCheck } from "./policyPages";
 import { ResourceGate } from "./StateViews";
 
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const PREFIX_PATTERN = /^[A-Z0-9]{1,4}$/;
-
-/** The public pages, as their Markdown files name them (frontend/public/legal/<slug>.md). */
-export const POLICY_PAGES: readonly { slug: PageSlug; title: string }[] = [
-  { slug: "terms", title: "Terms of service" },
-  { slug: "privacy", title: "Privacy policy" },
-  { slug: "refunds", title: "Cancellation and refunds" },
-  { slug: "shipping", title: "Shipping and delivery" },
-  { slug: "contact", title: "Contact us" },
-  { slug: "about", title: "About us" },
-  { slug: "pricing", title: "Pricing" },
-];
-
-type PageCheck = { slug: PageSlug; title: string; state: "final" | "draft" | "missing" | "error" };
-
-/** Reads each public page's Markdown for the draft marker (the going-live checklist). */
-function usePolicyPages(): { pages: PageCheck[] | null; reload: () => void } {
-  const [pages, setPages] = useState<PageCheck[] | null>(null);
-  const [round, setRound] = useState(0);
-  useEffect(() => {
-    const controller = new AbortController();
-    setPages(null);
-    void Promise.all(
-      POLICY_PAGES.map(({ slug, title }) =>
-        publicApi.page(slug, controller.signal).then(
-          (text): PageCheck => ({ slug, title, state: text.trimStart().startsWith(DRAFT_MARKER) ? "draft" : "final" }),
-          (err: unknown): PageCheck => ({
-            slug,
-            title,
-            state: err instanceof ApiError && err.status === 404 ? "missing" : "error",
-          }),
-        ),
-      ),
-    ).then((checked) => {
-      if (!controller.signal.aborted) setPages(checked);
-    });
-    return () => controller.abort();
-  }, [round]);
-  return { pages, reload: useCallback(() => setRound((n) => n + 1), []) };
-}
 
 /** "26-27": the Indian financial year (April to March) of today in IST. */
 function financialYear(today: string): string {
@@ -66,7 +27,7 @@ type BillingBusinessProps = { config: Resource<BillingAdminConfig>; onNavigate: 
 
 export default function BillingBusiness({ config, onNavigate }: BillingBusinessProps) {
   const flash = useFlash();
-  const policyPages = usePolicyPages();
+  const policyPages = usePolicyPages(POLICY_PAGES);
   return (
     <ResourceGate resource={config} loadingLabel="Loading the billing settings">
       {(data) => (
@@ -410,7 +371,9 @@ function PaymentsSetupCard({ config, onChecked, onError, onNavigate }: PaymentsS
           </Fact>
         ) : null}
         <Fact term="Reminder emails">
-          {setup.email_reminders ? "On" : "Off: set BILLING_EMAIL_FROM and the SMTP settings in .env to send them."}
+          {setup.email_reminders
+            ? "On"
+            : "Off: set MAIL_SMTP_HOST and MAIL_FROM (the MAIL_SMTP_* settings) in .env to send receipts and reminders."}
         </Fact>
       </dl>
       {setup.last_error ? (

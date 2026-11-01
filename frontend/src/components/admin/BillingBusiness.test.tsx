@@ -169,6 +169,11 @@ describe("Billing → Business & payments", () => {
     expect(within(card).getByText("Not set")).toBeInTheDocument();
     expect(within(card).getAllByText("Never")).toHaveLength(1);
     expect(within(card).getByText("Not run yet")).toBeInTheDocument();
+    expect(
+      within(card).getByText(
+        "Off: set MAIL_SMTP_HOST and MAIL_FROM (the MAIL_SMTP_* settings) in .env to send receipts and reminders.",
+      ),
+    ).toBeInTheDocument();
     expect(within(card).getByRole("alert")).toHaveTextContent("Razorpay rejected the keys (401).");
     expect(within(card).getByText(/Nobody can make test payments\./)).toBeInTheDocument();
     await user.click(within(card).getByRole("button", { name: "Mark testers in Users" }));

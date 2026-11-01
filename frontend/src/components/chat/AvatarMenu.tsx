@@ -82,13 +82,15 @@ export default function AvatarMenu({ user, imagesOffered, onOpenSettings, onPref
   const themeAttempt = useRef(0);
   const menuOpen = useRef(false);
   const role = user.is_admin ? "Administrator" : "Member";
+  // The display name: the verified email when there is one, else the username (functional S45).
+  const name = user.email ?? user.username;
   const usage = usageOf(user, imagesOffered);
   const lapsed = !user.is_admin && !user.plan.access;
   const days = user.is_admin ? null : expiringDays(user.plan);
   const lastDay = days !== null && days <= 0;
   const warn = usage !== null && (nearLimit(usage.allowance) || (usage.images !== null && nearLimit(usage.images)));
   const attention = warn ? ", usage almost at the limit" : lastDay ? ", your plan ends today" : "";
-  const buttonLabel = `Account: ${user.username}${attention}`;
+  const buttonLabel = `Account: ${name}${attention}`;
 
   // A failed save reverts (AuthContext) and never silently (U23): the reason shows under the row, or in the page's
   // notice when the menu has closed meanwhile. Only the latest choice reports; a newer one decides by its own result.
@@ -105,7 +107,7 @@ export default function AvatarMenu({ user, imagesOffered, onOpenSettings, onPref
 
   return (
     <Menu
-      label={`Account: ${user.username}, ${role}`}
+      label={`Account: ${name}, ${role}`}
       placement="bottom-end"
       className="chat-avatar-menu"
       onOpenChange={(open) => {
@@ -113,16 +115,16 @@ export default function AvatarMenu({ user, imagesOffered, onOpenSettings, onPref
         if (!open) setThemeError(null);
       }}
       trigger={(props) => (
-        <button {...props} type="button" className="chat-avatar-btn" aria-label={buttonLabel} title={user.username}>
-          <Avatar name={user.username} />
+        <button {...props} type="button" className="chat-avatar-btn" aria-label={buttonLabel} title={name}>
+          <Avatar name={name} />
           {warn || lastDay ? <span className="chat-tb-dot" aria-hidden="true" /> : null}
         </button>
       )}
     >
       <MenuHead
         className="chat-avatar-menu-head"
-        icon={<Avatar name={user.username} size={40} />}
-        title={user.username}
+        icon={<Avatar name={name} size={40} />}
+        title={name}
         subtitle={user.is_admin ? role : planLine(user.plan)}
       />
       {usage ? (

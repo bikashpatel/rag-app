@@ -51,6 +51,8 @@ class Preferences(BaseModel):
     enter_to_send: bool = True  # False: Ctrl/Cmd+Enter sends and Enter adds a new line
     # The chat model new chats start with; None when unset or no longer one the user may use (the server's default)
     default_model_id: int | None = None
+    email_plan_reminders: bool = True  # plan reminder emails to the verified email (docs/briefs/signup-auth.md S25)
+    email_receipts: bool = True  # a receipt email, PDF attached, for each payment
 
 
 ImageQuality = Literal["low", "medium", "high"]

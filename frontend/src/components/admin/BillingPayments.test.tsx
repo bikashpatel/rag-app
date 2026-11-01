@@ -135,6 +135,21 @@ describe("BillingPayments", () => {
     expect(onRecord).toHaveBeenCalled();
   });
 
+  it("shows each buyer's email under the username, in the list and the payment", async () => {
+    const paid = makeAdminPayment({ user: { email: "maya.chen.long.address@studio-nine.example.in" } });
+    setup({ "GET /admin/billing/payments": page([paid, offline]) });
+    const user = userEvent.setup();
+    const rows = await screen.findAllByRole("row");
+    const email = within(rows[1]).getByText("maya.chen.long.address@studio-nine.example.in");
+    expect(email).toHaveClass("admin-buyer-email");
+    expect(email).toHaveAttribute("title", "maya.chen.long.address@studio-nine.example.in");
+    expect(rows[2].querySelector(".admin-buyer-email")).toBeNull();
+
+    await user.click(within(rows[1]).getByRole("button", { name: /Open the payment/ }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByText("maya.chen.long.address@studio-nine.example.in")).toBeInTheDocument();
+  });
+
   it("says when nothing matches", async () => {
     setup({ "GET /admin/billing/payments": page([]) });
     expect(await screen.findByText("Nothing matches these filters in this month.")).toBeInTheDocument();

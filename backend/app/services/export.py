@@ -27,6 +27,7 @@ from starlette.types import Receive, Scope, Send
 
 from app.config import settings
 from app.models import (
+    AuthEvent,
     BillingOrder,
     BillingPayment,
     BillingReceipt,
@@ -36,6 +37,7 @@ from app.models import (
     Message,
     MessageFile,
     MessagePluginItem,
+    PendingEmail,
     Plan,
     PlanPeriod,
     PluginConnection,
@@ -278,10 +280,33 @@ def _json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8", errors="replace")
 
 
+# Kept out of the export's security events: the sealed address an email change's undo restores.
+_SEALED = frozenset({"restore"})
+
+
+async def _security_events(db: AsyncSession, user: User) -> list[dict[str, Any]]:
+    """The user's auth_events, oldest first (masked addresses and approximate IPs only)."""
+    rows = await db.scalars(
+        select(AuthEvent).where(AuthEvent.user_id == user.id).order_by(AuthEvent.created_at, AuthEvent.id)
+    )
+    return [
+        {
+            "type": row.type,
+            "at": _time(row.created_at),
+            "actor": row.actor,
+            "ip": row.ip,
+            "detail": {key: value for key, value in (row.detail or {}).items() if key not in _SEALED},
+        }
+        for row in rows
+    ]
+
+
 async def _account(db: AsyncSession, user: User, ent: Entitlements, exported_at: datetime) -> dict[str, Any]:
     connections = await db.scalars(
         select(PluginConnection).where(PluginConnection.user_id == user.id).order_by(PluginConnection.plugin_id)
     )
+    pending = await db.scalar(select(PendingEmail).where(PendingEmail.user_id == user.id))
+    identity = account.google_identity(user)
     return {
         "format": FORMAT,
         "version": VERSION,
@@ -308,6 +333,19 @@ async def _account(db: AsyncSession, user: User, ent: Entitlements, exported_at:
         "recent_logins": [
             event.model_dump(mode="json", exclude={"current"}) for event in await account.recent_logins(db, user, None)
         ],
+        "email": user.email,
+        "email_verified_at": _time(user.email_verified_at),
+        "pending_email": {"address": pending.address, "requested_at": _time(pending.created_at)}
+        if pending is not None
+        else None,
+        "google": {"email": identity.email_at_link, "linked_at": _time(identity.created_at)}
+        if identity is not None
+        else None,
+        "signup_source": user.signup_source,
+        "terms": {"version": user.terms_version, "accepted_at": _time(user.terms_accepted_at)}
+        if user.terms_version is not None
+        else None,
+        "security_events": await _security_events(db, user),
     }
 
 
@@ -386,7 +424,7 @@ async def _billing(db: AsyncSession, user: User) -> dict[str, Any]:
             }
             for payment in payments
         ],
-        "profile": {"name": profile.name, "email": profile.email} if profile is not None else None,
+        "profile": {"name": profile.name} if profile is not None else None,
     }
 
 
@@ -652,7 +690,8 @@ def _readme(
         "",
         "What is inside:",
         "- account.json: your profile, preferences, limits, the usage of your current allowance period, plugin",
-        "  connections (without any tokens) and your recent sign-ins.",
+        "  connections (without any tokens), your recent sign-ins, your email (and one waiting for confirmation),",
+        "  your Google sign-in, the terms you accepted and your account's security events.",
         "- billing.json: your plan periods, orders and payments with their receipt numbers.",
         f"- documents.json: the details of the {documents} document(s) you own. The files themselves aren't included:",
         "  download them from the documents panel.",

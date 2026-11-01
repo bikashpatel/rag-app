@@ -10,9 +10,10 @@ Playwright end-to-end suite, a full-stack integration suite, more backend tests 
 reviewed, fixed and verified (committed in `3a277a0` and `d4eada1`). Updated again later on 2026-10-25 after operations: Alembic
 migrations, backups with a tested restore, and monitoring with alerts, built, reviewed, fixed and deployed to the live
 stack (committed in `91e20bc`). Updated on 2026-10-27 after plans, Razorpay checkout and plan-based access were built,
-reviewed and deployed to the live stack (not committed yet). `SPEC.md` is the binding contract; `README.md` has setup,
-commands, the test suites, operations (section 8), plans and billing (section 9), the architecture and how to use the
-app.
+reviewed and deployed to the live stack (committed in `10ecd35`), and on 2026-11-01 after self-service sign-up, Google
+sign-in, password reset and transactional email were built, tested and deployed to the live stack with sign-up closed
+(not committed yet). `SPEC.md` is the binding contract; `README.md` has setup, commands, the test suites, operations
+(section 8), plans and billing (section 9), sign-up and email (section 10), the architecture and how to use the app.
 
 **Renamed on 2026-10-28:** the product is now **AskNuvexusDoc** (the owner's domain is asknuvexusdoc.com), formerly
 "RAG Assistant". The new name is in the tab titles, the brand (mark "N"), the default business name on receipts and
@@ -142,12 +143,13 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
   - **Review fixes** (2026-10-25/26): the 8 confirmed findings of the operations review are fixed, with failure
     injection in the restore drill and `integration/tests/test_16_watchdog.py` (see "Operations" below and "How it
     was verified"). Redeployed to the live stack on 2026-10-26; CI green on all five jobs at `c58622b`.
-- **Plans, Razorpay checkout and plan-based access** (2026-10-27, in the working tree, not committed yet;
+- **Plans, Razorpay checkout and plan-based access** (2026-10-27, committed in `10ecd35`;
   `docs/briefs/plans-billing.md` revision 2, `plans-billing-visual.md` and `payments-razorpay-research.md`;
   `README.md` section 9, `SPEC.md`; see "Plans and billing" below). Built, reviewed and **deployed to the live stack on
   2026-10-27**: migration 0003 is applied, `bikash` holds an open-ended complimentary Professional plan from the
-  rollout, and the admin is exempt. No Razorpay keys are set yet, so users see "Online payment isn't set up yet." and
-  no payment has gone through Razorpay, not even in test mode.
+  rollout, and the admin is exempt. No Razorpay keys are set yet, so users other than testers see "Paid plans open
+  soon. Check back in a few days." (since sign-up; before, "Online payment isn't set up yet.") and no payment has gone
+  through Razorpay, not even in test mode.
   - Backend: `services/billing/` (entitlements, periods, plans, checkout, the exactly-once `apply_payment`, the
     Razorpay client, webhooks, the worker's reconciler, refunds, disputes, receipts, reminders, the admin summary and
     CSV), `routers/{billing,admin_billing,public}.py`, `schemas_billing.py`, `errors.py` (`AppError` with a `code`),
@@ -164,6 +166,36 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
     `test_ops_billing.py`, `test_fake_razorpay.py`) with the in-process fake Razorpay (`tests/fake_razorpay.py`),
     `integration/tests/test_17_billing.py` against the same fake served by `integration/fake_razorpay/`, and
     `e2e/tests/billing.spec.ts`.
+- **Self-service sign-up, Google sign-in, password reset and transactional email** (2026-11-01, in the working tree,
+  not committed yet; `docs/briefs/signup-auth.md` revision 2, `signup-auth-visual.md` and `signup-research.md`;
+  `README.md` section 10, `SPEC.md`; see "Sign-up and email" below). Built, tested and **deployed to the live stack on
+  2026-11-01** with **sign-up closed until the owner opens it** (Admin → Users → Sign-up). Migration 0004 is applied.
+  The backup `20261101T031731Z-manual`, taken just before the deploy, is the rollback point. No Resend, Turnstile or
+  Google sign-in keys are set yet, so no email is sent and sign-in works by username and password as before; the
+  session cookie is now `__Host-rag_session`, so everyone signed in again once.
+  - Backend: `services/auth/` (sign-up, sign-in by email or username, Google OpenID Connect, identities and linking,
+    reset, email change and undo, step-up, the password policy with `app/data/common-passwords.txt` and the breach
+    check, tokens, throttles, Turnstile, emails, usernames, cookies, the sign-up settings, audit), `services/mail/` (the
+    outbox, the worker's mail loop, jobs, templates, SMTP transport, the bounce webhook, the hourly clean-up),
+    `services/billing/paid.py`, `routers/{auth_signup,auth_google,auth_email,admin_auth,mail_events}.py`,
+    `schemas_auth.py`, migration `0004_signup_auth.py` (8 tables, the `users` email, source and terms columns,
+    `password_hash` nullable, `login_events.method`, username tombstones, the billing profile's email dropped), the
+    admin guard in `bootstrap.py`, the `mail` monitor check, and changes to `auth`, `me`, `admin`, `deps`, `security`,
+    billing (checkout needs a confirmed email; caps for unpaid users; receipts and reminders through the outbox),
+    `export` and `worker.py`. nginx: HSTS, the Turnstile CSP on `/login`, `/signup` and `/forgot-password`, no-referrer
+    on the link pages, the auth and checkout rate zones, the Google callback unlogged, the mail webhook. No new
+    dependency.
+  - Frontend: `SignupPage`, `VerifyEmailPage`, `GoogleSignupPage`, `ForgotPasswordPage`, `ResetPasswordPage`,
+    `ConfirmEmailPage`, `UndoEmailPage`, `components/auth/` (Turnstile, the Google button, password rules, the terms
+    box, the email field with typo hints), `lib/authDocument.ts` (which documents may load Turnstile), Settings →
+    Account's email, password and Google sections (`EmailSection`, `SignInMethods`, `StepUp`), the email switches in
+    Settings → Plan & billing, and Admin → Users' Sign-up card (`SignupCard`, `SignupSettingsModal`) with the search
+    box, source and "Signed up" column.
+  - Tests: 22 new backend test files (`test_signup*.py`, `test_auth_*.py`, `test_google_*.py`, `test_mail_*.py`,
+    `test_password_*.py`, `test_email_change.py`, `test_login_identifier.py`, `test_admin_signup.py`,
+    `test_ops_mail.py`, `test_schemas_auth.py`, `test_migration_0004.py`) with fakes for SMTP, Turnstile, HIBP and
+    Google OpenID Connect; `integration/tests/test_18_signup.py` and `test_19_mail.py` against `integration/fake_mail/`
+    and `integration/fake_turnstile/`; `e2e/tests/signup.spec.ts`.
 
 How the work went: the lead wrote `SPEC.md` and the foundation code. Agents then built the
 feature areas in parallel from `docs/briefs/`, followed by backend integration tests, frontend
@@ -204,6 +236,12 @@ in the functional brief's sections 0.2 and 0.3) and second revisions; builders i
 section 13); then security, entitlement and UX reviews of the code (31 findings, 16 confirmed, all fixed), a rehearsal
 of migration 0003 on a restored copy of a real backup, and the live deploy.
 
+Sign-up went the same way: research on Google, Cloudflare, Resend, Brevo, OWASP, NIST and Have I Been Pwned
+(`signup-research.md`), a functional and a visual brief, security, product and design reviews of their first revision
+(45 points, answered in the functional brief's sections 0.2 and 0.3) and second revisions; the contract change applied
+first, then builders in stages on frozen interfaces (brief section 16); the five suites; a rehearsal of migration 0004
+on a restored copy of the live backup; and the live deploy with sign-up closed.
+
 The Compose project `rag-app` was left running with its data, on the final redesign build. The vision feature, files
 from chat, images from chat and plugins are committed (`9fb8be6`, `70f8076`, `7eaf587`, then `c5fb005`). The redesign
 is in two commits: `5148b83`, a WIP snapshot pushed to `origin/main` before its review, and `d11a9e5`, with the review
@@ -217,6 +255,12 @@ agents' smoke and browser-pass scripts lived in scratch directories and are not 
 
 | Check | Result |
 |---|---|
+| Sign-up: backend (2026-11-01) | `pytest -q --cov --cov-fail-under=94` **3834 passed, 57 skipped** (the `postgres`-marked tests), coverage 95.75 %. The 57 `postgres`-marked tests now include migration 0004, the sign-up races (two completions of one sign-up, a completion against a Google finish, two accounts confirming one address, an undo against a new change), two mail loops never sending one mail twice and two bounce reports for one address. Google sign-in, the mailer, Turnstile and the breach check run against fakes (`google_oidc.py` and `fake_google.py`, `fake_mail.py`, `fake_turnstile.py`, `fake_hibp.py`); `test_signup_enumeration.py` checks the same status, headers and bytes for every address |
+| Sign-up: frontend (2026-11-01) | Vitest **1422 passed in 98 files**; coverage 94.8 % of statements, 90.4 % of branches, 94.5 % of functions, 96.7 % of lines, over the thresholds (92, 87, 91, 94) |
+| Sign-up: integration (2026-11-01; `integration/run.sh`) | **182 passed in 20 files**, including `test_18_signup.py` (email sign-up in the same browser and elsewhere, an existing address, a stranger's sign-up leaving the first link working, resend and its limits, sign-in by email and username with the challenge and its outage fallback, forgot and reset, Google sign-up, automatic linking of a Gmail address, `link_required` for Workspace, an unverified Google address, linking, unlinking, the step-up and a first password, an email change and its undo) and `test_19_mail.py` (deferrals, a refused recipient suppressed, a lost connection kept once by its idempotency key, a mail interrupted by a worker stop sent once, the daily cap holding sign-up mail while a reset and a receipt go out, a receipt with its PDF, a plan reminder, checkout refused without a confirmed email, bounces pausing sign-up mail, the clean-up), against `integration/fake_mail/` and `integration/fake_turnstile/` beside the fake Google, the fake model server and the fake Razorpay |
+| Sign-up: end-to-end (2026-11-01) | **75 tests** (74 passed, the `@live` one skipped) against the live stack after the deploy, twice in a row, 0 test users left, in 12 files, including the new `signup.spec.ts` (sign-up, the emailed-link pages, reset, Google's finish and the sign-in challenge, with every endpoint that would send mail or call Cloudflare or Google mocked and Turnstile's script stubbed) |
+| Sign-up: migration 0004 rehearsal (2026-11-01) | Rehearsed on a restored copy of the live backup in a throwaway Compose project: 0 drift (`alembic check` clean after the upgrade) and every table's rows intact |
+| Sign-up: live deploy (2026-11-01, Compose project `rag-app`) | Backup `20261101T031731Z-manual` taken before the deploy (the rollback point). After the deploy: migration 0004 applied; the existing tables' row counts unchanged; `bikash`'s plan (the open-ended complimentary Professional) and documents intact; sign-up closed; `Strict-Transport-Security` on the responses, and the Turnstile CSP (`https://challenges.cloudflare.com` in `script-src` and `frame-src`) only on `/login`, `/signup` and `/forgot-password`, every other page with the strict CSP |
 | Plans and billing: backend (2026-10-27) | `pytest -q --cov --cov-fail-under=94` **3016 passed, 47 skipped**, coverage 95.6 %; `pytest -m postgres` on a throwaway Postgres 17 **47 passed**: the 35 earlier ones plus payments applied and checkouts started at once, receipt numbering and the plans migration. The payment paths run against the in-process fake Razorpay |
 | Plans and billing: frontend (2026-10-27) | Vitest **1040 passed in 78 files**; re-run for this handoff with coverage: 94.2 % of statements, 89.4 % of branches, 93.9 % of functions, 96.1 % of lines, over the thresholds (92, 87, 91, 94) |
 | Plans and billing: integration (2026-10-27; `integration/run.sh`) | **160 passed in 18 files**, including `test_17_billing.py` against the fake Razorpay (test keys, testers only): payment through the hosted page and the signed return, failures and late captures, the return and webhooks at once applying once, tampered amounts and forged returns and webhooks, refunds from the app and the Dashboard counted once, a lost dispute, renewal and an upgrade with its credit, expiry and renewal with the data intact, activation by the reconciler alone, Gmail outside a changed plan, and the monitor's `billing` warning; and the restore drill with a recorded bank transfer |
@@ -326,8 +370,10 @@ All contract changes are already in `SPEC.md` and `frontend/src/api/types.ts`.
   so an answer that can't be stored is still billed. NUL characters are dropped from answers.
 - A stopped answer is stored with `error = "Stopped before completion"`. The frontend matches this
   exact string to show a muted "Stopped" note instead of an error, so change it on both sides or not at all.
-- **Login throttle:** 10 failures per username and 100 per client IP within 15 minutes. A wrong
-  current password on change-password counts toward the username's limit.
+- **Login throttle:** 10 failures per account (the email and the username share one counter; an unknown identifier
+  has its own) and 100 per network (an IPv4 address or an IPv6 /64; 400 per /24 or /48) within 15 minutes, plus the
+  Turnstile challenge of "Sign-up and email" below. A wrong current password on change-password counts toward the
+  account's limit.
 - **Admin rules:** the env admin account can't be changed or deleted through the API (400). The
   active embedding model can't be deleted, disabled or un-defaulted (409). A disabled model can't
   become the default (400). Changing an embedding model's `litellm_model` or `api_base` drops its
@@ -432,7 +478,9 @@ All contract changes are already in `SPEC.md` and `frontend/src/api/types.ts`.
 
 ### Frontend
 
-- Routes: `/login`, `/`, `/c/:conversationId`, and `/admin`; `/settings` and `/settings/:tab` redirect to
+- Routes: `/login`, `/signup`, `/forgot-password` (signed-out only), the emailed-link and Google pages
+  (`/verify-email`, `/signup/google`, `/reset-password`, `/confirm-email`, `/undo-email`), `/`, `/c/:conversationId`,
+  the plan pages and `/admin`; `/settings` and `/settings/:tab` redirect to
   `/?settings=<tab>`. The admin page is a lazy chunk: it reloads once if the chunk is missing after a redeploy, then
   falls back to the app-wide `ErrorBoundary`.
 - Modals are portaled, make `#root` inert and trap focus, and never stack: anything Settings opens is inline, and
@@ -1290,9 +1338,9 @@ plugin store and the upload queue to drop the previous user's state.
 
 Choices still to confirm with the user (functional brief 16, visual spec 0.4):
 
-- sign-in IPs are stored approximately (`81.2.69.x`, IPv6 as a /48). Behind Docker and the quick tunnel every sign-in
-  comes from Docker's gateway and reads "Via a local network or proxy" until nginx's `set_real_ip_from` is set up
-  (next step 5);
+- sign-in IPs are stored approximately (`81.2.69.x`, IPv6 as a /48). Through the named tunnel nginx takes the
+  visitor's address from `CF-Connecting-IP` (`NGINX_REAL_IP_FROM`, since 2026-10-28); a sign-in at
+  `http://localhost:8080` reads "Via a local network or proxy";
 - Send waits while an attached file uploads or indexes (a large scan read by the vision model can take minutes);
 - non-admin users see the estimated cost of their own usage in Settings → Usage;
 - the top-bar model pick is per chat, and New chat returns to the account default;
@@ -1448,6 +1496,67 @@ end date, and the consent line under Pay. What matters when maintaining it:
 - **The settings** `RAZORPAY_*` and `BILLING_*` (`README.md` section 9); `DEFAULT_*` limits and
   `VISION_MONTHLY_TOKEN_LIMIT` are removed and ignored with a warning.
 
+### Sign-up and email
+
+Built and deployed on 2026-11-01 from [`docs/briefs/signup-auth.md`](briefs/signup-auth.md) (decisions S1 to S45 in its
+section 0, the review responses in 0.2 and 0.3), [`signup-auth-visual.md`](briefs/signup-auth-visual.md) and
+[`signup-research.md`](briefs/signup-research.md); `SPEC.md` has the contract and `README.md` section 10 the owner's
+guide. The owner decided (2026-10-28; the terms on 2026-11-01):
+
+- **Two ways to sign up**, the user's choice: email and password with email verification, and "Continue with Google"
+  (OpenID Connect).
+- **Resend** (free tier, over SMTP) sends every email to users from `no-reply@asknuvexusdoc.com` with SPF, DKIM and
+  DMARC: verification, reset, security notices, receipts and plan reminders. Brevo is the fallback.
+- **Anyone can sign up, then pays:** a new account has no plan until it pays (the plans rules).
+- **Cloudflare Turnstile** against bots on sign-up, resend and forgot password, and on sign-in after repeated failures.
+- **Only self-sign-ups accept the terms** (brief 18.1, item 1): `bikash` and admin-created users aren't asked, and
+  nobody is asked again when the terms change (a follow-up). There is no sign-in gate.
+
+What matters when maintaining it:
+
+- **Only verified addresses identify** (S2). `users.email` holds only a confirmed address (unique `email_canonical`); an
+  unproven one lives in `pending_signups` (no account yet; up to three per address, each bound to its password and its
+  browser) or `pending_emails`. Nothing unverified signs in, links or receives account mail.
+- **Usernames** of new accounts are random handles (`user-` and 8 base32 characters), never derived from the email, and
+  a deleted account's username is never reissued (`username_tombstones`, S3). The display name is the verified email
+  (S45).
+- **Enumeration-safe by construction** (S6): sign-up, resend and forgot password do the same work for every address and
+  answer the same 202; the worker decides what each outbox job becomes. Public jobs count against the day when queued
+  and take at least 2 s of the mail loop each, sent or not. `test_signup_enumeration.py` guards it.
+- **Tokens** (S7): minted by the worker when it sends, kept only as SHA-256 with the hash of the address they went to,
+  carried in the link's fragment, spent by a POST after a click. Every write to an email revokes the user's `reset`
+  and `email` tokens; an `email_undo` token survives later changes.
+- **Google** (S8 to S11, S37): its own Google project and client (`GOOGLE_SIGNIN_*`), scope `openid email`, the
+  server-side code flow with PKCE, `state`, `nonce` and a binding cookie, the ID token checked against Google's JWKS;
+  users are keyed on (issuer, subject). A new account is created only after the "Create your account" step; automatic
+  linking only for a `@gmail.com` address equal to a verified email; Workspace addresses answer `link_required`. The
+  Gmail plugin is separate and unchanged.
+- **One mailer, one outbox** (S20 to S22, S42): `MAIL_*` for user mail, `ALERT_*` for alerts. The `email_outbox`
+  table is drained by the worker's mail loop, with classes and shares of `MAIL_DAILY_LIMIT`, retries under one
+  idempotency key, and the address cleared when a job finishes. A suppression list is fed by Resend's webhook and
+  SMTP refusals; 3 bounces that are at least 2 % of the day's mail pause the `public` class until 00:00 UTC.
+- **Turnstile and the CSP** (S18, S19): only `/login`, `/signup` and `/forgot-password` get the second CSP; the widget
+  mounts only after `/auth/me` answered 401 in that document, and leaving those pages for the app is a full page load
+  (`lib/authDocument.ts`). Sign-up, resend and forgot fail closed; the sign-in challenge exists only with Turnstile
+  configured, never for local requests, and falls back to the hard limits during an outage.
+- **Test keys never on the public site** (S39): a Turnstile test secret, a fake endpoint (siteverify, Google, HIBP) or
+  `MAIL_SMTP_SECURITY=none` stops the backend while `PUBLIC_BASE_URLS` holds a public https origin.
+- **HTTPS and cookies** (S41): HSTS from nginx; with `COOKIE_SECURE` the session cookie is `__Host-rag_session` and the
+  auth cookies `__Secure-rag_signup`, `__Secure-rag_gsignin` and `__Secure-rag_gticket`.
+- **The env admin** (S16) has no email, Google identity or reset. Bootstrap refuses to start when `ADMIN_USERNAME`
+  names a self-signed-up account or one with an email or Google identity, and warns about a weak `ADMIN_PASSWORD`.
+- **Abuse is bounded** (S31): no plan, no model spend; checkout needs a verified email; users who never paid get 3
+  payment links an hour and 6 a day, and 30 an hour together (`CHECKOUT_UNPAID_PER_HOUR`).
+- **Sign-up settings** (S27) live in `app_state.signup_settings` (closed at deploy; the email and Google switches), are
+  changed in Admin → Users → Sign-up and recorded as `signup.settings` events; opening while a warning stands needs a
+  second click.
+- **Migration 0004** (S32): 8 new tables, the `users` email, source and terms columns, `password_hash` nullable,
+  `signup_source` backfilled (the env admin `env`, everyone else `admin`), username tombstones from billing records of
+  deleted users, `login_events.method`, and `user_billing_profiles.email` dropped. The way back is restoring
+  `20261101T031731Z-manual`.
+- **The settings:** the "Accounts and sign-up" and "Email" blocks of `.env.example` (`README.md` section 2);
+  `BILLING_EMAIL_FROM` is removed and ignored with a warning.
+
 ## Known limitations and open risks
 
 - **Parsing is only partly isolated.** pypdf, python-docx, python-pptx, openpyxl and BeautifulSoup still parse
@@ -1561,33 +1670,67 @@ end date, and the consent line under Pay. What matters when maintaining it:
     integration stack, intercepted requests in e2e). The checks of brief 14.2 are open: the localhost `callback_url`,
     the UPI QR and intent, a test UPI path after the end of UPI Collect, `order_id`, auto-capture, `fee` and `tax` in
     the payment, a repeated `reference_id`, disputes with test keys, the website check, and the live UPI limit.
-  - **Webhooks need the public domain.** Until it exists, payments are confirmed only by the return page and the
-    worker's reconciler (a sleeping Mac confirms them on waking), and refunds made in Razorpay's Dashboard and disputes
-    don't reach the app. The billing rate limits in nginx key on the tunnel's address until `real_ip_header` is set
-    (next step 5).
+  - **The Razorpay webhook isn't registered yet** (the public domain exists since 2026-10-28; next step 5). Until it
+    is, payments are confirmed only by the return page and the worker's reconciler (a sleeping Mac confirms them on
+    waking), and refunds made in Razorpay's Dashboard and disputes don't reach the app.
   - **The policy pages are drafts** (`frontend/public/legal/*.md`), and they are rendered in the browser; if
     Razorpay's website check doesn't run JavaScript, they need pre-rendering (brief 14.3).
   - **GST is not implemented**: no GSTIN, no tax line, no tax invoices (brief B10). Registering for GST needs a
     separate feature before GST is charged.
-  - Reminder emails are off until `BILLING_EMAIL_FROM` and the `ALERT_SMTP_*` settings are set.
+  - Receipt and reminder emails are off until `MAIL_SMTP_HOST` and `MAIL_FROM` (the `MAIL_SMTP_*` settings) are set,
+    and go only to an account's confirmed email (`bikash` has none yet; next step 12).
   - **E2E runs against the live stack write billing events** for their `e2e-` users (the plan grants of the admin
     API). They are deleted with the users only because those users never place an order; a test user with an order
     would leave its billing records behind, by design.
   - The standard token is tied to one price ($3.20 per million); if model prices move a lot, edit the allowances in
     Admin → Plans.
-- **Some Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks. The 47
+- **Sign-up and email, not yet checked** (brief 18.2; each needs the owner's real keys, next steps 7 to 11):
+  - Turnstile under the CSP of `/login`, `/signup` and `/forgot-password`: whether it also needs `connect-src
+    https://challenges.cloudflare.com`, whether `Referrer-Policy: same-origin` affects its hostname check, whether a
+    path-scoped `script-src` works; the widget across SPA route changes, a theme change and the one-reload rule.
+  - Google: the new project's consent screen before and after brand publishing, `/about` as the home page, an
+    `http://localhost:8080` redirect URI on an In-production client, the button against Google's branding rules, and
+    whether `max_age=0` and `login_hint` work for the step-up (`auth_time`).
+  - Resend: the idempotency header de-duplicating a retried SMTP message, no branding on the free tier, the webhook's
+    payload (the field that marks a permanent bounce, the `to` list, the Svix headers), a typo address arriving as
+    `email.bounced`.
+  - Google sign-up from Instagram, LinkedIn and WhatsApp's in-app browsers; through the tunnel, `curl -sI` showing HSTS,
+    the `__Host-` cookie set and sent, and `http://` and `www` redirecting once Cloudflare does (next step 6).
+- **Sign-up and email, risks and limits by design** (brief 18.3):
+  - **Resend's free day is 100 mails.** A bot wave or a busy day uses the `public` share (32 of 80); email sign-up then
+    answers "We can't send emails right now" until 00:00 UTC (05:30 IST), while Google sign-up, resets and receipts
+    keep working. Move to Resend Pro before announcing (next step 14).
+  - **Bounces pause Resend at 4 %**, for the whole account, receipts included. The suppression list, the automatic
+    pause at 2 % and Turnstile keep fake addresses down; without the webhook only SMTP refusals are seen. The runbook
+    (`README.md` section 10) switches to Brevo.
+  - **Everything still runs on the owner's Mac.** While it sleeps, mails wait in the outbox and go out on waking (reset
+    links are minted then, so they are still fresh); links in mails sent before a long sleep may expire.
+  - **Turnstile depends on Cloudflare**, and some privacy blockers block it; those users can still sign up with
+    Google, and sign-in never depends on it.
+  - **Google can rate-limit new sign-ins** for a new project (`rate_limit_exceeded`); an increase can be requested.
+  - **A determined stranger can use up one address's daily sign-up mails**; that person can still sign up with Google.
+  - **Per-network limits need `NGINX_REAL_IP_FROM`** (set on the live stack); without it every visitor shares one
+    address, and one visitor's failures challenge or block everyone.
+  - Not built (follow-ups): an admin action to clear a suppressed address and a Settings indicator that an account's
+    address is suppressed; self-service account deletion (users ask through Contact); bulk actions on new accounts and a
+    daily sign-up digest; asking existing users to accept changed terms.
+  - **`bikash`'s Gmail plugin connection needs a reconnect**: the Gmail Google project is in Testing mode, whose tokens
+    last 7 days (next step 18). Signing in with Google doesn't touch it.
+- **Some Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks. The 57
   `postgres`-marked tests (CI's `backend-postgres` job runs them) cover parallel uploads against the document, storage
   and duplicate checks with only the row lock left, the migrations and the schema's advisory lock across two processes,
   UTC sessions, the image reservation race, the account tests, one payment applied from three sides at once, two
   orders and a grant racing a payment, checkouts started at once, the periods' exclusion constraint, receipt numbering
-  across the financial-year boundary, and migration 0003. Still not raced between processes:
+  across the financial-year boundary, migrations 0003 and 0004, two completions of one sign-up, a sign-up against a
+  Google finish, two accounts confirming one address, an undo against a new change, and two mail loops claiming one
+  mail. Still not raced between processes:
   an admin password reset against a password change and a document deleted while the worker finishes it (both
   checked once with scratch tests against Postgres 17), and the embedding model edited while a job writes vectors.
 - **One worker only.** A second worker container would reset the other's in-flight documents (the
   start-up recovery and the sweep assume a single process).
-- **The per-IP login throttle is effectively global.** Behind Docker's port publishing every client
-  shares one IP, so 100 failed logins from anyone within 15 minutes block all logins until the
-  window passes. nginx has no `set_real_ip_from`/`real_ip_header` for an outer proxy.
+- **The per-network login throttle is global at `http://localhost:8080`.** Through the tunnel nginx takes each
+  visitor's address from `CF-Connecting-IP` (`NGINX_REAL_IP_FROM`), but local requests all share Docker's gateway, so
+  100 failed sign-ins there within 15 minutes block every local sign-in until the window passes.
 - **Without nginx** (uvicorn on :8000 in development), upload bodies are read before the session
   check, there is no 1 MB body cap, and 422 responses echo the rejected input.
 - **Budget overspend is bounded, not zero:** up to 2 in-flight answers can finish past the limit. An answer
@@ -1595,15 +1738,16 @@ end date, and the consent line under Pay. What matters when maintaining it:
   calls; it stops calling once it used what
   was left when it started, but answers running at the same time don't see each other's tokens.
   Embedding tokens don't count toward the budget (by design).
-- No HTTPS, `COOKIE_SECURE=false`.
-- **Backups stay on this Mac** (`./backups`) until an off-site copy is set up (next step 7), and the Mac sleeps and
+- **HTTPS ends at Cloudflare**, which reaches nginx through the tunnel; `COOKIE_SECURE=true` and nginx sends HSTS, but
+  Cloudflare's Always Use HTTPS and the `www` → apex redirect aren't on yet (next step 6).
+- **Backups stay on this Mac** (`./backups`) until an off-site copy is set up (next step 16), and the Mac sleeps and
   Docker Desktop quits now and then; while it is down nothing is backed up and nothing alerts. **No alert channel is
-  configured yet** (next step 6): alerts are only logged and shown in Admin → System, whose `monitor` check stays a
+  configured yet** (next step 15): alerts are only logged and shown in Admin → System, whose `monitor` check stays a
   warning until one is set. When the Mac sleeps, the worker's heartbeat expires and the monitor reports the worker as
   down, then resolved on waking: on the deploy day a sleep of about 20 minutes logged one such pair (the worker never
   restarted). `.env` is in no backup by design: keep it in a password manager.
 - The monitor runs inside Docker, so Docker or the whole machine stopping is reported only by the host watchdog (not
-  installed, next step 8) or an external uptime check on `/api/health/ready` (needs a public address, next step 5).
+  installed, next step 17) or an external uptime check on `https://asknuvexusdoc.com/api/health/ready` (next step 15).
 - A backup is taken while the app runs, part after part (uploads, Qdrant, Postgres), not as one snapshot. A document
   added or deleted meanwhile can come back with only some of its parts; the restore's reconcile step marks it failed
   (file missing: the user uploads it again) or re-indexes it (vectors missing), which costs embedding tokens for those
@@ -1627,8 +1771,8 @@ end date, and the consent line under Pay. What matters when maintaining it:
   too recently for the two-week rule.
 - `pytest` 8.4.2 has advisory GHSA-6w46-j5rx-g56g (dev only; fixed in 9.0.3). It was left pinned
   because a major bump may break `pytest-asyncio` 1.2.0.
-- Not done (optional): rate limits on upload and reprocess, and clearing a user's login-failure
-  counter when the admin resets their password.
+- Not done (optional): rate limits on upload and reprocess. (The admin's password reset now clears the user's
+  login-failure counters and revokes their reset links.)
 - Minor UI: right after Stop, the avatar menu's "Tokens this month" can lag until the next refresh,
   because the refresh can run before the server saves the stopped answer's usage. The overview's embedding tile
   still shortens "OpenAI text-embedding-3-small" on its second line at 1440 and 390 px (the full name is in the
@@ -1640,10 +1784,10 @@ end date, and the consent line under Pay. What matters when maintaining it:
   Usage tab has history); the export has no document files (each document has Download); there is no session list with
   per-session sign-out, only "Log out of all other sessions"; accents are the five presets, with no free colour
   picker; code blocks have no syntax colours (no highlighter in the stack); the bundled fonts cover Latin only, so
-  other scripts use the system fonts; the sign-in history shows Docker's gateway for every sign-in until nginx trusts
-  the outer proxy's client address. Also out of scope (functional brief 16): keyboard shortcuts, collapsing the
-  conversation sidebar on desktop, avatar images, languages other than English, notifications, deleting one's own
-  account, an admin view of users' sign-ins, and importing data.
+  other scripts use the system fonts; the sign-in history shows Docker's gateway for sign-ins at
+  `http://localhost:8080` (through the tunnel it shows the visitor's address). Also out of scope (functional brief
+  16): keyboard shortcuts, collapsing the conversation sidebar on desktop, avatar images, languages other than
+  English, notifications, deleting one's own account, an admin view of users' sign-ins, and importing data.
 - **Top bar, Settings and the redesign, not yet checked:**
   - WebKit isn't installed for Playwright, so the Safari file-picker rule (the "+" menu's Attach files calls
     `input.click()` inside the gesture) was checked in Chromium and by code review only. The forced-colours rules
@@ -1664,26 +1808,150 @@ end date, and the consent line under Pay. What matters when maintaining it:
 
 ## Next steps
 
-Plans, Razorpay checkout and plan-based access are built, reviewed and deployed to the live stack (2026-10-27), not
-committed yet (step 1). What is left, for the owner (`README.md` section 9 has the how-to):
+Self-service sign-up is built, tested and deployed to the live stack (2026-11-01) with sign-up closed, and
+committed in the first commit after `28b7fe5`. The steps are in order: 1 and 2 first, then the owner's actions of
+`docs/briefs/signup-auth.md` section 17 (steps 3 to 13; every click is there, `README.md` section 10 has the summary),
+which end with sign-up open, then the rest. The owner edits `.env`; never print it.
 
-- **Razorpay test mode:** add the test keys to `.env` (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`), run `docker compose
-  up -d backend worker` and recreate the frontend, mark a tester (a `smoke-*` user, never `bikash`), and run the
-  test-mode checks of brief 14.2 (items 1 to 6; item 7 once the domain exists) with **at most 10 payment links**
-  (test mode allows about 30 per business). Record what Razorpay does differently in the brief and here.
-- **The domain and the webhook:** once the Cloudflare domain exists (step 5), register
-  `https://<domain>/api/billing/razorpay/webhook` with the 14 events Admin → Billing lists, and put its secret in
-  `RAZORPAY_WEBHOOK_SECRET`.
-- **KYC and live keys:** complete Razorpay's KYC and website review, put the live keys in `.env`, work through the
-  going-live checklist (Admin → Billing → Business & payments), set the UPI limit Razorpay confirms, then one live
-  Starter payment by a `smoke-*` user and a full refund (brief 14.2, item 8; Razorpay keeps its fee, about ₹12).
-- **Policy pages and business details:** replace the drafts in `frontend/public/legal/*.md` (terms, privacy, refunds,
-  shipping, contact, about, the pricing intro; Claude can draft them for review) and rebuild the frontend; fill in the
-  business name, address, contact email and phone in Admin → Billing → Business & payments. Brief 14.1 lists the
-  owner's questions these pages answer (refund policy, bank transfers, how long lapsed users' data is kept).
-- **GST:** decide whether to register (brief 14.1, item 4). Version 1 has no GST; charging it needs tax invoices built
-  first.
-- Optional: **reminder emails**, by setting `BILLING_EMAIL_FROM` and the `ALERT_SMTP_*` settings.
+1. **Check CI on the sign-up commit** (the first after `28b7fe5`) and record the result here. Before it: the
+   redesign in `5148b83` and `d11a9e5`, plugins with Gmail in `c5fb005`, images from chat in `7eaf587`, files from
+   chat, the vision follow-up fix and `test_vision_independent.py` in `70f8076`, the test suites and CI in `3a277a0`
+   and `d4eada1`, operations (migrations, backups, monitoring) in `91e20bc` (CI green at `c58622b`), plans and billing
+   in `10ecd35`, and the rename to AskNuvexusDoc in `28b7fe5`.
+2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
+3. **Policy pages** (brief 17.1, item 1; the plans brief 14.1): replace the drafts in `frontend/public/legal/*.md`
+   (privacy, terms, about, refunds, shipping, contact, the pricing intro; Claude can draft them for review). The privacy
+   policy covers the sign-up brief's 8.6: what is stored and for how long, the processors (Resend, Cloudflare Turnstile
+   and the tunnel, Google sign-in, Have I Been Pwned's prefix check, Razorpay), what Google sign-in receives (`sub`, the
+   email, whether it is verified, `hd`) and that nothing else is kept, how to ask for deletion (Contact), and the
+   consent notice for India's DPDP Rules (with counsel). The about page describes the app and links the privacy policy
+   (Google's brand check). Remove the draft markers, rebuild the frontend (`docker compose up -d --build frontend`), and
+   set `TERMS_VERSION` to the terms' date (step 10). The plans brief's 14.1 lists the owner's questions these pages
+   answer (refund policy, bank transfers, how long lapsed users' data is kept).
+4. **Business details and the contact email** in Admin → Billing → Business & payments (name, address, contact email,
+   phone): receipts, the public pages, every email and the error pages show them.
+5. **Razorpay** (`README.md` section 9):
+   - **Test mode:** add the test keys to `.env` (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`), run `docker compose up -d
+     backend worker` and recreate the frontend, mark a tester (a `smoke-*` user, never `bikash`), and run the test-mode
+     checks of the plans brief's 14.2 (items 1 to 7) with **at most 10 payment links** (test mode allows about 30 per
+     business). Checkout now needs a confirmed email, so the tester needs one, which needs the mailer (steps 7 and
+     10); the payments themselves wait until then. Record what Razorpay does differently in the brief and here.
+   - **The webhook:** register `https://asknuvexusdoc.com/api/billing/razorpay/webhook` with the 14 events Admin →
+     Billing lists, and put its secret in `RAZORPAY_WEBHOOK_SECRET`.
+   - **KYC and live keys** (brief 17.1, item 3): complete Razorpay's KYC and website review, put the live keys in
+     `.env`, work through the going-live checklist (Admin → Billing → Business & payments), set the UPI limit Razorpay
+     confirms, then one live Starter payment by a `smoke-*` user and a full refund (the plans brief's 14.2, item 8;
+     Razorpay keeps its fee, about ₹12). Until live keys run, the Sign-up card warns that payments aren't live, new
+     accounts read "Paid plans open soon", and opening sign-up needs **Open anyway**.
+6. **Cloudflare, HTTPS** (brief 17.1, item 4; zone `asknuvexusdoc.com`): SSL/TLS → Edge Certificates → **Always Use
+   HTTPS** on; Rules → Redirect Rules → "www to apex" (Hostname equals `www.asknuvexusdoc.com`, dynamic redirect to
+   `concat("https://asknuvexusdoc.com", http.request.uri.path)`, 301, query string kept), then remove
+   `https://www.asknuvexusdoc.com` from `PUBLIC_BASE_URLS` (step 10). Leave Rocket Loader, Email Address Obfuscation,
+   Zaraz and the automatic Web Analytics snippet off: each would inject a script into our pages. HSTS already comes
+   from nginx, and `NGINX_REAL_IP_FROM=172.16.0.0/12` is set (item 5; the Sign-up card checks it).
+7. **Email: Resend and Cloudflare DNS** (brief 17.2, items 1 to 6): a Resend account; **Domains → Add domain**
+   `asknuvexusdoc.com`, region Tokyo (ap-northeast-1); in Cloudflare → DNS, each **DNS only**, exactly what Resend's
+   Records tab shows (expected: MX `send` → `feedback-smtp.ap-northeast-1.amazonses.com` priority 10, TXT `send`
+   `v=spf1 include:amazonses.com ~all`, TXT `resend._domainkey` with the DKIM key, and your own TXT `_dmarc`
+   `v=DMARC1; p=none; rua=mailto:dmarc@asknuvexusdoc.com;`; keep the `google-site-verification` TXT on `@`), then
+   **Verify**. Cloudflare → Email → **Email Routing** for the apex: verify your own mailbox as a destination and route
+   `support@` and `dmarc@` to it. In Resend: open and click tracking off; **API Keys → Create** "AskNuvexusDoc SMTP"
+   with **Sending access** for the domain (shown once: `MAIL_SMTP_PASSWORD`); **Webhooks → Add endpoint**
+   `https://asknuvexusdoc.com/api/mail/resend-events` with **email.bounced** and **email.complained** (its `whsec_…`
+   signing secret: `MAIL_WEBHOOK_SECRET`).
+8. **Turnstile** (brief 17.3): Cloudflare → **Turnstile → Add widget** "AskNuvexusDoc", hostname `asknuvexusdoc.com`
+   only (no `www`, no `localhost`), mode **Managed**, pre-clearance **No**; the Site key is `TURNSTILE_SITE_KEY`, the
+   Secret key `TURNSTILE_SECRET_KEY`.
+9. **Google sign-in, in a new and separate Google Cloud project** (brief 17.4; the Gmail plugin's project stays in
+   Testing and isn't touched): a Search Console **Domain** property for `asknuvexusdoc.com` (TXT on `@`, DNS only),
+   with the Google account that will own the project; **New project** "AskNuvexusDoc"; Google Auth Platform → **Get
+   started** (Audience **External**); **Branding** (home page `https://asknuvexusdoc.com/about`, privacy policy
+   `/privacy`, terms `/terms`, authorized domain `asknuvexusdoc.com`); **Data access** with only `openid` and
+   `…/auth/userinfo.email`; **Clients → Create client → Web application** "AskNuvexusDoc web" with no JavaScript origins
+   and the one redirect URI `https://asknuvexusdoc.com/api/auth/google/callback` (the ID and secret are
+   `GOOGLE_SIGNIN_CLIENT_ID` and `GOOGLE_SIGNIN_CLIENT_SECRET`); **Audience → Publish app**; and **Verify branding**
+   once the policy pages are live, then **Publish branding** within 7 days.
+10. **`.env` and restart** (brief 17.5, item 1): `PUBLIC_BASE_URLS=https://asknuvexusdoc.com,http://localhost:8080`,
+    `COOKIE_SECURE=true`, `NGINX_REAL_IP_FROM=172.16.0.0/12`, `MAIL_SMTP_HOST=smtp.resend.com`, `MAIL_SMTP_PORT=465`,
+    `MAIL_SMTP_SECURITY=ssl`, `MAIL_SMTP_USERNAME=resend`, `MAIL_SMTP_PASSWORD`, `MAIL_FROM=AskNuvexusDoc
+    <no-reply@asknuvexusdoc.com>`, `MAIL_REPLY_TO=support@asknuvexusdoc.com`, `MAIL_WEBHOOK_SECRET`,
+    `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`, `GOOGLE_SIGNIN_CLIENT_ID`, `GOOGLE_SIGNIN_CLIENT_SECRET` and
+    `TERMS_VERSION`; optionally `PASSWORD_MIN_LENGTH`, `PASSWORD_BREACH_CHECK`, `ADMIN_SIGNIN_FROM=local` (recommended
+    when administering only from this Mac) and `MAIL_DAILY_LIMIT`. Remove `BILLING_EMAIL_FROM` if present, and make
+    `ADMIN_PASSWORD` at least 15 characters and not a common one. Then `docker compose up -d backend worker monitor`
+    and `docker compose up -d --force-recreate frontend`.
+11. **Checks and a test email** (brief 17.5, item 2): Admin → Users → **Sign-up** shows every check configured and no
+    warning; **Edit… → Send a test email…** to your address arrives, isn't in spam, and Gmail's "Show original" says
+    SPF, DKIM and DMARC "PASS"; Admin → System's Email check is `ok`. With the keys in place, run the spikes of brief
+    18.2 (known limitations) and record what differs.
+12. **`bikash`'s email** (brief 17.5, item 3): as `bikash`, Settings → Account → **Add email…**, then open the
+    confirmation link while signed in as `bikash`. Receipts, reminders and checkout need it; an address saved earlier
+    for reminders was not carried over.
+13. **Open sign-up** (brief 17.5, item 4): Admin → Users → Sign-up → **Edit…** → **Open sign-up** with email and
+    Google; then at `https://asknuvexusdoc.com` sign up once with a throwaway address and once with a Google account,
+    and delete both users afterwards.
+14. **Before any announcement or paid promotion, move to Resend Pro** ($20 a month, no daily cap; brief 17.2, item 8)
+    and raise `MAIL_DAILY_LIMIT`. After two weeks of clean DMARC reports at `dmarc@`, change `_dmarc` to
+    `p=quarantine`, later `p=reject` (item 7).
+15. **Choose an alert channel** (the owner): a webhook (Slack, Google Chat, Discord, Teams), ntfy (the simplest for
+    push to a phone) or email. Put its `ALERT_*` settings in `.env` (`README.md` section 8), run `docker compose up -d
+    monitor`, then press **Send a test alert** in Admin → System. Until then alerts are only logged. Prefer ntfy or a
+    webhook over the Resend account, so a paused Resend is still reported. Also point an external uptime check at
+    `https://asknuvexusdoc.com/api/health/ready`.
+16. **Set up off-site backup copies** (the owner picks the storage): copy `./backups` off this machine after the daily
+    02:30 UTC backup, encrypted (rclone with a `crypt` remote, an encrypted drive, or restic; `scripts/README.md`,
+    "Off-site copies"), and keep `.env` in a password manager. Test a restore from the copy on a throwaway Compose
+    project now and then.
+17. **Install the watchdog** (optional; `scripts/watchdog/README.md`): the LaunchAgent on this Mac (and keep the Mac
+    awake, Docker Desktop starting at sign-in), or the systemd timer on a server. Check it with
+    `scripts/watchdog/watchdog.sh --test` once an alert channel is set.
+18. **Gmail's Google app** (the owner): it is in Google's testing mode, so connections end every 7 days and only
+    listed test users can connect; `bikash`'s connection needs a reconnect now (Settings → Plugins & data → Gmail →
+    **Reconnect**). Register `https://asknuvexusdoc.com/api/plugins/gmail/oauth/callback` in the Gmail project (only the
+    apex once `www` redirects). If every user is in the owner's Google Workspace, mark the app **Internal** (no Google
+    review), then set `GOOGLE_OAUTH_TESTING_MODE=false`; otherwise add the users as test users or apply for
+    verification (`docs/gmail-setup.md`). Sign-in's own project (step 9) doesn't change this.
+19. **Hosting** (the owner's choice): the stack runs on Docker Desktop on this Mac, which sleeps and quits now and then.
+    A small Linux server with Docker Engine and Compose is enough (8 GB of memory: the worker alone may use 4 GB).
+    Moving there: clone, put `.env` back, copy a backup into `./backups`, `docker compose up -d --build`, then
+    `scripts/restore.sh latest --yes --no-safety-backup` (`scripts/README.md`, "A new machine"); install the watchdog's
+    systemd timer (step 17).
+20. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the automatic
+    activation of the seeded Sonnet vision model; the vision allowance is now set per plan).
+21. Done on 2026-10-28: **the public address.** https://asknuvexusdoc.com (and www, until step 6) reach the app through
+    a Cloudflare named tunnel `asknuvexusdoc` run from this Mac (`~/.cloudflared/config.yml`, LaunchAgent
+    `~/Library/LaunchAgents/com.asknuvexusdoc.tunnel.plist`, log `~/Library/Logs/asknuvexusdoc-tunnel.log`; DNS CNAMEs
+    created by `cloudflared tunnel route dns`). `.env` has `COOKIE_SECURE=true`, `PUBLIC_BASE_URLS` with both https
+    origins and localhost, and `NGINX_REAL_IP_FROM=172.16.0.0/12` (`frontend/real-ip.envsh`: nginx takes the visitor's
+    address from `CF-Connecting-IP` for connections from Docker's network, so throttles, billing rate limits and the
+    sign-in history see real visitors; verified). What was left of it is in steps 5, 6, 15 and 18. The site is up only
+    while this Mac and Docker run (step 19).
+22. Done: the worker has `mem_limit`/`memswap_limit` `${WORKER_MEM_LIMIT:-4g}` (verified with `docker inspect`).
+    An OOM kill stays inside the worker, and the attempt counter fails the document after 3 kills.
+23. Later: move the remaining parsing (pypdf, Office formats, HTML) into a child process with a hard kill, as
+    PDF rendering already is, and bump pytest to 9.x together with a compatible pytest-asyncio. Consider rate limits
+    on upload and reprocess. A load test with many users at once hasn't been run.
+24. Later: read images in DOCX and PPTX files with the vision model (PDFs only for now), and remove
+    `llm._allow_effort` once LiteLLM's bundled model map lists `claude-sonnet-5-5`.
+
+Sign-up and email is built, tested and deployed with sign-up closed (2026-11-01). What is left beyond steps 3 to 14:
+
+- With the owner's keys, the spikes of brief 18.2 (known limitations). Add `connect-src
+  https://challenges.cloudflare.com` to the three Turnstile locations of `frontend/nginx.conf` only if the browser
+  console asks for it.
+- The owner's open choices (brief 18.1, items 2 to 6): the minimum password length (8 or 15), the breach check (on),
+  the sending address (`no-reply@` or a `mail.` subdomain), `ADMIN_SIGNIN_FROM` (`local` or `any`), and self-service
+  account deletion later.
+- Follow-ups: an admin action to clear a suppressed address, and a Settings indicator when an account's address is
+  suppressed; bulk actions and a daily sign-up digest in Admin → Users; asking existing users to accept changed terms.
+- Optional, for a development stack: a second Web client in the Gmail project with
+  `http://localhost:8080/api/auth/google/callback`, used only in that stack's `.env` (brief 17.4, item 9). Google
+  deletes clients unused for six months.
+
+Plans and billing are committed (`10ecd35`). What is left beyond step 5:
+
+- **GST:** decide whether to register (the plans brief's 14.1, item 4). Version 1 has no GST; charging it needs tax
+  invoices built first.
 
 The test suites and CI are written, reviewed, verified and committed (`3a277a0`, then `d4eada1`), and CI is green on
 GitHub (2026-10-25). What is left:
@@ -1742,51 +2010,6 @@ Files from chat is built and was verified live in Docker on 2026-10-16. What is 
   - the items rejected in brief 0.2 (prompt caching, re-rendering in another format, per-model switches);
   - downloads from Admin → Documents.
 - Decide the vision `NO_CONTENT` fix (known limitations), and optionally tidy nginx's duplicate headers on `/api/`.
-
-1. Done: every feature, the test suites and CI are committed. The redesign is in `5148b83` and `d11a9e5`, plugins
-   with Gmail in `c5fb005`, images from chat in `7eaf587`, files from chat, the vision follow-up fix and
-   `test_vision_independent.py` in `70f8076`, the test suites and CI in `3a277a0` and `d4eada1`, and operations
-   (migrations, backups, monitoring) in `91e20bc`, with CI green at `c58622b`. Plans and billing are deployed but not
-   committed yet: commit them so CI runs them.
-2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
-3. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the automatic
-   activation of the seeded Sonnet vision model; the vision allowance is now set per plan).
-4. **Hosting** (the owner's choice): the stack runs on Docker Desktop on this Mac, which sleeps and quits now and then.
-   A small Linux server with Docker Engine and Compose is enough (8 GB of memory: the worker alone may use 4 GB). Moving there: clone, put `.env` back,
-   copy a backup into `./backups`, `docker compose up -d --build`, then `scripts/restore.sh latest --yes
-   --no-safety-backup` (`scripts/README.md`, "A new machine"); install the watchdog's systemd timer (step 8).
-5. **Public address: done on 2026-10-28.** https://asknuvexusdoc.com (and www) reach the app through a Cloudflare
-   named tunnel `asknuvexusdoc` run from this Mac (`~/.cloudflared/config.yml`, LaunchAgent
-   `~/Library/LaunchAgents/com.asknuvexusdoc.tunnel.plist`, log `~/Library/Logs/asknuvexusdoc-tunnel.log`; DNS CNAMEs
-   created by `cloudflared tunnel route dns`). `.env` has `COOKIE_SECURE=true`, `PUBLIC_BASE_URLS` with both https
-   origins and localhost, and `NGINX_REAL_IP_FROM=172.16.0.0/12` (`frontend/real-ip.envsh`: nginx takes the visitor's
-   address from `CF-Connecting-IP` for connections from Docker's network, so throttles, billing rate limits and the
-   sign-in history see real visitors; verified). Still to do: the owner turns on Cloudflare **Always Use HTTPS**,
-   registers the Gmail callbacks for both https origins in Google, and sets the Razorpay webhook
-   (`https://asknuvexusdoc.com/api/billing/razorpay/webhook`) with `RAZORPAY_WEBHOOK_SECRET`; consider rate limits
-   on upload and reprocess; point an external uptime check at `https://asknuvexusdoc.com/api/health/ready`. The site
-   is up only while this Mac and Docker run (see Hosting).
-6. **Choose an alert channel** (the owner): a webhook (Slack, Google Chat, Discord, Teams), ntfy (the simplest for
-   push to a phone) or email. Put its `ALERT_*` settings in `.env` (`README.md` section 8), run `docker compose up -d
-   monitor`, then press **Send a test alert** in Admin → System. Until then alerts are only logged.
-7. **Set up off-site backup copies** (the owner picks the storage): copy `./backups` off this machine after the daily
-   02:30 UTC backup, encrypted (rclone with a `crypt` remote, an encrypted drive, or restic; `scripts/README.md`,
-   "Off-site copies"), and keep `.env` in a password manager. Test a restore from the copy on a throwaway Compose
-   project now and then.
-8. **Install the watchdog** (optional; `scripts/watchdog/README.md`): the LaunchAgent on this Mac (and keep the Mac
-   awake, Docker Desktop starting at sign-in), or the systemd timer on a server. Check it with
-   `scripts/watchdog/watchdog.sh --test` once an alert channel is set.
-9. **Gmail's Google app** (the owner): it is in Google's testing mode, so connections end every 7 days and only
-   listed test users can connect. If every user is in the owner's Google Workspace, mark the app **Internal** (no
-   Google review), then set `GOOGLE_OAUTH_TESTING_MODE=false`; otherwise add the users as test users or apply for
-   verification (`docs/gmail-setup.md`).
-10. Done: the worker has `mem_limit`/`memswap_limit` `${WORKER_MEM_LIMIT:-4g}` (verified with `docker inspect`).
-    An OOM kill stays inside the worker, and the attempt counter fails the document after 3 kills.
-11. Later: move the remaining parsing (pypdf, Office formats, HTML) into a child process with a hard kill, as
-    PDF rendering already is, and bump pytest to 9.x together with a compatible pytest-asyncio. A load test with many
-    users at once hasn't been run.
-12. Later: read images in DOCX and PPTX files with the vision model (PDFs only for now), and remove
-    `llm._allow_effort` once LiteLLM's bundled model map lists `claude-sonnet-5-5`.
 
 ## macOS setup notes (this machine)
 

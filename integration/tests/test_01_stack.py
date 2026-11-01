@@ -20,6 +20,8 @@ EXPECTED_SERVICES = {
     "fake-google",
     "fake-alerts",
     "fake-razorpay",
+    "fake-mail",
+    "fake-turnstile",
 }
 # What a backend-image container may have in its environment: the generated env file, docker-compose.yml's
 # `environment`, the image's ENV and what Docker adds. Anything else would have come from somewhere else (.env).
@@ -153,7 +155,7 @@ def test_admin_from_the_env_file_can_log_in(admin: httpx.Client) -> None:
 def test_wrong_password_is_rejected(stack: None) -> None:
     response = client().post("/api/auth/login", json={"username": ENV["ADMIN_USERNAME"], "password": "wrong-password"})
     assert response.status_code == 401
-    assert response.json()["detail"] == "Invalid username or password"
+    assert response.json()["detail"] == "Incorrect email, username or password."
 
 
 @pytest.mark.parametrize(

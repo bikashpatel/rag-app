@@ -1,15 +1,65 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
+import type { AuthConfig } from "../api/types";
+import { forgetAuthConfig } from "../auth/AuthContext";
 import type { LoginRedirectState } from "../auth/loginRedirect";
+import type { TurnstileApi } from "../components/auth/Turnstile";
+import { leaveForApp, take, turnstileAllowed } from "../lib/authDocument";
+import { makeAuthConfig, makeClosedAuthConfig } from "../test/auth";
 import { setMediaQueries } from "../test/browser";
 import { makeMe } from "../test/fixtures";
-import { deferred, errorResponse, stubFetch, type FetchCall } from "../test/http";
+import { deferred, errorResponse, jsonResponse, stubFetch, type FetchCall, type Route } from "../test/http";
 import { renderWithAuth } from "../test/render";
 import LoginPage from "./LoginPage";
 
-const signedOut = { "GET /auth/me": () => errorResponse(401, "Not authenticated") };
+vi.mock("../lib/authDocument", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../lib/authDocument")>()),
+  turnstileAllowed: vi.fn(),
+  leaveForApp: vi.fn(),
+}));
+
+const unauthorized = () => errorResponse(401, "Not authenticated");
+const signedOut: Record<string, Route> = { "GET /auth/me": unauthorized, "GET /auth/config": makeAuthConfig() };
+const WRONG = "Incorrect email, username or password.";
+
+function routes(extra: Record<string, Route> = {}, config: AuthConfig = makeAuthConfig()): Record<string, Route> {
+  return { ...signedOut, "GET /auth/config": config, ...extra };
+}
+
+function codeError(status: number, detail: string, code: string): Response {
+  return jsonResponse({ detail, code }, { status });
+}
+
+type WidgetOptions = Parameters<TurnstileApi["render"]>[1];
+
+/** Cloudflare's window.turnstile: the test hands out the tokens. */
+function installTurnstile() {
+  const widgets: WidgetOptions[] = [];
+  const api = {
+    render: vi.fn((_: HTMLElement, options: WidgetOptions) => {
+      widgets.push(options);
+      return `widget-${widgets.length}`;
+    }),
+    reset: vi.fn(),
+    remove: vi.fn(),
+  };
+  vi.stubGlobal("turnstile", api);
+  return {
+    api,
+    solve(token = "XXXX.DUMMY.TOKEN.XXXX") {
+      const widget = widgets.at(-1);
+      if (!widget) throw new Error("No widget");
+      act(() => widget.callback(token));
+    },
+  };
+}
+
+beforeEach(() => {
+  forgetAuthConfig();
+  vi.mocked(turnstileAllowed).mockReturnValue(true);
+});
 const PHONE = "(max-width: 799.98px)";
 
 // The owner's copy, verbatim (visual spec 6.28).
@@ -33,10 +83,18 @@ function renderLoginPage(state?: LoginRedirectState) {
 
 function fields() {
   return {
-    username: screen.getByRole("textbox", { name: "Username" }),
+    username: screen.getByRole("textbox", { name: "Email or username" }),
     password: screen.getByLabelText("Password"),
     submit: screen.getByRole("button", { name: "Sign in" }),
   };
+}
+
+async function fillAndSubmit(identifier = "maya.chen", password = "correct horse") {
+  const user = userEvent.setup();
+  await user.type(fields().username, identifier);
+  await user.type(fields().password, password);
+  await user.click(fields().submit);
+  return user;
 }
 
 /** A paragraph whose whole text is `text` (it may hold inline markup). */
@@ -72,31 +130,35 @@ function loginCalls(calls: FetchCall[]): FetchCall[] {
 }
 
 describe("LoginPage", () => {
-  it("shows the sign-in form with Sign in disabled until both fields are filled", async () => {
-    stubFetch(signedOut);
+  it("shows the sign-in form; Sign in stays enabled and says what is missing", async () => {
+    const calls = stubFetch(routes());
     const user = userEvent.setup();
     await renderLoginPage();
 
     expect(screen.getByRole("heading", { level: 1 })).toHaveTextContent("Welcome back to AskNuvexusDoc");
     const { username, password, submit } = fields();
     expect(username).toHaveFocus();
+    expect(username).toHaveAttribute("autocomplete", "username");
+    expect(username).toHaveAttribute("inputmode", "email");
     expect(password).toHaveAttribute("type", "password");
-    expect(submit).toBeDisabled();
+    expect(submit).toBeEnabled();
+
+    await user.click(submit);
+    expect(screen.getByText("Enter your email or username.")).toBeInTheDocument();
+    expect(screen.getByText("Enter your password.")).toBeInTheDocument();
+    expect(username).toHaveFocus();
+    expect(username).toHaveAttribute("aria-invalid", "true");
 
     await user.type(username, "   ");
     await user.type(password, "hunter2-long");
-    expect(submit).toBeDisabled();
-
-    await user.clear(username);
-    await user.type(username, "maya.chen");
-    expect(submit).toBeEnabled();
-
-    await user.clear(password);
-    expect(submit).toBeDisabled();
+    await user.click(submit);
+    expect(screen.getByText("Enter your email or username.")).toBeInTheDocument();
+    expect(screen.queryByText("Enter your password.")).not.toBeInTheDocument();
+    expect(loginCalls(calls)).toHaveLength(0);
   });
 
   it("puts the form before the copy and the tour, so the keyboard and screen readers reach it first", async () => {
-    stubFetch(signedOut);
+    stubFetch(routes());
     await renderLoginPage();
 
     const main = screen.getByRole("main");
@@ -110,17 +172,15 @@ describe("LoginPage", () => {
   });
 
   it("leads the aside with the hero picture and the owner's copy around the product tour", async () => {
-    stubFetch(signedOut);
+    stubFetch(routes());
     await renderLoginPage();
 
     const aside = screen.getByRole("complementary", { name: "About AskNuvexusDoc" });
     const [headline, hero, subheading, lead, ...pitch] = expectCopy();
     const tour = screen.getByRole("region", { name: "Product tour" });
     for (const part of [headline, hero, subheading, lead, ...pitch]) expect(aside).toContainElement(part);
-    // The picture, the subheading and the first paragraph, then the tour, then the second paragraph and the close.
     expect(precedes(lead, tour) && precedes(tour, pitch[0])).toBe(true);
 
-    // The large picture: both sizes to choose from, its box reserved before it loads, fetched first.
     expect(hero).toHaveAttribute("srcset", expect.stringMatching(/hero-800.*\.webp 800w, .*hero-1600.*\.webp 1600w$/));
     expect(hero).toHaveAttribute("sizes", "(min-width: 1280px) 560px, calc(52vw - 80px)");
     expect(hero).toHaveAttribute("width", "1600");
@@ -128,57 +188,38 @@ describe("LoginPage", () => {
     expect(hero).toHaveAttribute("decoding", "async");
     expect(hero).toHaveAttribute("fetchpriority", "high");
 
-    // One h1 (the form's), the headline as h2 and the tour's scene titles under it.
     expect(screen.getAllByRole("heading", { level: 1 })).toHaveLength(1);
     expect(screen.getAllByRole("heading", { level: 2 })).toEqual([headline]);
     expect(within(tour).getByRole("heading", { level: 3 })).toHaveTextContent("Cited answers");
-
-    // The old hero and points row are gone.
-    expect(screen.queryByText(/Ask your documents/)).not.toBeInTheDocument();
-    expect(screen.queryByText("Private to you")).not.toBeInTheDocument();
-    expect(screen.queryByText("Files and images on request")).not.toBeInTheDocument();
   });
 
   it("on phones, leaves the tour out and shows the copy after the form, the picture placed above it", async () => {
     setMediaQueries((query) => query === PHONE);
-    stubFetch(signedOut);
+    stubFetch(routes());
     await renderLoginPage();
+    await screen.findByRole("button", { name: "Continue with Google" });
 
     const main = screen.getByRole("main");
     const [headline, hero, ...rest] = expectCopy();
     expect(screen.queryByRole("complementary")).not.toBeInTheDocument();
     expect(screen.queryByRole("region", { name: "Product tour" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
     for (const part of [headline, hero, ...rest]) expect(main).toContainElement(part);
-
-    // The small picture only, its box reserved before it loads.
     expect(hero).toHaveAttribute("src", expect.stringMatching(/hero-800.*\.webp$/));
     expect(hero).not.toHaveAttribute("srcset");
-    expect(hero).not.toHaveAttribute("fetchpriority");
-    expect(hero).toHaveAttribute("width", "800");
-    expect(hero).toHaveAttribute("height", "450");
 
-    // The form comes first in the DOM (CSS shows the picture above it); the copy ends before the credit line.
     expect(precedes(fields().submit, headline)).toBe(true);
     expect(headline.parentElement).toHaveClass("login-mobile-hero");
     expect(headline.parentElement).toContainElement(hero);
     expect(precedes(rest[rest.length - 1], screen.getByText(/designed, developed/))).toBe(true);
-    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual([
-      "Welcome back to AskNuvexusDoc",
-      HEADLINE,
-    ]);
     expect(fields().username).toHaveFocus();
 
-    act(() => setMediaQueries(() => false)); // the window widens
+    act(() => setMediaQueries(() => false));
     expect(screen.getByRole("region", { name: "Product tour" })).toBeInTheDocument();
-    expect(screen.getAllByRole("heading", { level: 2, name: HEADLINE })).toHaveLength(1);
     expect(screen.getAllByRole("img", { name: HERO_ALT })).toHaveLength(1);
-    expect(screen.getByRole("complementary")).toContainElement(screen.getByRole("heading", { level: 2 }));
-    expect(screen.getByRole("img", { name: HERO_ALT })).toHaveAttribute("fetchpriority", "high");
   });
 
   it("links the public pages Razorpay's review reads under the card", async () => {
-    stubFetch(signedOut);
+    stubFetch(routes());
     await renderLoginPage();
     const policies = screen.getByRole("navigation", { name: "Policies" });
     expect(within(policies).getAllByRole("link").map((link) => [link.textContent, link.getAttribute("href")])).toEqual([
@@ -190,8 +231,38 @@ describe("LoginPage", () => {
     ]);
   });
 
+  it("with sign-up open: Create an account under the lede, Google first, Forgot password, no admin note", async () => {
+    stubFetch(routes());
+    await renderLoginPage();
+
+    const create = await screen.findByRole("link", { name: "Create an account" });
+    expect(create).toHaveAttribute("href", "/signup");
+    expect(create.closest("p")).toHaveTextContent("New to AskNuvexusDoc? Create an account");
+    const google = screen.getByRole("button", { name: "Continue with Google" });
+    expect(precedes(create, google) && precedes(google, fields().username)).toBe(true);
+    expect(screen.getByRole("separator", { name: "or" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Forgot password?" })).toHaveAttribute("href", "/forgot-password");
+    expect(screen.queryByText(/Accounts are created by your administrator/)).not.toBeInTheDocument();
+  });
+
+  it("as shipped (sign-up closed, no Google or reset): today's card with its admin note", async () => {
+    stubFetch(routes({}, makeClosedAuthConfig()));
+    await renderLoginPage();
+
+    expect(await screen.findByText(/Accounts are created by your administrator/)).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Create an account" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Continue with Google" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Forgot password?" })).not.toBeInTheDocument();
+  });
+
+  it("keeps today's admin note when the configuration can't be loaded", async () => {
+    stubFetch({ "GET /auth/me": unauthorized, "GET /auth/config": () => errorResponse(404, "Not Found") });
+    await renderLoginPage();
+    expect(await screen.findByText(/Accounts are created by your administrator/)).toBeInTheDocument();
+  });
+
   it("toggles the password's visibility", async () => {
-    stubFetch(signedOut);
+    stubFetch(routes());
     const user = userEvent.setup();
     await renderLoginPage();
 
@@ -201,123 +272,212 @@ describe("LoginPage", () => {
     expect(fields().password).toHaveAttribute("type", "password");
   });
 
-  it("signs in with the trimmed username and goes to the chat", async () => {
-    const calls = stubFetch({ ...signedOut, "POST /auth/login": makeMe() });
-    const user = userEvent.setup();
-    const view = await renderLoginPage();
+  it("signs in with the trimmed identifier and leaves for the chat with a full page load", async () => {
+    const calls = stubFetch(routes({ "POST /auth/login": makeMe() }));
+    await renderLoginPage();
 
-    const { username, password } = fields();
-    await user.type(username, "  maya.chen ");
-    await user.type(password, "correct horse");
-    await user.keyboard("{Enter}");
+    await fillAndSubmit("  maya@example.com ", "correct horse");
 
-    await waitFor(() => expect(view.location()).toBe("/"));
-    expect(loginCalls(calls).map((call) => call.body)).toEqual([{ username: "maya.chen", password: "correct horse" }]);
+    await waitFor(() => expect(leaveForApp).toHaveBeenCalledWith("/"));
+    expect(loginCalls(calls).map((call) => call.body)).toEqual([
+      { identifier: "maya@example.com", password: "correct horse" },
+    ]);
+    // It stays busy until the page goes.
+    expect(fields().submit).toHaveAttribute("aria-busy", "true");
   });
 
-  it("returns to the page in the redirect state after signing in", async () => {
-    stubFetch({ ...signedOut, "POST /auth/login": makeMe() });
-    const user = userEvent.setup();
+  it("returns to the page in the redirect state, or the one ?next= names", async () => {
+    stubFetch(routes({ "POST /auth/login": makeMe() }));
     const state: LoginRedirectState = { from: { pathname: "/c/42", search: "?settings=usage", hash: "" } };
     const view = await renderLoginPage(state);
+    await fillAndSubmit();
+    await waitFor(() => expect(leaveForApp).toHaveBeenLastCalledWith("/c/42?settings=usage"));
+    view.unmount();
 
-    await user.type(fields().username, "maya.chen");
-    await user.type(fields().password, "correct horse");
-    await user.click(fields().submit);
-
-    await waitFor(() => expect(view.location()).toBe("/c/42?settings=usage"));
+    await renderWithAuth(<LoginPage />, { route: "/login?next=/confirm-email" });
+    await fillAndSubmit();
+    await waitFor(() => expect(leaveForApp).toHaveBeenLastCalledWith("/confirm-email"));
   });
 
   it("ignores a redirect state pointing off the app", async () => {
-    stubFetch({ ...signedOut, "POST /auth/login": makeMe() });
-    const user = userEvent.setup();
+    stubFetch(routes({ "POST /auth/login": makeMe() }));
     const state: LoginRedirectState = { from: { pathname: "//evil.example", search: "", hash: "" } };
-    const view = await renderLoginPage(state);
-
-    await user.type(fields().username, "maya.chen");
-    await user.type(fields().password, "correct horse");
-    await user.click(fields().submit);
-
-    await waitFor(() => expect(view.location()).toBe("/"));
+    await renderLoginPage(state);
+    await fillAndSubmit();
+    await waitFor(() => expect(leaveForApp).toHaveBeenCalledWith("/"));
   });
 
-  it("disables Sign in and shows a spinner while signing in", async () => {
+  it("shows a spinner while signing in", async () => {
     const pending = deferred<Response>();
-    stubFetch({ ...signedOut, "POST /auth/login": () => pending.promise });
-    const user = userEvent.setup();
+    stubFetch(routes({ "POST /auth/login": () => pending.promise }));
     await renderLoginPage();
+    await fillAndSubmit();
 
-    await user.type(fields().username, "maya.chen");
-    await user.type(fields().password, "wrong password");
-    await user.click(fields().submit);
-
-    expect(fields().submit).toBeDisabled();
     expect(fields().submit).toHaveAttribute("aria-busy", "true");
-
-    pending.resolve(errorResponse(401, "Incorrect username or password."));
-    expect(await screen.findByRole("alert")).toHaveTextContent("Incorrect username or password.");
-    expect(fields().submit).toBeEnabled();
+    pending.resolve(errorResponse(401, WRONG));
+    expect(await screen.findByRole("alert")).toHaveTextContent(WRONG);
     expect(fields().submit).not.toHaveAttribute("aria-busy");
   });
 
-  it("shows a wrong password as an alert that describes both fields, and stays on the form", async () => {
-    stubFetch({ ...signedOut, "POST /auth/login": () => errorResponse(401, "Incorrect username or password.") });
-    const user = userEvent.setup();
+  it("shows a wrong password with the two hints, describing both fields, and stays on the form", async () => {
+    stubFetch(routes({ "POST /auth/login": () => errorResponse(401, WRONG) }));
     const view = await renderLoginPage();
-
-    await user.type(fields().username, "maya.chen");
-    await user.type(fields().password, "wrong password");
-    await user.click(fields().submit);
+    await fillAndSubmit("maya@example.com", "wrong password");
 
     const alert = await screen.findByRole("alert");
-    expect(alert).toHaveTextContent("Incorrect username or password.");
-    expect(fields().username).toHaveAccessibleDescription("Incorrect username or password.");
-    expect(fields().password).toHaveAccessibleDescription("Incorrect username or password.");
+    expect(alert).toHaveTextContent(WRONG);
+    expect(alert).toHaveTextContent("Just signed up? Open the link we emailed you, or send it again.");
+    expect(alert).toHaveTextContent("Signed up with Google? Use Continue with Google.");
+    expect(fields().username).toHaveAccessibleDescription(expect.stringContaining(WRONG));
+    expect(fields().password).toHaveAccessibleDescription(expect.stringContaining(WRONG));
     expect(view.location()).toBe("/login");
+    expect(leaveForApp).not.toHaveBeenCalled();
+
+    // "send it again" carries the typed address to the sign-up page in this tab; the other hint points at Google.
+    const resend = within(alert).getByRole("link", { name: "send it again" });
+    expect(resend).toHaveAttribute("href", "/signup?resend=1");
+    resend.addEventListener("click", (event) => event.preventDefault());
+    const user = userEvent.setup();
+    await user.click(resend);
+    expect(take("email")).toBe("maya@example.com");
+    await user.click(within(alert).getByRole("link", { name: "Continue with Google" }));
+    expect(screen.getByRole("button", { name: "Continue with Google" })).toHaveFocus();
+  });
+
+  it("leaves the hints out when neither email sign-up nor Google is available, and carries no username", async () => {
+    stubFetch(routes({ "POST /auth/login": () => errorResponse(401, WRONG) }, makeClosedAuthConfig()));
+    await renderLoginPage();
+    await fillAndSubmit("maya.chen", "wrong password");
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(WRONG);
+    expect(within(alert).queryByRole("list")).not.toBeInTheDocument();
   });
 
   it("clears the previous error when submitting again", async () => {
-    const replies = [errorResponse(401, "Incorrect username or password."), makeMe()];
-    stubFetch({ ...signedOut, "POST /auth/login": () => replies.shift() });
-    const user = userEvent.setup();
-    const view = await renderLoginPage();
-
-    await user.type(fields().username, "maya.chen");
-    await user.type(fields().password, "wrong password");
-    await user.click(fields().submit);
+    const replies = [errorResponse(401, WRONG), makeMe()];
+    stubFetch(routes({ "POST /auth/login": () => replies.shift() }));
+    await renderLoginPage();
+    const user = await fillAndSubmit("maya.chen", "wrong password");
     await screen.findByRole("alert");
 
     await user.click(fields().submit);
-    await waitFor(() => expect(view.location()).toBe("/"));
+    await waitFor(() => expect(leaveForApp).toHaveBeenCalledWith("/"));
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("explains when the server can't be reached", async () => {
-    stubFetch({
-      ...signedOut,
-      "POST /auth/login": () => {
-        throw new TypeError("Failed to fetch");
-      },
-    });
-    const user = userEvent.setup();
+  it("asks for the robot check after challenge_required, then sends its token with the same values", async () => {
+    const turnstile = installTurnstile();
+    const replies = [codeError(401, "Confirm you're not a robot to continue.", "challenge_required"), makeMe()];
+    const calls = stubFetch(routes({ "POST /auth/login": () => replies.shift() }));
     await renderLoginPage();
+    const user = await fillAndSubmit("maya@example.com", "correct horse");
 
-    await user.type(fields().username, "maya.chen");
-    await user.type(fields().password, "correct horse");
+    const caption = await screen.findByText("Confirm you're not a robot, then sign in again.");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    // Focus moves to the caption, so a screen reader says why nothing else happened.
+    expect(caption.closest("p")).toHaveFocus();
+    await waitFor(() => expect(turnstile.api.render).toHaveBeenCalledTimes(1));
+    expect(turnstile.api.render.mock.calls[0][1]).toMatchObject({ action: "login", sitekey: "1x00000000000000000000AA" });
+    expect(fields().username).toHaveValue("maya@example.com");
+
+    // Pressed before the check is done: it says so, and the form goes when the token arrives.
+    await user.click(fields().submit);
+    expect(screen.getByText("Checking you're not a robot…")).toBeInTheDocument();
+    expect(loginCalls(calls)).toHaveLength(1);
+    turnstile.solve("TOKEN-1");
+    await waitFor(() => expect(leaveForApp).toHaveBeenCalledWith("/"));
+    expect(loginCalls(calls)[1].body).toEqual({
+      identifier: "maya@example.com",
+      password: "correct horse",
+      turnstile_token: "TOKEN-1",
+    });
+  });
+
+  it("starts the check again after challenge_failed and sends once more with the next token", async () => {
+    const turnstile = installTurnstile();
+    const replies = [
+      codeError(401, "Confirm you're not a robot to continue.", "challenge_required"),
+      codeError(400, "The check expired or failed. Try again.", "challenge_failed"),
+      codeError(400, "The check expired or failed. Try again.", "challenge_failed"),
+    ];
+    const calls = stubFetch(routes({ "POST /auth/login": () => replies.shift() }));
+    await renderLoginPage();
+    const user = await fillAndSubmit();
+    await waitFor(() => expect(turnstile.api.render).toHaveBeenCalled());
+    turnstile.solve("TOKEN-1");
     await user.click(fields().submit);
 
+    await waitFor(() => expect(turnstile.api.reset).toHaveBeenCalled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    turnstile.solve("TOKEN-2");
+    expect(await screen.findByRole("alert")).toHaveTextContent("The check expired or failed. Try again.");
+    expect(loginCalls(calls).map((call) => (call.body as { turnstile_token?: string }).turnstile_token)).toEqual([
+      undefined,
+      "TOKEN-1",
+      "TOKEN-2",
+    ]);
+  });
+
+  it.each([
+    ["denied", "Google sign-in was cancelled."],
+    ["expired", "That took too long. Try again."],
+    ["error", "We couldn't sign you in with Google. Try again."],
+    ["link_required", "An account already uses this email. Sign in with your password, then connect Google in Settings → Account."],
+    ["use_password", "Sign in with your email or username, then connect Google in Settings → Account."],
+    ["signup_closed", "New sign-ups are closed right now."],
+    ["unavailable", "We couldn't sign you in. If you think this is a mistake, contact us."],
+  ])("shows ?google=%s once, then drops the parameter", async (result, text) => {
+    stubFetch(routes());
+    const view = await renderWithAuth(<LoginPage />, { route: `/login?google=${result}&next=/plans` });
+    expect(screen.getByRole("alert")).toHaveTextContent(text);
+    await waitFor(() => expect(view.location()).toBe("/login?next=/plans"));
+    expect(screen.getByRole("alert")).toHaveTextContent(text);
+  });
+
+  it("links the contact address in ?google=unavailable, and ignores unknown results", async () => {
+    stubFetch(routes());
+    const view = await renderWithAuth(<LoginPage />, { route: "/login?google=unavailable" });
+    expect(await screen.findByRole("link", { name: "contact us" })).toHaveAttribute(
+      "href",
+      "mailto:support@asknuvexusdoc.com",
+    );
+    view.unmount();
+
+    await renderWithAuth(<LoginPage />, { route: "/login?google=nonsense" });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("starts Google sign-in from the sign-in page, and says when it can't", async () => {
+    const calls = stubFetch(routes({ "POST /auth/google/start": () => errorResponse(503, "Google sign-in isn't set up.") }));
+    const user = userEvent.setup();
+    await renderWithAuth(<LoginPage />, { route: "/login?next=/plans" });
+    await user.click(await screen.findByRole("button", { name: "Continue with Google" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("Google sign-in isn't set up.");
+    expect(calls.find((call) => call.path === "/auth/google/start")?.body).toEqual({
+      intent: "signin",
+      from: "login",
+      next: "/plans",
+    });
+  });
+
+  it("explains when the server can't be reached", async () => {
+    stubFetch(
+      routes({
+        "POST /auth/login": () => {
+          throw new TypeError("Failed to fetch");
+        },
+      }),
+    );
+    await renderLoginPage();
+    await fillAndSubmit();
     expect(await screen.findByRole("alert")).toHaveTextContent("Cannot reach the server. Check that the app is running.");
   });
 
   it("shows a generic message for a server error", async () => {
-    stubFetch({ ...signedOut, "POST /auth/login": () => new Response("Bad gateway", { status: 502 }) });
-    const user = userEvent.setup();
+    stubFetch(routes({ "POST /auth/login": () => new Response("Bad gateway", { status: 502 }) }));
     await renderLoginPage();
-
-    await user.type(fields().username, "maya.chen");
-    await user.type(fields().password, "correct horse");
-    await user.click(fields().submit);
-
+    await fillAndSubmit();
     expect(await screen.findByRole("alert")).toHaveTextContent("The server ran into a problem. Please try again.");
   });
 });

@@ -20,6 +20,7 @@ CheckId = Literal[
     "proxy",
     "monitor",
     "billing",
+    "mail",
 ]
 AlertKind = Literal["problem", "reminder", "recovery", "test"]
 

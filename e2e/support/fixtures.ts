@@ -26,9 +26,17 @@ export function randomPassword(): string {
 }
 
 /**
- * Blocks, and records, every request a test must never make: any host other than the app (Google above all), a chat
- * request no canned answer handled (it would call a model), uploads (they call the embedding model), plugin connects
- * (OAuth) and the admin's model, request-check and re-index calls. A test's own page.route() handlers run first.
+ * The endpoints that mail someone or call Cloudflare or Google (docs/briefs/signup-auth.md 15.3): sign-up, the emailed
+ * links, password reset, Google sign-in, and the account's email, first password and Google. A test mocks each one it
+ * uses; an unmocked call is blocked.
+ */
+const MAILS_OR_CALLS_OUT = /^\/api\/(auth\/(signup|password\/|email\/|google\/)|me\/(email|password\/setup|google)(\/|$))/;
+
+/**
+ * Blocks, and records, every request a test must never make: any host other than the app (Google and Cloudflare above
+ * all), a chat request no canned answer handled (it would call a model), uploads (they call the embedding model),
+ * plugin connects (OAuth), the sign-up, reset, email and Google endpoints, and the admin's model, request-check and
+ * re-index calls. A test's own page.route() handlers run first.
  */
 async function installGuards(context: BrowserContext, allowModelCalls: boolean, violations: string[]): Promise<void> {
   const app = new URL(BASE_URL);
@@ -46,6 +54,10 @@ async function installGuards(context: BrowserContext, allowModelCalls: boolean, 
   await context.route((url) => url.host !== app.host, block("request outside the app"));
   if (!allowModelCalls) await context.route(CHAT_STREAM, block("chat request without a canned answer"));
   await context.route("**/api/plugins/*/connect", block("plugin connect (OAuth)"));
+  await context.route(
+    (url) => url.host === app.host && MAILS_OR_CALLS_OUT.test(url.pathname),
+    block("sign-up, email or Google request without a mock"),
+  );
   await context.route("**/api/documents", (route) =>
     route.request().method() === "POST" ? block("upload (embedding model)")(route) : route.fallback(),
   );
@@ -164,8 +176,35 @@ export const test = base.extend<TestFixtures, WorkerFixtures>({
   },
 });
 
+/** nginx's `auth_public` zone allows 30 sign-ins a minute per address (burst 20); the suite signs in more than that. */
+const SIGN_IN_RETRY_MS = 2_500;
+const SIGN_IN_PATIENCE_MS = 40_000;
+
+type HttpResponse = { status(): number; headers(): Record<string, string> };
+
+/** nginx's own 429 has no JSON body; the backend's `too_many_attempts` (which a test may expect) has. */
+function proxyLimited(res: HttpResponse): boolean {
+  return res.status() === 429 && !(res.headers()["content-type"] ?? "").includes("application/json");
+}
+
+/**
+ * Sends a sign-in again while nginx's per-address limit refuses it, waiting for the limit to refill, so the suite
+ * never needs a looser limit than production. Returns the last response.
+ */
+export async function untilSignInPasses<T extends HttpResponse>(send: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + SIGN_IN_PATIENCE_MS;
+  let res = await send();
+  while (proxyLimited(res) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, SIGN_IN_RETRY_MS));
+    res = await send();
+  }
+  return res;
+}
+
 /** Signs `user` in for the whole context through the API (the cookie lands in the context). */
 export async function signIn(context: BrowserContext, user: Pick<TestUser, "username" | "password">): Promise<void> {
-  const res = await context.request.post("/api/auth/login", { data: { username: user.username, password: user.password } });
+  const res = await untilSignInPasses(() =>
+    context.request.post("/api/auth/login", { data: { username: user.username, password: user.password } }),
+  );
   expect(res.status(), `sign-in of ${user.username}`).toBe(200);
 }

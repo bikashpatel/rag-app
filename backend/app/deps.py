@@ -15,8 +15,14 @@ def _unauthorized() -> HTTPException:
     return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
 
 
+def session_cookie_name() -> str:
+    """COOKIE_NAME, with the __Host- prefix behind HTTPS (COOKIE_SECURE): the browser then accepts it only Secure, for
+    Path / and without a Domain, so no subdomain or plain-http page can plant one."""
+    return f"__Host-{settings.cookie_name}" if settings.cookie_secure else settings.cookie_name
+
+
 def _extract_token(request: Request) -> str | None:
-    token = request.cookies.get(settings.cookie_name)
+    token = request.cookies.get(session_cookie_name())
     if token:
         return token
     auth = request.headers.get("authorization", "")
@@ -100,7 +106,7 @@ def set_session_cookie(
     if expires_at is not None:
         lifetime = max(1, min(lifetime, int((expires_at - datetime.now(timezone.utc)).total_seconds())))
     response.set_cookie(
-        key=settings.cookie_name,
+        key=session_cookie_name(),
         value=token,
         max_age=lifetime,
         httponly=True,
@@ -112,7 +118,7 @@ def set_session_cookie(
 
 def clear_session_cookie(response: Response) -> None:
     response.delete_cookie(
-        key=settings.cookie_name,
+        key=session_cookie_name(),
         httponly=True,
         secure=settings.cookie_secure,
         samesite="strict",

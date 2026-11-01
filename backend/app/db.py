@@ -54,11 +54,17 @@ def make_engine(url: str | URL) -> AsyncEngine:
     """Async engine that behaves the same on Postgres and SQLite.
 
     Postgres sessions run in UTC, so date() on timestamptz splits days in UTC whatever the server's
-    TimeZone. SQLite enforces foreign keys, so ON DELETE CASCADE / SET NULL work as on Postgres.
+    TimeZone. SQLite enforces foreign keys, so ON DELETE CASCADE / SET NULL work as on Postgres. A database error
+    never carries the statement's values (addresses, hashes) into a log.
     """
     if make_url(url).get_driver_name() == "asyncpg":
-        return create_async_engine(url, pool_pre_ping=True, connect_args={"server_settings": {"timezone": "UTC"}})
-    new_engine = create_async_engine(url, pool_pre_ping=True)
+        return create_async_engine(
+            url,
+            pool_pre_ping=True,
+            hide_parameters=True,
+            connect_args={"server_settings": {"timezone": "UTC"}},
+        )
+    new_engine = create_async_engine(url, pool_pre_ping=True, hide_parameters=True)
     if new_engine.dialect.name == "sqlite":
         event.listen(new_engine.sync_engine, "connect", _enable_sqlite_foreign_keys)
     return new_engine

@@ -69,6 +69,12 @@ npx playwright show-report
   with all their data after each test. Teardown deletes this run's users left behind (and fails if one remains); global
   setup deletes `e2e-` users older than an hour (an interrupted earlier run). Runs against the same stack may overlap:
   none touches another's users. No other user, model, plugin setting or the shared knowledge base is ever changed.
+  Deleting a user retires its username for good (`username_tombstones`), so each run leaves about 120 retired `e2e-`
+  names behind; on a stack with real data, remove them afterwards with `docker compose exec -T postgres sh -c 'psql -U
+  "$POSTGRES_USER" -d "$POSTGRES_DB" -c "DELETE FROM username_tombstones WHERE username ~ '"'"'^e2e-[0-9a-z]+-[0-9a-f]+$'"'"'"'`.
+- **Sign-in limit.** nginx allows 30 sign-ins a minute per address (burst 20) and the suite signs in more often than
+  that, so `signIn` and `submitLogin` wait and try again while nginx answers 429 (never the backend's own
+  `too_many_attempts`, which a test may expect).
 - **The admin.** Global setup signs the admin in once per run through Playwright's API request context (never the
   UI) and hands the session cookie to the workers in the environment; no storage-state file is written. The admin API
   calls in the workers use Node's `fetch`, which no trace or report records. The admin's preferences, password and

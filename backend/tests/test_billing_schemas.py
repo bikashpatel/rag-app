@@ -213,26 +213,18 @@ def test_a_checkout_takes_only_the_plan_and_the_kind(change: dict[str, Any], mes
     assert message in refused(CheckoutRequest, {"plan_id": 2, "kind": "period", "accept_terms": True, **change})
 
 
-def test_a_profile_turns_blank_values_into_null() -> None:
-    profile = BillingProfile.model_validate({"name": "  Maya Chen ", "email": "   "})
-
-    assert (profile.name, profile.email) == ("Maya Chen", None)
-    assert BillingProfile.model_validate({"name": "", "email": " maya@example.com "}).model_dump() == {
-        "name": None,
-        "email": "maya@example.com",
-    }
+def test_a_profile_turns_a_blank_name_into_null() -> None:
+    assert BillingProfile.model_validate({"name": "  Maya Chen "}).name == "Maya Chen"
+    assert BillingProfile.model_validate({"name": "   "}).model_dump() == {"name": None}
 
 
 @pytest.mark.parametrize(
     ("body", "message"),
     [
-        ({"name": None, "email": "maya@example"}, "should match pattern"),
-        ({"name": None, "email": "maya @example.com"}, "should match pattern"),
-        ({"name": None, "email": "m@" + "e" * 250 + ".in"}, "at most 254 characters"),
-        ({"name": "x" * 101, "email": None}, "at most 100 characters"),
-        ({"name": "Maya\tChen", "email": None}, "control characters"),
-        ({"name": None}, "Field required"),
-        ({"name": None, "email": None, "phone": "1"}, "Extra inputs"),
+        ({"name": "x" * 101}, "at most 100 characters"),
+        ({"name": "Maya\tChen"}, "control characters"),
+        ({}, "Field required"),
+        ({"name": None, "email": "maya@example.com"}, "Extra inputs"),  # receipts go to the account's verified email
     ],
 )
 def test_a_profile_with_a_bad_value_is_refused(body: dict[str, Any], message: str) -> None:

@@ -1,6 +1,7 @@
 """What a user can buy and starting a checkout (docs/briefs/plans-billing.md 4.3 to 4.5 and 6.3): the options per
 plan with their dates, amounts, credit, changes and reasons; the caps; the Payment Link; cancelling a checkout; and
-the views of an order."""
+the views of an order. Since sign-up (docs/briefs/signup-auth.md 4.12): checkout needs a verified email, and unpaid
+accounts (no live or offline payment applied yet) get smaller caps, plus one for all of them together."""
 
 import asyncio
 import logging
@@ -40,10 +41,9 @@ from app.schemas_billing import (
     PlanFeatures,
     PlanOffer,
     ReceiptRef,
-    UserRef,
 )
 from app.services import storage
-from app.services.billing import audit, business, entitlements, payments, periods, plans, razorpay
+from app.services.billing import audit, business, entitlements, paid, payments, periods, plans, razorpay
 from app.services.billing.entitlements import Entitlements
 from app.services.billing.locks import lock_user
 from app.services.billing.money import (
@@ -60,12 +60,17 @@ logger = logging.getLogger(__name__)
 
 HOUR_CAP: Final = 5  # payment links per user in any 60 minutes
 DAY_CAP: Final = 15  # and per IST day
+UNPAID_HOUR_CAP: Final = 3  # the same for a user who hasn't paid yet
+UNPAID_DAY_CAP: Final = 6
 REUSE_MINUTES: Final = 10  # an open checkout with this long left is returned instead of a new one
 FIRST_CHECK_SECONDS: Final = 30
 PROVIDER_ERROR: Final = "The payment service didn't answer. Try again in a minute."
 _RETIRED = "This plan is no longer offered."
 _PAID_AHEAD = "You already have a period paid ahead."
 _NO_PAYMENTS = "Online payment isn't set up yet."
+_OPENS_SOON = "Paid plans open soon. Check back in a few days."  # a non-tester's, while payments aren't live
+_EMAIL_REQUIRED = "Add and confirm your email in Settings → Account first. Your receipt goes there."
+_BUSY = "Checkout is busy. Try again in a few minutes."
 _NOT_HIGHER = "You're already on this plan or a higher one."
 _SUPERSEDED = "Another checkout was started at the same time. Open the plans page to see the one to pay."
 _MIB = 1024 * 1024
@@ -99,6 +104,7 @@ class Context:
     credit: int  # the credit for the rest of the current period (4.4)
     ranks: dict[int, int]
     can_pay: bool
+    no_payments: str  # why the user can't pay, when they can't
     documents: tuple[int, int]  # the user's own documents: count and bytes
     connected: set[str]  # plugin ids the user has a connection for
     enabled_models: dict[int, str]  # enabled chat model id -> name
@@ -125,6 +131,7 @@ async def context(db: AsyncSession, user: User, *, now: datetime | None = None) 
         credit=await payments.upgrade_credit(db, current, used=used, at=now) if current is not None else 0,
         ranks=dict((await db.execute(select(Plan.id, Plan.rank))).tuples().all()),
         can_pay=business.can_pay(user) and not user.is_admin,
+        no_payments=_NO_PAYMENTS if user.billing_tester or user.is_admin else _OPENS_SOON,
         documents=await storage.owned_totals(db, user.id),
         connected=set(await db.scalars(select(PluginConnection.plugin_id).where(PluginConnection.user_id == user.id))),
         enabled_models={model.id: model.display_name for model in cat.models},
@@ -195,7 +202,7 @@ def _period_option(ctx: Context, plan: Plan) -> CheckoutOption:
         if plan.status != "active"
         else _PAID_AHEAD
         if ctx.paid_ahead
-        else _NO_PAYMENTS
+        else ctx.no_payments
         if not ctx.can_pay
         else None
     )
@@ -246,7 +253,7 @@ def _now_option(ctx: Context, plan: Plan) -> CheckoutOption | None:
         credit=CreditLine(description=f"Credit for unused {name}, {span}", amount_paise=given) if given else None,
         changes=changes(ctx, plan),
         notes=notes,
-        unavailable_reason=None if ctx.can_pay else _NO_PAYMENTS,
+        unavailable_reason=None if ctx.can_pay else ctx.no_payments,
     )
 
 
@@ -291,13 +298,40 @@ def _day_key(user_id: int, now: datetime) -> str:
     return f"rl:checkout-day:{user_id}:{ist_date(now).isoformat()}"
 
 
-async def _reserve(user_id: int, now: datetime) -> None:
-    """Counts a payment link in both caps before it is made: each count is added first and taken back when it goes
-    over, so checkouts at the same time can't pass a cap together. 429 too_many_checkouts over a cap."""
+_UNPAID_KEY = "rl:checkout-unpaid"  # every unpaid user's payment links of the last hour
+_UNPAID_REACHED = "billing:checkout-unpaid-reached"  # set for an hour when that cap is reached (the billing check)
+
+
+async def unpaid_cap_reached() -> bool:
+    """The unpaid users' payment-link cap (CHECKOUT_UNPAID_PER_HOUR) was reached in the last hour."""
+    return bool(await get_redis().exists(_UNPAID_REACHED))
+
+
+async def _reserve_unpaid(stamp: float) -> str | None:
+    """Counts an unpaid user's link in the cap for all of them; None when it is over (taken back again)."""
+    redis = get_redis()
+    entry = f"{stamp}:{secrets.token_hex(4)}"
+    await redis.zremrangebyscore(_UNPAID_KEY, 0, stamp - 3600)
+    await redis.zadd(_UNPAID_KEY, {entry: stamp})
+    await redis.expire(_UNPAID_KEY, 3600)
+    count = await redis.zcard(_UNPAID_KEY)
+    if count >= settings.checkout_unpaid_per_hour:
+        await redis.set(_UNPAID_REACHED, "1", ex=3600)
+    if count > settings.checkout_unpaid_per_hour:
+        await redis.zrem(_UNPAID_KEY, entry)
+        return None
+    return entry
+
+
+async def _reserve(user_id: int, now: datetime, *, unpaid: bool = False) -> None:
+    """Counts a payment link in the caps before it is made: each count is added first and taken back when it goes
+    over, so checkouts at the same time can't pass a cap together. 429 too_many_checkouts over a user's cap; 503
+    checkout_busy over the cap for all unpaid users."""
     redis = get_redis()
     stamp = now.timestamp()
+    hour_cap, day_cap = (UNPAID_HOUR_CAP, UNPAID_DAY_CAP) if unpaid else (HOUR_CAP, DAY_CAP)
     day = _day_key(user_id, now)
-    if await redis.incr(day) > DAY_CAP:
+    if await redis.incr(day) > day_cap:
         await redis.decr(day)
         midnight = (now.astimezone(IST) + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
         retry = math.ceil((midnight - now).total_seconds())
@@ -308,13 +342,18 @@ async def _reserve(user_id: int, now: datetime) -> None:
     await redis.zremrangebyscore(hour, 0, stamp - 3600)
     await redis.zadd(hour, {entry: stamp})
     await redis.expire(hour, 3600)
-    if await redis.zcard(hour) > HOUR_CAP:
+    if await redis.zcard(hour) > hour_cap:
         await redis.zrem(hour, entry)
         await redis.decr(day)
         oldest = await redis.zrange(hour, 0, 0, withscores=True)
         retry = max(1, math.ceil(float(oldest[0][1]) + 3600 - stamp)) if oldest else 3600
         detail = "Too many payment attempts. Try again in an hour."
         raise AppError(429, detail, "too_many_checkouts", headers={"Retry-After": str(retry)})
+    if unpaid and await _reserve_unpaid(stamp) is None:
+        await redis.zrem(hour, entry)
+        await redis.decr(day)
+        logger.warning("The unpaid users' payment-link cap (CHECKOUT_UNPAID_PER_HOUR) refused a checkout")
+        raise AppError(503, _BUSY, "checkout_busy", headers={"Retry-After": "300"})
 
 
 # ---------------- Checkout (6.3) ----------------
@@ -372,6 +411,8 @@ async def start(db: AsyncSession, user: User, body: CheckoutRequest, origin: str
         raise AppError(403, "The admin doesn't need a plan.", "admin_exempt")
     if not business.can_pay(user):
         raise await payments_unavailable(db)
+    if not user.email:
+        raise AppError(409, _EMAIL_REQUIRED, "email_required")
     now = utcnow()
     plan = await db.get(Plan, body.plan_id)
     if plan is None:
@@ -389,7 +430,7 @@ async def start(db: AsyncSession, user: User, body: CheckoutRequest, origin: str
         await db.commit()
         return CheckoutStarted(order=await order_view(db, reused), pay_url=reused.pay_url)
     try:
-        await _reserve(user.id, now)
+        await _reserve(user.id, now, unpaid=not await paid.has_paid(db, user.id))
     except AppError:
         await db.rollback()
         raise
@@ -662,7 +703,7 @@ async def admin_order(db: AsyncSession, order: BillingOrder) -> AdminOrder:
     return AdminOrder(
         **view.model_dump(),
         id=order.id,
-        user=UserRef(id=order.user_id, username=order.username),
+        user=await payments.user_ref(db, order.user_id, order.username),
         mode=mode,
         razorpay_link_id=order.razorpay_link_id,
         razorpay_order_id=order.razorpay_order_id,

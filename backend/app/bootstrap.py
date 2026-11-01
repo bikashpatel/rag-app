@@ -1,5 +1,6 @@
 """Startup sync: the admin account from .env, the initial model catalogue and plans, and giving existing users a plan
-once (docs/briefs/plans-billing.md 4.11)."""
+once (docs/briefs/plans-billing.md 4.11). The env admin never has an email, a Google identity or a reset
+(docs/briefs/signup-auth.md 3.5): start-up refuses an ADMIN_USERNAME naming an account that has one."""
 
 import logging
 import os
@@ -11,8 +12,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.models import AppState, LLMModel, Plan, PlanPeriod, User, utcnow
+from app.models import AppState, LLMModel, PendingEmail, Plan, PlanPeriod, User, utcnow
 from app.security import hash_password, verify_password
+from app.services.auth import passwords
 from app.services.billing import entitlements, periods
 from app.services.billing.money import financial_year, receipt_seq_key
 
@@ -66,6 +68,32 @@ def _has_key(name: str) -> bool:
     return bool(os.environ.get(name, "").strip())
 
 
+class AdminAccountError(RuntimeError):
+    """ADMIN_USERNAME names an account that signs in by email or Google: making it the admin would hand the admin
+    account to whoever controls that address or Google account."""
+
+
+async def _refuse_self_service_admin(db: AsyncSession, user: User) -> None:
+    pending = await db.scalar(select(PendingEmail.id).where(PendingEmail.user_id == user.id).limit(1))
+    found = [
+        reason
+        for reason, present in (
+            (f"signed up by {user.signup_source}", user.signup_source in ("email", "google")),
+            ("has an email", user.email is not None),
+            ("has an email waiting for confirmation", pending is not None),
+            ("has a Google sign-in", bool(user.identities)),
+        )
+        if present
+    ]
+    if found:
+        message = (
+            f"ADMIN_USERNAME={user.username!r} names an account that {', '.join(found)}: the admin account from .env "
+            "can't have an email or Google sign-in. Choose another ADMIN_USERNAME."
+        )
+        logger.error("%s The backend doesn't start.", message)
+        raise AdminAccountError(message)
+
+
 async def _sync_admin(db: AsyncSession) -> None:
     username = settings.admin_username
     admin = await db.scalar(select(User).where(User.username == username))
@@ -76,10 +104,12 @@ async def _sync_admin(db: AsyncSession) -> None:
                 password_hash=hash_password(settings.admin_password),
                 is_admin=True,
                 is_active=True,
+                signup_source="env",
             )
         )
         logger.info("Created the admin account %r", username)
     else:
+        await _refuse_self_service_admin(db, admin)
         # Sessions issued before a promotion or a password change must not carry admin rights.
         if not admin.is_admin or not verify_password(settings.admin_password, admin.password_hash):
             admin.password_hash = hash_password(settings.admin_password)
@@ -87,6 +117,13 @@ async def _sync_admin(db: AsyncSession) -> None:
             logger.info("Updated the admin account %r from .env; its existing sessions were signed out", username)
         admin.is_admin = True
         admin.is_active = True
+        admin.signup_source = "env"
+    if passwords.weak_admin_password(settings.admin_password):
+        logger.warning(
+            "ADMIN_PASSWORD is weak: use at least %d characters, not a common password and not the app's name or "
+            "the admin's username",
+            passwords.ADMIN_MIN_LENGTH,
+        )
 
     former_admins = await db.scalars(select(User).where(User.is_admin.is_(True), User.username != username))
     for user in former_admins:

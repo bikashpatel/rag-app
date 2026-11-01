@@ -2,17 +2,19 @@
 
 These tests start an isolated copy of the whole Docker stack: nginx frontend, FastAPI backend, ingestion worker,
 Postgres, Redis, Qdrant, the monitor and the backup service. Next to it run a **fake OpenAI-compatible model server**,
-the **fake Google** (OAuth and Gmail) from `backend/tests` and a **fake alert receiver** for the monitor. The tests drive real cross-service flows through nginx, then tear everything down.
+the **fake Google** (OAuth and Gmail, and Google sign-in) from `backend/tests`, the fake Razorpay, a **fake SMTP server**
+for user mail, a **fake Turnstile** (which also answers the breached-password check) and a **fake alert receiver** for
+the monitor. The tests drive real cross-service flows through nginx, then tear everything down.
 
 They complement the other suites:
 
 | Suite | What runs | Models |
 |---|---|---|
 | `backend/tests` | the API in-process: SQLite, fakeredis, in-memory Qdrant | LiteLLM mocked |
-| `integration/` (this) | the real containers talking to each other, plus two fakes | the real LiteLLM, calling the fake server over HTTP |
+| `integration/` (this) | the real containers talking to each other, plus the fakes | the real LiteLLM, calling the fake server over HTTP |
 | `e2e/` | a browser against the live stack on port 8080 | whatever that stack uses |
 
-**It costs nothing.** No real model or Google endpoint can be reached:
+**It costs nothing.** No real model, Google, Razorpay, Cloudflare, Resend or Have I Been Pwned endpoint can be reached:
 
 - The provider keys are fake (`sk-it-fake`, `sk-ant-it-fake`), and every enabled model points at the fake server.
 - The backend and the worker sit on an internal Docker network with no route to the internet.
@@ -43,7 +45,7 @@ something behind. It prints the build, start and test times (wall clock: on a la
 | `--no-build` | reuse the images of an earlier run |
 | `--rmi` | also remove the `rag-it-*` images on teardown (CI) |
 | `-- <pytest args>` | e.g. `integration/run.sh -- -k gmail -x` |
-| `IT_APP_PORT`, `IT_FAKE_LLM_PORT`, `IT_FAKE_GOOGLE_PORT`, `IT_FAKE_RAZORPAY_PORT` | published ports on 127.0.0.1 (default 18090, 18091, 18092, 18093; 8080 is refused; a busy port fails fast) |
+| `IT_APP_PORT`, `IT_FAKE_LLM_PORT`, `IT_FAKE_GOOGLE_PORT`, `IT_FAKE_RAZORPAY_PORT`, `IT_FAKE_MAIL_PORT`, `IT_FAKE_TURNSTILE_PORT` | published ports on 127.0.0.1 (default 18090 to 18095; 8080 is refused; a busy port fails fast) |
 | `IT_PYTHON` | the Python that runs pytest (default `backend/.venv/bin/python`) |
 | `IT_LOGS` | where the stack logs of a failed run go (default `integration/.run/stack-logs.txt`) |
 | `IT_PROJECT` | Compose project name (default `rag-it`; only `rag-it` or `rag-it-<suffix>` with lowercase letters, digits and dashes is accepted) |
@@ -83,8 +85,8 @@ openpyxl, fpdf2, pypdf and Pillow. Test documents are generated at test time.
 - **Throwaway secrets.** `gen_env.py` writes a new `SECRET_KEY`, `ADMIN_PASSWORD`, `POSTGRES_PASSWORD` and
   `TOKEN_ENCRYPTION_KEY` on every run. The file is git-ignored and mode 600. It also holds the fake provider keys and
   the fake Google endpoints and client.
-- **No egress.** The default network is `internal: true`. Only the frontend and the model and Google fakes also join
-  `edge`, for their ports on 127.0.0.1. The monitor alerts the fake receiver (`fake_alerts/`) on the internal network.
+- **No egress.** The default network is `internal: true`. Only the frontend and the model, Google, Razorpay, mail and
+  Turnstile fakes also join `edge`, for their ports on 127.0.0.1. The monitor alerts the fake receiver (`fake_alerts/`) on the internal network.
 - **Backups stay in the run.** `BACKUP_DIR` is `integration/.run/backups` (git-ignored). `run.sh` empties it at the
   start and at teardown, from a container (on Linux root owns the files).
 - **Only fake models.** At session start (`conftest.py`, fixture `models`), the admin API adds these fake models with
@@ -93,6 +95,11 @@ openpyxl, fpdf2, pypdf and Pillow. Test documents are generated at test time.
   - two embedding models (256 and 384 dimensions);
   - a vision model;
   - an image model.
+- **Client addresses.** The stack trusts `CF-Connecting-IP` from any client (`NGINX_REAL_IP_FROM` in the generated
+  file; the ports are bound to 127.0.0.1), so the sign-up, mail and billing tests send their own addresses and land in
+  their own throttle buckets. nginx's per-address zones run in dry-run mode (`limit_req_dry_run`, a config only
+  `compose.it.yml` adds): every other request comes from Docker's one address, and the sign-in backstop would refuse
+  most of the suite's logins. The backend's own limits apply as in production.
 - **Nothing restarts on its own** (`restart: "no"`), so a stack left by an interrupted run stays down after a Docker
   restart.
 - **Verified by the suite itself.**
@@ -110,7 +117,7 @@ openpyxl, fpdf2, pypdf and Pillow. Test documents are generated at test time.
 
 | File | Flow |
 |---|---|
-| `test_01_stack.py` | all 11 services up and healthy, isolation (see above), the backup service holding no app secret, env admin login, 403 on admin routes for users and 401 anonymous, only fake models enabled, every admin model **Test** (chat, embedding, vision, image) reaching the fake |
+| `test_01_stack.py` | all 14 services up and healthy, isolation (see above), the backup service holding no app secret, env admin login, 403 on admin routes for users and 401 anonymous, only fake models enabled, every admin model **Test** (chat, embedding, vision, image) reaching the fake |
 | `test_02_ingestion.py` | every supported extension (`.pdf .docx .pptx .xlsx .html .htm .md .markdown .txt .csv .json`). Each goes upload → file on the shared volume → queue → worker parse, chunk and embed through the fake → Qdrant points = `num_chunks` → `ready` → found in chat. Also: corrupt PDF, DOCX, PPTX and XLSX files fail with a readable error; empty, unsupported, legacy and duplicate uploads are rejected; an embedding outage fails the document and Retry recovers it; other users get 404 |
 | `test_03_chat.py` | SSE through nginx: event order, deltas spread over time (no buffering), sources from the right document, `[n]` citations that map to sources, the prompt the fake received, history and retrieval query in turn 2, `document_ids` narrowing or skipping retrieval, persisted conversations and messages, a provider outage ending with `error` (saved), a client disconnect mid-answer saving the partial answer as stopped, and usage that matches the fake's reported tokens, `/auth/me`, `/me/usage`, the admin usage report, the user list and the `usage_events` rows |
 | `test_04_access.py` | a user's private passage never reaches another user's sources or prompt (checked in the fake's request log), also with that document's id in `document_ids`. The admin's shared document reaches every user (who can't delete it). Deleting a document removes its Qdrant points, its stored file and its retrieval |
@@ -127,6 +134,8 @@ openpyxl, fpdf2, pypdf and Pillow. Test documents are generated at test time.
 | `test_16_watchdog.py` | the host watchdog against stand-ins for curl, docker and sleep (no stack): one failed probe restarts nothing; two start the containers as they are (`docker compose start`, then `restart`; never `up` or a build); success is the app answering, not an exit code; alerts on going down and on recovery; a maintenance file keeps it away (a deploy, a running restore's process id, `hold`), unless it was left behind |
 | `test_15_monitoring.py` | `GET /api/health/ready` public and status-only; Admin → System for the admin only, with every check OK and the monitor's channels. Stopping Qdrant, the worker or nginx: readiness 503 (Qdrant, worker), one problem and one recovery alert per channel at the fake webhook and ntfy topic (title, priority and tags headers); a test alert delivered after two failed deliveries; no secret, username or document name in any alert |
 | `test_17_billing.py` | plans and payments against the fake Razorpay (test keys, testers only): paying through the hosted page and the signed return (a non-tester gets 503), a failure then a payment on one link, an abandoned link expiring and a late capture applied, the return and webhooks at once (duplicates, a replayed body under a new event id, a failure after the capture) applying once, a tampered amount, a forged return and a forged webhook, refunds from the admin and from Razorpay's Dashboard counted once, a dispute raised and lost, renewal with the one-ahead cap and an upgrade with its credit, expiry (402 everywhere, own documents still listed and downloadable) then renewal with the data intact, activation by the reconciler alone, Gmail outside a changed plan and back without reconnecting, and the monitor's `billing` warning |
+| `test_18_signup.py` | sign-up and sign-in against the fakes (sign-up opened through the admin API): an email sign-up finished in the same browser and on another device; an existing address's "you already have an account" mail, a stranger's sign-up leaving the first link working; resend and its limits; sign-in by email and username, the challenge and its outage fallback; forgot and reset (sessions ended, the notice, Google disconnected) and forgot for a pending sign-up; Google sign-up, the automatic link of a Gmail address, `link_required` for a Workspace address, an unverified address; linking and unlinking by hand, the step-up and a first password; an email change, its notice and its undo; the admin's password policy and retired usernames; the signed-out pages' headers; nginx's zones taking in the token pages and checkout (logged by the dry run) |
+| `test_19_mail.py` | the mailer against the fake SMTP server: a deferred mail (451) delivered once; a refused recipient (550) failed and suppressed; a connection lost after the data kept once by its idempotency key; the day's cap refusing sign-up mail while a reset and a receipt still go out; checkout refused without a verified email; a receipt with its PDF; a plan reminder; bounce reports pausing sign-up mail (Google sign-up unaffected); the clean-up and a deleted user's rows; a complaint alerting through the `mail` check |
 | `test_99_final.py` | the run-wide checks listed under isolation |
 
 ### Not covered
@@ -175,7 +184,18 @@ with `BILLING_RECONCILE_SECONDS=2`.
 `fake_google/server.py` serves the backend tests' fake Google (mounted read-only from `backend/tests`) with one fixed
 account and the default mailbox. It adds `GET /_state`: the drafts and sent emails it received, revocations and
 active grants. The backend reaches it as `http://fake-google:8099`; the consent URL the browser follows is the
-published port.
+published port. It also plays Google sign-in (its own client, OpenID Connect discovery, keys and signed ID tokens), with
+`POST /_control/signin` choosing the account the next consent signs in as.
+
+`fake_mail/server.py` (its own standard-library image) is the SMTP server the backend and the worker send user mail to
+(`fake-mail:2525`, no TLS, the generated login), with an HTTP side on the published port: `GET /_mail?to=` lists the
+messages, `POST /_control` injects deferrals (451), refusals (550), refused logins and connections dropped after the
+data, and `POST /_control/event` posts a Resend bounce or complaint signed with the generated webhook secret to nginx.
+A message whose idempotency key it saw before is kept once.
+
+`fake_turnstile/server.py` (the backend image, mounted read-only) answers Turnstile's siteverify (`pass-…` tokens pass,
+`fail-…` fail, a token seen before is a duplicate, `POST /_control` injects outages) and Have I Been Pwned's range API
+(nothing breached until `POST /_control/breached`). The stack runs with Cloudflare's always-passing test keys.
 
 ## CI
 

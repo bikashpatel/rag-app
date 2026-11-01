@@ -1,6 +1,7 @@
 """Applying a payment exactly once (docs/briefs/plans-billing.md 6.5, 6.6 and 4.9): a payment entity already fetched
 from Razorpay (or a bank transfer the admin records) buys its order's period under the user's row lock, only when its
-status, amount, currency, order and mode match; anything else goes to the admin's review. Also the payment views."""
+status, amount, currency, order and mode match; anything else goes to the admin's review. Its receipt is emailed through
+the outbox (receipts.issue queues it; the worker is woken after the commit). Also the payment views."""
 
 import logging
 import secrets
@@ -39,6 +40,7 @@ from app.schemas_billing import (
 from app.services.billing import audit, business, entitlements, periods, plans, receipts
 from app.services.billing.locks import lock_user
 from app.services.billing.money import IST, PERIOD_DAYS, credit_paise, format_inr, now_charge
+from app.services.mail import outbox
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +235,7 @@ async def apply_payment(db: AsyncSession, order_id: int, entity: Mapping[str, An
         )
     await _paid(db, order, payment, period, now, source=source)
     await db.commit()
+    await outbox.wake()
     return "applied"
 
 
@@ -389,6 +392,7 @@ async def record_offline(db: AsyncSession, admin: User, body: OfflinePaymentRequ
         },
     )
     await db.commit()
+    await outbox.wake()
     return payment
 
 
@@ -557,6 +561,12 @@ def dispute_view(dispute: BillingDispute) -> DisputeView:
     )
 
 
+async def user_ref(db: AsyncSession, user_id: int | None, username: str) -> UserRef:
+    """A billing record's user, with the account's verified email now (None once the user is deleted)."""
+    email = await db.scalar(select(User.email).where(User.id == user_id)) if user_id is not None else None
+    return UserRef(id=user_id, username=username, email=email)
+
+
 async def admin_payment(db: AsyncSession, payment: BillingPayment) -> AdminPayment:
     view = await payment_view(db, payment)
     order = await db.get(BillingOrder, payment.order_id) if payment.order_id else None
@@ -571,7 +581,7 @@ async def admin_payment(db: AsyncSession, payment: BillingPayment) -> AdminPayme
     )
     return AdminPayment(
         **view.model_dump(),
-        user=UserRef(id=payment.user_id, username=payment.username),
+        user=await user_ref(db, payment.user_id, payment.username),
         order_public_id=order.public_id if order else None,
         razorpay_payment_id=payment.razorpay_payment_id,
         fee_paise=payment.fee_paise,

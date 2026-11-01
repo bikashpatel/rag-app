@@ -23,11 +23,13 @@ import {
 } from "../components/ui/icons";
 import { ButtonSpinner } from "../components/ui/Spinner";
 import { answersLabel, formatInr, formatIstDate, formatIstRange, isRazorpayUrl } from "../lib/billing";
+import { useOpenSettings } from "../lib/settingsLink";
+import { EmailNeededNotice } from "./PlansPage";
 import "./plans.css";
 
 /** "Continue to Razorpay" appears when the browser hasn't left after this long (visual 5.5). */
 const CONTINUE_AFTER_MS = 3_000;
-const NO_PROFILE: BillingProfile = { name: null, email: null };
+const NO_PROFILE: BillingProfile = { name: null };
 
 type PayError = { message: string; code: string | null; orderId?: string };
 
@@ -95,10 +97,11 @@ type ReviewProps = {
 
 function Review({ user, offer, option, payments, profile }: ReviewProps) {
   const id = useId();
+  const openSettings = useOpenSettings();
   const errorRef = useRef<HTMLParagraphElement>(null);
+  const addEmailRef = useRef<HTMLButtonElement>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [name, setName] = useState(profile.name ?? "");
-  const [email, setEmail] = useState(profile.email ?? "");
   const [paying, setPaying] = useState(false);
   const [error, setError] = useState<PayError | null>(null);
   const [payUrl, setPayUrl] = useState<string | null>(null);
@@ -109,10 +112,18 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
   const later = starts > Date.now() + 60_000;
   const range = formatIstRange(option.starts_at, option.ends_at);
   const current = user.plan.plan?.name ?? null;
+  // "Add your email" is on screen already: a refusal for the missing email brings it back instead of a second message.
+  const shownError = error && !(error.code === "email_required" && !user.email) ? error : null;
 
   useEffect(() => {
-    if (error) errorRef.current?.focus();
-  }, [error]);
+    if (!error) return;
+    if (shownError) {
+      errorRef.current?.focus();
+      return;
+    }
+    addEmailRef.current?.scrollIntoView({ block: "center" });
+    addEmailRef.current?.focus();
+  }, [error, shownError]);
 
   useEffect(() => {
     if (payUrl === null) return;
@@ -138,11 +149,8 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
     setError(null);
     let leaving = false;
     try {
-      const next: BillingProfile = {
-        name: name.trim() || null,
-        email: payments.email_reminders ? email.trim() || null : profile.email,
-      };
-      if (next.name !== profile.name || next.email !== profile.email) {
+      const next: BillingProfile = { name: name.trim() || null };
+      if (next.name !== profile.name) {
         try {
           await billingApi.saveProfile(next);
         } catch (err) {
@@ -188,14 +196,20 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
       onClick={() => void pay()}
       aria-disabled={paying || undefined}
       aria-busy={paying || undefined}
-      aria-describedby={error ? `${id}-error` : `${id}-consent`}
+      aria-describedby={shownError ? `${id}-error` : `${id}-consent`}
     >
       {payLabel}
     </button>
   );
 
   let errorAction: ReactNode = null;
-  if (error?.code === "checkout_unavailable") {
+  if (error?.code === "email_required") {
+    errorAction = (
+      <button type="button" className="btn btn-xs" onClick={() => openSettings("account")}>
+        Add email
+      </button>
+    );
+  } else if (error?.code === "checkout_unavailable") {
     errorAction = (
       <Link className="btn btn-xs" to="/plans">
         Back to plans
@@ -332,27 +346,6 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
                       onChange={(event) => setName(event.target.value)}
                     />
                   </div>
-                  {payments.email_reminders ? (
-                    <div className="field">
-                      <label className="field-label" htmlFor={`${id}-email`}>
-                        Email for reminders
-                      </label>
-                      <input
-                        id={`${id}-email`}
-                        className="input"
-                        type="email"
-                        value={email}
-                        maxLength={254}
-                        autoComplete="email"
-                        placeholder="you@example.com"
-                        aria-describedby={`${id}-email-hint`}
-                        onChange={(event) => setEmail(event.target.value)}
-                      />
-                      <span className="field-hint" id={`${id}-email-hint`}>
-                        Used only to remind you before your plan ends.
-                      </span>
-                    </div>
-                  ) : null}
                 </div>
               </div>
             ) : null}
@@ -360,6 +353,7 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
         </div>
 
         <aside className="plans-summary" aria-labelledby={`${id}-summary`}>
+          {user.email ? null : <EmailNeededNotice buttonRef={addEmailRef} />}
           <h2 className="plans-label" id={`${id}-summary`}>
             Summary
           </h2>
@@ -398,11 +392,11 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
             </p>
           ) : null}
           {payButton("btn btn-primary plans-pay")}
-          {error ? (
+          {shownError ? (
             <p ref={errorRef} id={`${id}-error`} className="error-text plans-pay-error" role="alert" tabIndex={-1}>
               <AlertCircleIcon size={13} />
               <span>
-                {error.message} {errorAction}
+                {shownError.message} {errorAction}
               </span>
             </p>
           ) : null}

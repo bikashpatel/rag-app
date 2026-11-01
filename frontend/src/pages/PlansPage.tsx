@@ -1,4 +1,4 @@
-import { useCallback, useId, type ReactNode } from "react";
+import { useCallback, useId, type ReactNode, type Ref } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { billingApi } from "../api/client";
 import type { PlanAccess, PlanOffer } from "../api/types";
@@ -19,12 +19,40 @@ import {
   FlaskIcon,
   GiftIcon,
   InfoIcon,
+  MailIcon,
   ShieldIcon,
 } from "../components/ui/icons";
 import { formatIstDate } from "../lib/billing";
+import { useOpenSettings } from "../lib/settingsLink";
 import "./plans.css";
 
 const ADMIN_TITLE = "The admin doesn't need a plan.";
+
+/**
+ * Without a verified email (functional 4.12, visual 8): checkout needs one, because the receipt goes there. Add email
+ * opens Settings → Account over the page; `buttonRef` lets checkout bring it back into view when Pay is refused.
+ */
+export function EmailNeededNotice({ buttonRef }: { buttonRef?: Ref<HTMLButtonElement> }) {
+  const openSettings = useOpenSettings();
+  const textId = useId();
+  return (
+    <div className="ui-notice ui-notice-info plans-email-notice" role="status">
+      <MailIcon size={15} />
+      <span className="ui-notice-text" id={textId}>
+        <b>Add your email before you pay.</b> Your receipt goes there.
+      </span>
+      <button
+        ref={buttonRef}
+        type="button"
+        className="btn btn-sm"
+        onClick={() => openSettings("account")}
+        aria-describedby={textId}
+      >
+        Add email
+      </button>
+    </div>
+  );
+}
 
 /** The title, its key word in italics, the lede and the state badges (visual 4.2). */
 function Intro({ plan }: { plan: PlanAccess }) {
@@ -307,6 +335,7 @@ export default function PlansPage() {
   }
 
   const notices: ReactNode[] = [];
+  if (!admin && !user.email) notices.push(<EmailNeededNotice key="email" />);
   if (admin) {
     notices.push(
       <div key="admin" className="ui-notice" role="status">

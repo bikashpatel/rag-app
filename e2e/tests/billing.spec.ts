@@ -23,7 +23,7 @@ async function mockPayments(page: Page): Promise<{ markPaid: () => void; checkou
   let paid = false;
   const checkouts: unknown[] = [];
   await serveJson(page, "/billing/plans", fakeCatalog());
-  await serveJson(page, "/billing/profile", { name: null, email: null });
+  await serveJson(page, "/billing/profile", { name: null });
   await page.route("**/api/billing/checkout", async (route) => {
     checkouts.push(route.request().postDataJSON());
     const pending = fakeOrder(ORDER_ID, "pending");

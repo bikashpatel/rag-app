@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
     Table,
     Text,
@@ -51,10 +52,11 @@ user_allowed_models = Table(
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = (Index("uq_users_email_canonical", "email_canonical", unique=True),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
-    password_hash: Mapped[str] = mapped_column(String(255))
+    password_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)  # None: no password, never matches
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)
@@ -83,7 +85,17 @@ class User(Base):
     comp_granted_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     comp_granted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
+    # Sign-in data (docs/briefs/signup-auth.md 3.1): only ever a verified address, the canonical form unique
+    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    email_canonical: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    email_verified_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # "env" | "admin" | "email" | "google"
+    signup_source: Mapped[str] = mapped_column(String(16), default="admin", server_default="admin")
+    terms_version: Mapped[str | None] = mapped_column(String(32), nullable=True)  # a self sign-up's consent
+    terms_accepted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
     allowed_models: Mapped[list["LLMModel"]] = relationship(secondary=user_allowed_models, lazy="selectin")
+    identities: Mapped[list["UserIdentity"]] = relationship(cascade="all, delete-orphan", lazy="selectin")
 
 
 class LLMModel(Base):
@@ -415,6 +427,7 @@ class LoginEvent(Base):
     browser: Mapped[str | None] = mapped_column(String(64), nullable=True)
     os: Mapped[str | None] = mapped_column(String(32), nullable=True)
     device: Mapped[str] = mapped_column(String(16), default="unknown")  # "desktop" | "mobile" | "tablet" | "unknown"
+    method: Mapped[str] = mapped_column(String(16), default="password", server_default="password")  # | "google"
 
 
 # ---------------- Plans and billing (docs/briefs/plans-billing.md, section 6.2) ----------------
@@ -684,11 +697,174 @@ class BillingEvent(Base):
 
 
 class UserBillingProfile(Base):
-    """Optional, the user's own: the name on receipts and the address for plan reminders."""
+    """Optional, the user's own: the name on receipts (receipts and reminders go to the verified users.email)."""
 
     __tablename__ = "user_billing_profiles"
 
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     name: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    email: Mapped[str | None] = mapped_column(String(254), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+
+# ---------------- Sign-up, sign-in and email (docs/briefs/signup-auth.md, section 9.1) ----------------
+# No address an account hasn't proven identifies it: unproven ones live in pending_signups and pending_emails. Tokens,
+# outbox rows and suppressions keep SHA-256 hashes of canonical addresses (app.services.auth.emails.digest).
+
+
+class UserIdentity(Base):
+    """A Google account linked to a user, keyed on (issuer, subject); one per user. The address is informational."""
+
+    __tablename__ = "user_identities"
+    __table_args__ = (
+        UniqueConstraint("issuer", "subject", name="uq_user_identities_issuer_subject"),
+        UniqueConstraint("user_id", "provider", name="uq_user_identities_user_provider"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    provider: Mapped[str] = mapped_column(String(16))  # "google"
+    issuer: Mapped[str] = mapped_column(String(64))  # "https://accounts.google.com"
+    subject: Mapped[str] = mapped_column(String(255))  # Google's sub: case-sensitive
+    email_at_link: Mapped[str] = mapped_column(String(254))
+    email_kind: Mapped[str] = mapped_column(String(16))  # "gmail" | "workspace" | "unverified", at link time
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class PendingSignup(Base):
+    """An email sign-up waiting for its link, bound to the chosen password and the browser's rag_signup cookie. Never
+    a user; at most three live rows per canonical address; deleted 7 days after creation."""
+
+    __tablename__ = "pending_signups"
+    __table_args__ = (Index("ix_pending_signups_canonical_created", "canonical", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    address: Mapped[str] = mapped_column(String(254))
+    canonical: Mapped[str] = mapped_column(String(254))
+    password_hash: Mapped[str] = mapped_column(String(255))
+    browser_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    next_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    terms_version: Mapped[str] = mapped_column(String(32))
+    terms_accepted_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    password_failures: Mapped[int] = mapped_column(Integer, default=0)
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)  # approximate, as login_events
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+
+
+class PendingEmail(Base):
+    """An account's unconfirmed address (at most one per user): only that account can confirm it."""
+
+    __tablename__ = "pending_emails"
+    __table_args__ = (UniqueConstraint("user_id", name="uq_pending_emails_user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    address: Mapped[str] = mapped_column(String(254))
+    canonical: Mapped[str] = mapped_column(String(254), index=True)
+    source: Mapped[str] = mapped_column(String(16))  # "user" | "google"
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)  # the last confirmation mail
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime())  # 24 h after the last mail
+
+
+class AuthToken(Base):
+    """A token mailed in a link (app.services.auth.tokens): only its SHA-256 and that of the address it went to."""
+
+    __tablename__ = "auth_tokens"
+    __table_args__ = (
+        UniqueConstraint("token_sha256", name="uq_auth_tokens_token_sha256"),
+        Index("ix_auth_tokens_user_purpose", "user_id", "purpose"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    purpose: Mapped[str] = mapped_column(String(16))  # "signup" | "email" | "reset" | "email_undo"
+    token_sha256: Mapped[str] = mapped_column(String(64))
+    address_sha256: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    pending_signup_id: Mapped[int | None] = mapped_column(
+        ForeignKey("pending_signups.id", ondelete="CASCADE"), nullable=True
+    )
+    pending_email_id: Mapped[int | None] = mapped_column(
+        ForeignKey("pending_emails.id", ondelete="CASCADE"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    used_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class EmailOutbox(Base):
+    """One email to send (app.services.mail.outbox): never a token, link or secret. The address is cleared when the
+    job finishes (its hash stays for counting); the row is deleted 48 hours later."""
+
+    __tablename__ = "email_outbox"
+    __table_args__ = (
+        UniqueConstraint("public_id", name="uq_email_outbox_public_id"),
+        Index("ix_email_outbox_status_next", "status", "next_attempt_at"),
+        Index("ix_email_outbox_class_created", "mail_class", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    public_id: Mapped[str] = mapped_column(String(32))  # the idempotency key
+    kind: Mapped[str] = mapped_column(String(32))
+    priority: Mapped[int] = mapped_column(SmallInteger)  # 0 first
+    mail_class: Mapped[str] = mapped_column(String(16))  # "public" | "reset" | "account" | "billing"
+    to_address: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    canonical: Mapped[str | None] = mapped_column(String(254), nullable=True)
+    recipient_sha256: Mapped[str] = mapped_column(String(64))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    pending_signup_id: Mapped[int | None] = mapped_column(
+        ForeignKey("pending_signups.id", ondelete="SET NULL"), nullable=True
+    )
+    pending_email_id: Mapped[int | None] = mapped_column(
+        ForeignKey("pending_emails.id", ondelete="SET NULL"), nullable=True
+    )
+    params: Mapped[dict] = mapped_column(JSON, default=dict)  # ids, a plan name, a reminder kind
+    # "queued" | "sending" | "sent" | "failed" | "cancelled" | "expired"
+    status: Mapped[str] = mapped_column(String(16), default="queued")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(UTCDateTime())
+    not_after: Mapped[datetime] = mapped_column(UTCDateTime())
+    last_error: Mapped[str | None] = mapped_column(String(200), nullable=True)  # our short reason
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    sent_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True, index=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+
+
+class AuthEvent(Base):
+    """An account change (app.services.auth.audit): masked addresses only, an approximate IP cleared after 90 days."""
+
+    __tablename__ = "auth_events"
+    __table_args__ = (
+        Index("ix_auth_events_user_created", "user_id", "created_at"),
+        Index("ix_auth_events_type_created", "type", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    type: Mapped[str] = mapped_column(String(48))  # e.g. "signup.completed", "email.changed", "signup.settings"
+    actor: Mapped[str] = mapped_column(String(64))  # "self" | "admin:<username>" | "system"
+    ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    detail: Mapped[dict] = mapped_column(JSON, default=dict)
+
+
+class MailSuppression(Base):
+    """An address the worker never mails (a bounce for 30 days; a complaint until a user confirms it again)."""
+
+    __tablename__ = "mail_suppressions"
+
+    recipient_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    reason: Mapped[str] = mapped_column(String(16))  # "bounce" | "complaint"
+    source: Mapped[str] = mapped_column(String(16))  # "webhook" | "smtp"
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)  # the latest report
+    expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)  # None: until reconfirmed
+
+
+class UsernameTombstone(Base):
+    """A deleted user's username, never issued again."""
+
+    __tablename__ = "username_tombstones"
+
+    username: Mapped[str] = mapped_column(String(64), primary_key=True)
+    deleted_at: Mapped[datetime] = mapped_column(UTCDateTime())

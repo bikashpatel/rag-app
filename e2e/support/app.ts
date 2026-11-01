@@ -1,10 +1,10 @@
 import type { Locator, Page } from "@playwright/test";
 import type { ChatModel, Preferences } from "../../frontend/src/api/types";
-import { expect } from "./fixtures";
+import { expect, untilSignInPasses } from "./fixtures";
 
 // Locators and steps shared by the specs, by role, label and text (the accessible names the app gives its controls).
 
-export const INVALID_LOGIN = "Invalid username or password";
+export const INVALID_LOGIN = "Incorrect email, username or password.";
 
 /** Opens the chat at `path` and waits until the composer, the sidebar list and the model list have loaded. */
 export async function openChat(page: Page, path = "/"): Promise<void> {
@@ -90,11 +90,22 @@ export async function openSettings(page: Page, tab = "General"): Promise<Locator
   return dialog;
 }
 
-/** The login form: fills both fields and submits. */
+/** The sign-in form's first field. */
+export function identifierField(page: Page): Locator {
+  return page.getByRole("textbox", { name: "Email or username" });
+}
+
+/** The login form: fills both fields and submits (again while nginx's per-address limit refuses it). */
 export async function submitLogin(page: Page, username: string, password: string): Promise<void> {
-  await page.getByLabel("Username").fill(username);
+  await identifierField(page).fill(username);
   await page.getByLabel("Password", { exact: true }).fill(password);
-  await page.getByRole("button", { name: "Sign in" }).click();
+  await untilSignInPasses(async () => {
+    const response = page.waitForResponse(
+      (res) => new URL(res.url()).pathname === "/api/auth/login" && res.request().method() === "POST",
+    );
+    await page.getByRole("button", { name: "Sign in" }).click();
+    return response;
+  });
 }
 
 export function loginHeading(page: Page): Locator {

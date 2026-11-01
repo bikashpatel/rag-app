@@ -17,22 +17,34 @@ back, so there is nothing for the app to handle), and the difference between a t
 (Google sends the same `invalid_grant` body for both, so `expired_testing` vs `revoked` stays the app's heuristic).
 Consent screens, granular checkboxes (see `grant_scopes`), signature keys (id_tokens are HS256 with a random key)
 and rate limits are simplified.
+
+Google sign-in (docs/briefs/signup-auth.md 4.5, its own client in its own project) is `FakeGoogleSignin`: OpenID
+Connect's authorization-code flow for one client, answered at once for the account the test chose (`account`), with
+PKCE S256, the nonce, `max_age` (a fresh `auth_time`), RS256 ID tokens signed with a key published at
+`/oauth2/v3/certs`, and the discovery document. `fake_google_app(state, signin=...)` sends the sign-in client's
+authorize and token requests to it; backend tests route GOOGLE_SIGNIN_TOKEN_URL to `FakeGoogleSignin.handle` and play
+the browser with `consent()`.
 """
 
 import asyncio
 import base64
 import hashlib
+import json
 import secrets
 import time
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from functools import cache
 from html import escape
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlsplit
 
+import httpx
 import jwt
+from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi import APIRouter, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from jwt.algorithms import RSAAlgorithm
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
 CLIENT_ID = "fake-client-id.apps.googleusercontent.com"
@@ -247,7 +259,9 @@ class _Recorder(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-def fake_google_app(state: FakeGoogle, extra: Sequence[APIRouter] = ()) -> FastAPI:
+def fake_google_app(
+    state: FakeGoogle, extra: Sequence[APIRouter] = (), signin: "FakeGoogleSignin | None" = None
+) -> FastAPI:
     app = FastAPI()
     app.add_middleware(_Recorder, state=state)
 
@@ -255,9 +269,22 @@ def fake_google_app(state: FakeGoogle, extra: Sequence[APIRouter] = ()) -> FastA
     async def google_error(_: Request, exc: GoogleError) -> JSONResponse:
         return JSONResponse(exc.body, status_code=exc.status)
 
+    if signin is not None:
+
+        @app.get("/oauth2/v3/certs")
+        async def certs() -> Response:
+            return JSONResponse(signin.jwks(), headers={"Cache-Control": f"public, max-age={signin.max_age}"})
+
+        @app.get("/.well-known/openid-configuration")
+        async def discovery(request: Request) -> JSONResponse:
+            return JSONResponse(signin.discovery(str(request.base_url).rstrip("/")))
+
     @app.get("/o/oauth2/v2/auth")
     async def authorize(request: Request) -> Response:
         params = request.query_params
+        if signin is not None and params.get("client_id") == signin.client_id:
+            status, target = signin.authorize(dict(params))
+            return RedirectResponse(target, 302) if status == 302 else _bad_request(target)
         client = state.clients.get(params.get("client_id", ""))
         redirect_uri = params.get("redirect_uri", "")
         if client is None:
@@ -308,6 +335,9 @@ def fake_google_app(state: FakeGoogle, extra: Sequence[APIRouter] = ()) -> FastA
     async def token(request: Request) -> Response:
         form = await request.form()
         request.state.recorded.form_keys = sorted(form.keys())
+        if signin is not None and form.get("client_id") == signin.client_id:
+            status, body = signin.token({key: str(value) for key, value in form.items()})
+            return JSONResponse(body, status_code=status)
         if state.token_failures:
             status = state.token_failures.pop(0)
             if status == 400:
@@ -383,3 +413,188 @@ def _exchange(state: FakeGoogle, form: Any) -> Response:
         grant.refresh_tokens.add(refresh)
         body["refresh_token"] = refresh
     return JSONResponse(body)
+
+
+# ---------------- Google sign-in (OpenID Connect) ----------------
+
+SIGNIN_CLIENT_ID = "fake-signin-client.apps.googleusercontent.com"
+SIGNIN_CLIENT_SECRET = "fake-signin-secret"
+SIGNIN_SCOPE = "openid email"
+
+
+@cache
+def _signing_key(kid: str) -> rsa.RSAPrivateKey:
+    """One RSA key per kid for the process (generating one takes a while)."""
+    return rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+@dataclass
+class SigninAccount:
+    """The Google account the next consent signs in as. `email_verified` may be a bool, "true" or None (left out);
+    `auth_time` None: now when the request asked for max_age, else left out."""
+
+    sub: str = "100000000000000000777"
+    email: str = "it-person@gmail.com"
+    email_verified: bool | str | None = True
+    hd: str | None = None
+    auth_time: int | None = None
+
+
+@dataclass
+class _SigninCode:
+    redirect_uri: str
+    challenge: str
+    nonce: str | None
+    account: SigninAccount
+    fresh: bool  # max_age was asked for: Google signed the user in again
+    expires: float
+    used: bool = False
+
+
+class FakeGoogleSignin:
+    """Google's OIDC side for one sign-in client: the consent answers at once for `account`, the code is exchanged
+    (PKCE S256, the exact redirect_uri) for an RS256 ID token with the request's nonce. `mint` signs the claims (by
+    default with this fake's key, published by `jwks()`; backend tests pass their own JWKS fake's minter)."""
+
+    def __init__(
+        self,
+        client_id: str = SIGNIN_CLIENT_ID,
+        client_secret: str = SIGNIN_CLIENT_SECRET,
+        redirect_uris: Sequence[str] | None = None,
+        mint: Callable[[dict[str, Any]], str] | None = None,
+    ) -> None:
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.redirect_uris = list(redirect_uris) if redirect_uris is not None else None  # None: any
+        self.account = SigninAccount()
+        self.deny_next = False  # the next consent ends with error=access_denied
+        self.token_failures: list[int] = []  # statuses the next token calls answer
+        self.claims: dict[str, Any] = {}  # overrides of the next ID tokens' claims (None removes one)
+        self.authorize_requests: list[dict[str, str]] = []
+        self.token_requests: list[dict[str, str]] = []
+        self.codes: dict[str, _SigninCode] = {}
+        self.kid = "fake-signin-1"
+        self.max_age = 3600  # the JWKS answer's Cache-Control
+        self.mint = mint or self._sign  # replace it to sign otherwise
+
+    def choose(self, **fields: Any) -> None:
+        """The account the next consents sign in as (fields of SigninAccount; the rest as before)."""
+        self.account = replace(self.account, **fields)
+
+    def _sign(self, claims: dict[str, Any]) -> str:
+        present = {name: value for name, value in claims.items() if value is not None}
+        return jwt.encode(present, _signing_key(self.kid), algorithm="RS256", headers={"kid": self.kid})
+
+    def jwks(self) -> dict[str, Any]:
+        jwk = json.loads(RSAAlgorithm.to_jwk(_signing_key(self.kid).public_key()))
+        return {"keys": [{**jwk, "kid": self.kid, "alg": "RS256", "use": "sig"}]}
+
+    def discovery(self, base: str) -> dict[str, Any]:
+        return {
+            "issuer": ISSUER,
+            "authorization_endpoint": f"{base}/o/oauth2/v2/auth",
+            "token_endpoint": f"{base}/token",
+            "jwks_uri": f"{base}/oauth2/v3/certs",
+            "response_types_supported": ["code"],
+            "subject_types_supported": ["public"],
+            "id_token_signing_alg_values_supported": ["RS256"],
+            "scopes_supported": ["openid", "email", "profile"],
+            "code_challenge_methods_supported": ["plain", "S256"],
+            "claims_supported": ["aud", "email", "email_verified", "exp", "iat", "iss", "sub", "nonce", "hd"],
+        }
+
+    def authorize(self, params: Mapping[str, str]) -> tuple[int, str]:
+        """(302, where Google sends the browser back) or (400, Google's error page text)."""
+        self.authorize_requests.append(dict(params))
+        redirect_uri = params.get("redirect_uri", "")
+        if self.redirect_uris is not None and redirect_uri not in self.redirect_uris:
+            return 400, "Error 400: redirect_uri_mismatch."
+        problems = [
+            name
+            for name, ok in (
+                ("response_type", params.get("response_type") == "code"),
+                ("scope", params.get("scope", "").split()[:1] == ["openid"]),
+                ("code_challenge_method", params.get("code_challenge_method") == "S256"),
+                ("code_challenge", bool(params.get("code_challenge"))),
+                ("state", bool(params.get("state"))),
+                ("nonce", bool(params.get("nonce"))),
+            )
+            if not ok
+        ]
+        if problems:
+            return 400, f"Error 400: invalid_request. Bad or missing: {', '.join(problems)}."
+        target = redirect_uri + ("&" if "?" in redirect_uri else "?")
+        if self.deny_next:
+            self.deny_next = False
+            return 302, target + urlencode({"error": "access_denied", "state": params["state"]})
+        code = "4/fake-signin-" + secrets.token_urlsafe(24)
+        self.codes[code] = _SigninCode(
+            redirect_uri=redirect_uri,
+            challenge=params["code_challenge"],
+            nonce=params.get("nonce"),
+            account=replace(self.account),
+            fresh="max_age" in params,
+            expires=time.time() + CODE_SECONDS,
+        )
+        return 302, target + urlencode({"state": params["state"], "code": code, "scope": SIGNIN_SCOPE})
+
+    def id_token(self, code: _SigninCode) -> str:
+        account, now = code.account, int(time.time())
+        claims: dict[str, Any] = {
+            "iss": ISSUER,
+            "aud": self.client_id,
+            "azp": self.client_id,
+            "sub": account.sub,
+            "email": account.email,
+            "email_verified": account.email_verified,
+            "hd": account.hd,
+            "iat": now,
+            "exp": now + 3600,
+            "nonce": code.nonce,
+            "auth_time": account.auth_time if account.auth_time is not None else (now if code.fresh else None),
+            **self.claims,
+        }
+        return self.mint(claims)  # a None value is a claim left out
+
+    def token(self, form: Mapping[str, str]) -> tuple[int, dict[str, Any]]:
+        self.token_requests.append(dict(form))
+        if self.token_failures:
+            status = self.token_failures.pop(0)
+            return status, {"error": "invalid_grant" if status == 400 else "internal_failure"}
+        if form.get("client_id") != self.client_id or form.get("client_secret") != self.client_secret:
+            return 401, {"error": "invalid_client", "error_description": "The OAuth client was not found."}
+        if form.get("grant_type") != "authorization_code":
+            return 400, {"error": "unsupported_grant_type"}
+        code = self.codes.get(form.get("code", ""))
+        if code is None or code.used or code.expires < time.time():
+            return 400, {"error": "invalid_grant", "error_description": "Malformed auth code."}
+        code.used = True
+        if code.redirect_uri != form.get("redirect_uri"):
+            return 400, {"error": "redirect_uri_mismatch", "error_description": "Bad Request"}
+        verifier = form.get("code_verifier", "")
+        if not verifier or _challenge(verifier) != code.challenge:
+            return 400, {"error": "invalid_grant", "error_description": "Invalid code verifier."}
+        return 200, {
+            "access_token": "ya29.fake-signin-" + secrets.token_urlsafe(24),
+            "expires_in": 3599,
+            "scope": "openid https://www.googleapis.com/auth/userinfo.email",
+            "token_type": "Bearer",
+            "id_token": self.id_token(code),
+        }
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        """For an httpx transport route (backend tests): the token endpoint, or the JWKS for any other path."""
+        if request.method == "POST":
+            form = {key: values[0] for key, values in parse_qs(request.content.decode()).items()}
+            status, body = self.token(form)
+            return httpx.Response(status, json=body, request=request)
+        headers = {"Cache-Control": f"public, max-age={self.max_age}"}
+        return httpx.Response(200, json=self.jwks(), headers=headers, request=request)
+
+    def consent(self, authorize_url: str) -> str:
+        """Plays the browser at Google: the URL of the redirect back to the app (the callback, with its query)."""
+        query = {key: values[0] for key, values in parse_qs(urlsplit(authorize_url).query).items()}
+        status, target = self.authorize(query)
+        if status != 302:
+            raise AssertionError(target)
+        return target

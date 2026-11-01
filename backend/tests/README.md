@@ -11,6 +11,7 @@ Integration tests that run the whole backend in-process, with no Docker and no n
 | PDFium | the real render child (`app/services/pdf_render_child.py`) runs as a subprocess; a fake child script simulates crashes and timeouts |
 | File rendering | the real file render child (`app/services/filegen/child.py`) runs as a subprocess; fake children simulate timeouts, crashes and silent exits |
 | Google (OAuth and Gmail) | a fake Google, never the real one: `fake_google.py` (OAuth: consent, token, refresh, revoke, grants per account) and `fake_gmail.py` (a mailbox and the Gmail REST routes) served in-process through `httpx.ASGITransport`; `fake_google_server.py` runs the same fake standalone for Docker smoke runs |
+| Google sign-in, Turnstile, Have I Been Pwned, Resend | no request leaves the process: the autouse `outside_hosts` fixture fails any request to an outside host no fake answers. `google_oidc.py` (RSA keys, their JWKS and an ID-token minter; the token endpoint's OpenID Connect answers are `fake_google.py`'s `FakeGoogleSignin`), `fake_turnstile.py` (siteverify), `fake_hibp.py` (the breached-password range API, autouse: no password is breached until a test adds it) and `fake_mail.py` (an in-memory sink in place of the mailer's SMTP transport, and Svix-signed webhook headers) |
 | A provider for the real LiteLLM | `test_llm_tools.py` starts a local Starlette server that speaks the Anthropic Messages and OpenAI chat-completions SSE, and checks the request bodies the real LiteLLM sends; `test_llm_images.py` does the same for OpenAI's `/v1/images/generations` (request body, refusals, and how many requests slow, stopped and failing calls make) |
 
 ## Run
@@ -78,7 +79,7 @@ docker run -d --rm --name "$name" -e POSTGRES_USER=rag -e POSTGRES_PASSWORD="$pa
   postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24  # docker-compose.yml's
 until docker exec "$name" pg_isready -q -h 127.0.0.1 -U rag; do sleep 1; done
 export TEST_POSTGRES_URL="postgresql+asyncpg://rag:$password@127.0.0.1:$(docker port "$name" 5432 | head -1 | cut -d: -f2)/scratch"
-.venv/bin/python -m pytest -q -m postgres                      # 47 tests, seconds
+.venv/bin/python -m pytest -q -m postgres                      # 57 tests, seconds
 TEST_DATABASE=postgres .venv/bin/python -m pytest -q           # everything on Postgres, about 17 minutes
 docker stop "$name"
 ```
@@ -125,7 +126,10 @@ SQLite ignores `SELECT ... FOR UPDATE` and the other row locks, so the races the
 `postgres`-marked tests: `test_postgres_locks.py` (parallel uploads against the document, storage and duplicate checks
 with the in-process locks taken away, so only the row lock serializes them; `db.init_db`'s advisory lock, also between
 processes in `test_migrations.py`; the UTC session time zone of `db.make_engine` under a database set to another zone),
-`test_account_postgres.py` and the image reservation race in `test_image_tool.py`. Still untested as races between
+`test_account_postgres.py`, the image reservation race in `test_image_tool.py`, the sign-up races in
+`test_signup_races.py` (two completions, a completion and a Google finish, two confirmations of one address, an undo and
+a new change), two mail loops claiming one job (`test_mail_outbox.py`) and two bounce reports at once
+(`test_mail_enqueue.py`). Still untested as races between
 processes: an admin password reset racing a password change, a document deleted while the worker finishes it, and the
 embedding model edited while a job writes vectors (the tests cover the logic around these, also on Postgres with
 `TEST_DATABASE=postgres`, not the locking). What was checked by hand against Postgres 17 is listed in `docs/HANDOFF.md`.
@@ -188,6 +192,14 @@ Account and settings (docs/briefs/ui-shell-settings.md): `test_preferences.py`, 
 `export.clock`; the locks and build slots are reset per test) and `test_plugin_catalog.py`; "delete all chats" is in
 `test_conversations.py`. `test_ui_settings_independent.py` is an independent pass over all of them, written from SPEC.md
 and the brief.
+
+Sign-up, sign-in and mail (docs/briefs/signup-auth.md 15): the foundations in `test_auth_emails.py`,
+`test_auth_passwords.py`, `test_auth_tokens.py`, `test_auth_throttle.py` (Turnstile included), `test_mail_enqueue.py`
+and `test_migration_0004.py`; the flows in `test_signup.py`, `test_signup_enumeration.py`, `test_signup_races.py`
+(Postgres), `test_login_identifier.py`, `test_google_signin.py`, `test_google_linking.py`, `test_password_reset.py`,
+`test_password_setup.py`, `test_email_change.py` and `test_admin_signup.py`, with the helpers of `signup_support.py`;
+the mailer in `test_mail_transport.py`, `test_mail_templates.py`, `test_mail_outbox.py` (the worker's drain and the
+sweeps) and `test_mail_webhook.py`, and its monitor check in `test_ops_mail.py`.
 
 The tests never read the repository's `.env`: `conftest.py` sets `LITELLM_MODE=PRODUCTION`, because in its default DEV
 mode importing LiteLLM loads the nearest `.env`, which would give the tests the owner's real settings (a test checks it).
@@ -253,6 +265,11 @@ Read `conftest.py` before adding tests. It provides:
   signed callbacks and webhooks; `fail_next` and `timeout_next` inject failures). `billing_support.py` has the payment
   tests' helpers (checking out, paying and coming back, webhooks, the worker's processing, reading billing rows); the
   `fake_plugin_in_plans` autouse fixture puts the framework's fake plugin in every plan that includes Gmail.
+- **Sign-up and mail:** `fake_turnstile` (Cloudflare's test keys; `turnstile_token(action)` makes a passing
+  token), `google_oidc` (Google sign-in configured; `google_oidc.id_token(**claims)`), `mailer` (the mailer configured,
+  nothing sent) and `fake_mail` (the mailer with its transport replaced; run the worker's jobs with `drain_mail()`, read
+  `fake_mail.last_link(address)`). `open_signup()` opens sign-up in the admin's settings and `signup(client, email)`
+  posts a sign-up with the terms accepted and a passing token.
 - **Helpers:** `upload`, `process`, `process_queue`, `ingest`, `chat`, `sse_events` (it ignores SSE comment
   lines such as `: keepalive`).
 - **File builders:** `pdf_bytes`, `docx_bytes`, `pptx_bytes`, `xlsx_bytes`, `html_bytes`, `md_bytes`,

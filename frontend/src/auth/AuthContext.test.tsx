@@ -6,7 +6,15 @@ import { onUserChanged } from "../lib/appEvents";
 import { makeAdminMe, makeLapsedPlanAccess, makeMe, makePaidPlanAccess, makePreferences } from "../test/fixtures";
 import { deferred, errorResponse, jsonResponse, stubFetch, type FetchCall } from "../test/http";
 import { PREFERENCES_KEY } from "../theme/appearance";
-import { AuthProvider, handleExternalPreferences, useAuth } from "./AuthContext";
+import { makeAuthConfig } from "../test/auth";
+import {
+  AuthProvider,
+  forgetAuthConfig,
+  handleExternalPreferences,
+  loadAuthConfig,
+  useAuth,
+  useAuthConfig,
+} from "./AuthContext";
 
 const unauthorized = () => errorResponse(401, "Not authenticated");
 
@@ -102,14 +110,43 @@ describe("AuthProvider: the session", () => {
   it("tells the per-user stores each time the signed-in user changes (U30)", async () => {
     const seen: (number | null)[] = [];
     onTestFinished(onUserChanged((id) => seen.push(id)));
+    let me: Me | Response = makeMe();
     const { result } = await signedIn({
+      "GET /auth/me": () => me,
       "POST /auth/logout": () => new Response(null, { status: 204 }),
-      "POST /auth/login": makeMe({ id: 9, username: "sam.ortiz" }),
     });
     await act(() => result.current.logout());
-    await act(() => result.current.login("sam.ortiz", "correct horse"));
+    me = makeMe({ id: 9, username: "sam.ortiz" });
+    await act(() => result.current.refresh());
     expect(result.current.user?.id).toBe(9);
     expect(seen).toEqual([7, null, 9]);
+  });
+
+  it("signs in with the identifier (and the robot check's token) and leaves this document's state alone", async () => {
+    const sam = makeMe({ id: 9, username: "sam.ortiz", email: "sam@example.com" });
+    const calls = stubFetch({ "GET /auth/me": unauthorized, "POST /auth/login": sam });
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider });
+    await waitFor(() => expect(result.current.status).toBe("signed-out"));
+
+    await act(async () => {
+      await expect(result.current.login("sam@example.com", "correct horse")).resolves.toEqual(sam);
+      await result.current.login("sam@example.com", "correct horse", "TOKEN");
+    });
+    expect(calls.filter((call) => call.path === "/auth/login").map((call) => call.body)).toEqual([
+      { identifier: "sam@example.com", password: "correct horse" },
+      { identifier: "sam@example.com", password: "correct horse", turnstile_token: "TOKEN" },
+    ]);
+    // The page leaves with a full page load: the next document's session check signs in.
+    expect(result.current.user).toBeNull();
+  });
+
+  it("says where the session check stands", async () => {
+    const me = deferred<Me | Response>();
+    stubFetch({ "GET /auth/me": () => me.promise });
+    const { result } = renderHook(() => useAuth(), { wrapper: AuthProvider });
+    expect(result.current.status).toBe("loading");
+    await act(async () => me.resolve(errorResponse(503, "Starting up")));
+    await waitFor(() => expect(result.current.status).toBe("unavailable"));
   });
 
   it("requires the provider", () => {
@@ -212,6 +249,29 @@ describe("AuthProvider: plans", () => {
 });
 
 describe("AuthProvider: preferences", () => {
+  it("carries the two email switches of Plan & billing, saving them like the rest", async () => {
+    const { result, calls } = await signedIn(
+      {
+        "PATCH /me/preferences": ({ body }) => ({
+          ...makePreferences({ email_receipts: false, email_plan_reminders: true }),
+          ...(body as PreferencesUpdate),
+        }),
+      },
+      makeMe({ preferences: makePreferences({ email_receipts: false, email_plan_reminders: true }) }),
+    );
+    expect(result.current.preferences).toMatchObject({ email_receipts: false, email_plan_reminders: true });
+
+    await act(async () => {
+      await result.current.updatePreferences({ email_plan_reminders: false });
+    });
+    expect(patches(calls)).toEqual([{ email_plan_reminders: false }]);
+    expect(result.current.preferences).toMatchObject({ email_receipts: false, email_plan_reminders: false });
+
+    // Another tab's cache carries the switches too.
+    act(() => handleExternalPreferences(makePreferences({ theme: "dark", email_receipts: true })));
+    expect(result.current.preferences).toMatchObject({ theme: "dark", email_receipts: true, email_plan_reminders: true });
+  });
+
   it("applies a change at once and saves it", async () => {
     const { result, calls } = await signedIn({
       "PATCH /me/preferences": ({ body }) => ({ ...makePreferences(), ...(body as PreferencesUpdate) }),
@@ -316,5 +376,33 @@ describe("AuthProvider: preferences", () => {
   it("applies another tab's preferences directly before React has mounted", () => {
     handleExternalPreferences(makePreferences({ theme: "dark", accent: "slate" }));
     expect(document.documentElement).toHaveAttribute("data-accent", "slate");
+  });
+});
+
+describe("useAuthConfig", () => {
+  afterEach(() => forgetAuthConfig());
+
+  it("loads GET /auth/config once per document and shares it", async () => {
+    forgetAuthConfig();
+    const calls = stubFetch({ "GET /auth/config": makeAuthConfig() });
+    const first = renderHook(() => useAuthConfig());
+    await waitFor(() => expect(first.result.current.config).toEqual(makeAuthConfig()));
+    const second = renderHook(() => useAuthConfig());
+    expect(second.result.current.config).toEqual(makeAuthConfig()); // at once, from the shared answer
+    await expect(loadAuthConfig()).resolves.toEqual(makeAuthConfig());
+    expect(calls.filter((call) => call.path === "/auth/config")).toHaveLength(1);
+  });
+
+  it("says when it couldn't load, and asks again on retry", async () => {
+    forgetAuthConfig();
+    let up = false;
+    stubFetch({ "GET /auth/config": () => (up ? makeAuthConfig() : errorResponse(502, "Bad gateway")) });
+    const { result } = renderHook(() => useAuthConfig());
+    await waitFor(() => expect(result.current.failed).toBe(true));
+    expect(result.current.config).toBeNull();
+    up = true;
+    act(() => result.current.retry());
+    expect(result.current.failed).toBe(false);
+    await waitFor(() => expect(result.current.config).toEqual(makeAuthConfig()));
   });
 });

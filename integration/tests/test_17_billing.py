@@ -10,6 +10,7 @@ webhook; refunds from the admin and from Razorpay's Dashboard, counted once; a d
 one-ahead cap and an upgrade with its credit; expiry with own data still reachable, then renewal; activation by the
 reconciler alone; Gmail outside a changed plan and back; the monitor's billing warning."""
 
+import itertools
 import threading
 import time
 from collections.abc import Iterator
@@ -51,13 +52,35 @@ def plan_ids(admin: httpx.Client) -> dict[str, int]:
     return {plan["code"]: plan["id"] for plan in check(admin.get("/api/admin/plans")).json()}
 
 
+def verified_email(user_id: int, address: str) -> None:
+    """The account's verified email, as a confirmed change sets it (checkout needs one: docs/briefs/signup-auth.md
+    4.12)."""
+    sql(
+        f"UPDATE users SET email = '{address}', email_canonical = lower('{address}'), email_verified_at = now() "
+        f"WHERE id = {user_id}"
+    )
+
+
+_ADDRESSES = itertools.count(1)
+
+
+def own_address() -> str:
+    """A client address no other user of these tests has (the stack takes CF-Connecting-IP from any client): nginx's
+    per-address zones, checkout's included, see each user apart."""
+    number = next(_ADDRESSES)
+    return f"81.3.{number // 250}.{number % 250 + 1}"
+
+
 def new_user(admin: httpx.Client, name: str, *, tester: bool = True) -> User:
-    """A user without a plan; a tester may pay while test keys run."""
+    """A user without a plan, with a verified email and an address of its own; a tester may pay while test keys run."""
     username = unique(f"it-{name}-")
     password = f"pw-{unique('')}-secret"
     body = {"username": username, "password": password, "billing_tester": tester}
     created = check(admin.post("/api/admin/users", json=body), 201).json()
-    return User(created["id"], username, password, login(username, password))
+    verified_email(created["id"], f"{username}@example.test")
+    user = User(created["id"], username, password, login(username, password))
+    user.client.headers["CF-Connecting-IP"] = own_address()
+    return user
 
 
 def checkout(user: User, admin: httpx.Client, code: str, kind: str = "period", status: int = 201) -> dict[str, Any]:

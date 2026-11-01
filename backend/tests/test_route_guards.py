@@ -10,7 +10,7 @@ from collections.abc import Awaitable, Callable
 import httpx
 import pytest
 from conftest import ApiClient, chat, end_plan, fake_image, grant_plan, ingest, txt_bytes
-from fastapi import FastAPI
+from fastapi import FastAPI, params
 from fastapi.routing import APIRoute, RouteContext, iter_route_contexts
 from sqlalchemy import select
 
@@ -35,6 +35,27 @@ PUBLIC: set[Operation] = {
     # The pricing and policy pages
     ("GET", "/api/public/site"),
     ("GET", "/api/public/plans"),
+    # Sign-up, password reset and the emailed links: a session is neither needed nor used (docs/briefs/signup-auth.md)
+    ("GET", "/api/auth/config"),
+    ("POST", "/api/auth/signup"),
+    ("POST", "/api/auth/signup/resend"),
+    ("POST", "/api/auth/signup/check"),
+    ("POST", "/api/auth/signup/complete"),
+    ("POST", "/api/auth/password/forgot"),
+    ("POST", "/api/auth/password/check"),
+    ("POST", "/api/auth/password/reset"),
+    ("POST", "/api/auth/email/check"),
+    ("POST", "/api/auth/email/undo-check"),
+    ("POST", "/api/auth/email/undo"),
+    # Google sign-in: start (its link and reauth intents need the session; signin doesn't), and the callback Google
+    # sends the browser to, identified by the state and the binding cookie like the plugin callbacks
+    ("POST", "/api/auth/google/start"),
+    ("GET", "/api/auth/google/callback"),
+    ("GET", "/api/auth/google/pending"),
+    ("POST", "/api/auth/google/finish"),
+    ("POST", "/api/auth/google/cancel"),
+    # Resend's signed webhook
+    ("POST", "/api/mail/resend-events"),
 }
 
 # Without a plan (none or expired): 402 plan_required or plan_expired, before anything else is looked at.
@@ -55,12 +76,19 @@ GATED: set[Operation] = {
     ("POST", "/api/plugins/gmail/sends/{send_id}/send"),
     ("POST", "/api/plugins/gmail/sends/{send_id}/revise"),
 }
-# Open without a plan: the account and Settings, billing, the plugin catalog, Disconnect, every delete, and listing and
-# downloading one's own documents (a shared document's download and image answer 402; test_plan_gating.py).
+# Open without a plan: the account and Settings (its email, first password and Google sign-in, and confirming an email),
+# billing, the plugin catalog, Disconnect, every delete, and listing and downloading one's own documents (a shared
+# document's download and image answer 402; test_plan_gating.py).
 OPEN: set[Operation] = {
     ("GET", "/api/auth/me"),
     ("POST", "/api/auth/change-password"),
     ("POST", "/api/auth/logout-others"),
+    ("POST", "/api/auth/email/verify"),
+    ("POST", "/api/me/email"),
+    ("POST", "/api/me/email/resend"),
+    ("DELETE", "/api/me/email/pending"),
+    ("POST", "/api/me/password/setup"),
+    ("DELETE", "/api/me/google"),
     ("GET", "/api/me/preferences"),
     ("PATCH", "/api/me/preferences"),
     ("GET", "/api/me/account"),
@@ -191,6 +219,30 @@ async def test_anonymous_callers_get_401_everywhere_but_the_public_routes(app: F
         assert "set-cookie" not in response.headers, (method, path)
         checked += 1
     assert checked >= 50
+
+
+# What a form on another site can send without a preflight (a JSON body needs one).
+CROSS_SITE_BODIES = ("text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x")
+
+
+async def test_every_json_body_refuses_what_a_cross_site_form_can_send(app: FastAPI, admin_client: ApiClient) -> None:
+    """Every route taking a JSON body answers 422 to a body a cross-site form could post, so the session cookie riding
+    along (as the admin's here) can't make it act (docs/briefs/signup-auth.md 8.3). Uploads take multipart on purpose:
+    nginx's cross-site write guard and the SameSite=Strict cookie cover them. A plugin route may refuse earlier here:
+    the test registry has no plugins (404)."""
+    checked = 0
+    for (method, path), route in sorted(api_routes(app).items(), key=lambda item: item[0]):
+        fields = route.dependant.body_params
+        if not fields or any(isinstance(field.field_info, params.Form) for field in fields):
+            continue
+        for content_type in CROSS_SITE_BODIES:
+            response = await admin_client.request(
+                method, concrete(route), content=b'{"a": 1}', headers={"Content-Type": content_type}
+            )
+            refused = response.status_code == 422 or response.json() == {"detail": "Unknown plugin"}
+            assert refused, (method, path, content_type, response.status_code, response.text)
+        checked += 1
+    assert checked >= 40
 
 
 async def plan_answers(client: ApiClient, app: FastAPI) -> dict[Operation, httpx.Response]:

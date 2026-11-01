@@ -12,9 +12,10 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
-from conftest import CLIENT_SECRET, TEST_TOKEN_KEY, ApiClient, chat, grant_plan, txt_bytes, upload
+from conftest import CLIENT_SECRET, TEST_TOKEN_KEY, USER_PASSWORD, ApiClient, chat, grant_plan, txt_bytes, upload
 from gmail_support import gmail  # noqa: F401
 from pydantic import ValidationError
+from signup_support import confirm_token
 from sqlalchemy import select
 from starlette.requests import Request
 
@@ -30,6 +31,7 @@ from app.models import (
     MessagePluginItem,
     PluginConnection,
     User,
+    UserIdentity,
     utcnow,
 )
 from app.plugins.gmail import compose, sends
@@ -160,7 +162,9 @@ async def test_the_archive_holds_the_callers_account_documents_and_conversations
     assert profile["conversations"] == {"included": 2, "omitted": 0, "truncated": None}
     assert profile["plugin_connections"] == []
     [sign_in] = profile["recent_logins"]
-    assert "current" not in sign_in and sign_in["ip"] == "127.0.0.x"
+    assert "current" not in sign_in and sign_in["ip"] == "127.0.0.x" and sign_in["method"] == "password"
+    assert (profile["email"], profile["pending_email"], profile["google"], profile["terms"]) == (None, None, None, None)
+    assert (profile["signup_source"], profile["security_events"]) == ("admin", [])
     [document] = as_json(entries, "documents.json")
     assert (document["filename"], document["scope"], document["generated"], document["image"]) == (
         "notes.txt",
@@ -410,7 +414,7 @@ async def test_billing_json_holds_the_callers_periods_orders_payments_and_receip
     await grant_plan(alice.user_id, "starter", days=30)
     await add_payment(alice, "ord_alice", "TEST/26-27/000001")
     await add_payment(bob, "ord_bob", "TEST/26-27/000002")
-    assert (await alice.put("/api/billing/profile", json={"name": "Alice A", "email": "a@example.test"})).is_success
+    assert (await alice.put("/api/billing/profile", json={"name": "Alice A"})).is_success
 
     billing = as_json(unzip(await export_of(alice)), "billing.json")
 
@@ -421,7 +425,7 @@ async def test_billing_json_holds_the_callers_periods_orders_payments_and_receip
     assert (order["id"], order["plan"], order["amount_paise"]) == ("ord_alice", "Starter", 50_000)
     [payment] = billing["payments"]
     assert (payment["amount_paise"], payment["method"], payment["receipt"]) == (50_000, "upi", "TEST/26-27/000001")
-    assert billing["profile"] == {"name": "Alice A", "email": "a@example.test"}
+    assert billing["profile"] == {"name": "Alice A"}  # receipts go to the account's verified email
     everything = json.dumps(billing)
     for private in ("ord_bob", "000002", "Only for the admin", "pay_ord_alice", "1180"):
         assert private not in everything
@@ -740,3 +744,45 @@ async def test_the_response_streams_in_chunks_and_then_releases() -> None:
     assert b"".join(message["body"] for message in bodies) == payload
     assert max(len(message["body"]) for message in bodies) == export.CHUNK_BYTES
     assert archive.closed and not lock.locked()
+
+
+async def test_account_json_holds_the_email_google_terms_and_security_events(
+    create_user: CreateUser, mailer: None
+) -> None:
+    alice = await create_user("alice")
+    assert alice.user_id is not None
+    async with SessionLocal() as db:
+        user = await db.get(User, alice.user_id)
+        assert user is not None
+        user.email, user.email_canonical, user.email_verified_at = "alice@old.example", "alice@old.example", utcnow()
+        user.terms_version, user.terms_accepted_at, user.signup_source = "2026-11-01", utcnow(), "google"
+        db.add(
+            UserIdentity(
+                user_id=alice.user_id,
+                provider="google",
+                issuer="https://accounts.google.com",
+                subject="800000000000000000001",
+                email_at_link="alice@gmail.com",
+                email_kind="gmail",
+            )
+        )
+        await db.commit()
+    await alice.post("/api/me/email", json={"email": "alice@new.example", "password": USER_PASSWORD})
+    token = await confirm_token(alice.user_id)
+    assert (await alice.post("/api/auth/email/verify", json={"token": token})).status_code == 200
+    await alice.post("/api/me/email", json={"email": "alice@third.example", "password": USER_PASSWORD})
+
+    entries = unzip(await export_of(alice))
+    profile = as_json(entries, "account.json")
+
+    assert (profile["email"], profile["signup_source"]) == ("alice@new.example", "google")
+    assert profile["email_verified_at"] is not None
+    assert profile["pending_email"]["address"] == "alice@third.example"
+    assert profile["google"]["email"] == "alice@gmail.com" and profile["google"]["linked_at"]
+    assert profile["terms"]["version"] == "2026-11-01" and profile["terms"]["accepted_at"]
+    types = [entry["type"] for entry in profile["security_events"]]
+    assert types == ["email.pending", "email.changed", "email.pending"]
+    changed = profile["security_events"][1]
+    assert changed["detail"] == {"from": "a***@old.example", "to": "a***@new.example"}  # the sealed address left out
+    assert changed["actor"] == "self" and changed["ip"] == "127.0.0.x"
+    assert "security events" in entries["README.txt"].decode()

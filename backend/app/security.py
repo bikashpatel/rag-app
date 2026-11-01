@@ -1,3 +1,4 @@
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -16,12 +17,17 @@ _DUMMY_HASH = _hasher.hash("dummy-password-for-timing")
 
 
 def hash_password(password: str) -> str:
-    return _hasher.hash(password)
+    """The argon2 hash of the password's NFC form (NIST 800-63B), so a password typed with another composition of the
+    same characters still matches. Hashes made before were of ASCII passwords, where NFC changes nothing."""
+    return _hasher.hash(unicodedata.normalize("NFC", password))
 
 
-def verify_password(password: str, password_hash: str) -> bool:
+def verify_password(password: str, password_hash: str | None) -> bool:
+    """Whether the password's NFC form matches; a missing hash (no password) never does."""
+    if password_hash is None:
+        return False
     try:
-        return _hasher.verify(password_hash, password)
+        return _hasher.verify(password_hash, unicodedata.normalize("NFC", password))
     except (VerifyMismatchError, VerificationError, InvalidHashError):
         return False
 
@@ -38,7 +44,10 @@ async def verify_password_async(password: str, password_hash: str | None) -> boo
     return await run_in_threadpool(verify_password, password, password_hash)
 
 
-def needs_rehash(password_hash: str) -> bool:
+def needs_rehash(password_hash: str | None) -> bool:
+    """An outdated hash to replace after a successful sign-in; nothing to replace without a password."""
+    if password_hash is None:
+        return False
     try:
         return _hasher.check_needs_rehash(password_hash)
     except InvalidHashError:

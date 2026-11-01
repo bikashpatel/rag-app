@@ -105,7 +105,16 @@ export function makeLapsedPlanAccess(
 }
 
 export function makePreferences(overrides: Partial<Preferences> = {}): Preferences {
-  return { theme: "system", accent: "clay", chat_font_size: "default", enter_to_send: true, default_model_id: null, ...overrides };
+  return {
+    theme: "system",
+    accent: "clay",
+    chat_font_size: "default",
+    enter_to_send: true,
+    default_model_id: null,
+    email_plan_reminders: true,
+    email_receipts: true,
+    ...overrides,
+  };
 }
 
 export function makeMe(overrides: Partial<Me> = {}): Me {
@@ -128,6 +137,7 @@ export function makeMe(overrides: Partial<Me> = {}): Me {
     },
     preferences: makePreferences(),
     plan: makePlanAccess(),
+    email: null,
     ...overrides,
   };
 }
@@ -374,6 +384,15 @@ export function makeAdminUser(overrides: Partial<AdminUser> = {}): AdminUser {
       expiring_soon: false,
       ended_at: null,
     },
+    email: null,
+    email_verified_at: null,
+    pending_email: null,
+    signup_source: "admin",
+    has_password: true,
+    google_linked: false,
+    google_email: null,
+    terms_accepted_at: null,
+    terms_version: null,
     ...overrides,
   };
 }
@@ -418,6 +437,7 @@ export function makeLoginEvent(overrides: Partial<LoginEvent> = {}): LoginEvent 
     os: "macOS",
     device: "desktop",
     current: true,
+    method: "password",
     ...overrides,
   };
 }
@@ -435,6 +455,15 @@ export function makeAccount(overrides: Partial<AccountInfo> = {}): AccountInfo {
       makeLoginEvent(),
       makeLoginEvent({ id: 89, created_at: "2026-10-18T19:30:00Z", browser: "Safari 26", os: "iOS", device: "mobile", current: false }),
     ],
+    email: null,
+    email_verified_at: null,
+    pending_email: null,
+    has_password: true,
+    google: null,
+    signup_source: "admin",
+    terms_accepted_at: null,
+    email_change_needs: "password",
+    stepup_until: null,
     ...overrides,
   };
 }

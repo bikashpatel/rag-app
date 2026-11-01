@@ -8,7 +8,7 @@ import type {
   RevokeRequest,
   UserBilling,
 } from "../../frontend/src/api/types";
-import { ADMIN_SESSION_ENV, BASE_URL, RUN_ID_ENV, SESSION_COOKIE } from "./env";
+import { ADMIN_SESSION_ENV, BASE_URL, RUN_ID_ENV, sessionCookieName } from "./env";
 
 /** Every user the suite creates starts with this; nothing else is ever changed or deleted. */
 export const TEST_USER_PREFIX = "e2e-";
@@ -42,7 +42,7 @@ export class AdminApi {
   private plans: Promise<AdminPlan[]> | null = null;
 
   constructor(session: string) {
-    this.cookie = `${SESSION_COOKIE}=${session}`;
+    this.cookie = `${sessionCookieName()}=${session}`;
   }
 
   /** The admin session global-setup.ts signed in (passed to the workers in the environment). */

@@ -35,6 +35,8 @@ describe("normalizePreferences", () => {
       chat_font_size: "large",
       enter_to_send: false,
       default_model_id: 5,
+      email_plan_reminders: false,
+      email_receipts: false,
     };
     expect(normalizePreferences(preferences)).toEqual(preferences);
   });
@@ -43,10 +45,11 @@ describe("normalizePreferences", () => {
     const { normalizePreferences, DEFAULT_PREFERENCES } = await load();
     expect(normalizePreferences(null)).toEqual(DEFAULT_PREFERENCES);
     expect(normalizePreferences("dark")).toEqual(DEFAULT_PREFERENCES);
-    expect(normalizePreferences({ theme: "sepia", accent: "ocean", enter_to_send: "yes" })).toEqual({
-      ...DEFAULT_PREFERENCES,
-      accent: "ocean",
-    });
+    expect(DEFAULT_PREFERENCES).toMatchObject({ email_plan_reminders: true, email_receipts: true });
+    expect(
+      normalizePreferences({ theme: "sepia", accent: "ocean", enter_to_send: "yes", email_receipts: "no" }),
+    ).toEqual({ ...DEFAULT_PREFERENCES, accent: "ocean" });
+    expect(normalizePreferences({ email_receipts: false })).toEqual({ ...DEFAULT_PREFERENCES, email_receipts: false });
   });
 
   it.each([0, -1, 1.5, 2_147_483_648, "5", null])("drops the default model id %s", async (id) => {
@@ -62,6 +65,8 @@ describe("samePreferences", () => {
     expect(samePreferences(base, { ...base })).toBe(true);
     expect(samePreferences(base, { ...base, default_model_id: 3 })).toBe(false);
     expect(samePreferences(base, { ...base, enter_to_send: false })).toBe(false);
+    expect(samePreferences(base, { ...base, email_plan_reminders: false })).toBe(false);
+    expect(samePreferences(base, { ...base, email_receipts: false })).toBe(false);
   });
 });
 
@@ -75,7 +80,7 @@ describe("the preferences cache", () => {
 
   it("round-trips the preferences, writing only when they changed", async () => {
     const { cachePreferences, readCachedPreferences, PREFERENCES_KEY } = await load();
-    const preferences = makePreferences({ theme: "dark", accent: "plum", default_model_id: 2 });
+    const preferences = makePreferences({ theme: "dark", accent: "plum", default_model_id: 2, email_receipts: false });
     const setItem = vi.spyOn(Storage.prototype, "setItem");
     cachePreferences({ ...preferences, extra: "dropped" } as Preferences);
     cachePreferences(preferences);

@@ -21,6 +21,7 @@ import type {
   PublicSite,
   RefundView,
   UserBilling,
+  UserRef,
 } from "../api/types";
 import { makePaidPlanAccess } from "./fixtures";
 
@@ -29,6 +30,14 @@ export const STANDARD: PlanRef = { id: 2, code: "standard", name: "Standard" };
 export const PROFESSIONAL: PlanRef = { id: 3, code: "professional", name: "Professional" };
 
 const GMAIL = { id: "gmail", name: "Gmail", available: true };
+
+/** An admin billing list's user; `email` defaults to null (no verified email). */
+export function makeUserRef(overrides: Partial<UserRef> = {}): UserRef {
+  return { id: 7, username: "maya.chen", email: null, ...overrides };
+}
+
+/** Overrides whose `user` may leave out the fields makeUserRef fills in. */
+type WithUser<T extends { user: UserRef }> = Partial<Omit<T, "user">> & { user?: Partial<UserRef> };
 
 export function makePlanModel(overrides: Partial<PlanModel> = {}): PlanModel {
   return { id: 5, display_name: "Claude Sonnet 5.5", allowance_rate: 1, answers: 260, ...overrides };
@@ -246,7 +255,7 @@ export function makeBillingStatus(overrides: Partial<BillingStatus> = {}): Billi
     periods: [makePeriodView()],
     complimentary: null,
     open_order: null,
-    profile: { name: null, email: null },
+    profile: { name: null },
     payments: makePaymentsInfo(),
     ...overrides,
   };
@@ -329,11 +338,11 @@ export function makeBillingAdminConfig(overrides: Partial<BillingAdminConfig> = 
   };
 }
 
-export function makeAdminOrder(overrides: Partial<AdminOrder> = {}): AdminOrder {
+export function makeAdminOrder({ user, ...overrides }: WithUser<AdminOrder> = {}): AdminOrder {
   return {
     ...makeOrder(),
     id: 71,
-    user: { id: 7, username: "maya.chen" },
+    user: makeUserRef(user),
     mode: "live",
     razorpay_link_id: "plink_Q3Zx8LmP0aB2cD",
     razorpay_order_id: null,
@@ -364,10 +373,10 @@ export function makeRefund(overrides: Partial<RefundView> = {}): RefundView {
   };
 }
 
-export function makeAdminPayment(overrides: Partial<AdminPayment> = {}): AdminPayment {
+export function makeAdminPayment({ user, ...overrides }: WithUser<AdminPayment> = {}): AdminPayment {
   return {
     ...makePaymentView(),
-    user: { id: 7, username: "maya.chen" },
+    user: makeUserRef(user),
     order_public_id: "k8Yw2NnQ5rS7tU9vW1xY",
     razorpay_payment_id: "pay_Q3Zx8LmP0aB2cD",
     fee_paise: 4_000,
@@ -420,10 +429,15 @@ export function makeBillingSummary(overrides: Partial<BillingSummary> = {}): Bil
       { month: "2026-10", gross_paise: 950_000, net_paise: 877_580 },
     ],
     expiring: [
-      { user: { id: 7, username: "maya.chen" }, plan: "Standard", date: "2026-10-24", last_payment_at: "2026-09-25T08:00:00Z" },
+      { user: makeUserRef(), plan: "Standard", date: "2026-10-24", last_payment_at: "2026-09-25T08:00:00Z" },
     ],
     lapsed: [
-      { user: { id: 9, username: "sam.ortiz" }, plan: "Starter", date: "2026-10-11", last_payment_at: "2026-09-11T12:00:00Z" },
+      {
+        user: makeUserRef({ id: 9, username: "sam.ortiz" }),
+        plan: "Starter",
+        date: "2026-10-11",
+        last_payment_at: "2026-09-11T12:00:00Z",
+      },
     ],
     attention: [],
     ...overrides,
@@ -437,7 +451,7 @@ export function makeUserBilling(overrides: Partial<UserBilling> = {}): UserBilli
     complimentary: null,
     orders: [makeAdminOrder({ status: "paid", pay_url: null, paid_at: "2026-10-08T05:12:00Z" })],
     payments: [makeAdminPayment()],
-    profile: { name: "Maya Chen", email: null },
+    profile: { name: "Maya Chen" },
     events: [
       {
         at: "2026-10-08T05:12:00Z",

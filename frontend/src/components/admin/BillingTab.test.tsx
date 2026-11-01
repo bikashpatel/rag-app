@@ -9,6 +9,7 @@ import {
   makeAttentionItem,
   makeBillingAdminConfig,
   makeBillingSummary,
+  makeUserRef,
 } from "../../test/billing";
 import { makeAdminUser, NOW } from "../../test/fixtures";
 import { errorResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
@@ -215,6 +216,34 @@ describe("BillingTab: overview", () => {
     expect(screen.getByText("No payments this month")).toBeInTheDocument();
     expect(screen.getByText("Lost this month")).toBeInTheDocument();
     expect(screen.getByText("None")).toBeInTheDocument();
+  });
+
+  it("shows each user's email under the name in the expiring and lapsed lists", async () => {
+    setup({
+      "GET /admin/billing/summary": makeBillingSummary({
+        expiring: [
+          {
+            user: makeUserRef({ email: "maya@example.com" }),
+            plan: "Standard",
+            date: "2026-10-24",
+            last_payment_at: null,
+          },
+        ],
+        lapsed: [
+          {
+            user: makeUserRef({ id: null, username: "gone.user" }),
+            plan: null,
+            date: "2026-10-11",
+            last_payment_at: null,
+          },
+        ],
+      }),
+    });
+    const expiring = await screen.findByRole("region", { name: "Expiring in 7 days" });
+    expect(within(expiring).getByText("maya@example.com")).toHaveAttribute("title", "maya@example.com");
+    const lapsed = screen.getByRole("region", { name: "Lapsed in the last 30 days" });
+    expect(within(lapsed).getByText("gone.user")).toBeInTheDocument();
+    expect(lapsed.querySelector(".admin-buyer-email")).toBeNull();
   });
 
   it("loads another IST month from the picker and switches sections", async () => {

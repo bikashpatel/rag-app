@@ -8,13 +8,16 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
 from app.schemas import MAX_INT, AccentColor, ChatFontSize, Preferences, ThemePreference, UsageSummary, UserLimits
+from app.schemas_auth import EmailChangeNeeds, GoogleLink, PendingEmailInfo, SignupSource
 from app.schemas_billing import PlanAccess
 
 DeviceType = Literal["desktop", "mobile", "tablet", "unknown"]
 UsageKind = Literal["chat", "embedding", "vision", "image"]
 
+LoginMethod = Literal["password", "google"]
+
 # PATCH fields that may be omitted but never null (only default_model_id has a null meaning).
-_NOT_NULL = ("theme", "accent", "chat_font_size", "enter_to_send")
+_NOT_NULL = ("theme", "accent", "chat_font_size", "enter_to_send", "email_plan_reminders", "email_receipts")
 
 
 class Me(BaseModel):
@@ -27,6 +30,7 @@ class Me(BaseModel):
     usage: UsageSummary  # in the allowance window
     preferences: Preferences = Field(default_factory=Preferences)
     plan: PlanAccess
+    email: str | None = None  # the verified email (users.email); the display name when set
 
 
 class PreferencesUpdate(BaseModel):
@@ -42,6 +46,8 @@ class PreferencesUpdate(BaseModel):
     enter_to_send: StrictBool | None = None
     # An enabled chat model the caller may use (GET /models), else 422
     default_model_id: Annotated[StrictInt, Field(ge=1, le=MAX_INT)] | None = None
+    email_plan_reminders: StrictBool | None = None
+    email_receipts: StrictBool | None = None
 
     @model_validator(mode="after")
     def _refuse_null(self) -> "PreferencesUpdate":
@@ -67,6 +73,7 @@ class LoginEvent(BaseModel):
     os: str | None  # e.g. "macOS", "Windows", "iOS", "Android", "Linux", "ChromeOS"
     device: DeviceType
     current: bool  # the sign-in that started the session making this request
+    method: LoginMethod = "password"
 
 
 class AccountInfo(BaseModel):
@@ -80,6 +87,16 @@ class AccountInfo(BaseModel):
     last_login_at: datetime | None  # also set for sign-ins from before login_events existed
     conversation_count: int
     recent_logins: list[LoginEvent]  # newest first, at most 20 (older ones are deleted)
+    email: str | None  # verified
+    email_verified_at: datetime | None
+    pending_email: PendingEmailInfo | None
+    has_password: bool
+    google: GoogleLink | None
+    signup_source: SignupSource
+    terms_accepted_at: datetime | None
+    # google: a step-up first; not_allowed: the env admin, or no way to re-authenticate
+    email_change_needs: EmailChangeNeeds
+    stepup_until: datetime | None  # this session holds a step-up grant until then
 
 
 class UsageAmount(BaseModel):

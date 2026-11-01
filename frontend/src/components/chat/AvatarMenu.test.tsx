@@ -46,6 +46,14 @@ describe("AvatarMenu", () => {
     expect(screen.queryByRole("menuitem", { name: "Admin" })).not.toBeInTheDocument();
   });
 
+  it("names the account by its verified email when it has one", async () => {
+    const { user } = await setup(makeMe({ username: "user-k3m9q2xa", email: "maya@example.com" }));
+    const button = screen.getByRole("button", { name: "Account: maya@example.com" });
+    expect(button).toHaveAttribute("title", "maya@example.com");
+    await openMenu(user, "Account: maya@example.com");
+    expect(screen.getByRole("menu", { name: "Account: maya@example.com, Member" })).toBeInTheDocument();
+  });
+
   it("counts the chat allowance in standard tokens, not plain tokens", async () => {
     const me = makeMe();
     const { user } = await setup({ ...me, usage: { ...me.usage, chat_tokens: 1_900_000, chat_allowance_used: 1_900_000 } });

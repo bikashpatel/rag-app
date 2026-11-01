@@ -19,7 +19,7 @@ from sqlalchemy import func, select, text
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import Document, PluginConnection
+from app.models import Document, EmailOutbox, PluginConnection
 from app.ops import backup_status, heartbeat
 from app.ops.settings import ops_settings
 from app.plugins import connections, registry
@@ -50,6 +50,7 @@ LABELS: dict[CheckId, str] = {
     "proxy": "Web server (nginx)",
     "monitor": "Monitor and alerts",
     "billing": "Payments",
+    "mail": "Email",
 }
 # The backup service refreshes its status every 5 minutes while it waits; a backup in progress may take longer.
 SCHEDULER_STALE_SECONDS = 30 * 60
@@ -289,6 +290,93 @@ async def check_billing(timeout: float = CHECK_TIMEOUT_SECONDS) -> SystemCheck:
     return check("billing", "ok", f"Payments in {settings.razorpay_mode} mode; nothing needs attention")
 
 
+# ---------------- Email (docs/briefs/signup-auth.md 14.1) ----------------
+
+MAIL_STUCK = timedelta(minutes=10)  # a due job still waiting this long: the worker or the provider is stuck
+MAIL_DAY_SHARE = 0.8  # of MAIL_DAILY_LIMIT sent today
+MAIL_BOUNCES = 3  # today
+TURNSTILE_ERRORS = 10  # verifications Cloudflare couldn't answer in the last hour
+
+
+def _count_of(count: int, one: str, many: str) -> str:
+    return f"{count} {one if count == 1 else many}"
+
+
+async def mail_problems(now: datetime | None = None) -> tuple[list[str], str]:
+    """What the `mail` check warns about (counts only, never addresses), and its detail when all is well."""
+    from app.services.auth import signup_settings, throttle, turnstile
+    from app.services.mail import drain, outbox
+
+    now = now or datetime.now(timezone.utc)
+    async with SessionLocal() as db:
+        signup = await signup_settings.load(db)
+        mail = await outbox.mail_status(db)
+        failed = await db.scalar(
+            select(func.count())
+            .select_from(EmailOutbox)
+            .where(EmailOutbox.status == "failed", EmailOutbox.finished_at >= now - timedelta(hours=24))
+        )
+        stuck = await db.scalar(
+            select(func.count())
+            .select_from(EmailOutbox)
+            .where(EmailOutbox.status.in_(outbox.PENDING), EmailOutbox.next_attempt_at < now - MAIL_STUCK)
+        )
+        unprepared = await db.scalar(
+            select(func.count())
+            .select_from(EmailOutbox)
+            .where(
+                EmailOutbox.status == "queued",
+                EmailOutbox.last_error == drain.PREPARE_FAILED,
+                EmailOutbox.created_at < now - MAIL_STUCK,
+            )
+        )
+    configured = outbox.configured()
+    found: list[str] = []
+    if signup.open and not (configured and settings.turnstile_configured):
+        found.append("sign-up is open, but the mailer or Turnstile isn't set up")
+    if signup.open and not settings.mail_webhook_secret:
+        found.append("sign-up is open without bounce reports (MAIL_WEBHOOK_SECRET)")
+    if not configured:
+        if mail.queued:
+            found.append(f"{_count_of(mail.queued, 'email waits', 'emails wait')}, but the mailer isn't set up")
+        return found, "Email not set up"
+    if failed:
+        found.append(f"{_count_of(failed, 'email', 'emails')} failed in the last 24 hours")
+    if stuck:
+        found.append(f"{_count_of(stuck, 'email', 'emails')} due over 10 minutes ago still waiting")
+    if unprepared:
+        found.append(f"{_count_of(unprepared, 'email', 'emails')} couldn't be prepared for over 10 minutes (retried)")
+    if await drain.paused():
+        found.append("sending is paused for 15 minutes: the SMTP server refused the login")
+    if mail.sent_today >= mail.limit * MAIL_DAY_SHARE:
+        found.append(f"{mail.sent_today} of {mail.limit} emails sent today (MAIL_DAILY_LIMIT)")
+    if mail.public_paused:
+        found.append("sign-up emails are paused until 00:00 UTC: too many bounces")
+    if mail.bounces_today >= MAIL_BOUNCES:
+        found.append(f"{_count_of(mail.bounces_today, 'bounce', 'bounces')} today")
+    if mail.complaints_7d:
+        found.append(f"{_count_of(mail.complaints_7d, 'spam complaint', 'spam complaints')} in the last 7 days")
+    unavailable = await turnstile.unavailable_last_hour()
+    if unavailable >= TURNSTILE_ERRORS:
+        found.append(f"{unavailable} Turnstile verifications failed in the last hour")
+    if await throttle.site_challenge_recent():
+        found.append("a surge of failed sign-ins turned the robot check on for everyone in the last hour")
+    return found, f"{mail.sent_today} of {mail.limit} emails sent today; {mail.queued} waiting"
+
+
+async def check_mail(timeout: float = CHECK_TIMEOUT_SECONDS) -> SystemCheck:
+    """Email: failures, a stalled outbox, mail that can't be prepared, the day's cap, a refused SMTP login, bounces and
+    complaints, sign-up mail paused, Turnstile errors, a sign-in failure surge, and sign-up open without what it
+    needs."""
+    result, error = await _guard(mail_problems(), timeout)
+    if error or result is None:
+        return check("mail", "unknown", f"The email records can't be read: {error}")
+    problems, detail = result
+    if problems:
+        return check("mail", "warning", "; ".join(problem[0].upper() + problem[1:] for problem in problems))
+    return check("mail", "ok", detail)
+
+
 # ---------------- Disks and backups ----------------
 
 
@@ -451,7 +539,7 @@ class Snapshot:
 async def collect(proxy_url: str | None = None) -> Snapshot:
     """Every check (the proxy's only with a URL), run at once."""
     now = time.time()
-    services, billing = await asyncio.gather(
+    services, billing, mail = await asyncio.gather(
         asyncio.gather(
             check_postgres(),
             check_redis(),
@@ -461,11 +549,12 @@ async def collect(proxy_url: str | None = None) -> Snapshot:
             gmail_reconnect_needed(),
         ),
         check_billing(),
+        check_mail(),
     )
     (postgres, size), redis, qdrant, (worker, worker_info), (queue, queue_info, failed), gmail = services
     backup, backup_disk, backup_info, backup_disk_info = check_backup(now)
     uploads_disk, uploads_disk_info = check_uploads_disk(now)
-    checks = [postgres, redis, qdrant, worker, queue, backup, uploads_disk, backup_disk, billing]
+    checks = [postgres, redis, qdrant, worker, queue, backup, uploads_disk, backup_disk, billing, mail]
     if proxy_url:
         checks.append(await check_proxy(proxy_url))
     return Snapshot(

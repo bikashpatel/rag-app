@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
-import { api, ApiError } from "../../api/client";
+import { api, ApiError, passwordRefusal } from "../../api/client";
 import type {
   AdminConfig,
   AdminModel,
@@ -10,11 +10,12 @@ import type {
   LimitOverrides,
   UserLimits,
 } from "../../api/types";
-import { formatNumber } from "../../lib/format";
+import { formatDate, formatNumber, formatRelativeTime } from "../../lib/format";
+import { GoogleMark } from "../auth/GoogleButton";
 import Modal from "../ui/Modal";
 import PasswordInput from "../ui/PasswordInput";
 import { ButtonSpinner } from "../ui/Spinner";
-import { AlertCircleIcon, AlertIcon, InfoIcon } from "../ui/icons";
+import { AlertCircleIcon, AlertIcon, CheckIcon, ClockIcon, InfoIcon } from "../ui/icons";
 import { errorMessage } from "./adminApi";
 import { Field, SwitchField } from "./Field";
 import { FormValidator, MAX_INT32, type FieldErrors } from "./form";
@@ -102,6 +103,8 @@ type UserFormModalProps = {
   plans: AdminPlan[] | null;
   /** Regular users can pay online (live keys); without it a new user starts with a grant. */
   paymentsOpen: boolean;
+  /** PASSWORD_MIN_LENGTH (from /auth/config); the server applies the rest of the password policy. */
+  passwordMin: number;
   startGrant?: boolean;
   onClose: () => void;
   onSaved: (user: AdminUser, created: boolean) => void;
@@ -117,6 +120,7 @@ export default function UserFormModal({
   modelsError,
   plans,
   paymentsOpen,
+  passwordMin,
   startGrant,
   onClose,
   onSaved,
@@ -180,7 +184,7 @@ export default function UserFormModal({
     }
     const password = form.password;
     if (creating && !password) v.fail("password", "This field is required.");
-    else if (password && password.length < 8) v.fail("password", "Use at least 8 characters.");
+    else if (password && password.length < passwordMin) v.fail("password", `Use at least ${passwordMin} characters.`);
     else if (password.length > 256) v.fail("password", "Use at most 256 characters.");
 
     const overrides: Partial<LimitOverrides> = {};
@@ -238,7 +242,11 @@ export default function UserFormModal({
           : await api.patch<AdminUser>(`/admin/users/${user.id}`, valid.fields);
       onSaved(saved, creating);
     } catch (err) {
-      if (creating && err instanceof ApiError && err.status === 409) {
+      const refusal = passwordRefusal(err);
+      if (refusal) {
+        setErrors({ password: refusal.message });
+        setInvalidSubmits((n) => n + 1);
+      } else if (creating && err instanceof ApiError && err.status === 409) {
         setErrors({ username: err.message });
         setInvalidSubmits((n) => n + 1);
       } else {
@@ -277,6 +285,7 @@ export default function UserFormModal({
       <form id={formId} ref={formRef} className="admin-form" onSubmit={onSubmit} noValidate>
         <fieldset className="admin-form-section">
           <legend>Account</legend>
+          {user ? <SignInFacts user={user} /> : null}
           <div className="admin-form-grid">
             {creating ? (
               <Field
@@ -301,8 +310,10 @@ export default function UserFormModal({
               label={creating ? "Password" : "Set new password"}
               hint={
                 creating
-                  ? "At least 8 characters."
-                  : "Leave blank to keep the current password. A new password signs the user out everywhere."
+                  ? `At least ${passwordMin} characters, not a common or leaked password.`
+                  : user.has_password
+                    ? "Leave blank to keep the current password. A new password signs the user out everywhere."
+                    : "The user has no password and signs in with Google. Leave blank to keep it that way."
               }
               error={errors.password}
               className={creating ? undefined : "admin-span-2"}
@@ -518,6 +529,73 @@ export default function UserFormModal({
         ) : null}
       </form>
     </Modal>
+  );
+}
+
+/** "30 Oct 2026, 14:02" in the browser's time zone. */
+function dateAndTime(iso: string): string {
+  const time = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+  return `${formatDate(iso)}, ${time.format(new Date(iso))}`;
+}
+
+const SIGNED_UP: Record<AdminUser["signup_source"], string> = {
+  env: "From .env",
+  admin: "Created by the admin",
+  email: "With email",
+  google: "With Google",
+};
+
+/** Edit user: how the account signs in, read only (the user manages their email and Google in Settings). */
+function SignInFacts({ user }: { user: AdminUser }) {
+  const pending = user.pending_email;
+  const pendingText = pending
+    ? `${pending.address}, ${pending.sent_at ? `sent ${formatRelativeTime(pending.sent_at)}` : "not sent yet"}`
+    : null;
+  return (
+    <dl className="admin-signin-facts">
+      <dt>Signed up</dt>
+      <dd>
+        {SIGNED_UP[user.signup_source]} on {formatDate(user.created_at)}
+        {user.terms_version && user.terms_accepted_at ? (
+          <small>
+            Accepted the terms of {user.terms_version} on {dateAndTime(user.terms_accepted_at)}
+          </small>
+        ) : null}
+      </dd>
+      <dt>Email</dt>
+      <dd>
+        {user.email ? (
+          <>
+            <span className="admin-signin-address">{user.email}</span>
+            <span className="badge badge-success">
+              <CheckIcon size={12} />
+              Confirmed
+            </span>
+            {pendingText ? <small>Changing to {pendingText}</small> : null}
+          </>
+        ) : pendingText ? (
+          <span className="admin-user-email-pending">
+            <ClockIcon size={14} />
+            Pending: {pendingText}
+          </span>
+        ) : (
+          "No email"
+        )}
+      </dd>
+      <dt>Google</dt>
+      <dd>
+        {user.google_email ? (
+          <>
+            <GoogleMark size={16} />
+            <span>Connected as {user.google_email}</span>
+          </>
+        ) : (
+          "Not connected"
+        )}
+      </dd>
+      <dt>Password</dt>
+      <dd>{user.has_password ? "Set" : "Not set"}</dd>
+    </dl>
   );
 }
 

@@ -7,6 +7,7 @@ import { ButtonSpinner } from "../ui/Spinner";
 import { AlertCircleIcon, AlertIcon, BankIcon, DownloadIcon, InfoIcon } from "../ui/icons";
 import { adminReceiptUrl, errorMessage, getPayment, PAGE_SIZE, paymentsPath, refundPayment } from "./adminApi";
 import {
+  BuyerEmail,
   CopyButton,
   Fact,
   istDateTime,
@@ -339,6 +340,7 @@ export function PaymentDialog({ payment, onClose, onChanged }: PaymentDialogProp
         <Fact term="User">
           {payment.user.username}
           {payment.user.id === null ? <span className="admin-subtext"> (deleted)</span> : null}
+          <BuyerEmail email={payment.user.email} />
         </Fact>
         <Fact term="Plan and period">
           {payment.plan?.name ?? "—"}

@@ -1,18 +1,42 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { ApiError, getAccount, logoutOtherSessions } from "../../api/client";
-import type { AccountInfo, DeviceType, LoginEvent } from "../../api/types";
-import { useAuth } from "../../auth/AuthContext";
+import type { AccountInfo, DeviceType, LoginEvent, SignupSource } from "../../api/types";
+import { useAuth, useAuthConfig } from "../../auth/AuthContext";
 import { formatDate, formatRelativeTime } from "../../lib/format";
 import Avatar from "../ui/Avatar";
-import { AlertIcon, CheckCircleIcon, ChevronDownIcon, KeyIcon, LaptopIcon, LogoutIcon, MonitorIcon, PhoneIcon, TabletIcon } from "../ui/icons";
+import {
+  AlertIcon,
+  CheckCircleIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  InfoIcon,
+  LaptopIcon,
+  LogoutIcon,
+  MonitorIcon,
+  PhoneIcon,
+  TabletIcon,
+} from "../ui/icons";
 import { ButtonSpinner } from "../ui/Spinner";
+import EmailSection from "./EmailSection";
 import { AccountSkeleton, PanelError, PanelHead } from "./PanelParts";
-import PasswordForm from "./PasswordForm";
+import SignInMethods from "./SignInMethods";
 import { useLoad } from "./useLoad";
 
 /** Sign-ins shown before "Show all". */
 const FIRST_LOGINS = 5;
 const LOCALE = "en-GB";
+/** Until /auth/config answers: the server's own minimum is checked on save anyway. */
+const DEFAULT_MINIMUM = 8;
+/** Google's return to Settings → Account: its result, and the form a step-up was for. */
+const RETURN_PARAMS = ["google", "change", "setup"] as const;
+
+const SOURCE_LINE: Record<SignupSource, string> = {
+  env: "The administrator account is set in the server's settings",
+  admin: "Your account was created by the administrator",
+  email: "You signed up with email",
+  google: "You signed up with Google",
+};
 
 const DEVICE_ICON: Record<DeviceType, ReactNode> = {
   desktop: <LaptopIcon size={18} />,
@@ -84,6 +108,15 @@ function placeText(event: LoginEvent): string {
   return event.ip_private ? "via a local network or proxy" : event.ip;
 }
 
+function methodText(event: LoginEvent): string {
+  return event.method === "google" ? "with Google" : "with password";
+}
+
+/** The env admin's account is defined in .env: no email, Google or reset (functional 3.5). */
+function managedByEnv(account: AccountInfo): boolean {
+  return account.password_managed_by_env || account.signup_source === "env";
+}
+
 function roleLabel(isAdmin: boolean): string {
   return isAdmin ? "Administrator" : "Member";
 }
@@ -97,7 +130,7 @@ function LoginRow({ event }: { event: LoginEvent }) {
       <div className="settings-login-text">
         <b>{browserOn(event)}</b>
         <span>
-          <Place event={event} />
+          {methodText(event)} · <Place event={event} />
         </span>
       </div>
       <div className="settings-login-end">
@@ -113,23 +146,48 @@ function Profile({ account }: { account: AccountInfo }) {
   const last = logins[0] ?? null;
   const current = logins.find((event) => event.current) ?? null;
   const lastSignIn = last?.created_at ?? account.last_login_at;
+  const env = managedByEnv(account);
+  const name = env ? account.username : (account.email ?? account.username);
   return (
     <>
       <div className="settings-profile">
-        <Avatar name={account.username} size={56} />
+        <Avatar name={name} size={56} />
         <div>
-          <div className="settings-profile-name">{account.username}</div>
+          <div className={account.email ? "settings-profile-name settings-profile-email" : "settings-profile-name"}>
+            {name}
+          </div>
           <div className="settings-profile-meta">
             <span className={account.is_admin ? "badge badge-accent" : "badge"}>{roleLabel(account.is_admin)}</span>
-            <span>
-              {account.is_admin ? "The administrator account is set in the server's settings" : "Accounts are managed by your administrator"}
-            </span>
+            <span>{SOURCE_LINE[env ? "env" : account.signup_source]}</span>
           </div>
         </div>
       </div>
       <dl className="settings-facts">
         <dt>Username</dt>
-        <dd>{account.username}</dd>
+        <dd>
+          {account.username}
+          {env ? null : <span className="settings-fact-note">Also works for sign-in</span>}
+        </dd>
+        {env ? null : (
+          <>
+            <dt>Email</dt>
+            <dd>
+              {account.email ? (
+                <span className="settings-email-value">
+                  <span className="badge badge-success">
+                    <CheckIcon size={13} />
+                    Confirmed
+                  </span>
+                  {account.email_verified_at ? (
+                    <span className="settings-email-none">since {formatDate(account.email_verified_at)}</span>
+                  ) : null}
+                </span>
+              ) : (
+                <span className="settings-email-none">No email</span>
+              )}
+            </dd>
+          </>
+        )}
         <dt>Role</dt>
         <dd>{roleLabel(account.is_admin)}</dd>
         <dt>Account created</dt>
@@ -140,6 +198,7 @@ function Profile({ account }: { account: AccountInfo }) {
           {last ? (
             <small>
               {browserOn(last)} · {last.device === "unknown" ? "unknown device" : last.device} ·{" "}
+              {methodText(last)} ·{" "}
               {last.ip_private ? (
                 <span title={last.ip ?? undefined}>
                   via a local network or proxy<span className="sr-only"> ({last.ip})</span>
@@ -166,12 +225,13 @@ function Profile({ account }: { account: AccountInfo }) {
 
 function SignIns({ account }: { account: AccountInfo }) {
   const listId = useId();
+  const headingId = useId();
   const [all, setAll] = useState(false);
   const logins = account.recent_logins;
   const shown = all ? logins : logins.slice(0, FIRST_LOGINS);
   return (
     <div className="settings-group">
-      <h3>Recent sign-ins</h3>
+      <h3 id={headingId}>Recent sign-ins</h3>
       <p className="settings-desc">
         If you don't recognise one, change your password and log out of your other sessions. Addresses are approximate
         and are as seen by this server. Behind a proxy or tunnel, sign-ins show as coming from a local network.
@@ -188,7 +248,7 @@ function SignIns({ account }: { account: AccountInfo }) {
         </p>
       ) : (
         <>
-          <ul className="settings-logins" id={listId}>
+          <ul className="settings-logins" id={listId} aria-labelledby={headingId}>
             {shown.map((event) => (
               <LoginRow key={event.id} event={event} />
             ))}
@@ -223,14 +283,17 @@ function Result({ children }: { children: ReactNode }) {
   );
 }
 
-function PasswordSection({ account }: { account: AccountInfo }) {
-  const formId = useId();
-  const [open, setOpen] = useState(false);
-  const [changed, setChanged] = useState(false);
-  const toggleRef = useRef<HTMLButtonElement>(null);
-
-  if (account.password_managed_by_env) {
-    return (
+/** The env admin's email and sign-in methods: managed in .env (functional 13.7). */
+function AdminSections() {
+  return (
+    <>
+      <div className="settings-group">
+        <h3>Email</h3>
+        <p className="ui-notice settings-pending">
+          <InfoIcon size={18} />
+          <span className="ui-notice-text">The admin account is managed in .env.</span>
+        </p>
+      </div>
       <div className="settings-group">
         <h3>Password</h3>
         <p className="settings-desc">
@@ -238,45 +301,7 @@ function PasswordSection({ account }: { account: AccountInfo }) {
           there and restart the backend.
         </p>
       </div>
-    );
-  }
-  return (
-    <div className="settings-group">
-      <div className="settings-row settings-row-wrap">
-        <div className="settings-label">
-          <h3>Password</h3>
-          <p className="settings-desc">Changing it signs you out everywhere else.</p>
-        </div>
-        <button
-          ref={toggleRef}
-          type="button"
-          className="btn btn-sm"
-          aria-expanded={open}
-          aria-controls={open ? formId : undefined}
-          onClick={() => {
-            setChanged(false);
-            setOpen((value) => !value);
-          }}
-        >
-          <KeyIcon size={15} />
-          Change password…
-        </button>
-      </div>
-      {open ? (
-        <PasswordForm
-          id={formId}
-          onChanged={() => {
-            setOpen(false);
-            setChanged(true);
-          }}
-          onCancel={() => {
-            setOpen(false);
-            toggleRef.current?.focus();
-          }}
-        />
-      ) : null}
-      {changed ? <Result>Your password was changed. Your other sessions were signed out.</Result> : null}
-    </div>
+    </>
   );
 }
 
@@ -390,16 +415,75 @@ function SessionsSection() {
   );
 }
 
-/** Settings → Account: profile, sign-in activity, password, sessions. */
+/** Google's return parameters (`?google=`, `change`, `setup`), read once; they then leave the address bar. */
+function useAccountReturn(): { google: string | null; change: boolean; setup: boolean } {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [value] = useState(() => {
+    const params = new URLSearchParams(location.search);
+    const google = params.get("google");
+    const ok = google === "reauth_ok";
+    return {
+      google: ok ? null : google,
+      change: ok && params.get("change") === "email",
+      setup: ok && params.get("setup") === "password",
+    };
+  });
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (!RETURN_PARAMS.some((name) => params.has(name))) return;
+    RETURN_PARAMS.forEach((name) => params.delete(name));
+    const search = params.toString().replaceAll("%2F", "/");
+    navigate(
+      { pathname: location.pathname, search: search ? `?${search}` : "", hash: location.hash },
+      { replace: true, state: location.state },
+    );
+  }, [location, navigate]);
+  return value;
+}
+
+/** Settings → Account: profile, email, sign-in methods, sign-in activity, sessions (functional 13.7). */
 export default function AccountTab({ onClose }: { onClose: () => void }) {
   const account = useLoad((signal) => getAccount(signal), "Couldn't load your account.");
+  const { config } = useAuthConfig();
+  const returned = useAccountReturn();
+  const [googleResult, setGoogleResult] = useState(returned.google);
+  const minimum = config?.password_min_length ?? DEFAULT_MINIMUM;
+  const { reload } = account;
+  // Google's result describes the account as it came back: any later action or reload makes it stale.
+  const dismissResult = useCallback(() => setGoogleResult(null), []);
+  const changed = useCallback(() => {
+    setGoogleResult(null);
+    reload();
+  }, [reload]);
   let body: ReactNode;
   if (account.data) {
-    body = (
+    const data = account.data;
+    // Adding an email needs the mailer (password reset is available exactly when mail and Turnstile are set up).
+    const showEmail = Boolean(config?.password_reset || data.email || data.pending_email);
+    body = managedByEnv(data) ? (
       <>
-        <Profile account={account.data} />
-        <SignIns account={account.data} />
-        <PasswordSection account={account.data} />
+        <Profile account={data} />
+        <AdminSections />
+        <SignIns account={data} />
+        <SessionsSection />
+      </>
+    ) : (
+      <>
+        <Profile account={data} />
+        {showEmail ? (
+          <EmailSection account={data} resumeChange={returned.change} onAction={dismissResult} onChanged={changed} />
+        ) : null}
+        <SignInMethods
+          account={data}
+          googleSignin={config?.google_signin ?? false}
+          minimum={minimum}
+          googleResult={googleResult}
+          resumeSetup={returned.setup}
+          onAction={dismissResult}
+          onChanged={changed}
+        />
+        <SignIns account={data} />
         <SessionsSection />
       </>
     );

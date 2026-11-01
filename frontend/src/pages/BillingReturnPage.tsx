@@ -1,25 +1,26 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ApiError, billingApi, receiptUrl } from "../api/client";
-import type { BillingStatus, OrderView } from "../api/types";
+import type { OrderView } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
-import { checkoutPath, istDayMonth, istMoment, lastDayOf, methodLabel } from "../components/billing/planText";
+import { checkoutPath, istMoment, lastDayOf, methodLabel } from "../components/billing/planText";
 import PlansFrame from "../components/billing/PlansFrame";
 import {
   AlertCircleIcon,
   ArrowRightIcon,
   ArrowUpRightIcon,
-  CheckCircleIcon,
   CheckIcon,
   ClockIcon,
   DownloadIcon,
   FlaskIcon,
   InfoIcon,
+  MailIcon,
   RefreshIcon,
   ShieldIcon,
 } from "../components/ui/icons";
 import { ButtonSpinner } from "../components/ui/Spinner";
 import { formatInr, formatIstDate, formatIstRange, isRazorpayUrl } from "../lib/billing";
+import { useOpenSettings } from "../lib/settingsLink";
 import "./plans.css";
 
 /** Polling (8.4): at once, every 3 s for 60 s, then every 15 s up to 10 minutes, then Check again. */
@@ -95,72 +96,35 @@ function PaidSlip({ order }: { order: OrderView }) {
   );
 }
 
-/** "Remind me before my plan ends": one email field, when reminder emails are set up and none was given (8.4). */
-function RemindAsk({ until }: { until: string | null }) {
-  const [email, setEmail] = useState("");
-  const [state, setState] = useState<"asking" | "saving" | "saved" | "dismissed">("asking");
-  const [error, setError] = useState<string | null>(null);
-  const [status, setStatus] = useState<BillingStatus | null>(null);
+/** No verified email with the mailer set up: one line to add one, for receipts and reminders (functional 13.8). */
+function EmailLine() {
+  const { user } = useAuth();
+  const openSettings = useOpenSettings();
+  const [mailer, setMailer] = useState(false);
+  const needed = user !== null && user.email === null;
 
   useEffect(() => {
+    if (!needed) return;
     const controller = new AbortController();
-    billingApi.status(controller.signal).then(setStatus, () => undefined);
-    return () => controller.abort();
-  }, []);
-
-  if (!status || !status.payments.email_reminders || status.profile.email || state === "dismissed") return null;
-  if (state === "saved") {
-    return (
-      <p className="plans-remind-done">
-        <CheckCircleIcon size={15} />
-        We'll email you before {until ? istDayMonth(until) : "your plan ends"}.
-      </p>
+    billingApi.status(controller.signal).then(
+      (status) => setMailer(status.payments.email_reminders),
+      () => undefined,
     );
-  }
+    return () => controller.abort();
+  }, [needed]);
 
-  async function save(event: FormEvent) {
-    event.preventDefault();
-    if (state === "saving" || !status) return;
-    setState("saving");
-    setError(null);
-    try {
-      await billingApi.saveProfile({ name: status.profile.name, email: email.trim() || null });
-      setState("saved");
-    } catch (err) {
-      setState("asking");
-      setError(err instanceof ApiError ? err.message : "Couldn't save the email. Please try again.");
-    }
-  }
-
+  if (!needed || !mailer) return null;
   return (
-    <form className="plans-remind" onSubmit={(event) => void save(event)} noValidate>
-      <label className="plans-remind-label" htmlFor="plans-remind-email">
-        Remind me before my plan ends
-      </label>
-      <input
-        id="plans-remind-email"
-        className="input"
-        type="email"
-        autoComplete="email"
-        placeholder="you@example.com"
-        value={email}
-        aria-invalid={error ? true : undefined}
-        onChange={(event) => setEmail(event.target.value)}
-      />
-      <button type="submit" className="btn btn-sm" aria-disabled={state === "saving" || undefined}>
-        {state === "saving" ? <ButtonSpinner size={12} /> : null}
-        Save
-      </button>
-      <button type="button" className="btn btn-ghost btn-xs" onClick={() => setState("dismissed")}>
-        Not now
-      </button>
-      {error ? (
-        <p className="error-text" role="alert">
-          <AlertCircleIcon size={13} />
-          {error}
-        </p>
-      ) : null}
-    </form>
+    <p className="ui-notice plans-email-line" role="status">
+      <MailIcon size={15} />
+      <span className="ui-notice-text">
+        Add an email in{" "}
+        <button type="button" className="plans-link-button" onClick={() => openSettings("account")}>
+          Settings → Account
+        </button>{" "}
+        to get receipts and reminders by email.
+      </span>
+    </p>
   );
 }
 
@@ -299,7 +263,7 @@ export default function BillingReturnPage() {
       extra = order ? (
         <>
           <PaidSlip order={order} />
-          <RemindAsk until={until} />
+          <EmailLine />
         </>
       ) : null;
       actions = (

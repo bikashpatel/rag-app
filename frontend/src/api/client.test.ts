@@ -2,10 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeBillingStatus, makeCatalog, makeOrder, makePaymentView, makePublicPlan, makePublicSite } from "../test/billing";
 import { deferred, errorResponse, jsonResponse, streamResponse, stubFetch, type FetchCall } from "../test/http";
 import { makeMe } from "../test/fixtures";
+import { makeGooglePending, makePasswordTokenInfo, makeSignupCheck, makeUndoInfo } from "../test/auth";
 import {
+  accountEmailApi,
   api,
   ApiError,
   apiErrorFromBody,
+  authApi,
+  authErrorCode,
   billingApi,
   changePassword,
   documentDownloadUrl,
@@ -16,6 +20,7 @@ import {
   isPlanRequired,
   notifyPlanRequired,
   onPluginProblem,
+  passwordRefusal,
   postSSE,
   publicApi,
   receiptUrl,
@@ -77,7 +82,7 @@ describe("errorMessageFromBody", () => {
     [502, "<html>Bad gateway</html>", "The server ran into a problem. Please try again."],
     [500, { detail: "" }, "The server ran into a problem. Please try again."],
     [404, { detail: [] }, "Request failed (404)"],
-    [429, { message: "slow down" }, "Request failed (429)"],
+    [429, { message: "slow down" }, "Too many attempts. Wait a minute and try again."],
   ])("falls back by status %d", (status, body, expected) => {
     expect(errorMessageFromBody(status, body)).toBe(expected);
   });
@@ -224,6 +229,175 @@ describe("error codes and the plan handler", () => {
   });
 });
 
+describe("sign-up and sign-in errors", () => {
+  const breached = "This password has appeared in a data breach. Choose a different one.";
+
+  it("reads the reason of a refused password", async () => {
+    stubFetch({
+      "POST /auth/signup": () =>
+        jsonResponse({ detail: breached, code: "password_rejected", reason: "breached" }, { status: 422 }),
+    });
+    const error = await rejection(authApi.signup(signupBody));
+    expect(error).toMatchObject({ status: 422, code: "password_rejected", reason: "breached", feature: null });
+    expect(passwordRefusal(error)).toEqual({ reason: "breached", message: breached });
+    expect(apiErrorFromBody(422, { detail: "x", reason: 3 }).reason).toBeNull();
+    expect(new ApiError(400, "x").reason).toBeNull();
+  });
+
+  it("names the sign-up and sign-in codes, and nothing else", () => {
+    expect(authErrorCode(new ApiError(401, "x", { code: "challenge_required" }))).toBe("challenge_required");
+    expect(authErrorCode(new ApiError(409, "x", { code: "email_required" }))).toBe("email_required");
+    expect(authErrorCode(new ApiError(402, "x", { code: "plan_required" }))).toBeNull();
+    expect(authErrorCode(new ApiError(400, "x"))).toBeNull();
+    expect(authErrorCode(new Error("challenge_required"))).toBeNull();
+    expect(authErrorCode(null)).toBeNull();
+  });
+
+  it("gives PasswordRules only a refusal with a known reason", () => {
+    const tooShort = new ApiError(422, "Use at least 8 characters.", { code: "password_rejected", reason: "too_short" });
+    expect(passwordRefusal(tooShort)).toEqual({ reason: "too_short", message: "Use at least 8 characters." });
+    expect(passwordRefusal(new ApiError(422, "x", { code: "password_rejected", reason: "shiny" }))).toBeNull();
+    expect(passwordRefusal(new ApiError(422, "x", { code: "password_rejected" }))).toBeNull();
+    expect(passwordRefusal(new ApiError(400, "x", { code: "wrong_password" }))).toBeNull();
+    expect(passwordRefusal(new Error("x"))).toBeNull();
+  });
+
+  it("leaves a 401 challenge at sign-in to the page", async () => {
+    stubFetch({
+      "POST /auth/login": () =>
+        jsonResponse({ detail: "Confirm you're not a robot to continue.", code: "challenge_required" }, { status: 401 }),
+    });
+    await expect(api.post("/auth/login", { identifier: "maya@example.com", password: "x" })).rejects.toMatchObject({
+      code: "challenge_required",
+    });
+    expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+});
+
+const signupBody = {
+  email: "maya@example.com",
+  password: "correct horse battery",
+  accept_terms: true as const,
+  turnstile_token: "XXXX.DUMMY.TOKEN.XXXX",
+  next: "/plans",
+};
+
+describe("authApi", () => {
+  const accepted = () => jsonResponse({ status: "accepted" }, { status: 202 });
+  const noContent = () => new Response(null, { status: 204 });
+
+  it("reads the sign-in config and sends sign-up, resend and forgot", async () => {
+    const config = { signup: { open: false, email: false, google: false } };
+    const calls = stubFetch({
+      "GET /auth/config": config,
+      "POST /auth/signup": accepted,
+      "POST /auth/signup/resend": accepted,
+      "POST /auth/password/forgot": accepted,
+    });
+    const challenge = { email: "maya@example.com", turnstile_token: "XXXX.DUMMY.TOKEN.XXXX" };
+    await expect(authApi.config()).resolves.toEqual(config);
+    await expect(authApi.signup(signupBody)).resolves.toEqual({ status: "accepted" });
+    await expect(authApi.resend(challenge)).resolves.toEqual({ status: "accepted" });
+    await expect(authApi.forgot(challenge)).resolves.toEqual({ status: "accepted" });
+    expect(calls.map(({ method, path, body }) => [method, path, body])).toEqual([
+      ["GET", "/auth/config", undefined],
+      ["POST", "/auth/signup", signupBody],
+      ["POST", "/auth/signup/resend", challenge],
+      ["POST", "/auth/password/forgot", challenge],
+    ]);
+  });
+
+  it("checks and spends the emailed links' tokens", async () => {
+    const me = makeMe();
+    const calls = stubFetch({
+      "POST /auth/signup/check": makeSignupCheck(),
+      "POST /auth/signup/complete": me,
+      "POST /auth/password/check": makePasswordTokenInfo(),
+      "POST /auth/password/reset": noContent,
+      "POST /auth/email/check": { email: "maya@example.org", account: "maya", signed_in: true },
+      "POST /auth/email/verify": { email: "maya@example.org" },
+      "POST /auth/email/undo-check": makeUndoInfo(),
+      "POST /auth/email/undo": noContent,
+    });
+    await expect(authApi.checkSignup("t1")).resolves.toEqual(makeSignupCheck());
+    await expect(authApi.completeSignup({ token: "t1", password: "chosen" })).resolves.toEqual(me);
+    await expect(authApi.checkPasswordToken("t2")).resolves.toEqual(makePasswordTokenInfo());
+    const reset = { token: "t2", new_password: "new one", disconnect_google: true };
+    await expect(authApi.resetPassword(reset)).resolves.toBeUndefined();
+    await expect(authApi.checkEmailToken("t3")).resolves.toMatchObject({ signed_in: true });
+    await expect(authApi.confirmEmail("t3")).resolves.toEqual({ email: "maya@example.org" });
+    await expect(authApi.checkUndo("t4")).resolves.toEqual(makeUndoInfo());
+    await expect(authApi.undoEmail("t4")).resolves.toBeUndefined();
+    expect(calls.map(({ path, body }) => [path, body])).toEqual([
+      ["/auth/signup/check", { token: "t1" }],
+      ["/auth/signup/complete", { token: "t1", password: "chosen" }],
+      ["/auth/password/check", { token: "t2" }],
+      ["/auth/password/reset", reset],
+      ["/auth/email/check", { token: "t3" }],
+      ["/auth/email/verify", { token: "t3" }],
+      ["/auth/email/undo-check", { token: "t4" }],
+      ["/auth/email/undo", { token: "t4" }],
+    ]);
+    expect(calls.every((call) => call.method === "POST")).toBe(true);
+  });
+
+  it("starts, reads, finishes and cancels a Google sign-up", async () => {
+    const me = makeMe();
+    const calls = stubFetch({
+      "POST /auth/google/start": { authorize_url: "https://accounts.google.com/o/oauth2/v2/auth?state=s" },
+      "GET /auth/google/pending": makeGooglePending(),
+      "POST /auth/google/finish": me,
+      "POST /auth/google/cancel": noContent,
+    });
+    await expect(authApi.googleStart({ intent: "signin", from: "login", next: "/plans" })).resolves.toEqual({
+      authorize_url: "https://accounts.google.com/o/oauth2/v2/auth?state=s",
+    });
+    await expect(authApi.googlePending()).resolves.toEqual(makeGooglePending());
+    await expect(authApi.googleFinish({ accept_terms: true })).resolves.toEqual(me);
+    await expect(authApi.googleCancel()).resolves.toBeUndefined();
+    expect(calls.map(({ method, path, body }) => [method, path, body])).toEqual([
+      ["POST", "/auth/google/start", { intent: "signin", from: "login", next: "/plans" }],
+      ["GET", "/auth/google/pending", undefined],
+      ["POST", "/auth/google/finish", { accept_terms: true }],
+      ["POST", "/auth/google/cancel", {}],
+    ]);
+  });
+});
+
+describe("accountEmailApi", () => {
+  it("changes, resends and cancels the email, sets a first password and disconnects Google", async () => {
+    const noContent = () => new Response(null, { status: 204 });
+    const calls = stubFetch({
+      "POST /me/email": () => jsonResponse({ status: "accepted" }, { status: 202 }),
+      "POST /me/email/resend": () => jsonResponse({ status: "accepted" }, { status: 202 }),
+      "DELETE /me/email/pending": noContent,
+      "POST /me/password/setup": noContent,
+      "DELETE /me/google": noContent,
+    });
+    await expect(accountEmailApi.change({ email: "maya@example.org", password: "pw" })).resolves.toEqual({
+      status: "accepted",
+    });
+    await expect(accountEmailApi.resend()).resolves.toEqual({ status: "accepted" });
+    await expect(accountEmailApi.cancel()).resolves.toBeUndefined();
+    await expect(accountEmailApi.setupPassword({ new_password: "a new one" })).resolves.toBeUndefined();
+    await expect(accountEmailApi.unlinkGoogle({ password: "pw" })).resolves.toBeUndefined();
+    expect(calls.map(({ method, path, body }) => [method, path, body])).toEqual([
+      ["POST", "/me/email", { email: "maya@example.org", password: "pw" }],
+      ["POST", "/me/email/resend", {}],
+      ["DELETE", "/me/email/pending", undefined],
+      ["POST", "/me/password/setup", { new_password: "a new one" }],
+      ["DELETE", "/me/google", { password: "pw" }],
+    ]);
+    expect(vi.mocked(fetch).mock.calls[4][1]?.headers).toEqual({ "Content-Type": "application/json" });
+  });
+
+  it("reports a 401 as an ended session", async () => {
+    stubFetch({ "POST /me/email/resend": () => errorResponse(401, "Not authenticated") });
+    await expect(accountEmailApi.resend()).rejects.toMatchObject({ status: 401 });
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("billingApi", () => {
   it("reads the catalog, status, payments and profile", async () => {
     const catalog = makeCatalog();
@@ -253,13 +427,10 @@ describe("billingApi", () => {
       "PUT /billing/profile": ({ body }) => body as object,
     });
     await expect(billingApi.checkout({ plan_id: 2, kind: "period", accept_terms: true })).resolves.toEqual(started);
-    await expect(billingApi.saveProfile({ name: "Maya", email: "maya@example.com" })).resolves.toEqual({
-      name: "Maya",
-      email: "maya@example.com",
-    });
+    await expect(billingApi.saveProfile({ name: "Maya" })).resolves.toEqual({ name: "Maya" });
     expect(calls).toMatchObject([
       { method: "POST", path: "/billing/checkout", body: { plan_id: 2, kind: "period", accept_terms: true } },
-      { method: "PUT", path: "/billing/profile", body: { name: "Maya", email: "maya@example.com" } },
+      { method: "PUT", path: "/billing/profile", body: { name: "Maya" } },
     ]);
   });
 
