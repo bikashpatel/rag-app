@@ -59,6 +59,7 @@ os.environ.update(
 import httpx  # noqa: E402
 import litellm  # noqa: E402
 import pytest  # noqa: E402
+from argon2 import PasswordHasher  # noqa: E402
 from cryptography.fernet import Fernet  # noqa: E402
 from docx import Document as new_docx  # noqa: E402
 from fake_google import CLIENT_ID, CLIENT_SECRET, FakeGoogle, fake_google_app  # noqa: E402
@@ -81,7 +82,7 @@ from sqlalchemy import make_url, select  # noqa: E402
 from sqlalchemy import text as sql  # noqa: E402
 from sqlalchemy.ext.asyncio import AsyncEngine  # noqa: E402
 
-from app import db  # noqa: E402
+from app import db, security  # noqa: E402
 from app.config import settings  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
 from app.models import Document, Plan, PlanPeriod, User, utcnow  # noqa: E402
@@ -100,6 +101,20 @@ SseEvent = tuple[str, dict[str, Any]]
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     shutil.rmtree(_ROOT, ignore_errors=True)
+
+
+# The app's argon2 parameters (64 MiB, 3 passes, 4 lanes) cost a tenth of a second per hash on a CI runner, and most
+# tests hash and verify several times; tests use the cheapest ones instead (test_auth pins the production ones).
+PRODUCTION_HASHER = security._hasher
+
+
+@pytest.fixture(autouse=True, scope="session")
+def cheap_password_hashing() -> Iterator[None]:
+    with pytest.MonkeyPatch.context() as patch:
+        hasher = PasswordHasher(time_cost=1, memory_cost=8, parallelism=1)
+        patch.setattr(security, "_hasher", hasher)
+        patch.setattr(security, "_DUMMY_HASH", hasher.hash("dummy-password-for-timing"))
+        yield
 
 
 # ---------------- Isolated state ----------------

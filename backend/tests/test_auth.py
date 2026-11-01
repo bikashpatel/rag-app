@@ -13,7 +13,7 @@ import httpx
 import jwt
 import pytest
 from argon2 import PasswordHasher
-from conftest import ADMIN_PASSWORD, ADMIN_USERNAME, USER_PASSWORD, ApiClient, drain_mail
+from conftest import ADMIN_PASSWORD, ADMIN_USERNAME, PRODUCTION_HASHER, USER_PASSWORD, ApiClient, drain_mail
 from fake_mail import FakeMail
 from fastapi import FastAPI
 from redis.asyncio import Redis
@@ -297,6 +297,12 @@ async def test_nul_characters_in_the_username_are_ignored(create_user: CreateUse
     # Postgres can't compare text with NUL in it: this used to be a 500 there.
     assert (await client.login("ali\x00ce", WRONG_PASSWORD)).status_code == 401
     assert (await client.login("ali\x00ce", USER_PASSWORD)).status_code == 200
+
+
+def test_the_app_hashes_with_argon2s_default_parameters() -> None:
+    defaults = PasswordHasher()
+    used = (PRODUCTION_HASHER.time_cost, PRODUCTION_HASHER.memory_cost, PRODUCTION_HASHER.parallelism)
+    assert used == (defaults.time_cost, defaults.memory_cost, defaults.parallelism) == (3, 65536, 4)
 
 
 async def test_login_upgrades_an_outdated_password_hash(create_user: CreateUser, client: ApiClient) -> None:
