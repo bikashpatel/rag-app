@@ -1809,11 +1809,12 @@ What matters when maintaining it:
 ## Next steps
 
 Self-service sign-up is built, tested and deployed to the live stack (2026-11-01) with sign-up closed, and
-committed in the first commit after `28b7fe5`. The steps are in order: 1 and 2 first, then the owner's actions of
+committed in `f30adcd` (CI green at `81ca2d1`). The steps are in order: 1 and 2 first, then the owner's actions of
 `docs/briefs/signup-auth.md` section 17 (steps 3 to 13; every click is there, `README.md` section 10 has the summary),
 which end with sign-up open, then the rest. The owner edits `.env`; never print it.
 
-1. **Check CI on the sign-up commit** (the first after `28b7fe5`) and record the result here. Before it: the
+1. Done: sign-up is committed in `f30adcd`, and CI is green at `81ca2d1` (the backend job runs in about 24 minutes
+   with test-only argon2 parameters). Before it: the
    redesign in `5148b83` and `d11a9e5`, plugins with Gmail in `c5fb005`, images from chat in `7eaf587`, files from
    chat, the vision follow-up fix and `test_vision_independent.py` in `70f8076`, the test suites and CI in `3a277a0`
    and `d4eada1`, operations (migrations, backups, monitoring) in `91e20bc` (CI green at `c58622b`), plans and billing
