@@ -1,6 +1,6 @@
 <!-- draft -->
 # Pricing
 
-**Draft.** This page is a placeholder. Replace it with your own text before going live.
+Last updated: 1 November 2026
 
-[One or two sentences that introduce the plans; the plan cards and the comparison below come from Admin → Plans]
+Every plan gives you 30 days of AskNuvexusDoc, priced in Indian rupees and paid in advance; nothing renews automatically. Sign up first, then choose the plan that fits your work, and upgrade whenever you need more.
