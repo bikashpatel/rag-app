@@ -1,7 +1,7 @@
 // Words and dates about the user's plan, shared by the chat, Settings and the plan pages (docs/briefs/plans-billing.md
 // 8; plans-billing-visual.md 3.3). Billing dates are India dates whatever the browser's zone, as the server writes them.
 
-import type { CheckoutKind, CheckoutOption, PlanAccess, PlanOffer } from "../../api/types";
+import type { CheckoutKind, CheckoutOption, OrderChannel, PlanAccess, PlanOffer } from "../../api/types";
 import { formatIstDate } from "../../lib/billing";
 
 const DAY_MS = 86_400_000;
@@ -39,17 +39,24 @@ export function istLongDay(value: string): string {
   }).format(instant);
 }
 
+const istTime = new Intl.DateTimeFormat("en-GB", {
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23",
+  timeZone: IST_ZONE,
+});
+
 /** "Today, 15:02" or "26 Oct, 15:02" (IST). */
 export function istMoment(iso: string, now: number = Date.now()): string {
   const instant = Date.parse(iso);
   if (Number.isNaN(instant)) return "—";
-  const time = new Intl.DateTimeFormat("en-GB", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-    timeZone: IST_ZONE,
-  }).format(instant);
-  return `${istDay(instant) === istDay(now) ? "Today" : istDayMonth(iso)}, ${time}`;
+  return `${istDay(instant) === istDay(now) ? "Today" : istDayMonth(iso)}, ${istTime.format(instant)}`;
+}
+
+/** "21 Oct, 14:58" (IST), with the date even today. */
+export function istDayTime(iso: string): string {
+  const instant = Date.parse(iso);
+  return Number.isNaN(instant) ? "—" : `${istDayMonth(iso)}, ${istTime.format(instant)}`;
 }
 
 /** The IST date of the last day of a period that ends at `endsAt` (an exclusive instant, midnight IST). */
@@ -120,8 +127,9 @@ export function returnPath(orderId: string): string {
   return `/billing/return?order=${encodeURIComponent(orderId)}`;
 }
 
-/** "UPI", "Card", "Netbanking", "Bank transfer", … for an order's or a payment's method. */
-export function methodLabel(method: string | null): string | null {
+/** "UPI", "UPI (direct)", "Card", "Bank transfer", … for an order's or a payment's method (and its channel). */
+export function methodLabel(method: string | null, channel?: OrderChannel): string | null {
+  if (channel === "upi_direct") return "UPI (direct)";
   if (!method) return null;
   const known: Record<string, string> = {
     upi: "UPI",

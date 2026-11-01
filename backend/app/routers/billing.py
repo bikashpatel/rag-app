@@ -1,9 +1,10 @@
-"""The caller's plans, checkout, orders, payments, receipts and billing profile, and Razorpay's two inbound endpoints
-(SPEC.md section 6, "Billing"; docs/briefs/plans-billing.md 6 and 7.2). Open to users without a plan; the return and
-the webhook take no session (the return's signature and the webhook's HMAC are checked instead)."""
+"""The caller's plans, checkout (online or by direct UPI), orders, payments, receipts and billing profile, and
+Razorpay's two inbound endpoints (SPEC.md section 6, "Billing"; docs/briefs/plans-billing.md 6 and 7.2;
+docs/briefs/upi-direct.md 6). Open to users without a plan; the return and the webhook take no session (the return's
+signature and the webhook's HMAC are checked instead)."""
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse, Response
@@ -23,9 +24,10 @@ from app.schemas_billing import (
     OrderView,
     PaymentView,
     PlanCatalog,
+    UtrSubmission,
     WebhookAck,
 )
-from app.services.billing import business, checkout, payments, receipts, reconcile, summary, webhooks
+from app.services.billing import business, checkout, payments, receipts, reconcile, summary, upi, webhooks
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,16 @@ async def start_checkout(
     return await checkout.start(db, user, body, request.headers.get("origin"))
 
 
+@router.post("/upi/checkout", status_code=status.HTTP_201_CREATED)
+async def start_upi_checkout(
+    body: CheckoutRequest,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> OrderView:
+    return await upi.start(db, user, body, request)
+
+
 @router.get("/orders/{public_id}")
 async def get_order(
     public_id: PublicId,
@@ -92,6 +104,35 @@ async def cancel_order(
     public_id: PublicId, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> OrderView:
     return await checkout.cancel(db, user, await _own_order(db, user, public_id))
+
+
+@router.post("/orders/{public_id}/utr")
+async def submit_utr(
+    public_id: PublicId,
+    body: UtrSubmission,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> OrderView:
+    return await upi.submit_utr(db, user, await _own_order(db, user, public_id), body.utr)
+
+
+_QR: dict[int | str, dict[str, Any]] = {
+    200: {"content": {"image/svg+xml": {}, "image/png": {}}, "description": "The payment request as a QR code"}
+}
+
+
+@router.get("/orders/{public_id}/upi-qr.svg", response_class=Response, responses=_QR)
+async def upi_qr_svg(
+    public_id: PublicId, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> Response:
+    return upi.order_qr(await _own_order(db, user, public_id), "svg")
+
+
+@router.get("/orders/{public_id}/upi-qr.png", response_class=Response, responses=_QR)
+async def upi_qr_png(
+    public_id: PublicId, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> Response:
+    return upi.order_qr(await _own_order(db, user, public_id), "png")
 
 
 @router.get("/payments")

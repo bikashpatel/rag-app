@@ -1,6 +1,7 @@
 """What the admin and the user see of billing as a whole (docs/briefs/plans-billing.md 7.1, 8.5 and 8.11): the month's
-summary with "Needs attention", the expiring and lapsed lists, a user's billing page and status. Months are IST
-months; test payments count only while test keys run."""
+summary with "Needs attention" (direct-UPI UTRs to check among them, docs/briefs/upi-direct.md 8.7), the expiring and
+lapsed lists, a user's billing page and status, and the monitor's billing check. Months are IST months; test payments
+count only while test keys run."""
 
 import re
 from datetime import datetime, timedelta
@@ -40,7 +41,7 @@ from app.schemas_billing import (
     UserPlanRow,
     UserRef,
 )
-from app.services.billing import business, checkout, entitlements, payments, periods, plans
+from app.services.billing import business, checkout, entitlements, payments, periods, plans, upi
 from app.services.billing.disputes import NEEDS_ACTION
 from app.services.billing.money import IST, format_inr, format_ist_date, ist_date
 from app.services.billing.webhooks import MAX_ATTEMPTS
@@ -49,6 +50,7 @@ EXPIRING_DAYS: Final = 7
 LAPSED_DAYS: Final = 30
 STALE_REFUND: Final = timedelta(days=7)
 RECENT: Final = timedelta(days=30)
+UPI_LATE: Final = timedelta(hours=24)  # a UTR waiting this long for the admin: the monitor warns
 _MONTH = re.compile(r"^(\d{4})-(\d{2})$")
 
 
@@ -392,9 +394,42 @@ async def _reversed(db: AsyncSession, now: datetime) -> list[AttentionItem]:
     return items
 
 
+def _sent(moment: datetime) -> str:
+    """ "1 Nov, 15:10 IST"."""
+    local = moment.astimezone(IST)
+    return f"{local.day} {local:%b, %H:%M} IST"
+
+
+async def _upi_to_check(db: AsyncSession, now: datetime) -> list[AttentionItem]:
+    """One item while direct-UPI UTRs wait for the admin, naming the oldest."""
+    waiting = list(
+        await db.scalars(
+            select(BillingOrder)
+            .where(BillingOrder.status == "submitted", BillingOrder.upi_reference.is_not(None))
+            .order_by(BillingOrder.upi_submitted_at, BillingOrder.id)
+        )
+    )
+    if not waiting:
+        return []
+    oldest = waiting[0]
+    sent = oldest.upi_submitted_at or oldest.created_at
+    late = " (over a day ago)" if now - sent > UPI_LATE else ""
+    return [
+        _item(
+            "upi_to_check",
+            f"{_plural(len(waiting), 'UPI payment', 'UPI payments')} to check",
+            detail=f"The oldest: {format_inr(oldest.amount_paise)} from {oldest.username}, sent {_sent(sent)}{late}. "
+            "Find each credit in your bank or UPI app before you confirm it.",
+            order_public_id=oldest.public_id,
+            count=len(waiting),
+        )
+    ]
+
+
 async def attention(db: AsyncSession) -> list[AttentionItem]:
     now = utcnow()
     items = await _setup_items(db)
+    items += await _upi_to_check(db, now)
     for order in await db.scalars(
         select(BillingOrder)
         .where(BillingOrder.status == "review", BillingOrder.reviewed_at.is_(None))
@@ -525,12 +560,7 @@ async def billing_status(db: AsyncSession, user: User) -> BillingStatus:
     now = utcnow()
     ent = await entitlements.load(db, user, now=now)
     rows = await periods.user_periods(db, user.id)
-    open_order = await db.scalar(
-        select(BillingOrder)
-        .where(BillingOrder.user_id == user.id, BillingOrder.status == "pending")
-        .order_by(BillingOrder.created_at.desc(), BillingOrder.id.desc())
-        .limit(1)
-    )
+    open_order = await entitlements.open_order(db, user.id, now)
     return BillingStatus(
         plan=await entitlements.plan_access(db, user, ent),
         periods=[period_view(row, now) for row in rows if row.revoked_at is None and row.ends_at > now],
@@ -591,6 +621,12 @@ def _plural(count: int, one: str, many: str) -> str:
     return f"{count} {one if count == 1 else many}"
 
 
+async def upi_on() -> bool:
+    """Direct UPI is offered (its settings live in the database): the billing check runs for it too."""
+    async with SessionLocal() as db:
+        return business.upi_ready(await business.get_settings(db))
+
+
 async def problems(now: datetime | None = None) -> list[str]:
     """What the `billing` check warns about, as counts (never usernames or amounts); empty when all is well."""
     now = now or utcnow()
@@ -645,6 +681,17 @@ async def problems(now: datetime | None = None) -> list[str]:
         )
         if failed:
             found.append(_plural(failed, "webhook event failed 3 times", "webhook events failed 3 times"))
+        late = await db.scalar(
+            select(func.count())
+            .select_from(BillingOrder)
+            .where(
+                BillingOrder.status == "submitted",
+                BillingOrder.upi_reference.is_not(None),
+                BillingOrder.upi_submitted_at < now - UPI_LATE,
+            )
+        )
+        if late:
+            found.append(_plural(late, "UPI payment waiting over 24 hours", "UPI payments waiting over 24 hours"))
         if settings.razorpay_webhook_secret:
             captured = set(
                 await db.scalars(
@@ -680,4 +727,9 @@ async def problems(now: datetime | None = None) -> list[str]:
         found.append("test keys run on a public https address")
     if await checkout.unpaid_cap_reached():
         found.append("unpaid users reached their payment-link cap (CHECKOUT_UNPAID_PER_HOUR) in the last hour")
+    if await upi.unpaid_cap_reached():
+        found.append(
+            f"UPI payments of unpaid users were refused in the last hour: {upi.UNPAID_WAITING_CAP} of their UTRs "
+            "waited for your check"
+        )
     return [problem[0].upper() + problem[1:] for problem in found]

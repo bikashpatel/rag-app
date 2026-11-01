@@ -10,6 +10,7 @@ import type {
   EndComplimentaryRequest,
   GrantRequest,
   OfflinePaymentRequest,
+  OrderChannel,
   OrderStatus,
   Page,
   PaymentStatus,
@@ -23,6 +24,8 @@ import type {
   RevokeRequest,
   SignupSettings,
   SignupStatus,
+  UpiConfirmRequest,
+  UpiRejectRequest,
   UserBilling,
 } from "../../api/types";
 
@@ -99,8 +102,9 @@ export const refundPayment = (id: number, body: RefundRequest) =>
 export const recordOfflinePayment = (body: OfflinePaymentRequest) =>
   api.post<AdminPayment>("/admin/billing/offline-payments", body);
 
-export const ordersPath = (status: OrderStatus | null, page: number) =>
-  `/admin/billing/orders${query({ status, page })}`;
+/** `status=submitted`: the direct-UPI UTRs to check, the oldest first. */
+export const ordersPath = (status: OrderStatus | null, page: number, channel: OrderChannel | null = null) =>
+  `/admin/billing/orders${query({ status, channel, page })}`;
 const orderPath = (publicId: string) => `/admin/billing/orders/${encodeURIComponent(publicId)}`;
 export const getOrder = (publicId: string, signal?: AbortSignal) =>
   api.get<AdminOrderDetail>(orderPath(publicId), { signal });
@@ -109,6 +113,14 @@ export const resolveOrder = (publicId: string, body: ResolveRequest) =>
   api.post<AdminOrder>(`${orderPath(publicId)}/resolve`, body);
 export const listOrders = (status: OrderStatus | null, page: number) =>
   api.get<Page<AdminOrder>>(ordersPath(status, page));
+/** Records the direct-UPI payment and applies it once; `utr` must be the order's (409 utr_mismatch). */
+export const confirmUpi = (publicId: string, body: UpiConfirmRequest) =>
+  api.post<AdminOrder>(`${orderPath(publicId)}/upi-confirm`, body);
+export const rejectUpi = (publicId: string, body: UpiRejectRequest) =>
+  api.post<AdminOrder>(`${orderPath(publicId)}/upi-reject`, body);
+/** The ₹1 test QR of the saved UPI ID and payee name; `v` changes with them, so a new save shows a new image. */
+export const upiPreviewUrl = (upiId: string, payeeName: string) =>
+  `/api/admin/billing/upi-preview.svg${query({ v: `${upiId} ${payeeName}` })}`;
 
 export const userBillingPath = (userId: number) => `/admin/billing/users/${userId}`;
 export const grantPlan = (userId: number, body: GrantRequest) =>

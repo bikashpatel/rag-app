@@ -12,8 +12,10 @@ migrations, backups with a tested restore, and monitoring with alerts, built, re
 stack (committed in `91e20bc`). Updated on 2026-10-27 after plans, Razorpay checkout and plan-based access were built,
 reviewed and deployed to the live stack (committed in `10ecd35`), and on 2026-11-01 after self-service sign-up, Google
 sign-in, password reset and transactional email were built, tested and deployed to the live stack with sign-up closed
-(not committed yet). `SPEC.md` is the binding contract; `README.md` has setup, commands, the test suites, operations
-(section 8), plans and billing (section 9), sign-up and email (section 10), the architecture and how to use the app.
+(not committed yet), and on 2026-11-02 after direct UPI payments to the owner's UPI ID were built, reviewed, fixed and
+verified on the working tree (**not deployed and not committed yet**). `SPEC.md` is the binding contract; `README.md`
+has setup, commands, the test suites, operations (section 8), plans and billing (section 9), sign-up and email (section
+10), the architecture and how to use the app.
 
 **Renamed on 2026-10-28:** the product is now **AskNuvexusDoc** (the owner's domain is asknuvexusdoc.com), formerly
 "RAG Assistant". The new name is in the tab titles, the brand (mark "N"), the default business name on receipts and
@@ -24,7 +26,8 @@ the old name until changed there; the receipt prefix stays `RA`.
 
 ## Status
 
-Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
+Everything in `SPEC.md` is built, tested, reviewed and running in Docker, except direct UPI, which is built, reviewed
+and verified but not deployed yet (below):
 
 - **Backend:** auth and admin (`bootstrap.py`, `routers/{auth,models,admin}.py`), ingestion
   (`services/{parsing,chunking,ingestion}.py`, `worker.py`, `routers/documents.py`), chat
@@ -196,6 +199,37 @@ Everything in `SPEC.md` is built, tested, reviewed and running in Docker:
     `test_ops_mail.py`, `test_schemas_auth.py`, `test_migration_0004.py`) with fakes for SMTP, Turnstile, HIBP and
     Google OpenID Connect; `integration/tests/test_18_signup.py` and `test_19_mail.py` against `integration/fake_mail/`
     and `integration/fake_turnstile/`; `e2e/tests/signup.spec.ts`.
+- **Direct UPI payments** (2026-11-02, in the working tree, **not deployed and not committed yet**;
+  `docs/briefs/upi-direct.md` revision 1, `README.md` section 9 "Direct UPI", `SPEC.md`; see "Direct UPI" below).
+  Customers pay the owner's own UPI ID by QR code or a UPI app link, enter the payment's 12-digit UTR, and the owner
+  confirms it in Admin → Billing → UPI; only then the plan starts, through the same exactly-once apply. Built, reviewed
+  and fixed; **migration 0005 rehearsed** on a restored copy of the live backup `20261101T170805Z-manual`. The live
+  database is still at 0004 (0005 runs when the new backend starts), and direct UPI stays off after the deploy until
+  the owner saves a UPI ID and turns it on.
+  - Backend: `services/billing/upi.py` (the request `upi://pay?pa=…&pn=…&am=….00&cu=INR&tn=<reference>`, its SVG and
+    PNG QR codes with segno 1.6.6, the order, the UTR, the admin's confirm and reject, expiry), migration
+    `0005_upi_direct.py` (nine nullable `upi_*` columns on `billing_orders`, the unique reference, the partial unique
+    index `uq_billing_orders_upi_utr`, `ix_billing_orders_status_submitted`; no row changed), and changes to
+    `checkout` (both checkouts refuse while a UTR waits; the channel; the order views), `payments` (`apply_matched`,
+    the apply both paths share; bank transfers refused on a waiting or confirmed UTR), `periods` (`start_now` in mode
+    `offline`), `entitlements` (`pending_order` includes `submitted`; `rejected_order`), `business` (the three
+    settings, `upi_ready`, `PaymentsInfo.upi_direct`), `summary` (the `upi_to_check` item, the monitor's problem),
+    `receipts` ("UPI (direct)"), `csv_export`, `reconcile` (the billing loop always runs and expires requests),
+    `services/export.py`, the mail kinds `upi_submitted` and `upi_rejected`, `ops/checks.py`, the throttle rule
+    `upi_unpaid`, the routers and `schemas_billing.py`. nginx: `/api/billing/upi/checkout` in the checkout rate zone.
+    One new dependency, `segno==1.6.6` (pure Python, released 2025-03-12), in both locks.
+  - Frontend: the payment page (`components/billing/UpiOrder.tsx` on `BillingReturnPage`), "Pay with UPI" on
+    `CheckoutPage` and the phone pay bar, the banners and notices (`PendingCheckoutBanner`, `/plans`, Settings → Plan &
+    billing), Admin → Billing → UPI (`BillingUpi.tsx`, the confirm and reject dialogs in `UpiDecision.tsx`), the "UPI
+    payments" card with the ₹1 test QR in Business & payments, the badges and channel in Orders and Payments, the
+    refund dialog's text, the delete warning in Admin → Users, `QrIcon`, and the policy pages (refunds, terms,
+    privacy, shipping, contact).
+  - Tests: 99 new backend tests in 8 files (`test_upi_schemas.py`, `test_upi_request.py`, `test_upi_checkout.py`,
+    `test_upi_utr.py`, `test_upi_confirm.py`, `test_upi_reject.py`, `test_upi_views.py`, `test_migration_0005.py`; 5
+    of them `postgres`-marked: two confirms at once, two orders sending one UTR at once, and migration 0005),
+    additions to 10 others,
+    `integration/tests/test_21_upi_direct.py` (the whole flow through nginx, with the fake mail server),
+    `e2e/tests/upi.spec.ts` (4 tests) and one in `admin.spec.ts`, and Vitest for the new components.
 
 How the work went: the lead wrote `SPEC.md` and the foundation code. Agents then built the
 feature areas in parallel from `docs/briefs/`, followed by backend integration tests, frontend
@@ -242,6 +276,12 @@ Sign-up went the same way: research on Google, Cloudflare, Resend, Brevo, OWASP,
 first, then builders in stages on frozen interfaces (brief section 16); the five suites; a rehearsal of migration 0004
 on a restored copy of the live backup; and the live deploy with sign-up closed.
 
+Direct UPI went the same way: the owner's decisions (D1 to D10 in the brief), research on NPCI's UPI link
+specification, personal and merchant UPI IDs, the UTR and phones (brief section 2), a brief with the contract applied
+first (stage 0), a backend and a frontend builder in parallel on frozen interfaces (brief section 13), reviews of the
+built code, two fixers in parallel, a rehearsal of migration 0005 on a restored copy of the live backup, and a final
+pass that ran every suite on the combined tree. The deploy waits for the owner's approval.
+
 The Compose project `rag-app` was left running with its data, on the final redesign build. The vision feature, files
 from chat, images from chat and plugins are committed (`9fb8be6`, `70f8076`, `7eaf587`, then `c5fb005`). The redesign
 is in two commits: `5148b83`, a WIP snapshot pushed to `origin/main` before its review, and `d11a9e5`, with the review
@@ -255,6 +295,14 @@ agents' smoke and browser-pass scripts lived in scratch directories and are not 
 
 | Check | Result |
 |---|---|
+| Direct UPI: lint and types (2026-11-02, the combined working tree after both fixers) | ruff 0.13.0 clean on app, tests and migrations; mypy 1.18.2 clean on app and migrations (150 files) |
+| Direct UPI: backend (2026-11-02) | `pytest -q --cov --cov-fail-under=94` **3965 passed, 62 skipped** (the `postgres`-marked tests) in 930 s, coverage 95.84 % (`services/billing/upi.py` 98.6 %). 99 new tests in 8 files: the UTR, UPI ID and payee name rules, the exact request strings and the QR codes, checkout with direct UPI only and its caps, the UTR's uniqueness and the attempts cap, confirms of `period` and `now` orders (D13), rejections and their mail, the views, the expiry, the attention item, the monitor, the CSV, the export, user deletion and a recorded refund; no UTR in the logs |
+| Direct UPI: backend on Postgres (2026-11-02; a throwaway `postgres:17.11-alpine` at `docker-compose.yml`'s digest, tmpfs, random port and password, removed afterwards) | `pytest -m postgres` **62 passed** (37 s): the 57 earlier ones plus two confirms of one payment at once applying once, two orders sending one UTR at once holding it once, and migration 0005 (columns and rows, the schema against the models, the partial unique index) |
+| Direct UPI: migrations (2026-11-02; a second fresh throwaway Postgres, removed afterwards) | `alembic upgrade head` ran 0001 to 0005; `alembic check` "No new upgrade operations detected"; `alembic current` 0005 (head) |
+| Direct UPI: migration 0005 rehearsal (2026-11-02) | On a restored copy of the live backup `20261101T170805Z-manual` in a throwaway Postgres, through the real start-up path (`app.db.init_db`); the rehearsal script compared every table's row count and a checksum of its existing columns before and after, compared the schema with the models, and checked the new columns empty and `bikash`'s plan |
+| Direct UPI: frontend (2026-11-02) | `tsc` clean; `npm run test:coverage` **1488 passed in 101 files**; 94.88 % of statements, 90.53 % of branches, 94.42 % of functions, 96.75 % of lines, over the thresholds (92, 87, 91, 94); `vite build` into a scratch directory clean (only the old chunk-size warning) |
+| Direct UPI: end-to-end (2026-11-02) | `e2e` `tsc --noEmit` clean; Playwright lists **80 tests in 13 files** (the new `upi.spec.ts` with 4, and the admin's confirm and reject dialogs in `admin.spec.ts`). Not run here: the live stack serves the previous build; run them after the deploy |
+| Direct UPI: integration (2026-11-02; `integration/run.sh --rmi`, project `rag-it-upifinal`, ports 20000 to 20005) | **188 passed in 22 files** (614 s of tests), including `test_21_upi_direct.py` (the settings, a customer without an email, the QR codes through nginx with their headers, the UTR and its mail to the owner, Needs attention, another customer's same UTR refused, the confirm and its receipt, the billing check, a reject and its mail, a recorded refund ending access). Teardown left no container, volume, network or image of the project |
 | Sign-up: backend (2026-11-01) | `pytest -q --cov --cov-fail-under=94` **3834 passed, 57 skipped** (the `postgres`-marked tests), coverage 95.75 %. The 57 `postgres`-marked tests now include migration 0004, the sign-up races (two completions of one sign-up, a completion against a Google finish, two accounts confirming one address, an undo against a new change), two mail loops never sending one mail twice and two bounce reports for one address. Google sign-in, the mailer, Turnstile and the breach check run against fakes (`google_oidc.py` and `fake_google.py`, `fake_mail.py`, `fake_turnstile.py`, `fake_hibp.py`); `test_signup_enumeration.py` checks the same status, headers and bytes for every address |
 | Sign-up: frontend (2026-11-01) | Vitest **1422 passed in 98 files**; coverage 94.8 % of statements, 90.4 % of branches, 94.5 % of functions, 96.7 % of lines, over the thresholds (92, 87, 91, 94) |
 | Sign-up: integration (2026-11-01; `integration/run.sh`) | **182 passed in 20 files**, including `test_18_signup.py` (email sign-up in the same browser and elsewhere, an existing address, a stranger's sign-up leaving the first link working, resend and its limits, sign-in by email and username with the challenge and its outage fallback, forgot and reset, Google sign-up, automatic linking of a Gmail address, `link_required` for Workspace, an unverified Google address, linking, unlinking, the step-up and a first password, an email change and its undo) and `test_19_mail.py` (deferrals, a refused recipient suppressed, a lost connection kept once by its idempotency key, a mail interrupted by a worker stop sent once, the daily cap holding sign-up mail while a reset and a receipt go out, a receipt with its PDF, a plan reminder, checkout refused without a confirmed email, bounces pausing sign-up mail, the clean-up), against `integration/fake_mail/` and `integration/fake_turnstile/` beside the fake Google, the fake model server and the fake Razorpay |
@@ -1557,6 +1605,42 @@ What matters when maintaining it:
 - **The settings:** the "Accounts and sign-up" and "Email" blocks of `.env.example` (`README.md` section 2);
   `BILLING_EMAIL_FROM` is removed and ignored with a warning.
 
+### Direct UPI
+
+Built on 2026-11-02 from [`docs/briefs/upi-direct.md`](briefs/upi-direct.md) (decisions D1 to D17 in its section 0,
+where it departs from the owner's D1 to D10 in 0.1); `SPEC.md` has the contract and `README.md` section 9 ("Direct
+UPI") the owner's guide. **The owner decided (2026-11-01): direct UPI next to Razorpay**, not instead of it: customers
+pay the owner's UPI ID by QR code or app link and enter the UTR, the owner checks the bank or UPI app and confirms in
+Admin, and then the plan starts; Razorpay stays the automatic channel once its KYC is done. What matters when
+maintaining it:
+
+- **A direct-UPI order is a billing order** with `mode` `offline` and `upi_reference` set (`AN-XXXX-XXXX`, the UPI
+  note); its `channel` (`upi_direct`, `bank_transfer`, `razorpay`) is derived, not stored. Statuses `submitted` (a UTR
+  waits) and `rejected` join the others; every rule that keys on `pending` (Razorpay supersede, cancel, reuse,
+  reconcile, reminders) leaves a waiting UTR alone. Open = `pending` before `expires_at` (24 hours) or `submitted`, one
+  per user; while a UTR waits, neither checkout starts (409 `upi_waiting`).
+- **The UTR** (exactly 12 ASCII digits) is unique among orders `submitted`, `paid` or `review` (the partial unique index
+  `uq_billing_orders_upi_utr`), and checked against the references of recorded payments that didn't fail
+  (`payments.reference_utrs`: the digits when there are 12, or a run of 12) both ways: a UTR sent for UPI and a bank
+  transfer recorded with it refuse each other. A rejected order's UTR is free again.
+- **The confirm** (`upi.confirm`) must echo the order's UTR (409 `utr_mismatch`), takes the user's lock and the order's
+  row lock, re-checks the status, records the payment (method `upi`, mode `offline`, `offline_reference` the UTR,
+  `recorded_by` the admin, `captured_at` the submission) and applies it through `payments.apply_matched`, the code
+  `apply_payment` runs after its Razorpay checks: exactly once, so a double click or a second admin changes nothing.
+  `now` orders get D13's adjustments for the hours the owner takes; a fallen credit or a changed period goes to
+  `review`.
+- **No confirmed email needed** (D7): receipts are always in Settings, emailed when there is one. The abuse guards
+  instead: one open order, 5 orders a day (3 unpaid), 10 UTRs a day, 3 rejections in 30 days pause the user, 20 UTRs of
+  unpaid accounts waiting at most, and the network rule `upi_unpaid` (10 an hour, 30 a day).
+- **The settings** (`upi_enabled`, `upi_id`, `upi_payee_name`) live in `app_state.billing_settings`, not `.env`, and are
+  audited (`settings.updated`). An open order keeps the UPI ID and name it was made with. The billing loop now always
+  runs in the worker, because direct UPI can be on without Razorpay or mail.
+- **Records and privacy:** the app keeps the UTR and the reference, never the payer's name or UPI ID; logs never carry
+  a UTR, UPI ID or payee name. Event detail keys are `reference`, `utr` and `upi_id` (audit's payer filter drops `vpa`
+  and `upi`). Receipts read "UPI (direct)" in the live series; the CSV method is `upi_direct`.
+- **Migration 0005** adds nine nullable `upi_*` columns to `billing_orders`, the unique reference and two indexes; it
+  changes no row and can't be downgraded. The way back after its deploy is restoring the backup taken just before it.
+
 ## Known limitations and open risks
 
 - **Parsing is only partly isolated.** pypdf, python-docx, python-pptx, openpyxl and BeautifulSoup still parse
@@ -1670,7 +1754,7 @@ What matters when maintaining it:
     integration stack, intercepted requests in e2e). The checks of brief 14.2 are open: the localhost `callback_url`,
     the UPI QR and intent, a test UPI path after the end of UPI Collect, `order_id`, auto-capture, `fee` and `tax` in
     the payment, a repeated `reference_id`, disputes with test keys, the website check, and the live UPI limit.
-  - **The Razorpay webhook isn't registered yet** (the public domain exists since 2026-10-28; next step 5). Until it
+  - **The Razorpay webhook isn't registered yet** (the public domain exists since 2026-10-28; next step 6). Until it
     is, payments are confirmed only by the return page and the worker's reconciler (a sleeping Mac confirms them on
     waking), and refunds made in Razorpay's Dashboard and disputes don't reach the app.
   - **The policy pages are drafts** (`frontend/public/legal/*.md`), and they are rendered in the browser; if
@@ -1678,13 +1762,13 @@ What matters when maintaining it:
   - **GST is not implemented**: no GSTIN, no tax line, no tax invoices (brief B10). Registering for GST needs a
     separate feature before GST is charged.
   - Receipt and reminder emails are off until `MAIL_SMTP_HOST` and `MAIL_FROM` (the `MAIL_SMTP_*` settings) are set,
-    and go only to an account's confirmed email (`bikash` has none yet; next step 12).
+    and go only to an account's confirmed email (`bikash` has none yet; next step 13).
   - **E2E runs against the live stack write billing events** for their `e2e-` users (the plan grants of the admin
     API). They are deleted with the users only because those users never place an order; a test user with an order
     would leave its billing records behind, by design.
   - The standard token is tied to one price ($3.20 per million); if model prices move a lot, edit the allowances in
     Admin → Plans.
-- **Sign-up and email, not yet checked** (brief 18.2; each needs the owner's real keys, next steps 7 to 11):
+- **Sign-up and email, not yet checked** (brief 18.2; each needs the owner's real keys, next steps 8 to 12):
   - Turnstile under the CSP of `/login`, `/signup` and `/forgot-password`: whether it also needs `connect-src
     https://challenges.cloudflare.com`, whether `Referrer-Policy: same-origin` affects its hostname check, whether a
     path-scoped `script-src` works; the widget across SPA route changes, a theme change and the one-reload rule.
@@ -1695,11 +1779,11 @@ What matters when maintaining it:
     payload (the field that marks a permanent bounce, the `to` list, the Svix headers), a typo address arriving as
     `email.bounced`.
   - Google sign-up from Instagram, LinkedIn and WhatsApp's in-app browsers; through the tunnel, `curl -sI` showing HSTS,
-    the `__Host-` cookie set and sent, and `http://` and `www` redirecting once Cloudflare does (next step 6).
+    the `__Host-` cookie set and sent, and `http://` and `www` redirecting once Cloudflare does (next step 7).
 - **Sign-up and email, risks and limits by design** (brief 18.3):
   - **Resend's free day is 100 mails.** A bot wave or a busy day uses the `public` share (32 of 80); email sign-up then
     answers "We can't send emails right now" until 00:00 UTC (05:30 IST), while Google sign-up, resets and receipts
-    keep working. Move to Resend Pro before announcing (next step 14).
+    keep working. Move to Resend Pro before announcing (next step 15).
   - **Bounces pause Resend at 4 %**, for the whole account, receipts included. The suppression list, the automatic
     pause at 2 % and Turnstile keep fake addresses down; without the webhook only SMTP refusals are seen. The runbook
     (`README.md` section 10) switches to Brevo.
@@ -1715,15 +1799,33 @@ What matters when maintaining it:
     address is suppressed; self-service account deletion (users ask through Contact); bulk actions on new accounts and a
     daily sign-up digest; asking existing users to accept changed terms.
   - **`bikash`'s Gmail plugin connection needs a reconnect**: the Gmail Google project is in Testing mode, whose tokens
-    last 7 days (next step 18). Signing in with Google doesn't touch it.
-- **Some Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks. The 57
+    last 7 days (next step 19). Signing in with Google doesn't touch it.
+- **Direct UPI, not yet checked and limits by design** (built 2026-11-02, not deployed):
+  - **No real UPI payment has gone through it**: every suite uses made-up UTRs. The owner's ₹1 tests (brief 11 and
+    14.2) settle what Google Pay, PhonePe and Paytm do with the link and the QR code for the chosen UPI ID, whether
+    the note reaches the owner's bank app, and what an iPhone opens for `upi://`.
+  - **The confirm has no field showing a matching bank transfer**: nothing in the app sees the bank. The confirm
+    dialog shows the amount, UTR, reference and UPI ID, and the admin has to find the credit in the bank or UPI app by
+    hand; a customer typing someone else's UTR is caught only by that check (the amount and the note).
+  - **A bank transfer recorded for one user and a UPI confirm for another user with the same UTR, at the same
+    instant, take no shared lock**: each checks the other's table under its own user's lock, so both could pass. The
+    partial unique index covers UPI against UPI, not this pair; it needs two admin actions on one UTR within the same
+    moment.
+  - **UPI app links to personal UPI IDs can fail in some apps** ("exceeds limit", a security warning, or nothing; in
+    developers' reports, unverified). The QR code and the copied UPI ID always show beside "Open UPI app".
+  - Small-merchant (P2PM) UPI IDs are capped at ₹10,000 a payment, ₹25,000 a day and ₹1,00,000 a month received
+    (brief 2.2); a payer's bank may cap a new account or device at ₹5,000 for 24 hours (Professional's price).
+- **Accounts with no plan and no sign-in for 12 months are deleted by hand** (the privacy policy's promise, next step
+  4): the app has no job for it yet. Until it does, check Admin → Users once a month, email those accounts, and delete
+  them a month later.
+- **Some Postgres-only locking isn't in the suite.** The suite runs on SQLite, which ignores row locks. The 62
   `postgres`-marked tests (CI's `backend-postgres` job runs them) cover parallel uploads against the document, storage
   and duplicate checks with only the row lock left, the migrations and the schema's advisory lock across two processes,
   UTC sessions, the image reservation race, the account tests, one payment applied from three sides at once, two
   orders and a grant racing a payment, checkouts started at once, the periods' exclusion constraint, receipt numbering
-  across the financial-year boundary, migrations 0003 and 0004, two completions of one sign-up, a sign-up against a
-  Google finish, two accounts confirming one address, an undo against a new change, and two mail loops claiming one
-  mail. Still not raced between processes:
+  across the financial-year boundary, migrations 0003, 0004 and 0005, two completions of one sign-up, a sign-up against
+  a Google finish, two accounts confirming one address, an undo against a new change, two mail loops claiming one mail,
+  two confirms of one UPI payment at once, and two orders sending one UTR at once. Still not raced between processes:
   an admin password reset against a password change and a document deleted while the worker finishes it (both
   checked once with scratch tests against Postgres 17), and the embedding model edited while a job writes vectors.
 - **One worker only.** A second worker container would reset the other's in-flight documents (the
@@ -1739,15 +1841,15 @@ What matters when maintaining it:
   was left when it started, but answers running at the same time don't see each other's tokens.
   Embedding tokens don't count toward the budget (by design).
 - **HTTPS ends at Cloudflare**, which reaches nginx through the tunnel; `COOKIE_SECURE=true` and nginx sends HSTS, but
-  Cloudflare's Always Use HTTPS and the `www` → apex redirect aren't on yet (next step 6).
-- **Backups stay on this Mac** (`./backups`) until an off-site copy is set up (next step 16), and the Mac sleeps and
+  Cloudflare's Always Use HTTPS and the `www` → apex redirect aren't on yet (next step 7).
+- **Backups stay on this Mac** (`./backups`) until an off-site copy is set up (next step 17), and the Mac sleeps and
   Docker Desktop quits now and then; while it is down nothing is backed up and nothing alerts. **No alert channel is
-  configured yet** (next step 15): alerts are only logged and shown in Admin → System, whose `monitor` check stays a
+  configured yet** (next step 16): alerts are only logged and shown in Admin → System, whose `monitor` check stays a
   warning until one is set. When the Mac sleeps, the worker's heartbeat expires and the monitor reports the worker as
   down, then resolved on waking: on the deploy day a sleep of about 20 minutes logged one such pair (the worker never
   restarted). `.env` is in no backup by design: keep it in a password manager.
 - The monitor runs inside Docker, so Docker or the whole machine stopping is reported only by the host watchdog (not
-  installed, next step 17) or an external uptime check on `https://asknuvexusdoc.com/api/health/ready` (next step 15).
+  installed, next step 18) or an external uptime check on `https://asknuvexusdoc.com/api/health/ready` (next step 16).
 - A backup is taken while the app runs, part after part (uploads, Qdrant, Postgres), not as one snapshot. A document
   added or deleted meanwhile can come back with only some of its parts; the restore's reconcile step marks it failed
   (file missing: the user uploads it again) or re-indexes it (vectors missing), which costs embedding tokens for those
@@ -1809,8 +1911,8 @@ What matters when maintaining it:
 ## Next steps
 
 Self-service sign-up is built, tested and deployed to the live stack (2026-11-01) with sign-up closed, and
-committed in `f30adcd` (CI green at `81ca2d1`). The steps are in order: 1 and 2 first, then the owner's actions of
-`docs/briefs/signup-auth.md` section 17 (steps 3 to 13; every click is there, `README.md` section 10 has the summary),
+committed in `f30adcd` (CI green at `81ca2d1`). The steps are in order: 1 to 3 first, then the owner's actions of
+`docs/briefs/signup-auth.md` section 17 (steps 4 to 14; every click is there, `README.md` section 10 has the summary),
 which end with sign-up open, then the rest. The owner edits `.env`; never print it.
 
 1. Done: sign-up is committed in `f30adcd`, and CI is green at `81ca2d1` (the backend job runs in about 24 minutes
@@ -1820,25 +1922,39 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
    and `d4eada1`, operations (migrations, backups, monitoring) in `91e20bc` (CI green at `c58622b`), plans and billing
    in `10ecd35`, and the rename to AskNuvexusDoc in `28b7fe5`.
 2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
-3. **Policy pages** (`frontend/public/legal/*.md`): drafted on 2026-11-01 from what the app does, with the owner's
+3. **Deploy direct UPI (owner's approval), then set the UPI ID in Admin and test with the ₹1 QR.** Built, reviewed and
+   verified on 2026-11-02 in the working tree; migration 0005 rehearsed on `20261101T170805Z-manual`. Commit it and
+   let CI run, then, with the owner's go-ahead: `touch .maintenance`; `scripts/backup.sh` (keep the `BACKUP_NAME` it
+   prints: the way back); `APP_VERSION=$(git describe --always --dirty) docker compose up -d --build` (rebuilds the
+   backend image for `backend`, `worker` and `monitor`, with segno, and the `frontend` image; the backend runs
+   migration 0005 while it starts: "Database schema migrated from 0004 to revision 0005"); `docker compose up -d
+   --force-recreate frontend`; `docker compose exec backend alembic current` (0005 (head)); `rm .maintenance`; then
+   the e2e suite against the live stack (80 tests, the `@live` one skipped). Direct UPI stays off until it is turned
+   on. Then, by `README.md` section 9 ("Direct UPI"): choose the UPI ID (brief 14.1: a business ID with the
+   small-merchant limits, or a personal one), save it and the payee name in Admin → Billing → Business & payments with
+   **Accept UPI payments** off, pay the ₹1 test QR from another phone with Google Pay, PhonePe and Paytm (the name
+   shown, the ₹1 credit, where the UTR and the note `AN-TEST` appear), set the contact email (step 5) and the mailer
+   for the alerts, switch it on, and run the `smoke-*` purchase of brief 11 (Starter by UPI from a phone, the UTR, the
+   confirm, the receipt, a refund paid by UPI and recorded). Record what the apps do in the brief (14.2) and here.
+4. **Policy pages** (`frontend/public/legal/*.md`): drafted on 2026-11-01 from what the app does, with the owner's
    decisions (refunds only for duplicate or mistaken payments and periods that never started; users 18 and over; no
    GST; replies within 1 to 2 working days; accounts with no plan and no sign-in deleted after 12 months, with an email
    30 days before; billing records kept 8 years; web server logs 30 days; liability capped at 30 days' fees; 30 days'
    notice and a refund of unused days if the service closes; 15 days' notice of important changes to the terms; bank
    transfers on request). Still open: `[Business legal name]`, `[Registered address]`, `[City]` (courts) and the
    Grievance Officer's name and email, then remove the `<!-- draft -->` lines, rebuild the frontend
-   (`docker compose up -d --build frontend`) and set `TERMS_VERSION` to the terms' date (step 10). A lawyer's read of
+   (`docker compose up -d --build frontend`) and set `TERMS_VERSION` to the terms' date (step 11). A lawyer's read of
    the privacy policy and terms is advisable. The app doesn't yet delete accounts with no plan by itself: until it
    does, check Admin → Users once a month for accounts with no plan and no sign-in for 11 months, email them, and
    delete them a month later.
-4. **Business details and the contact email** in Admin → Billing → Business & payments (name, address, contact email,
+5. **Business details and the contact email** in Admin → Billing → Business & payments (name, address, contact email,
    phone): receipts, the public pages, every email and the error pages show them.
-5. **Razorpay** (`README.md` section 9):
+6. **Razorpay** (`README.md` section 9):
    - **Test mode:** add the test keys to `.env` (`RAZORPAY_KEY_ID`, `RAZORPAY_KEY_SECRET`), run `docker compose up -d
      backend worker` and recreate the frontend, mark a tester (a `smoke-*` user, never `bikash`), and run the test-mode
      checks of the plans brief's 14.2 (items 1 to 7) with **at most 10 payment links** (test mode allows about 30 per
-     business). Checkout now needs a confirmed email, so the tester needs one, which needs the mailer (steps 7 and
-     10); the payments themselves wait until then. Record what Razorpay does differently in the brief and here.
+     business). Checkout now needs a confirmed email, so the tester needs one, which needs the mailer (steps 8 and
+     11); the payments themselves wait until then. Record what Razorpay does differently in the brief and here.
    - **The webhook:** register `https://asknuvexusdoc.com/api/billing/razorpay/webhook` with the 14 events Admin →
      Billing lists, and put its secret in `RAZORPAY_WEBHOOK_SECRET`.
    - **KYC and live keys** (brief 17.1, item 3): complete Razorpay's KYC and website review, put the live keys in
@@ -1846,13 +1962,13 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
      confirms, then one live Starter payment by a `smoke-*` user and a full refund (the plans brief's 14.2, item 8;
      Razorpay keeps its fee, about ₹12). Until live keys run, the Sign-up card warns that payments aren't live, new
      accounts read "Paid plans open soon", and opening sign-up needs **Open anyway**.
-6. **Cloudflare, HTTPS** (brief 17.1, item 4; zone `asknuvexusdoc.com`): SSL/TLS → Edge Certificates → **Always Use
+7. **Cloudflare, HTTPS** (brief 17.1, item 4; zone `asknuvexusdoc.com`): SSL/TLS → Edge Certificates → **Always Use
    HTTPS** on; Rules → Redirect Rules → "www to apex" (Hostname equals `www.asknuvexusdoc.com`, dynamic redirect to
    `concat("https://asknuvexusdoc.com", http.request.uri.path)`, 301, query string kept), then remove
-   `https://www.asknuvexusdoc.com` from `PUBLIC_BASE_URLS` (step 10). Leave Rocket Loader, Email Address Obfuscation,
+   `https://www.asknuvexusdoc.com` from `PUBLIC_BASE_URLS` (step 11). Leave Rocket Loader, Email Address Obfuscation,
    Zaraz and the automatic Web Analytics snippet off: each would inject a script into our pages. HSTS already comes
    from nginx, and `NGINX_REAL_IP_FROM=172.16.0.0/12` is set (item 5; the Sign-up card checks it).
-7. **Email: Resend and Cloudflare DNS** (brief 17.2, items 1 to 6): a Resend account; **Domains → Add domain**
+8. **Email: Resend and Cloudflare DNS** (brief 17.2, items 1 to 6): a Resend account; **Domains → Add domain**
    `asknuvexusdoc.com`, region Tokyo (ap-northeast-1); in Cloudflare → DNS, each **DNS only**, exactly what Resend's
    Records tab shows (expected: MX `send` → `feedback-smtp.ap-northeast-1.amazonses.com` priority 10, TXT `send`
    `v=spf1 include:amazonses.com ~all`, TXT `resend._domainkey` with the DKIM key, and your own TXT `_dmarc`
@@ -1862,10 +1978,10 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
    with **Sending access** for the domain (shown once: `MAIL_SMTP_PASSWORD`); **Webhooks → Add endpoint**
    `https://asknuvexusdoc.com/api/mail/resend-events` with **email.bounced** and **email.complained** (its `whsec_…`
    signing secret: `MAIL_WEBHOOK_SECRET`).
-8. **Turnstile** (brief 17.3): Cloudflare → **Turnstile → Add widget** "AskNuvexusDoc", hostname `asknuvexusdoc.com`
+9. **Turnstile** (brief 17.3): Cloudflare → **Turnstile → Add widget** "AskNuvexusDoc", hostname `asknuvexusdoc.com`
    only (no `www`, no `localhost`), mode **Managed**, pre-clearance **No**; the Site key is `TURNSTILE_SITE_KEY`, the
    Secret key `TURNSTILE_SECRET_KEY`.
-9. **Google sign-in, in a new and separate Google Cloud project** (brief 17.4; the Gmail plugin's project stays in
+10. **Google sign-in, in a new and separate Google Cloud project** (brief 17.4; the Gmail plugin's project stays in
    Testing and isn't touched): a Search Console **Domain** property for `asknuvexusdoc.com` (TXT on `@`, DNS only),
    with the Google account that will own the project; **New project** "AskNuvexusDoc"; Google Auth Platform → **Get
    started** (Audience **External**); **Branding** (home page `https://asknuvexusdoc.com/about`, privacy policy
@@ -1874,7 +1990,7 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
    and the one redirect URI `https://asknuvexusdoc.com/api/auth/google/callback` (the ID and secret are
    `GOOGLE_SIGNIN_CLIENT_ID` and `GOOGLE_SIGNIN_CLIENT_SECRET`); **Audience → Publish app**; and **Verify branding**
    once the policy pages are live, then **Publish branding** within 7 days.
-10. **`.env` and restart** (brief 17.5, item 1): `PUBLIC_BASE_URLS=https://asknuvexusdoc.com,http://localhost:8080`,
+11. **`.env` and restart** (brief 17.5, item 1): `PUBLIC_BASE_URLS=https://asknuvexusdoc.com,http://localhost:8080`,
     `COOKIE_SECURE=true`, `NGINX_REAL_IP_FROM=172.16.0.0/12`, `MAIL_SMTP_HOST=smtp.resend.com`, `MAIL_SMTP_PORT=465`,
     `MAIL_SMTP_SECURITY=ssl`, `MAIL_SMTP_USERNAME=resend`, `MAIL_SMTP_PASSWORD`, `MAIL_FROM=AskNuvexusDoc
     <no-reply@asknuvexusdoc.com>`, `MAIL_REPLY_TO=support@asknuvexusdoc.com`, `MAIL_WEBHOOK_SECRET`,
@@ -1883,61 +1999,69 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
     when administering only from this Mac) and `MAIL_DAILY_LIMIT`. Remove `BILLING_EMAIL_FROM` if present, and make
     `ADMIN_PASSWORD` at least 15 characters and not a common one. Then `docker compose up -d backend worker monitor`
     and `docker compose up -d --force-recreate frontend`.
-11. **Checks and a test email** (brief 17.5, item 2): Admin → Users → **Sign-up** shows every check configured and no
+12. **Checks and a test email** (brief 17.5, item 2): Admin → Users → **Sign-up** shows every check configured and no
     warning; **Edit… → Send a test email…** to your address arrives, isn't in spam, and Gmail's "Show original" says
     SPF, DKIM and DMARC "PASS"; Admin → System's Email check is `ok`. With the keys in place, run the spikes of brief
     18.2 (known limitations) and record what differs.
-12. **`bikash`'s email** (brief 17.5, item 3): as `bikash`, Settings → Account → **Add email…**, then open the
+13. **`bikash`'s email** (brief 17.5, item 3): as `bikash`, Settings → Account → **Add email…**, then open the
     confirmation link while signed in as `bikash`. Receipts, reminders and checkout need it; an address saved earlier
     for reminders was not carried over.
-13. **Open sign-up** (brief 17.5, item 4): Admin → Users → Sign-up → **Edit…** → **Open sign-up** with email and
+14. **Open sign-up** (brief 17.5, item 4): Admin → Users → Sign-up → **Edit…** → **Open sign-up** with email and
     Google; then at `https://asknuvexusdoc.com` sign up once with a throwaway address and once with a Google account,
     and delete both users afterwards.
-14. **Before any announcement or paid promotion, move to Resend Pro** ($20 a month, no daily cap; brief 17.2, item 8)
+15. **Before any announcement or paid promotion, move to Resend Pro** ($20 a month, no daily cap; brief 17.2, item 8)
     and raise `MAIL_DAILY_LIMIT`. After two weeks of clean DMARC reports at `dmarc@`, change `_dmarc` to
     `p=quarantine`, later `p=reject` (item 7).
-15. **Choose an alert channel** (the owner): a webhook (Slack, Google Chat, Discord, Teams), ntfy (the simplest for
+16. **Choose an alert channel** (the owner): a webhook (Slack, Google Chat, Discord, Teams), ntfy (the simplest for
     push to a phone) or email. Put its `ALERT_*` settings in `.env` (`README.md` section 8), run `docker compose up -d
     monitor`, then press **Send a test alert** in Admin → System. Until then alerts are only logged. Prefer ntfy or a
     webhook over the Resend account, so a paused Resend is still reported. Also point an external uptime check at
     `https://asknuvexusdoc.com/api/health/ready`.
-16. **Set up off-site backup copies** (the owner picks the storage): copy `./backups` off this machine after the daily
+17. **Set up off-site backup copies** (the owner picks the storage): copy `./backups` off this machine after the daily
     02:30 UTC backup, encrypted (rclone with a `crypt` remote, an encrypted drive, or restic; `scripts/README.md`,
     "Off-site copies"), and keep `.env` in a password manager. Test a restore from the copy on a throwaway Compose
     project now and then.
-17. **Install the watchdog** (optional; `scripts/watchdog/README.md`): the LaunchAgent on this Mac (and keep the Mac
+18. **Install the watchdog** (optional; `scripts/watchdog/README.md`): the LaunchAgent on this Mac (and keep the Mac
     awake, Docker Desktop starting at sign-in), or the systemd timer on a server. Check it with
     `scripts/watchdog/watchdog.sh --test` once an alert channel is set.
-18. **Gmail's Google app** (the owner): it is in Google's testing mode, so connections end every 7 days and only
+19. **Gmail's Google app** (the owner): it is in Google's testing mode, so connections end every 7 days and only
     listed test users can connect; `bikash`'s connection needs a reconnect now (Settings → Plugins & data → Gmail →
     **Reconnect**). Register `https://asknuvexusdoc.com/api/plugins/gmail/oauth/callback` in the Gmail project (only the
     apex once `www` redirects). If every user is in the owner's Google Workspace, mark the app **Internal** (no Google
     review), then set `GOOGLE_OAUTH_TESTING_MODE=false`; otherwise add the users as test users or apply for
-    verification (`docs/gmail-setup.md`). Sign-in's own project (step 9) doesn't change this.
-19. **Hosting** (the owner's choice): the stack runs on Docker Desktop on this Mac, which sleeps and quits now and then.
+    verification (`docs/gmail-setup.md`). Sign-in's own project (step 10) doesn't change this.
+20. **Hosting** (the owner's choice): the stack runs on Docker Desktop on this Mac, which sleeps and quits now and then.
     A small Linux server with Docker Engine and Compose is enough (8 GB of memory: the worker alone may use 4 GB).
     Moving there: clone, put `.env` back, copy a backup into `./backups`, `docker compose up -d --build`, then
     `scripts/restore.sh latest --yes --no-safety-backup` (`scripts/README.md`, "A new machine"); install the watchdog's
-    systemd timer (step 17).
-20. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the automatic
+    systemd timer (step 18).
+21. Confirm the vision choices listed at the end of "Vision model for PDFs" with the user (above all the automatic
     activation of the seeded Sonnet vision model; the vision allowance is now set per plan).
-21. Done on 2026-10-28: **the public address.** https://asknuvexusdoc.com (and www, until step 6) reach the app through
+22. Done on 2026-10-28: **the public address.** https://asknuvexusdoc.com (and www, until step 7) reach the app through
     a Cloudflare named tunnel `asknuvexusdoc` run from this Mac (`~/.cloudflared/config.yml`, LaunchAgent
     `~/Library/LaunchAgents/com.asknuvexusdoc.tunnel.plist`, log `~/Library/Logs/asknuvexusdoc-tunnel.log`; DNS CNAMEs
     created by `cloudflared tunnel route dns`). `.env` has `COOKIE_SECURE=true`, `PUBLIC_BASE_URLS` with both https
     origins and localhost, and `NGINX_REAL_IP_FROM=172.16.0.0/12` (`frontend/real-ip.envsh`: nginx takes the visitor's
     address from `CF-Connecting-IP` for connections from Docker's network, so throttles, billing rate limits and the
-    sign-in history see real visitors; verified). What was left of it is in steps 5, 6, 15 and 18. The site is up only
-    while this Mac and Docker run (step 19).
-22. Done: the worker has `mem_limit`/`memswap_limit` `${WORKER_MEM_LIMIT:-4g}` (verified with `docker inspect`).
+    sign-in history see real visitors; verified). What was left of it is in steps 6, 7, 16 and 19. The site is up only
+    while this Mac and Docker run (step 20).
+23. Done: the worker has `mem_limit`/`memswap_limit` `${WORKER_MEM_LIMIT:-4g}` (verified with `docker inspect`).
     An OOM kill stays inside the worker, and the attempt counter fails the document after 3 kills.
-23. Later: move the remaining parsing (pypdf, Office formats, HTML) into a child process with a hard kill, as
+24. Later: move the remaining parsing (pypdf, Office formats, HTML) into a child process with a hard kill, as
     PDF rendering already is, and bump pytest to 9.x together with a compatible pytest-asyncio. Consider rate limits
     on upload and reprocess. A load test with many users at once hasn't been run.
-24. Later: read images in DOCX and PPTX files with the vision model (PDFs only for now), and remove
+25. Later: read images in DOCX and PPTX files with the vision model (PDFs only for now), and remove
     `llm._allow_effort` once LiteLLM's bundled model map lists `claude-sonnet-5-5`.
 
-Sign-up and email is built, tested and deployed with sign-up closed (2026-11-01). What is left beyond steps 3 to 14:
+Direct UPI is built, reviewed and verified (2026-11-02), not yet deployed or committed. What is left beyond step 3:
+
+- The owner's answers to brief 14.1: which UPI ID (and so which limits), how fast payments are checked (the copy
+  promises "usually within a few hours during the day"), refunds by UPI within 3 working days, the pause after 3
+  rejections in 30 days, the inbox the "UPI payment to check" emails go to, and tax on these payments (the accountant).
+- Follow-ups (brief 1, not in scope): matching credits from a bank statement or a bank's API, and a shared lock (or a
+  unique index across both tables) for a UTR recorded as a bank transfer and confirmed as UPI at the same instant.
+
+Sign-up and email is built, tested and deployed with sign-up closed (2026-11-01). What is left beyond steps 4 to 15:
 
 - With the owner's keys, the spikes of brief 18.2 (known limitations). Add `connect-src
   https://challenges.cloudflare.com` to the three Turnstile locations of `frontend/nginx.conf` only if the browser
@@ -1951,7 +2075,7 @@ Sign-up and email is built, tested and deployed with sign-up closed (2026-11-01)
   `http://localhost:8080/api/auth/google/callback`, used only in that stack's `.env` (brief 17.4, item 9). Google
   deletes clients unused for six months.
 
-Plans and billing are committed (`10ecd35`). What is left beyond step 5:
+Plans and billing are committed (`10ecd35`). What is left beyond step 6:
 
 - **GST:** decide whether to register (the plans brief's 14.1, item 4). Version 1 has no GST; charging it needs tax
   invoices built first.

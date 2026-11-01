@@ -79,6 +79,11 @@ export type PlanState = "exempt" | "none" | "active" | "expired";
 /** period: one more period of the plan (now, or when the paid time ends); now: a new period from now, for a credit. */
 export type CheckoutKind = "period" | "now";
 
+/** razorpay: a Payment Link; upi_direct: paid to the owner's UPI ID, checked by the admin; bank_transfer: recorded. */
+export type OrderChannel = "razorpay" | "upi_direct" | "bank_transfer";
+
+/** The caller's open order: a Razorpay checkout, or a direct-UPI order waiting for its UTR (pending, until it
+ * expires) or for the admin's check (submitted). */
 export type PendingOrder = {
   public_id: string;
   kind: CheckoutKind;
@@ -86,7 +91,28 @@ export type PendingOrder = {
   amount_paise: number;
   created_at: string;
   expires_at: string;
-  pay_url: string | null; // null once the link expired
+  pay_url: string | null; // null once the link expired; always null for direct UPI
+  channel: OrderChannel;
+  status: "pending" | "submitted";
+};
+
+export type UpiRejectReason = "not_received" | "amount_differs" | "utr_used" | "other";
+export type UpiRejection = {
+  reason: UpiRejectReason;
+  message: string; // what the customer reads
+  note: string | null; // the admin's own words, shown under it
+};
+
+/** A direct-UPI order the admin rejected in the last 7 days, while no newer order exists. */
+export type RejectedOrder = {
+  public_id: string;
+  kind: CheckoutKind;
+  plan: PlanRef;
+  amount_paise: number;
+  reference: string;
+  utr: string;
+  rejected_at: string;
+  rejection: UpiRejection;
 };
 
 /** Per locked feature, the name of the cheapest active plan that includes it (null when none does). */
@@ -116,6 +142,7 @@ export type PlanAccess = {
   pending_order: PendingOrder | null;
   can_start_new_period: boolean; // a current period with 90% or more of one of its allowances used
   unlock: PlanUnlock;
+  rejected_order: RejectedOrder | null; // a direct-UPI payment the admin couldn't confirm, for 7 days
 };
 
 export type PlanModel = {
@@ -165,17 +192,31 @@ export type PlanOffer = {
 };
 
 export type PaymentsInfo = {
-  available: boolean; // for this caller: keys set, and a tester under test keys
+  available: boolean; // online payment (Razorpay) for this caller: keys set, and a tester under test keys
   mode: "test" | "live" | null; // null when not available to this caller
   contact_email: string | null;
-  upi_limit_paise: number; // 0: no limit
+  upi_limit_paise: number; // 0: no limit (Razorpay's UPI only)
   email_reminders: boolean; // the mailer is configured: receipts and reminders can be emailed
+  upi_direct: boolean; // direct UPI to the owner's UPI ID is on, with its UPI ID and payee name
 };
 
 export type PlanCatalog = { plans: PlanOffer[]; payments: PaymentsInfo };
 
-export type OrderStatus = "pending" | "paid" | "expired" | "cancelled" | "review";
+/** submitted: a direct-UPI order whose UTR waits for the admin's check; rejected: no matching payment was found. */
+export type OrderStatus = "pending" | "paid" | "expired" | "cancelled" | "review" | "submitted" | "rejected";
 export type ReceiptRef = { id: number; number: string };
+
+/** A direct-UPI order's payment request and its check. */
+export type UpiOrderInfo = {
+  reference: string; // "AN-7K4M-Q9TX": the UPI note (tn), to match the credit
+  upi_id: string; // the payee UPI ID the order asks to pay, as it was when the order was made
+  payee_name: string;
+  uri: string | null; // upi://pay?pa=…&pn=…&am=2000.00&cu=INR&tn=AN-…, while pending and not expired
+  utr: string | null; // as the customer submitted it
+  submitted_at: string | null;
+  decided_at: string | null; // confirmed or rejected by the admin
+  rejection: UpiRejection | null;
+};
 
 export type OrderView = {
   public_id: string;
@@ -195,11 +236,15 @@ export type OrderView = {
   receipt: ReceiptRef | null;
   method: string | null; // upi | card | netbanking | wallet | emi | bank_transfer
   test_mode: boolean;
+  channel: OrderChannel;
+  upi: UpiOrderInfo | null; // direct UPI only
 };
 
-/** POST /billing/checkout: accept_terms records the consent line under Pay with the order. */
+/** POST /billing/checkout and POST /billing/upi/checkout: accept_terms records the consent line under Pay. */
 export type CheckoutRequest = { plan_id: number; kind: CheckoutKind; accept_terms: true };
 export type CheckoutStarted = { order: OrderView; pay_url: string };
+/** POST /billing/orders/{public_id}/utr: 12 digits (spaces are dropped). */
+export type UtrSubmission = { utr: string };
 
 export type PaymentStatus = "captured" | "refunded" | "partially_refunded" | "disputed";
 
@@ -217,6 +262,7 @@ export type PaymentView = {
   period_end: string | null;
   receipt: ReceiptRef | null;
   test_mode: boolean;
+  channel: OrderChannel;
 };
 
 export type PeriodSource = "payment" | "comp";
@@ -243,7 +289,7 @@ export type BillingStatus = {
   plan: PlanAccess;
   periods: PeriodView[]; // unexpired, in order
   complimentary: ComplimentaryView | null; // the open-ended plan
-  open_order: OrderView | null;
+  open_order: OrderView | null; // as Me.plan.pending_order: pending, or a direct-UPI order submitted
   profile: BillingProfile;
   payments: PaymentsInfo;
 };
@@ -918,7 +964,10 @@ export type BillingSettings = {
   contact_email: string | null;
   contact_phone: string | null; // ≤ 20
   receipt_prefix: string; // 1 to 4 of A-Z0-9, not "TEST"
-  upi_limit_paise: number; // 0: no limit
+  upi_limit_paise: number; // 0: no limit (Razorpay's UPI)
+  upi_enabled: boolean; // direct UPI; needs both fields below
+  upi_id: string | null; // the owner's UPI ID, stored lowercase
+  upi_payee_name: string | null; // ≤ 50, ASCII, as the bank account's name reads
 };
 
 export type PaymentsSetup = {
@@ -959,6 +1008,7 @@ export type AdminOrder = OrderView & {
   next_check_at: string | null;
   last_error: string | null;
   paused: boolean; // of the other mode than the server's keys
+  upi_decided_by: string | null; // direct UPI: the admin who confirmed or rejected it
 };
 
 export type AdminOrderDetail = AdminOrder & {
@@ -1035,6 +1085,10 @@ export type RevokeRequest = { reason: string };
 export type EndComplimentaryRequest = { reason: string };
 export type ResolveRequest = { note: string /* 1..500 */ };
 export type ReconcileResult = { checked: number };
+/** POST /admin/billing/orders/{public_id}/upi-confirm: the UTR the admin checked (must be the order's). */
+export type UpiConfirmRequest = { utr: string };
+/** POST /admin/billing/orders/{public_id}/upi-reject: note 1..200, required for "other"; the customer reads it. */
+export type UpiRejectRequest = { reason: UpiRejectReason; note: string | null };
 
 export type AttentionKind =
   | "review"
@@ -1051,7 +1105,8 @@ export type AttentionKind =
   | "test_keys_public"
   | "live_without_webhook"
   | "keys_rejected"
-  | "paused_orders";
+  | "paused_orders"
+  | "upi_to_check"; // direct-UPI payments waiting for the admin's check
 
 export type AttentionItem = {
   kind: AttentionKind;

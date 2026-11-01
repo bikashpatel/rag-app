@@ -3,7 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
 import type { DocumentConfig, DocumentSelection } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
-import PendingCheckoutBanner from "../components/billing/PendingCheckoutBanner";
+import PendingCheckoutBanner, { RejectedOrderBanner } from "../components/billing/PendingCheckoutBanner";
 import PlanBanner from "../components/billing/PlanBanner";
 import PlanEndedPanel from "../components/billing/PlanEndedPanel";
 import { canUpgrade, checkoutPath } from "../components/billing/planText";
@@ -490,7 +490,12 @@ export default function ChatPage() {
         {pendingOrder ? (
           <PendingCheckoutBanner order={pendingOrder} />
         ) : user && !user.is_admin ? (
-          <PlanBanner key={user.plan.paid_through ?? ""} plan={user.plan} />
+          <>
+            {user.plan.rejected_order ? (
+              <RejectedOrderBanner key={user.plan.rejected_order.public_id} order={user.plan.rejected_order} />
+            ) : null}
+            <PlanBanner key={user.plan.paid_through ?? ""} plan={user.plan} />
+          </>
         ) : null}
         {notice ? (
           <div

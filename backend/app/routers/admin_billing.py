@@ -1,12 +1,13 @@
 """The admin's plans and billing (SPEC.md section 6, "Admin": plans and billing; docs/briefs/plans-billing.md 7.2):
-the plan editor, the billing settings and setup, the month's summary and CSV, orders, payments, refunds, bank
-transfers, a user's plan (grants, complimentary plans, changing the plan, revoking a period) and receipts. Every write
+the plan editor, the billing settings and setup, the month's summary and CSV, orders, the direct-UPI check
+(docs/briefs/upi-direct.md 6), payments, refunds, bank transfers, a user's plan (grants, complimentary plans, changing
+the plan, revoking a period) and receipts. Every write
 takes the user's row lock where a user is involved and writes a billing event with the admin as actor."""
 
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Response, status
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -27,6 +28,7 @@ from app.schemas_billing import (
     EndComplimentaryRequest,
     GrantRequest,
     OfflinePaymentRequest,
+    OrderChannel,
     OrderEvent,
     OrderStatus,
     PaymentStatus,
@@ -37,6 +39,8 @@ from app.schemas_billing import (
     RefundRequest,
     ResolveRequest,
     RevokeRequest,
+    UpiConfirmRequest,
+    UpiRejectRequest,
     UserBilling,
 )
 from app.services.billing import (
@@ -52,6 +56,7 @@ from app.services.billing import (
     reconcile,
     refunds,
     summary,
+    upi,
 )
 from app.services.billing.locks import lock_user
 
@@ -125,6 +130,15 @@ async def save_settings(
     return await _config(db)
 
 
+@router.get(
+    "/billing/upi-preview.svg",
+    response_class=Response,
+    responses={200: {"content": {"image/svg+xml": {}}, "description": "A ₹1 request to the saved UPI ID"}},
+)
+async def upi_preview(db: AsyncSession = Depends(get_db)) -> Response:
+    return await upi.preview_qr(db)
+
+
 @router.get("/billing/summary")
 async def get_summary(month: Month = None, db: AsyncSession = Depends(get_db)) -> BillingSummary:
     return await summary.summary(db, month)
@@ -154,29 +168,40 @@ async def _order(db: AsyncSession, public_id: str) -> BillingOrder:
     return order
 
 
+_CHANNELS: dict[str, ColumnElement[bool]] = {
+    "upi_direct": BillingOrder.upi_reference.is_not(None),
+    "bank_transfer": and_(BillingOrder.mode == "offline", BillingOrder.upi_reference.is_(None)),
+    "razorpay": BillingOrder.mode != "offline",
+}
+
+
 @router.get("/billing/orders")
 async def list_orders(
     status_filter: Annotated[OrderStatus | None, Query(alias="status")] = None,
     user_id: Annotated[int | None, Query(ge=1, le=MAX_INT)] = None,
+    channel: OrderChannel | None = None,
     page: Page = 1,
     db: AsyncSession = Depends(get_db),
 ) -> AdminOrderPage:
+    """Newest first; the UTRs to check (status=submitted) oldest submission first."""
     conditions = [
         condition
         for condition in (
             BillingOrder.status == status_filter if status_filter else None,
             BillingOrder.reviewed_at.is_(None) if status_filter == "review" else None,  # still to review
             BillingOrder.user_id == user_id if user_id else None,
+            _CHANNELS[channel] if channel else None,
         )
         if condition is not None
     ]
+    order = (
+        (BillingOrder.upi_submitted_at, BillingOrder.id)
+        if status_filter == "submitted"
+        else (BillingOrder.created_at.desc(), BillingOrder.id.desc())
+    )
     total = await db.scalar(select(func.count()).select_from(BillingOrder).where(*conditions))
     rows = await db.scalars(
-        select(BillingOrder)
-        .where(*conditions)
-        .order_by(BillingOrder.created_at.desc(), BillingOrder.id.desc())
-        .offset((page - 1) * PAGE_SIZE)
-        .limit(PAGE_SIZE)
+        select(BillingOrder).where(*conditions).order_by(*order).offset((page - 1) * PAGE_SIZE).limit(PAGE_SIZE)
     )
     return AdminOrderPage(items=[await checkout.admin_order(db, order) for order in rows], total=total or 0)
 
@@ -232,6 +257,27 @@ async def resolve_order(
     )
     await db.commit()
     return await checkout.admin_order(db, order)
+
+
+@router.post("/billing/orders/{public_id}/upi-confirm")
+async def confirm_upi(
+    public_id: PublicId,
+    body: UpiConfirmRequest,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminOrder:
+    """The admin found the credit in the bank or UPI app: the payment is recorded and applied, once."""
+    return await upi.confirm(db, admin, await _order(db, public_id), body.utr)
+
+
+@router.post("/billing/orders/{public_id}/upi-reject")
+async def reject_upi(
+    public_id: PublicId,
+    body: UpiRejectRequest,
+    admin: User = Depends(get_current_admin),
+    db: AsyncSession = Depends(get_db),
+) -> AdminOrder:
+    return await upi.reject(db, admin, await _order(db, public_id), body)
 
 
 @router.post("/billing/reconcile")

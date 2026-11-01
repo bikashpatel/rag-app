@@ -35,8 +35,10 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
                                └── uploads volume (shared)
               worker (same image) <── Redis list rag:ingest_queue
                  parse ─> [PDF pages: render (child process) ─> vision model (LiteLLM)] ─> chunk ─> embed (LiteLLM) ─> Qdrant
-                 billing loop: open checkouts, refunds and webhook events ─> Razorpay; plan reminders queued as emails
-                 mail loop: email_outbox (Postgres) ─> SMTP (Resend): verification, resets, notices, receipts, reminders
+                 billing loop: open checkouts, refunds and webhook events ─> Razorpay; plan reminders queued as emails;
+                               direct-UPI requests without a UTR expired after 24 h
+                 mail loop: email_outbox (Postgres) ─> SMTP (Resend): verification, resets, notices, receipts,
+                            reminders, direct-UPI alerts to the owner and rejections
               monitor (same image)  checks every service, the app through nginx, backups and disks ─> alert channels
               backup (postgres image)  daily: pg_dump + uploads + Qdrant snapshots ─> ./backups (BACKUP_DIR)
 ```
@@ -77,7 +79,8 @@ browser ──> nginx (frontend container, 127.0.0.1:8080)
 - **Accounts:** one admin account, defined in `.env`. Other users are created by the admin, or sign up themselves
   (email and password with a verification email, or Google) once the admin opens sign-up (section 10).
 - **Plans and payments:** a user's access, features and limits come from their plan (seeded: Starter, Standard,
-  Professional; edited in Admin → Plans), held as prepaid 30-day periods paid through Razorpay Payment Links, granted
+  Professional; edited in Admin → Plans), held as prepaid 30-day periods paid through Razorpay Payment Links or by
+  direct UPI to the owner's UPI ID (a QR code rendered on the server, the customer's UTR, the admin's confirm), granted
   free by the admin, or paid by a bank transfer the admin records. The backend enforces it on every route
   (`billing.entitlements`); the admin needs no plan (section 9).
 - **Operations:** the backend migrates the database with Alembic when it starts, the `backup` service backs up daily
@@ -97,8 +100,8 @@ Code layout:
 |---|---|
 | `backend/app/main.py`, `config.py`, `db.py`, `models.py`, `errors.py` | app factory, settings, async SQLAlchemy (and the migrations run at start-up), ORM, errors with a machine-readable `code` |
 | `backend/migrations/`, `backend/alembic.ini` | Alembic migrations ([README](backend/migrations/README.md)) |
-| `backend/app/routers/` | `auth` (sign-in, the sign-up configuration), `auth_signup` (email sign-up and password reset), `auth_google` (Google sign-in), `auth_email` (confirming and undoing an email), `admin_auth` (Admin → Users → Sign-up and the test email), `mail_events` (Resend's bounce and complaint webhook), `me` (the caller's preferences, account, email, password, Google sign-in, usage and export), `models`, `documents`, `conversations`, `chat`, `admin`, `plugins`, `admin_plugins`, `billing` (plans, checkout, orders, payments, receipts, the Razorpay return and webhook), `admin_billing` (Admin → Plans and Billing), `public` (the public pricing and site details), `system` (readiness and Admin → System) (all under `/api`) |
-| `backend/app/services/billing/` | plans and payments: `entitlements` (what a user may do), `periods`, `plans`, `checkout`, `payments` (the exactly-once apply), `razorpay` (the REST client), `webhooks`, `reconcile` (the worker's billing loop), `refunds`, `disputes`, `receipts` (PDF), `reminders`, `summary`, `csv_export`, `business` (billing settings), `money`, `locks`, `audit` |
+| `backend/app/routers/` | `auth` (sign-in, the sign-up configuration), `auth_signup` (email sign-up and password reset), `auth_google` (Google sign-in), `auth_email` (confirming and undoing an email), `admin_auth` (Admin → Users → Sign-up and the test email), `mail_events` (Resend's bounce and complaint webhook), `me` (the caller's preferences, account, email, password, Google sign-in, usage and export), `models`, `documents`, `conversations`, `chat`, `admin`, `plugins`, `admin_plugins`, `billing` (plans, checkout, the direct-UPI checkout, UTR and QR codes, orders, payments, receipts, the Razorpay return and webhook), `admin_billing` (Admin → Plans and Billing, the direct-UPI confirm and reject), `public` (the public pricing and site details), `system` (readiness and Admin → System) (all under `/api`) |
+| `backend/app/services/billing/` | plans and payments: `entitlements` (what a user may do), `periods`, `plans`, `checkout`, `payments` (the exactly-once apply), `upi` (direct UPI: the request, its QR codes, the UTR, the admin's confirm and reject, expiry), `razorpay` (the REST client), `webhooks`, `reconcile` (the worker's billing loop), `refunds`, `disputes`, `receipts` (PDF), `reminders`, `summary`, `csv_export`, `business` (billing settings), `paid` (whether a user has paid), `money`, `locks`, `audit` |
 | `backend/app/services/auth/` | sign-up and sign-in: `signup`, `login`, `google` (OpenID Connect), `identities`, `reset`, `email_change`, `undo`, `stepup`, `passwords` (policy, blocklist in `app/data/`, breach check), `tokens`, `throttle`, `turnstile`, `emails`, `usernames`, `cookies`, `signup_settings`, `audit` |
 | `backend/app/services/mail/` | email to users: `outbox` (the queue, classes and daily cap), `drain` (the worker's mail loop), `jobs`, `templates`, `transport` (SMTP), `webhook` (bounces and complaints), `sweeps` (the hourly clean-up) |
 | `backend/app/ops/` | operations: `checks` (every health check), `monitor` (the monitor service), `alerts` + `channels` (alert states, webhook, ntfy, email), `heartbeat` (the worker's), `backup_status`, `reconcile` (after a restore), `settings` |
@@ -108,7 +111,7 @@ Code layout:
 | `backend/app/worker.py` | ingestion worker (`python -m app.worker`) |
 | `backend/tests/` | in-process API tests, no Docker needed ([README](backend/tests/README.md)) |
 | `frontend/src/pages/` | `LoginPage` (+ `login.css`), `SignupPage`, `VerifyEmailPage`, `GoogleSignupPage`, `ForgotPasswordPage`, `ResetPasswordPage`, `ConfirmEmailPage`, `UndoEmailPage` (+ `auth.css`), `ChatPage`, `AdminPage`, `PlansPage`, `CheckoutPage`, `BillingReturnPage` (+ `plans.css`), `public/` (the pricing and policy pages) |
-| `frontend/src/components/` | `auth/` (the sign-up and sign-in parts: Turnstile, Google button, password rules, terms), `chat/` (top bar, model, Plugins, avatar and "+" menus, thread, composer; `chat/plugins/`: Gmail cards), `documents/` (right-hand panel), `settings/` (the Settings dialog and its tabs), `connections/` (plugin cards, Gmail browser), `billing/` (plan cards, compare table, banners, locked items, the plan-ended panel), `admin/`, `ui/` (shared primitives: Modal, Menu, Meter, Switch, SegmentedControl, PasswordInput, icons, …) |
+| `frontend/src/components/` | `auth/` (the sign-up and sign-in parts: Turnstile, Google button, password rules, terms), `chat/` (top bar, model, Plugins, avatar and "+" menus, thread, composer; `chat/plugins/`: Gmail cards), `documents/` (right-hand panel), `settings/` (the Settings dialog and its tabs), `connections/` (plugin cards, Gmail browser), `billing/` (plan cards, compare table, banners, locked items, the plan-ended panel, the direct-UPI payment page), `admin/`, `ui/` (shared primitives: Modal, Menu, Meter, Switch, SegmentedControl, PasswordInput, icons, …) |
 | `frontend/public/legal/` | the public policy pages' text as Markdown (drafts to replace before going live, section 9) |
 | `frontend/src/styles/`, `src/assets/fonts/` | the design system: `global.css` (tokens for light, dark, five accents and three chat font sizes, plus shared primitives), `fonts.css` and the bundled fonts with their licences |
 | `frontend/public/theme-boot.js`, `src/theme/appearance.ts` | the theme engine: applies the cached appearance before the first paint, then follows the account's preferences and the OS (System) |
@@ -162,7 +165,8 @@ Notes:
 - **Payments** (`RAZORPAY_*`, `BILLING_*` and `CHECKOUT_UNPAID_PER_HOUR`, the "Payments" block of `.env.example`) are
   optional. Without Razorpay keys users see "Paid plans open soon. Check back in a few days." (testers and the admin:
   "Online payment isn't set up yet.") and get access only from a plan the admin grants or a bank transfer the admin
-  records. Section 9 has the setup and the settings.
+  records, or by direct UPI once the admin turns it on. Direct UPI has no `.env` setting: its switch, UPI ID and payee
+  name are saved in Admin → Billing → Business & payments. Section 9 has the setup and the settings.
 - **Sign-up and email** (the "Accounts and sign-up" and "Email" blocks of `.env.example`; table below) are optional.
   Without them sign-up stays closed, sign-in by username works as before, and no email is sent (receipts and plan
   reminders included). Section 10 has the setup.
@@ -590,11 +594,11 @@ Been Pwned** in its default run, so they cost nothing:
 
 | Suite | Where | What it covers | Needs | Size |
 |---|---|---|---|---|
-| Backend | `backend/tests/` ([README](backend/tests/README.md)) | the whole API in-process: SQLite, fakeredis, in-memory Qdrant, LiteLLM mocked, a fake Google (Gmail and OpenID Connect sign-in), a fake Razorpay, a fake SMTP sink, a fake Turnstile and a fake breach check, the real PDF and file render children; route guards and deletion checks that cover new routes and tables without being edited; the migrations, the monitor, alerts and channels, readiness and Admin → System, and the restore's reconcile step; plans, entitlements on every route, checkout, payments, refunds, disputes, receipts and reminders; sign-up, sign-in by email, Google sign-in and linking, password reset, email changes and undo, the password policy, throttles, enumeration (the same response for every address), the mail outbox, templates, bounces and the `mail` check | Python 3.13 | 3,834 tests plus the 57 `postgres`-marked ones (skipped without Postgres); coverage 95.75 % (statements and branches) |
-| Backend on Postgres | the `postgres`-marked tests in `backend/tests/` (with `TEST_DATABASE=postgres`, all of them) | the migrations (adopting a database made before them, repairs and refusals, the advisory lock across two processes), row locks under parallel uploads, UTC sessions, the image reservation race, the account tests, payments applied and checkouts started at once, receipt numbering, the plans and sign-up migrations, sign-up races (two completions, a completion against a Google finish, two accounts confirming one address), two mail loops never sending one mail twice | a throwaway Postgres 17 (e.g. in Docker) | 57 tests |
-| Frontend | `frontend/src/**/*.test.ts(x)` ([README](frontend/src/test/README.md)) | components, hooks, stores and the API client (the SSE parser included) with Vitest, Testing Library and jsdom; `fetch` is stubbed | Node 22+ | 1,422 tests in 98 files; coverage 94.8 % of statements, 90.4 % of branches |
-| End-to-end | `e2e/` ([README](e2e/README.md)) | a real Chromium (desktop and a phone) against the running stack: sign-in, sign-up, verification, Google's return, forgot and reset password, the email pages (their endpoints mocked, Turnstile stubbed), top bar, chat streaming and Stop, the composer, documents, Settings, the admin page, plans, checkout and the return page (the payment side intercepted), phone layout, accessibility | the Docker stack up | 75 tests in 12 files (1 `@live`, skipped) |
-| Integration | `integration/` ([README](integration/README.md)) | an isolated copy of the whole stack (nginx, backend, worker, Postgres, Redis, Qdrant, the monitor and the backup service) with a fake OpenAI-compatible model server, the fake Google, a fake alert receiver, a fake SMTP server (`fake_mail`) and a fake Turnstile with the breach check (`fake_turnstile`): ingestion, chat, access, files and images from chat, limits, sessions, the worker, re-indexing, user deletion, export, Gmail, vision, backups and the restore drill, monitoring and alerts, the host watchdog, payments against a fake Razorpay, sign-up, Google sign-in and password reset (`test_18_signup`), the mailer: retries, refusals, the daily cap, receipts, bounces (`test_19_mail`) | Docker | 182 tests in 20 files |
+| Backend | `backend/tests/` ([README](backend/tests/README.md)) | the whole API in-process: SQLite, fakeredis, in-memory Qdrant, LiteLLM mocked, a fake Google (Gmail and OpenID Connect sign-in), a fake Razorpay, a fake SMTP sink, a fake Turnstile and a fake breach check, the real PDF and file render children; route guards and deletion checks that cover new routes and tables without being edited; the migrations, the monitor, alerts and channels, readiness and Admin → System, and the restore's reconcile step; plans, entitlements on every route, checkout, payments, refunds, disputes, receipts and reminders; direct UPI (the request and its QR codes, the UTR, the admin's confirm and reject, the caps, migration 0005); sign-up, sign-in by email, Google sign-in and linking, password reset, email changes and undo, the password policy, throttles, enumeration (the same response for every address), the mail outbox, templates, bounces and the `mail` check | Python 3.13 | 3,965 tests plus the 62 `postgres`-marked ones (skipped without Postgres); coverage 95.84 % (statements and branches) |
+| Backend on Postgres | the `postgres`-marked tests in `backend/tests/` (with `TEST_DATABASE=postgres`, all of them) | the migrations (adopting a database made before them, repairs and refusals, the advisory lock across two processes), row locks under parallel uploads, UTC sessions, the image reservation race, the account tests, payments applied and checkouts started at once, receipt numbering, the plans, sign-up and direct-UPI migrations, sign-up races (two completions, a completion against a Google finish, two accounts confirming one address), two mail loops never sending one mail twice, two confirms of one UPI payment and two orders sending one UTR at once | a throwaway Postgres 17 (e.g. in Docker) | 62 tests |
+| Frontend | `frontend/src/**/*.test.ts(x)` ([README](frontend/src/test/README.md)) | components, hooks, stores and the API client (the SSE parser included) with Vitest, Testing Library and jsdom; `fetch` is stubbed | Node 22+ | 1,488 tests in 101 files; coverage 94.9 % of statements, 90.5 % of branches |
+| End-to-end | `e2e/` ([README](e2e/README.md)) | a real Chromium (desktop and a phone) against the running stack: sign-in, sign-up, verification, Google's return, forgot and reset password, the email pages (their endpoints mocked, Turnstile stubbed), top bar, chat streaming and Stop, the composer, documents, Settings, the admin page, plans, checkout and the return page (the payment side intercepted), direct UPI (the payment page, the UTR, "Open UPI app" on a phone, the admin's confirm and reject dialogs; intercepted), phone layout, accessibility | the Docker stack up | 80 tests in 13 files (1 `@live`, skipped) |
+| Integration | `integration/` ([README](integration/README.md)) | an isolated copy of the whole stack (nginx, backend, worker, Postgres, Redis, Qdrant, the monitor and the backup service) with a fake OpenAI-compatible model server, the fake Google, a fake alert receiver, a fake SMTP server (`fake_mail`) and a fake Turnstile with the breach check (`fake_turnstile`): ingestion, chat, access, files and images from chat, limits, sessions, the worker, re-indexing, user deletion, export, Gmail, vision, backups and the restore drill, monitoring and alerts, the host watchdog, payments against a fake Razorpay, sign-up, Google sign-in and password reset (`test_18_signup`), the mailer: retries, refusals, the daily cap, receipts, bounces (`test_19_mail`), the web server logs (`test_20_web_logs`), direct UPI from checkout through the UTR, the emails, confirm, reject and a recorded refund (`test_21_upi_direct`) | Docker | 188 tests in 22 files |
 
 ```bash
 # Backend (from the repo root)
@@ -602,7 +606,7 @@ cd backend
 uv venv --python 3.13 .venv            # once (uv downloads Python 3.13 if needed)
 uv pip sync requirements-dev.txt       # again whenever the locks change
 #   or, with python3.13 on PATH: python3.13 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
-.venv/bin/python -m pytest -q                              # 8 to 12 minutes (57 skipped without TEST_POSTGRES_URL)
+.venv/bin/python -m pytest -q                              # 8 to 15 minutes (62 skipped without TEST_POSTGRES_URL)
 .venv/bin/python -m pytest -q --cov --cov-fail-under=94    # with coverage (.coveragerc); fails under 94 %
 uvx ruff@0.13.0 check --target-version py313 --line-length 120 --select E,F,W,I,B --ignore B008 app tests migrations
 uvx mypy@1.18.2 --python-executable .venv/bin/python --ignore-missing-imports app migrations
@@ -662,7 +666,7 @@ by hand, with a read-only token, actions pinned to commit SHAs, a timeout per jo
 | Job | Runs |
 |---|---|
 | `backend` | the hashed dev requirements (`pip install --require-hashes`, `pip check`), ruff, mypy, pytest with coverage (fails under 94 %) |
-| `backend-postgres` | the 57 `postgres`-marked tests against a Postgres 17.11 service container |
+| `backend-postgres` | the 62 `postgres`-marked tests against a Postgres 17.11 service container |
 | `frontend` | `npm ci`, `tsc`, Vitest with the coverage thresholds, `vite build` |
 | `e2e` | a throwaway `.env` (random secrets, fake provider keys), the stack as Compose project `rag-e2e`, the e2e type check and Playwright; the report and the stack logs are uploaded on failure, and the stack is removed with its volumes |
 | `integration` | ruff on `integration/`, then `integration/run.sh --rmi`; the stack logs are uploaded on failure |
@@ -864,9 +868,11 @@ Every one is optional; the defaults are in `.env.example`. After a change, run `
 ## 9. Plans and billing
 
 Every user except the admin needs a current plan to use the app. A plan is bought as a prepaid 30-day period through
-Razorpay (UPI, cards, netbanking, wallets), granted free by the admin, or paid by a bank transfer the admin records.
-Nothing renews by itself. The design is in [`docs/briefs/plans-billing.md`](docs/briefs/plans-billing.md) (looks:
-`plans-billing-visual.md`; Razorpay facts: `payments-razorpay-research.md`); the contract is `SPEC.md`.
+Razorpay (UPI, cards, netbanking, wallets) or by **direct UPI** to the owner's own UPI ID (confirmed by the admin),
+granted free by the admin, or paid by a bank transfer the admin records. Nothing renews by itself. The design is in
+[`docs/briefs/plans-billing.md`](docs/briefs/plans-billing.md) (looks: `plans-billing-visual.md`; Razorpay facts:
+`payments-razorpay-research.md`) and, for direct UPI, [`docs/briefs/upi-direct.md`](docs/briefs/upi-direct.md); the
+contract is `SPEC.md`.
 
 ### What users see
 
@@ -876,12 +882,15 @@ Nothing renews by itself. The design is in [`docs/briefs/plans-billing.md`](docs
   kept.
 - **Checkout** (`/plans/checkout/<plan>`) shows the dates, the amount, what a switch to a smaller plan removes, and
   **Pay**. Pay opens Razorpay's own page in the same tab, which offers UPI, cards, netbanking and wallets. No Razorpay
-  script runs on the app's pages. Checkout needs a confirmed email ("Add and confirm your email in Settings → Account
-  first. Your receipt goes there."). A user who has never paid gets 3 payment links an hour and 6 a day, and all such
-  users together `CHECKOUT_UNPAID_PER_HOUR` (30) an hour ("Checkout is busy. Try again in a few minutes.").
+  script runs on the app's pages. Paying online needs a confirmed email ("Add and confirm your email in Settings →
+  Account first. Your receipt goes there."). A user who has never paid gets 3 payment links an hour and 6 a day, and
+  all such users together `CHECKOUT_UNPAID_PER_HOUR` (30) an hour ("Checkout is busy. Try again in a few minutes.").
+  With direct UPI on, **Pay with UPI** comes first and **Pay online** second (each only when available); paying by UPI
+  needs no email (below, "Direct UPI").
 - **The return page** (`/billing/return`) checks with the server until the payment is confirmed, then shows the plan,
   its dates and the receipt number, with **Start chatting** and **Download receipt**. A failed or abandoned payment
-  says the plan hasn't changed; a payment the app has to check says "Please don't pay again."
+  says the plan hasn't changed; a payment the app has to check says "Please don't pay again." A direct-UPI order has
+  its own page at the same address (the QR code, the UTR field, then "We're checking your payment").
 - **Settings → Plan & billing:** the current plan with its dates, the next period, receipt details (a name), the
   switches for receipt and reminder emails (on by default; they go to the account's confirmed email), and the payment
   history with a PDF receipt per payment (`RA/26-27/000001`, numbered per Indian financial year; test payments
@@ -946,25 +955,146 @@ UTC calendar month.
   recommended plan, active or retired) and **Delete** (unused plans only).
 - **Admin → Billing:** **Overview** (a month in IST: gross, Razorpay fees, refunds, disputes lost, net; **Needs
   attention**; users by plan; expiring in 7 days; lapsed in the last 30 days; **Export CSV** of the month's payments,
-  refunds and lost disputes), **Payments** (each payment with **Refund** and **Download receipt**), **Orders**
-  (checkouts by status; **Check now**; a payment in review gets **Mark resolved** or **Grant instead**), and **Business
-  & payments** (the business name, address, contact email and phone and the receipt prefix, shown on receipts and the
-  public pages; the UPI limit; the payments setup with the webhook URL and the 14 events to subscribe; **Check pending
-  payments now**; the going-live checklist).
+  refunds and lost disputes), **UPI** (the direct-UPI payments to check, with **Confirm…** and **Reject…**, and the
+  recent ones; below, "Direct UPI"), **Payments** (each payment with **Refund** and **Download receipt**), **Orders**
+  (checkouts by status, each with its channel; **Check now**; a payment in review gets **Mark resolved** or **Grant
+  instead**), and **Business & payments** (the business name, address, contact email and phone and the receipt prefix,
+  shown on receipts and the public pages; the UPI limit; the payments setup with the webhook URL and the 14 events to
+  subscribe; **Check pending payments now**; the direct-UPI settings and their ₹1 test QR; the going-live checklist).
 - **Admin → Users:** in a user's **Plan** section, **Grant a complimentary plan…** (1 to 90 days, or no end date),
   **Change plan…** (no charge), **Revoke…** a period, **End plan** for an open-ended one, and **View payments**; the
   switch **Can make test payments** marks testers. Every grant, plan change, revoke, limit override and tester flag is
   recorded in the billing events (grants, changes and revokes with the admin's reason).
 - **Refunds** start in Admin → Billing → Payments (Razorpay's refund API). A full refund ends the period it paid for; a
   partial one does only with **End access** ticked. Refund from the app rather than Razorpay's Dashboard: a Dashboard
-  refund reaches the app only through a webhook.
+  refund reaches the app only through a webhook. A direct-UPI payment or a bank transfer is paid back from your bank
+  app and only recorded here.
 - **Disputes** (chargebacks) arrive by webhook and show under Needs attention with the date to respond by, in
   Razorpay's Dashboard. A lost dispute ends access like a full refund.
 - **Bank transfers** (NEFT, RTGS, IMPS to your account): **Record bank transfer** (Overview or Payments) gives the user
-  a period and a receipt (at least ₹1; a note is required when the amount is below the plan's price).
+  a period and a receipt (at least ₹1; a note is required when the amount is below the plan's price). A bank reference
+  that carries the UTR of a direct-UPI payment that waits, was confirmed or is under review is refused (the same money
+  can't count twice).
 - **Deleting a user** keeps their billing records (orders, payments, refunds, disputes, receipts and their events) with
   the username, for the accounts. A user who never had an order leaves no billing events behind. Their periods and
-  billing profile go with them, and their open payment links are cancelled.
+  billing profile go with them, and their open payment links and UPI requests are cancelled. A UTR still waiting for
+  your check stays in Admin → Billing → UPI (the delete dialog warns about it): it can't be confirmed any more, so pay
+  it back by UPI and reject it.
+
+### Direct UPI
+
+Customers pay your own UPI ID from any UPI app, then type the payment's 12-digit **UTR** (the UPI reference number);
+you find that credit in your bank or UPI app and confirm it in Admin, and only then the plan starts, through the same
+exactly-once apply as every other payment. No payment company is involved, and it works with or without Razorpay. The
+design is [`docs/briefs/upi-direct.md`](docs/briefs/upi-direct.md).
+
+**What customers see.**
+
+- At checkout, **Pay ₹… with UPI** first ("From any UPI app, straight to <business name>. Your plan starts once we've
+  checked the payment, usually within a few hours.") and, when online payment is available too, **Pay online**. Paying
+  by UPI needs no confirmed email.
+- The payment page (`/billing/return?order=…`, open for 24 hours): on a computer a QR code to scan with any UPI app; on
+  a phone **Open UPI app** (a `upi://pay` link with your UPI ID, payee name, the exact amount and the reference) with
+  the QR code behind **Show QR code** and **Save QR image** (to scan from the UPI app's gallery). Always the UPI ID,
+  the amount and the note (the order's reference, `AN-XXXX-XXXX`) with Copy buttons, and the UTR field with **I've paid
+  · Send UTR**. A request can be cancelled; one made for the same plan and amount with an hour left is shown again
+  instead of a new one.
+- After the UTR: "We're checking your payment" (the page checks every 30 s for half an hour), a banner in the chat and
+  a notice on `/plans` and in Settings. No new checkout of either kind starts while it waits, so nobody pays twice.
+- Confirmed: the plan starts (a renewal after the paid time; an upgrade at once, in place of the current period) and
+  the receipt reads "UPI (direct)" with the UTR. Rejected: the reason you chose and your note, on the payment page and
+  for 7 days in a chat banner, on `/plans` and in Settings, with **Start a new payment**.
+
+**Which UPI ID to use.** The UPI ID of the bank account the money should reach (research in the brief, 2.2 to 2.5):
+
+- **A business ID** (a business current account's UPI ID, or the merchant ID of Google Pay for Business, PhonePe
+  Business, Paytm for Business or BharatPe) shows a business name and notifies you of each payment. The small-merchant
+  (P2PM) IDs of the business apps are limited by NPCI to **₹10,000 per payment, ₹25,000 per 24 hours and ₹1,00,000 per
+  30 days received**: 50 Standard payments a month.
+- **A personal savings account's ID** works too, but banks may ask about many business payments into it. And a
+  `upi://` link opened from a phone's browser can fail in some apps ("exceeds limit", a security warning, or nothing),
+  by developers' reports more often for personal IDs (Google Pay and PhonePe are named; unverified). Scanning the QR
+  code and paying the copied UPI ID work in every app, so the page always shows both; your ₹1 tests settle it.
+- **iPhones have no app chooser:** **Open UPI app** opens whichever one UPI app iOS picks, so iPhone users are told to
+  copy the UPI ID or save the QR image if it isn't theirs.
+- Since 30 June 2025 UPI apps show the account's name from the bank's records, not the payee name of the link: enter
+  the payee name as your bank shows it. A bank may also cap a payer's new account, device or reset PIN at ₹5,000 for
+  24 hours (Professional costs exactly that).
+- Ask your bank and your accountant which ID suits a business (brief 14.1).
+
+**Turning it on** (Admin → Billing → Business & payments, the **UPI payments** card; nothing goes in `.env`):
+
+1. Enter the **UPI ID** (lowercased; letters, digits, `.`, `_` and `-`, then `@` and the bank's handle) and the
+   **Payee name** (up to 50 of letters, digits, spaces and `. , & ' ( ) / -`), leave **Accept UPI payments** off, and
+   **Save**.
+2. **Test with the ₹1 QR** that then appears: scan it from another phone with Google Pay, PhonePe and Paytm and pay ₹1.
+   Check the name each app shows, that ₹1 reaches your account, and where your bank or UPI app shows the UTR and the
+   note (`AN-TEST`).
+3. For email alerts, set the **contact email** in Business details and the mailer (section 10); the card says "Email
+   alerts: on, to …" once both are set.
+4. Switch **Accept UPI payments** on and **Save** (it is refused without the UPI ID and payee name). The going-live
+   checklist then lists "Test direct UPI with ₹1 from Google Pay, PhonePe and Paytm".
+5. Then a real test with a `smoke-*` user from a phone: buy Starter by UPI, send the UTR, confirm it, check the receipt,
+   pay it back by UPI and record the refund (access ends).
+
+Changing the UPI ID later moves future money only: requests already made keep the ID they were made with for up to 24
+hours, and the list shows that ID under the reference when it differs. Every change is in the billing events.
+
+**Every day.** You hear of a UTR by Needs attention ("2 UPI payments to check"), the **UPI · 2** tab, the email "UPI
+payment to check: ₹2,000 (AN-…)", and the monitor's `billing` check, which warns when one waits over 24 hours. In
+Admin → Billing → **UPI**, oldest first:
+
+1. Open your bank or UPI app and find a credit of **exactly the amount** with **that UTR**. If your app shows the note,
+   it should be the order's reference. A customer could type someone else's UTR seen on a screenshot: the amount and
+   the note are your check.
+2. Found it: **Confirm…**, tick "I found a credit of exactly ₹… with UTR …" and **Confirm and start the plan**. The
+   payment is recorded (method UPI, by you, paid at the time the UTR came) and applied once; a double click or a second
+   admin changes nothing, and a stale dialog with another UTR is refused. An upgrade whose credit fell meanwhile, or
+   whose current period changed, goes to **review** (Orders): refund it or grant the plan instead.
+3. Not found, or not right: **Reject…** with a reason the customer reads: "No payment with this UTR arrived", "The
+   amount is different" (send what they paid back by UPI), "This UTR belongs to another payment" or "Something else"
+   (a note is then required). The note (up to 200 characters) is shown to the customer: no bank details in it. A
+   rejected UTR is free again, so if you rejected a payment that did arrive, the customer starts a new payment and
+   sends the same UTR.
+
+**Refunds by UPI.** Pay the money back by UPI from your bank app to the payer of that UTR first, then Admin → Billing →
+Payments → **Refund…** on the "UPI (direct)" payment → **Record refund of ₹…** (the reason can hold your refund's UTR).
+Nothing moves through the app; access follows the usual refund rules (a full refund ends the period; a partial one only
+with **End access**).
+
+**Limits and abuse guards.**
+
+- One open UPI request per user; a request without a UTR expires after 24 hours; one UTR per request.
+- A UTR can be on only one payment that waits, was confirmed or is under review, and never on a bank transfer you
+  recorded (both ways): the same money can't count twice. The amount is fixed when the request is made.
+- Per user: 5 requests per day (IST; 3 for an account that has never paid) and 10 UTR submissions per day. Three
+  rejections in 30 days pause direct UPI for that user (they can still pay online or write to you).
+- Accounts that have never paid: together at most 20 UTRs waiting for your check, after which their new requests are
+  refused until you have checked some ("Many UPI payments are waiting to be checked.") and the `billing` check warns
+  for an hour; from one network at most 10 requests an hour and 30 a day. A customer who has paid can always send
+  their UTR. nginx rate-limits the UPI checkout like the online one.
+- The app stores the UTR and the reference, never the payer's name or UPI ID; logs carry no UTR, UPI ID or payee name.
+
+**Emails** (only with the mailer set up, section 10; without it, Needs attention, the UPI tab and the monitor still
+show everything, and customers see it on the payment page and in Settings):
+
+- To you, at the business contact email: "UPI payment to check" for each UTR sent, with the amount, plan, username,
+  reference, UTR and a link to Admin → Billing → UPI. It isn't sent when you decided before the mailer got to it.
+- To the customer, at their confirmed email with receipt emails on: "We couldn't confirm your UPI payment" when you
+  reject one, and the receipt when you confirm one (as for every payment).
+
+**"I paid, but my UTR didn't go through."** Nothing to confirm yet: there is no UTR in the list.
+
+- Ask for the 12-digit UTR from the payment's details in their UPI app ("UTR", "UPI Ref No." or "UPI transaction ID";
+  not the app's own transaction ID with letters), and find the credit yourself first.
+- While their request is open (24 hours), they enter it there: the chat banner's **Continue**, `/plans` or Settings →
+  Plan & billing lead back to it. After that, the request has expired: they start a new payment for the same plan and
+  send the same UTR on it (the app tells them so). If the amount differs, reject it with "The amount is different" and
+  pay it back.
+- If they can't, record it yourself as a bank transfer (**Record bank transfer**, the UTR as the bank reference): the
+  receipt then reads bank transfer.
+- If their app says the payment failed or is pending, confirm nothing: a failed payment's money comes back to them by
+  itself, usually within a day.
 
 ### Setting up Razorpay
 
@@ -1016,7 +1146,9 @@ change with `docker compose up -d backend worker`, then recreate the frontend):
 
 Receipts (PDF attached) and plan reminder emails go through the mailer to the account's confirmed email: they are on
 once `MAIL_SMTP_HOST` and `MAIL_FROM` (with the other `MAIL_SMTP_*` settings, section 2) are set. `BILLING_EMAIL_FROM`
-is removed (ignored with a warning when still set).
+is removed (ignored with a warning when still set). Direct UPI adds no setting here: it is configured in Admin
+("Direct UPI" above), and its limits are fixed in `services/billing/upi.py` and `services/auth/throttle.py`
+(`upi_unpaid`).
 
 Removed, now per plan: `DEFAULT_MONTHLY_TOKEN_LIMIT`, `DEFAULT_RATE_LIMIT_PER_MIN`, `DEFAULT_MAX_UPLOAD_MB`,
 `DEFAULT_MAX_DOCUMENTS`, `DEFAULT_MAX_STORAGE_MB`, `DEFAULT_MONTHLY_IMAGE_LIMIT` and `VISION_MONTHLY_TOKEN_LIMIT`
@@ -1306,6 +1438,10 @@ sign-in works only at the public address: sign up there. Before any announcement
     webhook's HMAC over the raw body, or the worker's polling, and only when its amount, currency, order and mode match
     the stored order. Each Razorpay payment is applied once. A webhook's body never changes anything by itself; events
     are deduplicated by id and by body.
+  - A direct-UPI plan starts only on the admin's confirm, which must echo the order's UTR, and applies once under the
+    user's and the order's row locks. A UTR is unique among waiting, confirmed and reviewed orders (a partial unique
+    index) and checked against recorded bank transfers both ways. The payment request and its QR codes are built only
+    from the validated settings and the stored order; the QR images are served with `sandbox` and `no-store`.
   - Amounts are computed on the server only, in integer paise. Every per-user money or access change takes the user's
     row lock first, and no Razorpay call runs inside a database transaction.
   - The key secret and webhook secrets are never logged or shown (Admin → Billing shows a key hint). The return path is
@@ -1368,6 +1504,10 @@ sign-in works only at the public address: sign up there. Before any announcement
     sees an empty page.
   - No GST and no tax invoices; no automatic renewal (each period is paid again); no coupons or annual plans. A new
     Razorpay account may cap UPI at ₹2,000 per payment, and test mode allows about 30 payment links.
+  - Direct UPI is built but not deployed yet, and no real UPI payment has gone through it: the ₹1 tests (section 9,
+    "Direct UPI") settle what the apps do with the link and the note. The confirm dialog can't see the bank: the admin
+    finds the credit by hand. "Open UPI app" can fail in some apps for a personal UPI ID (the QR code and the copied ID
+    still work).
 - **Sign-up and email:**
   - Built and tested against fakes only: no real Resend, Turnstile or Google sign-in keys have been used yet, so the
     checks of `docs/briefs/signup-auth.md` 18.2 (Turnstile under the CSP, Google's consent screens and step-up,

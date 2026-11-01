@@ -1,12 +1,14 @@
 import { useCallback, useState } from "react";
-import type { BillingAdminConfig } from "../../api/types";
+import type { AdminOrder, BillingAdminConfig, Page } from "../../api/types";
 import { formatInr } from "../../lib/billing";
+import { formatNumber } from "../../lib/format";
 import SegmentedControl from "../ui/SegmentedControl";
-import { BILLING_CONFIG_PATH } from "./adminApi";
+import { BILLING_CONFIG_PATH, ordersPath } from "./adminApi";
 import BillingBusiness from "./BillingBusiness";
 import BillingOrders from "./BillingOrders";
 import BillingOverview from "./BillingOverview";
 import BillingPayments from "./BillingPayments";
+import BillingUpi from "./BillingUpi";
 import { currentIstMonth } from "./billingUi";
 import FlashMessage from "./FlashMessage";
 import { useFlash, useResource } from "./hooks";
@@ -15,12 +17,16 @@ import RecordTransferModal from "./RecordTransferModal";
 
 const SECTIONS = [
   { value: "overview", label: "Overview" },
+  { value: "upi", label: "UPI" },
   { value: "payments", label: "Payments" },
   { value: "orders", label: "Orders" },
   { value: "business", label: "Business & payments" },
 ] as const;
 
 type Section = (typeof SECTIONS)[number]["value"];
+
+/** The direct-UPI UTRs waiting for the admin's check: the UPI section's list and the count in its label. */
+const TO_CHECK_PATH = ordersPath("submitted", 1);
 
 /** A positive whole number from the hash, else null. */
 function idParam(value: string | null): number | null {
@@ -35,13 +41,21 @@ type BillingTabProps = {
   onNavigate: (hash: string) => void;
 };
 
-/** Admin → Billing: the month's money and what needs attention, payments, orders, and the business settings (8.11). */
+/**
+ * Admin → Billing: the month's money and what needs attention, the direct-UPI payments to check, payments, orders,
+ * and the business settings (8.11; upi-direct.md 10.5).
+ */
 export default function BillingTab({ section, params, onNavigate }: BillingTabProps) {
   const current: Section = SECTIONS.find((option) => option.value === section)?.value ?? "overview";
   const [month, setMonth] = useState(currentIstMonth);
   const [recording, setRecording] = useState(false);
   const [version, setVersion] = useState(0);
   const config = useResource<BillingAdminConfig>(BILLING_CONFIG_PATH, "Couldn't load the payments setup.");
+  const toCheck = useResource<Page<AdminOrder>>(TO_CHECK_PATH, "Couldn't load the UPI payments to check.");
+  const waiting = toCheck.data?.total ?? 0;
+  const sections = SECTIONS.map((option) =>
+    option.value === "upi" && waiting > 0 ? { ...option, label: `UPI · ${formatNumber(waiting)}` } : option,
+  );
   const flash = useFlash();
   const paramsRead = useCallback(() => onNavigate(`billing/${current}`), [onNavigate, current]);
 
@@ -52,7 +66,7 @@ export default function BillingTab({ section, params, onNavigate }: BillingTabPr
           label="Billing section"
           size="sm"
           value={current}
-          options={SECTIONS}
+          options={sections}
           onChange={(value) => onNavigate(`billing/${value}`)}
         />
         {current === "overview" || current === "payments" ? (
@@ -69,6 +83,7 @@ export default function BillingTab({ section, params, onNavigate }: BillingTabPr
           version={version}
         />
       ) : null}
+      {current === "upi" ? <BillingUpi toCheck={toCheck} config={config} onNavigate={onNavigate} /> : null}
       {current === "payments" ? (
         <BillingPayments
           month={month}
@@ -84,6 +99,8 @@ export default function BillingTab({ section, params, onNavigate }: BillingTabPr
           orderParam={params.get("order")}
           onParamsRead={paramsRead}
           onGrant={(userId) => onNavigate(`users?user=${userId}&grant=1`)}
+          contact={config.data?.settings.contact_email ?? null}
+          onUpiDecided={() => void toCheck.reload()}
         />
       ) : null}
       {current === "business" ? <BillingBusiness config={config} onNavigate={onNavigate} /> : null}

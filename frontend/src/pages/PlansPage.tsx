@@ -1,10 +1,10 @@
 import { useCallback, useId, type ReactNode, type Ref } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { billingApi } from "../api/client";
-import type { PlanAccess, PlanOffer } from "../api/types";
+import type { PaymentsInfo, PlanAccess, PlanOffer } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { PaymentsUnavailable, TestModeNotice } from "../components/billing/BillingNotices";
-import { PendingCheckoutNotice } from "../components/billing/PendingCheckoutBanner";
+import { PendingCheckoutNotice, RejectedOrderNotice } from "../components/billing/PendingCheckoutBanner";
 import PlanCard, { PlanGridSkeleton, type PlanEmphasis } from "../components/billing/PlanCard";
 import PlanCompareTable from "../components/billing/PlanCompareTable";
 import { checkoutPath, endsBadge, expiringDays, isStacked, istDayMonth } from "../components/billing/planText";
@@ -20,6 +20,7 @@ import {
   GiftIcon,
   InfoIcon,
   MailIcon,
+  QrIcon,
   ShieldIcon,
 } from "../components/ui/icons";
 import { formatIstDate } from "../lib/billing";
@@ -29,17 +30,28 @@ import "./plans.css";
 const ADMIN_TITLE = "The admin doesn't need a plan.";
 
 /**
- * Without a verified email (functional 4.12, visual 8): checkout needs one, because the receipt goes there. Add email
- * opens Settings → Account over the page; `buttonRef` lets checkout bring it back into view when Pay is refused.
+ * Without a verified email (functional 4.12, visual 8): online checkout needs one, because the receipt goes there.
+ * Add email opens Settings → Account over the page; `buttonRef` lets checkout bring it back into view when Pay is
+ * refused; `children` replaces the sentence (beside direct UPI, which needs no email).
  */
-export function EmailNeededNotice({ buttonRef }: { buttonRef?: Ref<HTMLButtonElement> }) {
+export function EmailNeededNotice({
+  buttonRef,
+  children,
+}: {
+  buttonRef?: Ref<HTMLButtonElement>;
+  children?: ReactNode;
+}) {
   const openSettings = useOpenSettings();
   const textId = useId();
   return (
     <div className="ui-notice ui-notice-info plans-email-notice" role="status">
       <MailIcon size={15} />
       <span className="ui-notice-text" id={textId}>
-        <b>Add your email before you pay.</b> Your receipt goes there.
+        {children ?? (
+          <>
+            <b>Add your email before you pay.</b> Your receipt goes there.
+          </>
+        )}
       </span>
       <button
         ref={buttonRef}
@@ -247,12 +259,37 @@ function CardActions({ offer, primary, admin, length }: CardActionsProps) {
   );
 }
 
-const HOW = [
-  {
+/** How paying works, by the ways open to the caller (direct UPI, online on Razorpay, or both). */
+function payingHow(payments: PaymentsInfo | null) {
+  if (payments?.upi_direct && payments.available) {
+    return {
+      icon: <QrIcon size={20} />,
+      title: "Pay by UPI or online",
+      text: "Scan a QR code with any UPI app, or use Razorpay's secure page. We never see your UPI PIN or bank details.",
+    };
+  }
+  if (payments?.upi_direct) {
+    return {
+      icon: <QrIcon size={20} />,
+      title: "Pay by UPI from any app",
+      text: "Scan a QR code or pay to our UPI ID. We never see your UPI PIN or bank details.",
+    };
+  }
+  return {
     icon: <ShieldIcon size={20} />,
     title: "Pay on Razorpay's secure page",
     text: "UPI, cards, netbanking or wallets. We never see your card or bank details.",
-  },
+  };
+}
+
+function processedBy(payments: PaymentsInfo | null): string {
+  if (!payments?.upi_direct) return "Payments are processed by Razorpay.";
+  return payments.available
+    ? "Online payments are processed by Razorpay; UPI payments go straight to our bank account."
+    : "UPI payments go straight to our bank account.";
+}
+
+const HOW_MORE = [
   {
     icon: <CalendarIcon size={20} />,
     title: "30 days, no automatic renewal",
@@ -335,7 +372,7 @@ export default function PlansPage() {
   }
 
   const notices: ReactNode[] = [];
-  if (!admin && !user.email) notices.push(<EmailNeededNotice key="email" />);
+  if (!admin && !user.email && payments && !payments.upi_direct) notices.push(<EmailNeededNotice key="email" />);
   if (admin) {
     notices.push(
       <div key="admin" className="ui-notice" role="status">
@@ -344,12 +381,13 @@ export default function PlansPage() {
       </div>,
     );
   }
-  if (payments && !payments.available)
+  if (payments && !payments.available && !payments.upi_direct)
     notices.push(<PaymentsUnavailable key="payments" payments={payments} admin={admin} />);
   if (payments?.available && payments.mode === "test") notices.push(<TestModeNotice key="test" />);
   if (plan.pending_order) {
     notices.push(<PendingCheckoutNotice key="pending" order={plan.pending_order} onCancelled={onCancelled} />);
   }
+  if (plan.rejected_order) notices.push(<RejectedOrderNotice key="rejected" order={plan.rejected_order} />);
   if (params.get("payment") === "unknown") {
     notices.push(
       <div key="unknown" className="ui-notice ui-notice-info" role="status">
@@ -371,7 +409,7 @@ export default function PlansPage() {
         <>
           <PlanCompareTable plans={plans} emphasisedCode={emphasis?.code ?? null} />
           <ul className="plans-how" aria-label="How payment works">
-            {HOW.map((item) => (
+            {[payingHow(payments), ...HOW_MORE].map((item) => (
               <li key={item.title}>
                 <span className="plans-how-icon" aria-hidden="true">
                   {item.icon}
@@ -385,7 +423,7 @@ export default function PlansPage() {
       ) : null}
       <footer className="plans-foot">
         <PolicyLinks />
-        <p>Payments are processed by Razorpay.</p>
+        <p>{processedBy(payments)}</p>
       </footer>
     </PlansFrame>
   );

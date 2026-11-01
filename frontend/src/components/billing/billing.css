@@ -298,6 +298,8 @@
   margin-left: auto;
 }
 .billing-pending {
+  display: grid;
+  gap: 10px;
   margin-bottom: 14px;
 }
 

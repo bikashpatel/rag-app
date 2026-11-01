@@ -41,6 +41,8 @@ MailKind = Literal[
     "google_unlinked",
     "receipt",
     "plan_reminder",
+    "upi_submitted",
+    "upi_rejected",
     "test",
 ]
 MailClass = Literal["public", "reset", "account", "billing"]
@@ -67,6 +69,8 @@ KINDS: Final[Mapping[MailKind, KindRule]] = MappingProxyType(
         "google_unlinked": _NOTICE,
         "receipt": KindRule("billing", 2, timedelta(days=3)),
         "plan_reminder": KindRule("billing", 2, timedelta(days=1)),
+        "upi_submitted": KindRule("billing", 1, timedelta(days=1)),  # to the business contact email
+        "upi_rejected": KindRule("billing", 2, timedelta(days=3)),
         "test": KindRule("account", 2, timedelta(hours=1)),
     }
 )

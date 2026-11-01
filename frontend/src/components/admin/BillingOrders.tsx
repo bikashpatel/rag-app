@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import type { AdminOrder, AdminOrderDetail, OrderStatus, Page } from "../../api/types";
-import { formatInr, formatIstDate } from "../../lib/billing";
+import { formatInr, formatIstDate, formatUtr } from "../../lib/billing";
 import { formatNumber, formatRelativeTime } from "../../lib/format";
 import Modal from "../ui/Modal";
 import SegmentedControl from "../ui/SegmentedControl";
@@ -9,6 +9,8 @@ import { AlertCircleIcon, RefreshIcon } from "../ui/icons";
 import { checkOrder, errorMessage, getOrder, ordersPath, PAGE_SIZE, resolveOrder } from "./adminApi";
 import {
   BuyerEmail,
+  CHANNEL_LABELS,
+  CopyButton,
   Fact,
   istDateTime,
   kindLabel,
@@ -24,6 +26,7 @@ import FlashMessage from "./FlashMessage";
 import { FormValidator } from "./form";
 import { useFlash, useResource } from "./hooks";
 import { EmptyState, ErrorState, LoadingState, ResourceGate } from "./StateViews";
+import { decidable, REJECT_REASONS, UpiDecisionDialog, type UpiDecision } from "./UpiDecision";
 
 type StatusFilter = "all" | OrderStatus;
 
@@ -33,17 +36,31 @@ function checksText(order: AdminOrder): string {
   return [plural(order.checks, "check"), next ? `next ${formatRelativeTime(next)}` : null].filter(Boolean).join(" · ");
 }
 
+/** The second line under Kind: how the order is paid, unless through Razorpay. */
+const CHANNEL_SHORT = { razorpay: null, upi_direct: "UPI", bank_transfer: "Bank transfer" } as const;
+
 type BillingOrdersProps = {
   /** From the hash: an order to open. */
   orderParam: string | null;
   onParamsRead: () => void;
   onGrant: (userId: number) => void;
+  /** The business contact email, for the customer's sentences in the UPI reject dialog. */
+  contact: string | null;
+  /** A direct-UPI payment was confirmed or rejected: Billing's count of UTRs to check changes. */
+  onUpiDecided: () => void;
 };
 
-export default function BillingOrders({ orderParam, onParamsRead, onGrant }: BillingOrdersProps) {
+export default function BillingOrders({
+  orderParam,
+  onParamsRead,
+  onGrant,
+  contact,
+  onUpiDecided,
+}: BillingOrdersProps) {
   const [status, setStatus] = useState<StatusFilter>("all");
   const [page, setPage] = useState(1);
   const [open, setOpen] = useState<string | null>(null);
+  const [deciding, setDeciding] = useState<UpiDecision | null>(null);
   const flash = useFlash();
   const orders = useResource<Page<AdminOrder>>(
     ordersPath(status === "all" ? null : status, page),
@@ -62,8 +79,10 @@ export default function BillingOrders({ orderParam, onParamsRead, onGrant }: Bil
   const filters = [
     { value: "all", label: "All" },
     { value: "pending", label: "Pending" },
+    { value: "submitted", label: "To check" },
     { value: "review", label: reviewCount ? `Review ${formatNumber(reviewCount)}` : "Review" },
     { value: "paid", label: "Paid" },
+    { value: "rejected", label: "Rejected" },
     { value: "expired", label: "Expired" },
     { value: "cancelled", label: "Cancelled" },
   ] as const satisfies readonly { value: StatusFilter; label: string }[];
@@ -84,8 +103,8 @@ export default function BillingOrders({ orderParam, onParamsRead, onGrant }: Bil
             Orders
           </h2>
           <p className="admin-card-subtitle">
-            Every checkout, with how the app checks it with Razorpay. Orders paid with the other kind of keys are paused
-            until those keys run again.
+            Every checkout, with how the app checks it with Razorpay, and every direct-UPI order. Orders paid with the
+            other kind of keys are paused until those keys run again.
           </p>
         </div>
       </div>
@@ -139,7 +158,14 @@ export default function BillingOrders({ orderParam, onParamsRead, onGrant }: Bil
                           <UserCell user={order.user} />
                         </td>
                         <td>{order.plan.name}</td>
-                        <td>{kindLabel(order.kind)}</td>
+                        <td>
+                          <span className="admin-upi-stack">
+                            {kindLabel(order.kind)}
+                            {CHANNEL_SHORT[order.channel] ? (
+                              <span className="admin-subtext">{CHANNEL_SHORT[order.channel]}</span>
+                            ) : null}
+                          </span>
+                        </td>
                         <td className="num admin-nowrap">
                           {formatInr(order.amount_paise)}
                           {order.test_mode ? (
@@ -151,7 +177,7 @@ export default function BillingOrders({ orderParam, onParamsRead, onGrant }: Bil
                         </td>
                         <td>
                           <span className="admin-badges">
-                            <OrderStatusBadge status={order.status} />
+                            <OrderStatusBadge status={order.status} channel={order.channel} />
                             {order.status === "review" && order.review_note ? (
                               <span className="badge badge-neutral">Resolved</span>
                             ) : null}
@@ -159,7 +185,7 @@ export default function BillingOrders({ orderParam, onParamsRead, onGrant }: Bil
                           </span>
                         </td>
                         <td className="admin-subtext admin-nowrap">
-                          {order.mode === "offline" ? "Bank transfer" : checksText(order)}
+                          {order.channel === "razorpay" ? checksText(order) : "—"}
                         </td>
                         <td className="admin-last-error" title={order.last_error ?? undefined}>
                           {order.last_error ?? ""}
@@ -195,13 +221,29 @@ export default function BillingOrders({ orderParam, onParamsRead, onGrant }: Bil
             setOpen(null);
             onGrant(userId);
           }}
+          onDecide={(decision) => {
+            setOpen(null);
+            setDeciding(decision);
+          }}
+        />
+      ) : null}
+      {deciding ? (
+        <UpiDecisionDialog
+          decision={deciding}
+          contact={contact}
+          onClose={() => setDeciding(null)}
+          onDone={(order, message) => {
+            setDeciding(null);
+            changed(order, message);
+            onUpiDecided();
+          }}
         />
       ) : null}
     </section>
   );
 }
 
-const MODES: Record<AdminOrder["mode"], string> = { live: "Live", test: "Test keys", offline: "Bank transfer" };
+const MODES: Record<AdminOrder["mode"], string> = { live: "Live", test: "Test keys", offline: "Offline" };
 
 /** A detail value as a short "key=value" chip. */
 function chip(key: string, value: unknown): string {
@@ -213,10 +255,15 @@ type OrderDialogProps = {
   onClose: () => void;
   onChanged: (order: AdminOrder, message: string) => void;
   onGrant: (userId: number) => void;
+  /** Confirm… or Reject… on a direct-UPI order whose UTR waits (the caller opens that dialog). */
+  onDecide: (decision: UpiDecision) => void;
 };
 
-/** One order: its facts, the events timeline, Check now, and for a review Mark resolved or Grant instead. */
-export function OrderDialog({ publicId, onClose, onChanged, onGrant }: OrderDialogProps) {
+/**
+ * One order: its facts, the events timeline, Check now, for a review Mark resolved or Grant instead, and for a
+ * direct-UPI order its request, UTR and decision, with Confirm… and Reject… while the UTR waits.
+ */
+export function OrderDialog({ publicId, onClose, onChanged, onGrant, onDecide }: OrderDialogProps) {
   const [detail, setDetail] = useState<AdminOrderDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState<"check" | "resolve" | null>(null);
@@ -279,6 +326,16 @@ export function OrderDialog({ publicId, onClose, onChanged, onGrant }: OrderDial
         <button type="button" className="btn" onClick={onClose}>
           Close
         </button>
+        {decidable(order) ? (
+          <>
+            <button type="button" className="btn" onClick={() => onDecide({ order, action: "reject" })}>
+              Reject…
+            </button>
+            <button type="button" className="btn btn-primary" onClick={() => onDecide({ order, action: "confirm" })}>
+              Confirm…
+            </button>
+          </>
+        ) : null}
         {order.mode !== "offline" ? (
           <button
             type="button"
@@ -336,7 +393,7 @@ export function OrderDialog({ publicId, onClose, onChanged, onGrant }: OrderDial
             </Fact>
             <Fact term="Status">
               <span className="admin-badges">
-                <OrderStatusBadge status={order.status} />
+                <OrderStatusBadge status={order.status} channel={order.channel} />
                 {order.paused ? <span className="badge badge-neutral">Paused: the other kind of keys</span> : null}
               </span>
             </Fact>
@@ -344,13 +401,44 @@ export function OrderDialog({ publicId, onClose, onChanged, onGrant }: OrderDial
               {formatInr(order.amount_paise)} · {kindLabel(order.kind)}
               {order.credit_paise > 0 ? ` (after a ${formatInr(order.credit_paise)} credit)` : ""}
             </Fact>
-            <Fact term="Mode">{MODES[order.mode]}</Fact>
+            <Fact term="Mode">{order.channel === "razorpay" ? MODES[order.mode] : CHANNEL_LABELS[order.channel]}</Fact>
             <Fact term="Created">{istDateTime(order.created_at)}</Fact>
             {order.paid_at ? (
               <Fact term="Paid">{istDateTime(order.paid_at)}</Fact>
-            ) : (
-              <Fact term="Link expires">{istDateTime(order.expires_at)}</Fact>
-            )}
+            ) : order.status === "pending" || order.channel === "razorpay" ? (
+              <Fact term={order.upi ? "Request expires" : "Link expires"}>{istDateTime(order.expires_at)}</Fact>
+            ) : null}
+            {order.upi ? (
+              <>
+                <Fact term="Reference">
+                  <code className="admin-code">{order.upi.reference}</code>
+                </Fact>
+                <Fact term="Paid to">
+                  {order.upi.payee_name} · <code className="admin-code">{order.upi.upi_id}</code>
+                </Fact>
+                {order.upi.utr ? (
+                  <Fact term="UTR">
+                    <span className="admin-copy-row">
+                      <code className="admin-code">{formatUtr(order.upi.utr)}</code>
+                      <CopyButton value={order.upi.utr} label="Copy the UTR" />
+                    </span>
+                  </Fact>
+                ) : null}
+                {order.upi.submitted_at ? <Fact term="Sent">{istDateTime(order.upi.submitted_at)}</Fact> : null}
+                {order.upi.decided_at ? (
+                  <Fact term="Decided">
+                    {order.status === "rejected" ? "Rejected" : "Confirmed"}
+                    {order.upi_decided_by ? ` by ${order.upi_decided_by}` : ""} on {istDateTime(order.upi.decided_at)}
+                    {order.upi.rejection ? (
+                      <span className="admin-fact-note">
+                        {REJECT_REASONS[order.upi.rejection.reason].label}
+                        {order.upi.rejection.note ? `: ${order.upi.rejection.note}` : ""}
+                      </span>
+                    ) : null}
+                  </Fact>
+                ) : null}
+              </>
+            ) : null}
             {order.valid_through ? <Fact term="Bought">Valid through {formatIstDate(order.valid_through)}</Fact> : null}
             {order.razorpay_link_id ? (
               <Fact term="Razorpay link">

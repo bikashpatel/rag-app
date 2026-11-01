@@ -67,9 +67,25 @@ async def do_nothing(doc_id: int) -> None:
     return None
 
 
+class IdleBillingLoop:
+    """The worker's billing loop, idle until the worker stops: these tests are about the jobs (test_billing_reminders
+    covers the loop). Records that the worker started it."""
+
+    started = 0
+
+    def __init__(self, stopping: asyncio.Event) -> None:
+        self._stopping = stopping
+
+    async def run(self) -> None:
+        IdleBillingLoop.started += 1
+        await self._stopping.wait()
+
+
 @pytest.fixture(autouse=True)
 def short_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker, "_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(worker, "BillingLoop", IdleBillingLoop)
+    IdleBillingLoop.started = 0
 
 
 @pytest.fixture
@@ -326,6 +342,18 @@ async def test_a_failing_job_does_not_stop_the_worker(
 
     assert jobs.finished == [1, 2]
     assert worker_messages(caplog, logging.ERROR) == ["Unexpected error while processing document 1"]
+
+
+async def test_the_billing_loop_always_runs_beside_the_jobs() -> None:
+    """Without payments or mail set up too: direct UPI's settings live in the database (docs/briefs/upi-direct.md
+    D17)."""
+    async with running(worker.Worker(1)):
+        for _ in range(250):
+            if IdleBillingLoop.started:
+                break
+            await asyncio.sleep(0.02)
+
+    assert IdleBillingLoop.started == 1
 
 
 async def test_a_stopped_worker_does_not_start(monkeypatch: pytest.MonkeyPatch) -> None:

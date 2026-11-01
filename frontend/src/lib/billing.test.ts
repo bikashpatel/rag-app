@@ -6,7 +6,9 @@ import {
   formatIstDate,
   formatIstRange,
   formatRate,
+  formatUtr,
   isRazorpayUrl,
+  isUpiPayUri,
 } from "./billing";
 
 describe("formatInr", () => {
@@ -108,6 +110,20 @@ describe("isRazorpayUrl", () => {
     expect(isRazorpayUrl(own, true)).toBe(true);
     expect(isRazorpayUrl(own, false)).toBe(false);
     expect(isRazorpayUrl("https://example.com/pay", true)).toBe(false);
+  });
+});
+
+describe("direct UPI", () => {
+  it("groups a UTR in fours", () => {
+    expect(formatUtr("630512345678")).toBe("6305 1234 5678");
+    expect(formatUtr("6305")).toBe("6305");
+  });
+
+  it("links only a upi://pay request", () => {
+    expect(isUpiPayUri("upi://pay?pa=asha.rao@okhdfcbank&pn=Asha%20Rao&am=2000.00&cu=INR&tn=AN-7K4M-Q9TX")).toBe(true);
+    expect(isUpiPayUri("upi://mandate?pa=x@y")).toBe(false);
+    expect(isUpiPayUri("javascript:alert(1)")).toBe(false);
+    expect(isUpiPayUri(null)).toBe(false);
   });
 });
 

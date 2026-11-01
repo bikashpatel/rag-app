@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationDetail, ConversationSummary, Me } from "../api/types";
 import { setMediaQueries } from "../test/browser";
 import { deltaEvent, doneEvent, liveStream, metaEvent } from "../test/chatStream";
-import { makeCatalog, makeOrder } from "../test/billing";
+import { makeCatalog, makePendingOrder, makeRejectedOrder } from "../test/billing";
 import {
   makeChatModel,
   makeDocumentConfig,
@@ -416,9 +416,20 @@ describe("ChatPage with plans", () => {
     expect(screen.getByText(/plan ends in 4 days/)).toHaveTextContent("Your Standard plan ends in 4 days, on 24 Oct.");
     first.unmount();
 
-    await setup({ me: makeMe({ plan: { ...ending, pending_order: makeOrder() } }) });
+    await setup({ me: makeMe({ plan: { ...ending, pending_order: makePendingOrder() } }) });
     expect(screen.getByText(/is in progress/)).toHaveTextContent("A payment for Standard is in progress.");
     expect(screen.queryByText(/plan ends in/)).not.toBeInTheDocument();
+  });
+
+  it("shows a rejected UPI payment above the plan's own banner", async () => {
+    await setup({ me: makeMe({ plan: makePaidPlanAccess({ rejected_order: makeRejectedOrder() }) }) });
+    expect(screen.getByText(/We couldn't confirm your UPI payment/)).toHaveTextContent(
+      "We couldn't confirm your UPI payment of ₹2,000 for Standard.",
+    );
+    expect(screen.getByRole("link", { name: "See why" })).toHaveAttribute(
+      "href",
+      "/billing/return?order=u7Kp2QwX9mN4bV6cZ8dA",
+    );
   });
 
   it("offers a new period or an upgrade when the chat allowance is used up", async () => {

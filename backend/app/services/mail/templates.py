@@ -424,6 +424,46 @@ def plan_reminder(site: Site, *, which: Reminder, plan: str, last_day: date, bus
     )
 
 
+def upi_submitted(site: Site, *, username: str, amount: str, plan: str, reference: str, utr: str) -> Rendered:
+    """To the owner: a customer sent the UTR of a direct-UPI payment (docs/briefs/upi-direct.md 8.7)."""
+    return _render(
+        site,
+        _Mail(
+            subject=f"UPI payment to check: {amount} ({reference})",
+            title="UPI payment to check",
+            lead=[
+                f"{username} says they paid {amount} by UPI for {plan}.",
+                f"UTR: {utr}",
+                f"Reference: {reference} (in the payment's note, if their app kept it)",
+                f"Before you confirm, open your bank or UPI app and find a credit of exactly {amount} with this UTR.",
+            ],
+            button=("Confirm or reject it", f"{site.base}/admin#billing/upi"),
+            why="You get this email because your address is the contact email in Admin → Billing → Business & "
+            "payments.",
+        ),
+    )
+
+
+def upi_rejected(
+    site: Site, *, message: str, screenshot: bool, note: str | None, business_name: str, link: str
+) -> Rendered:
+    """To the customer: the admin couldn't confirm their direct-UPI payment. `screenshot`: the reason asks them to
+    write with a screenshot of the payment (the contact follows on its own line)."""
+    ask = "If money left your account, write to us with a screenshot of the payment:"
+    first: Line = (f"{message} {ask}", site.reach) if screenshot else message
+    return _render(
+        site,
+        _Mail(
+            subject="We couldn't confirm your UPI payment",
+            title="We couldn't confirm your UPI payment",
+            lead=[first, *([f"Note from {business_name}: {note}"] if note else [])],
+            button=("Open the payment", link),
+            after=[] if screenshot else [("Questions? Contact us:", site.reach)],
+            why="Turn receipt emails off in Settings → Plan & billing.",
+        ),
+    )
+
+
 def admin_test(site: Site) -> Rendered:
     return _render(
         site,

@@ -50,7 +50,7 @@ Questions about this policy go to support@asknuvexusdoc.com or to our Grievance 
 - Changes to your account (sign-up, confirmations, password resets and changes, email changes, Google connections) with an approximate IP address.
 - Short-lived counters of failed attempts, which stop repeated guessing.
 
-**Billing records**: your plan periods, orders, payments (amount, method such as UPI or card, status, and Razorpay's payment ID), refunds, disputes and receipts. You pay on Razorpay's own page: we never receive or store your card number, UPI ID or bank account, or the phone number and email address you type there.
+**Billing records**: your plan periods, orders, payments (amount, method such as UPI or card, status, and Razorpay's payment ID), refunds, disputes and receipts. When you pay online, you pay on Razorpay's own page: we never receive or store your card number, UPI ID or bank account, or the phone number and email address you type there. For a direct UPI payment we keep the 12-digit UTR you enter and our order reference. Our bank or UPI app shows us the name and UPI ID you paid from, as for any UPI payment; we don't copy them into AskNuvexusDoc.
 
 **Gmail** (only if you connect it): see "Google sign-in and Gmail" below.
 
@@ -120,7 +120,7 @@ The app doesn't add your name, username or email address to these requests.
 
 **Google** signs you in when you use Continue with Google, and handles the Gmail requests the app makes for you if you connect Gmail.
 
-**Razorpay** processes payments. We send it the amount, a description, our order reference and your account's number, never your name, email or phone. Razorpay collects the payment details it needs on its own page.
+**Razorpay** processes payments. We send it the amount, a description, our order reference and your account's number, never your name, email or phone. Razorpay collects the payment details it needs on its own page. Direct UPI payments don't go through Razorpay.
 
 **Have I Been Pwned** checks new passwords against known data breaches. Only the first 5 characters of a hash of the new password leave the app, never the password itself or anything about your account.
 

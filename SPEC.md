@@ -152,7 +152,8 @@ rag-app/
                                         periods, locks, audit, plans, business, razorpay (client and signatures),
                                         checkout, payments (apply once), webhooks, reconcile (the worker's billing
                                         loop), refunds, disputes, receipts (PDF), reminders, summary, csv_export,
-                                        paid (has_paid, payments_live)
+                                        paid (has_paid, payments_live), upi (direct UPI: orders, UTRs, the admin's
+                                        check, the QR codes with segno)
       data/common-passwords.txt  SIGNUP the bundled common-password blocklist (its source and licence in the header)
       fonts/                CHAT        Noto Sans TTFs for generated PDFs (SIL OFL 1.1, fonts/OFL.txt)
       schemas_plugins.py    PLUGINS     plugin API shapes (the Gmail ones are in plugins/gmail/schemas.py)
@@ -581,16 +582,28 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   returns to, one of `PUBLIC_BASE_URLS`), `expires_at, watch_until,
   next_check_at, check_step, last_checked_at, checks, last_error,
   last_payment_error, paid_at, payment_id → billing_payments (SET NULL),
-  created_at, updated_at`. One checkout attempt (or one recorded bank
-  transfer).
+  created_at, updated_at`, and for direct UPI (`docs/briefs/upi-direct.md`)
+  `upi_reference` (unique, `AN-XXXX-XXXX` from `23456789ABCDEFGHJKMNPQRSTUVWXYZ`:
+  the UPI note), `upi_vpa, upi_payee_name` (the payee UPI ID and name the order
+  asks to pay, copied from the billing settings when it was made), `upi_utr`
+  (the customer's 12-digit UTR; unique among orders `submitted`, `paid` or
+  `review`: the partial unique index `uq_billing_orders_upi_utr`),
+  `upi_submitted_at, upi_decided_at, upi_decided_by, upi_rejection`
+  ("not_received"|"amount_differs"|"utr_used"|"other"), `upi_rejection_note`;
+  index `(status, upi_submitted_at)`. One checkout attempt, one direct-UPI order
+  (`upi_reference` set, mode `offline`; statuses `pending` → `submitted` →
+  `paid`|`review`|`rejected`, or `expired` 24 hours after it was made without a
+  UTR, or `cancelled`), or one recorded bank transfer.
 - **billing_payments**: `id, razorpay_payment_id` (unique; null for an offline
   payment), `order_id → billing_orders (SET NULL), user_id → users (SET NULL),
   username, status` ("captured"|"failed"|"refunded"|"partially_refunded"|
   "disputed"), `amount_paise, currency, method, fee_paise, fee_tax_paise,
   error_code, error_reason, captured_at, applied_at` (set once: the payment
   bought its period), `refunded_paise` (the sum of its processed refunds),
-  `mode, offline_reference, recorded_by, created_at, updated_at`. Never the
-  payer's email, phone, UPI id, card or bank.
+  `mode, offline_reference, recorded_by, created_at, updated_at`. A direct-UPI
+  payment has method `upi`, mode `offline`, the UTR as `offline_reference` and
+  the confirming admin as `recorded_by`. Never the payer's email, phone, UPI id,
+  card or bank.
 - **billing_refunds**: `id, payment_id → billing_payments (CASCADE),
   razorpay_refund_id` (unique), `idempotency_key` (unique), `amount_paise,
   status` ("creating"|"pending"|"processed"|"failed"), `initiated_by`
@@ -648,8 +661,13 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   the usernames on billing records of already-deleted users (skipping names a
   current user has); and drops `user_billing_profiles.email` (its log line
   counts the dropped values, never an address). It imports no app module and
-  invents no email. Up to revision 0002 the schema is exactly what `create_all`
-  made; releases up to `c1da1d0` predate migrations, ignore `alembic_version` and
+  invents no email. Revision 0005 (direct UPI) adds the `billing_orders`
+  columns `upi_reference` (with its unique constraint), `upi_vpa`,
+  `upi_payee_name`, `upi_utr`, `upi_submitted_at`, `upi_decided_at`,
+  `upi_decided_by`, `upi_rejection` and `upi_rejection_note`, the partial unique
+  index `uq_billing_orders_upi_utr` and the index
+  `ix_billing_orders_status_submitted`; it changes no row. Up to revision 0002
+  the schema is exactly what `create_all` made; releases up to `c1da1d0` predate migrations, ignore `alembic_version` and
   start on any schema, so go back to one only with a database at 0002 or from
   before migrations. Rolling back past plugins needs the SQL in
   `docs/briefs/plugins-gmail.md` 3.3; rolling back past the account tables needs
@@ -766,8 +784,17 @@ type PlanFeatures = { files: boolean; images: boolean; plugins: string[] /* plug
 type PlanRef = { id: number; code: string; name: string }
 type PlanState = "exempt" /* the admin */|"none" /* never had a plan */|"active"|"expired"
 type CheckoutKind = "period" /* one more period: now, or when the paid time ends */|"now" /* a new period now, for a credit */
+type OrderChannel = "razorpay" /* a Payment Link */|"upi_direct" /* paid to the owner's UPI ID, checked by the
+  admin */|"bank_transfer" /* recorded by the admin */
 type PendingOrder = { public_id: string; kind: CheckoutKind; plan: PlanRef; amount_paise: number;
-  created_at: string; expires_at: string; pay_url: string|null /* null once the link expired */ }
+  created_at: string; expires_at: string; pay_url: string|null /* null once the link expired; always for direct UPI */;
+  channel: OrderChannel; status: "pending"|"submitted" /* submitted: a direct-UPI UTR waiting for the admin */ }
+  // the caller's newest open order: a pending checkout, a direct-UPI order before it expires, or one submitted
+type UpiRejectReason = "not_received"|"amount_differs"|"utr_used"|"other"
+type UpiRejection = { reason: UpiRejectReason; message: string /* what the customer reads */;
+  note: string|null /* the admin's own words, shown under it */ }
+type RejectedOrder = { public_id: string; kind: CheckoutKind; plan: PlanRef; amount_paise: number;
+  reference: string; utr: string; rejected_at: string; rejection: UpiRejection }
 type PlanUnlock = { files: string|null; images: string|null; plugins: Record<string, string|null>;
   models: string|null /* a higher plan with a chat model the user can't use now */ }
   // the name of the cheapest active plan that includes each feature; null when none does
@@ -780,7 +807,9 @@ type PlanAccess = { state: PlanState; access: boolean /* exempt or active */;
   valid_through: string|null /* IST date of the last day with access; null: open-ended */;
   next_plan: PlanRef|null; expiring_soon: boolean; ended_at: string|null /* expired: when access ended */;
   features: PlanFeatures /* exempt: everything; without access: nothing */; pending_order: PendingOrder|null;
-  can_start_new_period: boolean /* a current period with 90% or more of an allowance used */; unlock: PlanUnlock }
+  can_start_new_period: boolean /* a current period with 90% or more of an allowance used */; unlock: PlanUnlock;
+  rejected_order: RejectedOrder|null /* the newest direct-UPI order when the admin rejected it in the last 7 days
+    and no newer order exists */ }
 type ImageQuality = "low"|"medium"|"high"
 type GeneratedImage = { width: number; height: number; alt_text: string;
   quality: ImageQuality /* as requested */ }  // display details only; no prompt
@@ -1035,6 +1064,7 @@ type GoogleFinish = { accept_terms: true }
   | `resend`, `forgot` per network | 10 an hour each |
   | `token` per network (`signup/check`, `signup/complete`, `password/check`, `password/reset`, `email/check`, `email/verify`, `email/undo-check`, `email/undo`, `google/pending`) | 30 an hour |
   | `google_start` per network | 20 a minute |
+  | `upi_unpaid` per network (direct-UPI orders made by unpaid accounts) | 10 an hour, 30 a day |
   | mails per recipient **and kind** (`signup`: sign-up and resend; `reset`: forgot; `confirm`: email changes, their resends and a Google sign-up's unverified address), by `sha256(delivery key)` | 1 a minute, 3 an hour, 6 a day each; **silent**: the request answers as usual and enqueues nothing |
   | security notices per account (`password_changed`, `password_added`, `google_linked`, `google_unlinked`) | 3 an hour, 10 a day; **silent**: the change goes ahead without its notice (as when the notice's class has no room today) |
   | email changes per user | 5 a day; 3 for an unpaid account |
@@ -1259,6 +1289,8 @@ auto-generated`, plain text then HTML, and the idempotency header.
 | `password_changed`, `password_added`, `google_linked`, `google_unlinked` | public; account once paid (0) | 3 days | the verified email (none: nothing) |
 | `receipt` | billing (2) | 3 days | the verified email, with `email_receipts`: the receipt mail with its PDF |
 | `plan_reminder` | billing (2) | 1 day | the verified email, with `email_plan_reminders` |
+| `upi_submitted` | billing (1) | 1 day | the business contact email (billing settings) at the time: a direct-UPI UTR to check (amount, plan, reference, UTR, username, a link to Admin → Billing → UPI); no `user_id` on the job |
+| `upi_rejected` | billing (2) | 3 days | the verified email, with `email_receipts`: the rejection's message and note, a link to the order |
 | `test` | account (2) | 1 h | the admin's typed address |
 
 "Paid" means at least one live or offline payment applied. `MAIL_DAILY_LIMIT`
@@ -1380,7 +1412,8 @@ gets 400 "The admin account is managed in .env" on each):
   `google` (the linked address and date), `terms` (version and time) and
   `security_events` (the user's `auth_events`), and the counts of included
   and omitted conversations), `documents.json` (metadata of the documents the
-  caller owns; no file bytes), `billing.json` (the caller's periods, orders,
+  caller owns; no file bytes), `billing.json` (the caller's periods, orders
+  with their channel and, for direct UPI, the reference, UTR and decision,
   payments and receipt numbers), `conversations/index.json`, and per conversation
   `conversations/<id>-<slug>.md` (a transcript, with one line per plugin card)
   and `.json` (messages with sources, files and plugin cards with their current
@@ -1872,33 +1905,42 @@ type PlanOffer = { id: number; code: string; name: string; description: string; 
   answers_estimate: number|null /* with default_chat_model */;
   status: "active"|"retired"; current: boolean /* the plan that applies now */;
   options: CheckoutOption[] /* what the caller can buy now; empty for the admin */ }
-type PaymentsInfo = { available: boolean /* for this caller: keys set, and a tester under test keys */;
+type PaymentsInfo = { available: boolean /* online payment (Razorpay) for this caller: keys set, and a tester
+    under test keys */;
   mode: "test"|"live"|null /* null when not available to this caller */; contact_email: string|null;
-  upi_limit_paise: number /* 0: no limit */; email_reminders: boolean /* the mailer is configured */ }
+  upi_limit_paise: number /* 0: no limit; Razorpay's UPI only */; email_reminders: boolean /* the mailer is configured */;
+  upi_direct: boolean /* direct UPI is on with its UPI ID and payee name (the admin sees it as a preview) */ }
 type PlanCatalog = { plans: PlanOffer[]; payments: PaymentsInfo }
 type OrderStatus = "pending"|"paid"|"expired"|"cancelled"|"review"
+  |"submitted" /* direct UPI: the UTR waits for the admin's check */|"rejected" /* direct UPI: no matching payment */
 type ReceiptRef = { id: number; number: string }
+type UpiOrderInfo = { reference: string /* "AN-7K4M-Q9TX": the UPI note (tn) */;
+  upi_id: string; payee_name: string /* what the order asks to pay, as it was when the order was made */;
+  uri: string|null /* upi://pay?pa=…&pn=…&am=2000.00&cu=INR&tn=AN-…, while pending and not expired */;
+  utr: string|null /* as submitted */; submitted_at: string|null;
+  decided_at: string|null /* confirmed or rejected */; rejection: UpiRejection|null }
 type OrderView = { public_id: string; kind: CheckoutKind; plan: PlanRef; amount_paise: number; credit_paise: number;
   status: OrderStatus; created_at: string; expires_at: string; paid_at: string|null;
   pay_url: string|null /* pending, not expired */; last_payment_error: string|null;
   period_start: string|null; period_end: string|null; valid_through: string|null /* what it bought */;
   receipt: ReceiptRef|null; method: string|null /* upi | card | netbanking | wallet | emi | bank_transfer */;
-  test_mode: boolean }
-type CheckoutRequest = { plan_id: number; kind: CheckoutKind; accept_terms: true }
+  test_mode: boolean; channel: OrderChannel; upi: UpiOrderInfo|null /* direct UPI only */ }
+type CheckoutRequest = { plan_id: number; kind: CheckoutKind; accept_terms: true }   // also POST /billing/upi/checkout
 type CheckoutStarted = { order: OrderView; pay_url: string }
+type UtrSubmission = { utr: string /* exactly 12 ASCII digits; spaces are dropped first */ }
 type PaymentStatus = "captured"|"refunded"|"partially_refunded"|"disputed"
 type PaymentView = { id: number; paid_at: string; plan: PlanRef|null; kind: CheckoutKind; description: string;
   amount_paise: number; method: string|null; status: PaymentStatus; refunded_paise: number;
   period_start: string|null; period_end: string|null /* null: a receipt-only offline payment */;
-  receipt: ReceiptRef|null; test_mode: boolean }
+  receipt: ReceiptRef|null; test_mode: boolean; channel: OrderChannel }
 type PeriodSource = "payment"|"comp"
 type PeriodView = { id: number; plan: PlanRef|null; plan_name: string; starts_at: string; ends_at: string;
   valid_through: string; source: PeriodSource; current: boolean; test_mode: boolean; reason: string|null /* comps */ }
 type BillingProfile = { name: string|null /* ≤ 100 */ }   // receipts and reminders go to the verified users.email
 type ComplimentaryView = { plan: PlanRef; reason: string; granted_by: string; granted_at: string }
 type BillingStatus = { plan: PlanAccess; periods: PeriodView[] /* unexpired, in order */;
-  complimentary: ComplimentaryView|null /* the open-ended plan */; open_order: OrderView|null;
-  profile: BillingProfile; payments: PaymentsInfo }
+  complimentary: ComplimentaryView|null /* the open-ended plan */;
+  open_order: OrderView|null /* the order of plan.pending_order */; profile: BillingProfile; payments: PaymentsInfo }
 type PublicPlan = Omit<PlanOffer, "id"|"status"|"current"|"options">
 type PublicSite = { business_name: string; contact_email: string|null; contact_phone: string|null; address: string|null }
 type PageSlug = "pricing"|"terms"|"privacy"|"refunds"|"contact"|"about"|"shipping"   // frontend/public/legal/<slug>.md
@@ -1913,7 +1955,12 @@ rank) or, on the same plan, "Start a new period now" once `can_start_new_period`
 It costs the plan's price minus a credit, `floor_to_rupee((the current period's
 charge_basis_paise − the refunds of its payment being made or made) × min(share
 of time left, 1 − the largest used share of its limited allowances))`, at least
-₹1; scheduled periods move after the new one.
+₹1; scheduled periods move after the new one. An option can be bought while
+online payment (`PaymentsInfo.available`) or direct UPI (`upi_direct`) is
+available to the caller; the same quote (dates, amount, credit) holds for both,
+except that a tester under test keys sees test-mode dates (1 day) while a
+direct-UPI order always buys 30 days, and a period paid in test mode gives no
+credit towards a direct-UPI order.
 Labels: "Choose <plan>" ("Renew <plan>" for the last plan when expired), "Renew",
 "Switch on <date>", "Upgrade now · ₹X", "Start a new period now · ₹X". Reasons
 when unavailable: "You already have a period paid ahead.", "This plan is no
@@ -1960,6 +2007,97 @@ User endpoints (session required; open to users without access):
   `X-Content-Type-Options: nosniff`, `Content-Security-Policy: sandbox`.
 - `GET /billing/profile` → `BillingProfile`; `PUT /billing/profile`
   `BillingProfile` → `BillingProfile` (blank strings become null).
+
+**Direct UPI** (`docs/briefs/upi-direct.md`): the customer pays the owner's own
+UPI ID (Admin → Billing → Business & payments: `upi_enabled`, `upi_id`,
+`upi_payee_name`) by QR code or a UPI app link, then enters the payment's
+12-digit UTR; the admin finds the credit in the bank or UPI app and confirms
+it, and only then the order is applied (`apply_payment`'s rules, once). A
+direct-UPI order is a `billing_orders` row with mode `offline`, its own
+reference `AN-XXXX-XXXX` (the UPI note), open for 24 hours. Its payment request
+is exactly `upi://pay?pa=<upi_id>&pn=<payee name, percent-encoded, %20 for a
+space>&am=<rupees>.00&cu=INR&tn=<reference>` (no `tr`, `mc`, `mode` or `sign`).
+No verified email is needed. One open direct-UPI order per user; a pending
+checkout of either channel is cancelled when a new one starts (a Razorpay link
+best effort, after the commit), and while a UTR waits for the admin
+(`submitted`) both checkouts answer 409 `upi_waiting`.
+
+- `POST /billing/upi/checkout` `CheckoutRequest` → 201 `OrderView` (`pending`,
+  `channel: "upi_direct"`, `upi.uri` set): the option and its amount as for
+  `POST /billing/checkout`, computed under the user's lock; an open
+  direct-UPI order for the same plan, kind, amount and UPI ID with an hour
+  left is returned instead (201, nothing created). Errors: 403 `admin_exempt`;
+  404 unknown plan; 409 `checkout_unavailable` (also "Your current period was
+  paid in test mode, so it gives no credit towards a UPI payment. Pay online
+  instead, or choose the plan to start after this period." for a `now` option
+  with a credit from a test-mode period); 409 `upi_waiting`; 409
+  `upi_paused` (3 of the caller's direct-UPI orders rejected in the last 30
+  days); 422 (also without `accept_terms: true`); 429 `too_many_checkouts` (5
+  direct-UPI orders per IST day; 3 for an unpaid user; `Retry-After` until IST
+  midnight); 429 `too_many_attempts` (the network's `upi_unpaid` limit, for an
+  unpaid user; counted only for an order that is made); 503 `upi_unavailable`
+  (direct UPI off, or its UPI ID or payee name missing); 503 `checkout_busy`
+  (for an unpaid user while unpaid users together have 20 UTRs waiting for the
+  admin; orders without a UTR don't count; `Retry-After: 3600`, and the billing
+  check warns for an hour).
+- `POST /billing/orders/{public_id}/utr` `UtrSubmission` → `OrderView`
+  (`submitted`): the caller's own `pending` direct-UPI order before it expires;
+  the same UTR again on the order it was submitted with answers the order
+  (200, nothing changes). The admin is told (Needs attention, and an outbox
+  `upi_submitted` mail to the business contact email when the mailer is
+  configured and the email is set). Errors: 404 (not the caller's, or not a
+  direct-UPI order); 409 `order_not_open` (expired, cancelled, rejected, paid,
+  or already submitted with another UTR: "This payment request has expired. If
+  you paid, start a new payment for the same plan and enter this UTR there."
+  for an expired or cancelled one); 409 `utr_used` (another order holds the UTR:
+  submitted, paid or under review; or a recorded payment that didn't fail, a
+  bank transfer, carries it in its reference: its digits when there are 12, or
+  a run of exactly 12 digits); 422 (not 12 digits); 429
+  `too_many_attempts` (10 submissions a day per user, `Retry-After` until IST
+  midnight).
+- `GET /billing/orders/{public_id}/upi-qr.svg` → `image/svg+xml` (the payment
+  request as a QR code, black on white with a 4-module quiet zone, no
+  width/height, a `viewBox`); `GET /billing/orders/{public_id}/upi-qr.png` →
+  `image/png` (10 px modules), `Content-Disposition: attachment;
+  filename="upi-AN-7K4M-Q9TX.png"`, for scanning from a UPI app's gallery. Both
+  rendered on the server (segno) from the stored order, `Cache-Control:
+  private, no-store`, `X-Content-Type-Options: nosniff`,
+  `Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline';
+  sandbox`; 404 unless the caller's own direct-UPI order is `pending` and not
+  expired.
+- A `pending` direct-UPI order past its `expires_at` reads as `expired`
+  everywhere and the worker's billing loop marks it so (event
+  `order.expired`); `POST /billing/orders/{public_id}/cancel` cancels a
+  `pending` one; a `submitted` one waits for the admin (no expiry, no cancel).
+- `Me.plan.pending_order` and `BillingStatus.open_order`: the caller's newest
+  order that is `pending` (a direct-UPI one only before it expires) or
+  `submitted`. `Me.plan.rejected_order`: the newest direct-UPI order when it was
+  rejected in the last 7 days and no newer order exists. The customer reads
+  the rejection's `message`, by reason: `not_received` "We couldn't find a
+  payment of ₹2,000 with UTR 6305 1234 5678. If money left your account, write
+  to <contact email> with a screenshot of the payment."; `amount_differs` "The
+  payment with UTR 6305 1234 5678 wasn't for ₹2,000. We'll send what you paid
+  back to you by UPI. Start a new payment for the exact amount."; `utr_used`
+  "UTR 6305 1234 5678 belongs to another payment. Check the 12-digit number in
+  your UPI app, then start a new payment."; `other` "We couldn't confirm your
+  payment of ₹2,000." (the admin's note follows in `note`). Without a contact
+  email the first ends "…write to us from Settings."
+- Confirming (the admin, below) records a payment of the order's amount
+  (method `upi`, mode `offline`, `offline_reference` the UTR, `recorded_by` the
+  admin, `captured_at` the submission's time) and applies it under the user's
+  row lock exactly once: a `period` order adds its 30 days at max(now, paid
+  through); a `now` order checks its credit again with the time left as quoted
+  and the replaced period's own window: usage up to the UTR's submission counts
+  in full, usage after it only beyond the share of the period that passed
+  between the submission and the confirmation (or the period's end), so a
+  customer chatting at the plan's pace while the admin checks keeps the credit
+  and one who uses the allowance up doesn't. It then replaces that period, or,
+  when that period ended by itself meanwhile (not revoked, plan and end as
+  quoted), adds the 30 days at max(now, paid through) instead, with the amount
+  paid as the period's charge basis (the credit has no unused time left to
+  back it). A changed period, a fallen credit, or a credit from a period paid
+  in test mode puts the order in `review`. A second confirm, by a double click
+  or another admin, changes nothing.
 
 Razorpay endpoints (no session; nginx rate-limits both and logs the path only):
 
@@ -2010,7 +2148,9 @@ numbered `<prefix>/<yy>-<yy+1>/<seq:06d>` per Indian financial year (1 April to
 31 March, IST) and mode: `RA/26-27/000001`, `TEST/26-27/000001` under test keys
 (with a watermark); live and offline payments share the live series, with no
 gaps. The row is a snapshot (seller, buyer, lines, amount, method); the PDF
-(fpdf2, Noto Sans) is rendered on demand and shows refunds and lost disputes. No
+(fpdf2, Noto Sans) is rendered on demand and shows refunds and lost disputes;
+a direct-UPI payment reads "UPI (direct)" as the method, its line's detail
+"UPI (direct), UTR 630512345678" and its reference row "UPI UTR". No
 GST line. The receipt is also emailed, PDF attached, to the account's verified
 email when `email_receipts` is on (an outbox `receipt` job; the buyer email on
 the row is the account's email at the time), and plan reminders go the same way
@@ -2217,7 +2357,10 @@ type CostInputs = { usd_inr: number; standard_usd_per_mtok: number /* 3.20 */; v
   image_usd: number; fee_bp: number /* 236 */ }   // the plan editor computes PlanCostEstimate from these, as the server does
 type BillingSettings = { business_name: string /* 1..100 */; address: string /* ≤ 500, several lines */;
   contact_email: string|null; contact_phone: string|null /* ≤ 20 */;
-  receipt_prefix: string /* 1 to 4 of A-Z0-9, not TEST */; upi_limit_paise: number /* 0: no limit */ }
+  receipt_prefix: string /* 1 to 4 of A-Z0-9, not TEST */; upi_limit_paise: number /* 0: no limit (Razorpay) */;
+  upi_enabled: boolean /* direct UPI; refused (422) without both fields below */;
+  upi_id: string|null /* the owner's UPI ID, stored lowercase: ^[a-z0-9][a-z0-9._-]{0,79}@[a-z][a-z0-9]{1,63}$ */;
+  upi_payee_name: string|null /* 1..50 of A-Z a-z 0-9 space . , & ' ( ) / -, spaces collapsed */ }
 type PaymentsSetup = { configured: boolean; mode: "test"|"live"|null; key_id_hint: string|null /* "rzp_test_…AbCd" */;
   webhook_secret_set: boolean; previous_webhook_secret_set: boolean; last_webhook_at: string|null;
   webhook_url: string /* to register */; webhook_events: string[]; test_links_created: number;
@@ -2229,7 +2372,7 @@ type UserRef = { id: number|null /* null: deleted */; username: string;
 type AdminOrder = OrderView & { id: number; user: UserRef; mode: "test"|"live"|"offline";
   razorpay_link_id: string|null; razorpay_order_id: string|null; review_reason: string|null;
   review_note: string|null; checks: number; last_checked_at: string|null; next_check_at: string|null;
-  last_error: string|null; paused: boolean }
+  last_error: string|null; paused: boolean; upi_decided_by: string|null /* direct UPI */ }
 type AdminOrderDetail = AdminOrder & { events: { at: string; source: string; type: string;
   detail: Record<string, unknown>; error: string|null }[] }
 type RefundView = { id: number; amount_paise: number; status: "creating"|"pending"|"processed"|"failed";
@@ -2255,9 +2398,12 @@ type RevokeRequest = { reason: string /* 1..200 */ }
 type EndComplimentaryRequest = { reason: string /* 1..200 */ }
 type ResolveRequest = { note: string /* 1..500 */ }
 type ReconcileResult = { checked: number }
+type UpiConfirmRequest = { utr: string /* the UTR the admin checked: must be the order's */ }
+type UpiRejectRequest = { reason: UpiRejectReason; note: string|null /* 1..200; required for "other"; the customer
+  reads it */ }
 type AttentionKind = "review"|"duplicate"|"refund_failed"|"refund_pending"|"partial_refund"|"dispute"|
   "dispute_lost"|"credit_reversed"|"webhook_errors"|"payments_not_configured"|"test_mode"|"test_keys_public"|
-  "live_without_webhook"|"keys_rejected"|"paused_orders"
+  "live_without_webhook"|"keys_rejected"|"paused_orders"|"upi_to_check" /* direct-UPI UTRs waiting: one item */
 type AttentionItem = { kind: AttentionKind; message: string; detail: string|null; order_public_id: string|null;
   payment_id: number|null; count: number|null }
 type UserPlanRow = { user: UserRef; plan: string|null; date: string /* IST: valid through, or ended */;
@@ -2295,9 +2441,11 @@ type UserBilling = { plan: PlanAccess; periods: PeriodView[] /* every one, newes
   kind, amount in ₹ with two decimals, method, Razorpay payment id or bank
   reference, fee, fee GST, refunded); cells starting with `=`, `+`, `-` or `@`
   get a leading `'`.
-- `GET /admin/billing/orders?status=&user_id=&page=` → `Page<AdminOrder>`,
-  newest first, 50 per page (no `status`: every order; `status=review`: the
-  orders still to review, without the resolved ones). `GET /admin/billing/orders/{public_id}` →
+- `GET /admin/billing/orders?status=&user_id=&channel=&page=` →
+  `Page<AdminOrder>`, newest first, 50 per page (no `status`: every order;
+  `status=review`: the orders still to review, without the resolved ones;
+  `status=submitted`: the direct-UPI UTRs to check, the oldest submission
+  first; `channel` one of `razorpay`, `upi_direct`, `bank_transfer`). `GET /admin/billing/orders/{public_id}` →
   `AdminOrderDetail`. `POST /admin/billing/orders/{public_id}/check` →
   `AdminOrder` (checked with Razorpay now). `POST
   /admin/billing/orders/{public_id}/resolve` `ResolveRequest` → `AdminOrder` (a
@@ -2313,7 +2461,11 @@ type UserBilling = { plan: PlanAccess; periods: PeriodView[] /* every one, newes
   offline payments are recorded only). `POST /admin/billing/offline-payments`
   `OfflinePaymentRequest` → 201 `AdminPayment` (a bank transfer: the same apply
   as a Razorpay payment, method `bank_transfer`, a receipt in the live series;
-  422 below ₹1 or without the note below the plan's price).
+  422 below ₹1 or without the note below the plan's price; 409 `utr_used` when
+  the reference carries the UTR of a direct-UPI order that waits, was confirmed
+  or is under review: "This reference is the UTR of a UPI payment from <user>
+  (AN-7K4M-Q9TX), which waits for your check in Billing → UPI. The same payment
+  can't be recorded twice." A rejected order's UTR is free).
 - `GET /admin/billing/users/{user_id}` → `UserBilling`. `POST
   /admin/billing/users/{user_id}/grants` `GrantRequest` → `UserBilling` (a
   dated grant becomes rows of at most 30 days, a shorter last row with its
@@ -2325,6 +2477,26 @@ type UserBilling = { plan: PlanAccess; periods: PeriodView[] /* every one, newes
   `UserBilling` (every unexpired period gets the plan, at no charge; 409 without
   one). `POST /admin/billing/periods/{id}/revoke` `RevokeRequest` →
   `UserBilling` (later periods move up; no refund).
+- `POST /admin/billing/orders/{public_id}/upi-confirm` `UpiConfirmRequest` →
+  `AdminOrder` (`paid`, or `review` when a `now` order can't apply: the
+  Billing rules above; a receipt in the live series; events `upi.confirmed`,
+  `payment.captured` and the period's). Already confirmed with this UTR: the
+  order, unchanged. Errors: 404 unknown; 409 `upi_not_waiting` (not a
+  `submitted` direct-UPI order); 409 `utr_mismatch` (not the order's UTR); 409
+  `user_deleted` (reject it instead, and pay the money back by UPI); 409
+  `utr_used` (a recorded payment, a bank transfer, carries the UTR: "UTR 6305
+  1234 5678 is already recorded for a bank transfer from <user>. Reject this
+  payment with "This UTR belongs to another payment".").
+- `POST /admin/billing/orders/{public_id}/upi-reject` `UpiRejectRequest` →
+  `AdminOrder` (`rejected`, event `upi.rejected`, the outbox `upi_rejected`
+  mail; the UTR is free again). Already rejected: the order, unchanged. Errors:
+  404; 409 `upi_not_waiting`; 422 (a note is required for `other`).
+- `GET /admin/billing/upi-preview.svg` → the QR code of a ₹1 request to the
+  saved UPI ID and payee name (`tn=AN-TEST`), for the owner's own test, whether
+  direct UPI is on or not (404 without both). Headers as the customer's.
+- Refunding a direct-UPI payment (`POST /admin/billing/payments/{id}/refund`)
+  records it only, as for a bank transfer (the admin pays the money back by
+  UPI from the bank app first); its access rules are those of every refund.
 - `POST /admin/billing/reconcile` → `ReconcileResult` (every due order of the
   current mode now; also retries after rejected keys).
 - `GET /admin/billing/receipts/{id}` → `application/pdf`, any user's (headers
@@ -2602,7 +2774,14 @@ type AlertTestQueued = { queued_at: string }
   consent line "By paying you agree to the Terms of service and the
   Cancellation and refunds policy." under it, then the same tab goes to
   `pay_url` after checking it is a Razorpay URL: no Razorpay script runs on the
-  app's origin and the CSP doesn't change); the return page (polls the
+  app's origin and the CSP doesn't change; with direct UPI on, "Pay with UPI"
+  comes first and "Pay online" second, each only when available, and neither:
+  "Paid plans open soon"); the order page `/billing/return?order=<id>` also
+  shows a direct-UPI order: while `pending` the QR code (`<img>` of
+  `/api/billing/orders/<id>/upi-qr.svg`), "Open UPI app" (`upi.uri`, on
+  phones), the UPI ID, amount and reference with copy buttons, "Save QR image"
+  and the 12-digit UTR field; then "We're checking your payment", paid or
+  rejected; the return page (polls the
   order with `?refresh=true`: at once, every 3 s for 60 s, then every 15 s up
   to 10 minutes; a live region; focus on the result heading); banners under the
   top bar (an open checkout, then "ends in N days", dismissible for the day);
@@ -2778,9 +2957,11 @@ type AlertTestQueued = { queued_at: string }
   Plugins, System. Admin → **Plans** (`#plans`): the plans with their users and
   cost estimate, and the plan editor (limits, features, models, the live cost
   estimate computed in the browser from `BillingAdminConfig.estimate` as the
-  server does). Admin → **Billing** (`#billing/overview|payments|orders|business`):
-  needs-attention items, the month's tiles and lists, payments with refunds,
-  bank transfers, orders, business details and the payments setup with the
+  server does). Admin → **Billing** (`#billing/overview|upi|payments|orders|business`):
+  needs-attention items, the month's tiles and lists, the direct-UPI UTRs to
+  check with Confirm and Reject (`#billing/upi`), payments with refunds,
+  bank transfers, orders, business details with the UPI payments card (on/off,
+  UPI ID, payee name, the ₹1 test QR) and the payments setup with the
   going-live checklist (each user's email under the username wherever a
   `UserRef` is shown). Admin → **Users**: the **Sign-up** card above the list
   (Open or Closed, the Methods, Sign-ups, Email today and Checks tiles, the
@@ -3005,7 +3186,7 @@ alert states and its last 50 alerts in `rag:monitor:status`. The checks:
 | `backup` | the last attempt failed: `critical`; no success yet, the last success older than `BACKUP_MAX_AGE_HOURS`, or the scheduler silent for 30 minutes outside a running backup: `warning`. No success yet or an old one is `unknown` (no alert) while a backup runs or a start-up backup is due (until 10 minutes after `catch_up_at`), and while the status file is missing in the monitor's first 10 minutes |
 | `disk_uploads`, `disk_backups` | free space under `ALERT_DISK_MIN_FREE_PERCENT`: `warning`; under half of it: `critical` |
 | `proxy` | the app doesn't answer 200 through nginx: `critical` |
-| `billing` ("Payments") | `ok` when payments aren't set up or nothing below holds. `warning`: orders in `review`; a dispute needing action whose response is due within 3 days; the reconciler stalled (a due order of the current mode over 15 minutes late); rejected keys; a refund pending or creating for over 7 days, or failed; 20 or more bad webhook or callback signatures in the last hour; a webhook event that failed 3 times; webhooks set up but a payment of the last 24 hours that no webhook reported; live keys without `RAZORPAY_WEBHOOK_SECRET`; test keys while `PUBLIC_BASE_URLS` holds a public `https` origin; the unpaid users' payment-link cap (`CHECKOUT_UNPAID_PER_HOUR`) reached in the last hour. `unknown`: the database can't be read. Counts only, never usernames or amounts |
+| `billing` ("Payments") | `ok` when payments aren't set up or nothing below holds. `warning`: orders in `review`; a dispute needing action whose response is due within 3 days; the reconciler stalled (a due order of the current mode over 15 minutes late); rejected keys; a refund pending or creating for over 7 days, or failed; 20 or more bad webhook or callback signatures in the last hour; a webhook event that failed 3 times; webhooks set up but a payment of the last 24 hours that no webhook reported; live keys without `RAZORPAY_WEBHOOK_SECRET`; test keys while `PUBLIC_BASE_URLS` holds a public `https` origin; the unpaid users' payment-link cap (`CHECKOUT_UNPAID_PER_HOUR`) reached in the last hour; the unpaid users' cap on direct-UPI UTRs waiting (20) refusing an order in the last hour; a direct-UPI UTR waiting for the admin over 24 hours. Checked while Razorpay or direct UPI is set up. `unknown`: the database can't be read. Counts only, never usernames or amounts |
 | `mail` ("Email") | `ok`: "Email not set up" while sign-up is closed and no billing mail is due, or nothing below holds. `warning`: a job `failed` in the last 24 h; a due job waiting over 10 minutes; a job that couldn't be prepared, created over 10 minutes ago and still retried; sending paused after a refused SMTP login; today's count at or above 80% of `MAIL_DAILY_LIMIT`; the `public` class paused by bounces; 3 or more bounces today; a complaint in the last 7 days; 10 or more Turnstile verification errors (`challenge_unavailable`) in the last hour; the site-wide sign-in challenge turned on in the last hour; sign-up open while the mailer or Turnstile isn't configured, or without the mail webhook. `unknown`: the database can't be read. Counts only, never addresses |
 
 **Alerts** (`app.ops.alerts`):

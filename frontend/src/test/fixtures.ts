@@ -63,6 +63,7 @@ export function makePlanAccess(overrides: Partial<PlanAccess> = {}): PlanAccess 
     pending_order: null,
     can_start_new_period: false,
     unlock: { files: "Standard", images: "Professional", plugins: { gmail: "Professional" }, models: null },
+    rejected_order: null,
     ...overrides,
   };
 }

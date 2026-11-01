@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrderView } from "../api/types";
 import { makeBillingStatus, makeOrder, makePaidOrder, makePaymentsInfo } from "../test/billing";
 import { makeLapsedPlanAccess, makeMe, makePaidPlanAccess, NOW } from "../test/fixtures";
-import { errorResponse, stubFetch, type FetchCall, type Route } from "../test/http";
+import { deferred, errorResponse, stubFetch, type FetchCall, type Route } from "../test/http";
 import { renderWithAuth } from "../test/render";
 import BillingReturnPage from "./BillingReturnPage";
 
@@ -161,6 +161,15 @@ describe("BillingReturnPage", () => {
     const { calls } = await setup(makeOrder(), { route: "/billing/return" });
     expect(title()).toHaveTextContent("This payment isn't in your account");
     expect(polls(calls)).toBe(0);
+  });
+
+  it("shows a skeleton until the order's first answer", async () => {
+    const answer = deferred<OrderView>();
+    await setup(() => answer.promise);
+    expect(screen.getByText("Loading your payment…")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 1 })).not.toBeInTheDocument();
+    await act(async () => answer.resolve(makeOrder()));
+    expect(title()).toHaveTextContent("Confirming your payment…");
   });
 
   it("keeps checking through a failed request", async () => {

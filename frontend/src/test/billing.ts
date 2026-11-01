@@ -11,6 +11,7 @@ import type {
   CheckoutOption,
   OrderView,
   PaymentsInfo,
+  PendingOrder,
   PaymentView,
   PeriodView,
   PlanCatalog,
@@ -20,6 +21,8 @@ import type {
   PublicPlan,
   PublicSite,
   RefundView,
+  RejectedOrder,
+  UpiOrderInfo,
   UserBilling,
   UserRef,
 } from "../api/types";
@@ -166,6 +169,7 @@ export function makePaymentsInfo(overrides: Partial<PaymentsInfo> = {}): Payment
     contact_email: "billing@example.com",
     upi_limit_paise: 200_000,
     email_reminders: false,
+    upi_direct: false,
     ...overrides,
   };
 }
@@ -194,6 +198,80 @@ export function makeOrder(overrides: Partial<OrderView> = {}): OrderView {
     receipt: null,
     method: null,
     test_mode: false,
+    channel: "razorpay",
+    upi: null,
+    ...overrides,
+  };
+}
+
+/** Me.plan.pending_order of the pending Standard checkout of makeOrder. */
+export function makePendingOrder(overrides: Partial<PendingOrder> = {}): PendingOrder {
+  const order = makeOrder();
+  return {
+    public_id: order.public_id,
+    kind: order.kind,
+    plan: order.plan,
+    amount_paise: order.amount_paise,
+    created_at: order.created_at,
+    expires_at: order.expires_at,
+    pay_url: order.pay_url,
+    channel: "razorpay",
+    status: "pending",
+    ...overrides,
+  };
+}
+
+/** A direct-UPI order's request, waiting for the customer's UTR (docs/briefs/upi-direct.md 5). */
+export function makeUpiInfo(overrides: Partial<UpiOrderInfo> = {}): UpiOrderInfo {
+  return {
+    reference: "AN-7K4M-Q9TX",
+    upi_id: "asha.rao@okhdfcbank",
+    payee_name: "Asha Rao",
+    uri: "upi://pay?pa=asha.rao@okhdfcbank&pn=Asha%20Rao&am=2000.00&cu=INR&tn=AN-7K4M-Q9TX",
+    utr: null,
+    submitted_at: null,
+    decided_at: null,
+    rejection: null,
+    ...overrides,
+  };
+}
+
+/** A direct-UPI Standard order made two minutes before NOW, open for 24 hours. */
+export function makeUpiOrder(overrides: Partial<OrderView> = {}): OrderView {
+  return makeOrder({
+    public_id: "u7Kp2QwX9mN4bV6cZ8dA",
+    expires_at: "2026-10-21T09:28:00Z",
+    pay_url: null,
+    channel: "upi_direct",
+    upi: makeUpiInfo(),
+    ...overrides,
+  });
+}
+
+/** The same order once its UTR was submitted: it waits for the admin's check. */
+export function makeSubmittedUpiOrder(overrides: Partial<OrderView> = {}): OrderView {
+  return makeUpiOrder({
+    status: "submitted",
+    upi: makeUpiInfo({ uri: null, utr: "630512345678", submitted_at: "2026-10-20T09:34:00Z" }),
+    ...overrides,
+  });
+}
+
+/** Me.plan.rejected_order: the admin found no payment for the submitted order. */
+export function makeRejectedOrder(overrides: Partial<RejectedOrder> = {}): RejectedOrder {
+  return {
+    public_id: "u7Kp2QwX9mN4bV6cZ8dA",
+    kind: "period",
+    plan: STANDARD,
+    amount_paise: 200_000,
+    reference: "AN-7K4M-Q9TX",
+    utr: "630512345678",
+    rejected_at: "2026-10-20T11:02:00Z",
+    rejection: {
+      reason: "not_received",
+      message: "We couldn't find a payment of ₹2,000 with UTR 6305 1234 5678.",
+      note: null,
+    },
     ...overrides,
   };
 }
@@ -228,6 +306,7 @@ export function makePaymentView(overrides: Partial<PaymentView> = {}): PaymentVi
     period_end: "2026-11-07T18:30:00Z",
     receipt: { id: 33, number: "RA/26-27/000033" },
     test_mode: false,
+    channel: "razorpay",
     ...overrides,
   };
 }
@@ -316,6 +395,9 @@ export function makeBillingAdminConfig(overrides: Partial<BillingAdminConfig> = 
       contact_phone: null,
       receipt_prefix: "RA",
       upi_limit_paise: 200_000,
+      upi_enabled: false,
+      upi_id: null,
+      upi_payee_name: null,
     },
     payments: {
       configured: true,
@@ -353,6 +435,7 @@ export function makeAdminOrder({ user, ...overrides }: WithUser<AdminOrder> = {}
     next_check_at: "2026-10-20T09:30:00Z",
     last_error: null,
     paused: false,
+    upi_decided_by: null,
     ...overrides,
   };
 }

@@ -84,6 +84,7 @@ async def test_someone_who_isnt_a_tester_cant_pay_with_test_keys(create_user: Cr
         "contact_email": None,
         "upi_limit_paise": 200_000,
         "email_reminders": False,
+        "upi_direct": False,
     }
     assert {item["unavailable_reason"] for item in offer(found, "starter")["options"]} == {
         "Paid plans open soon. Check back in a few days."

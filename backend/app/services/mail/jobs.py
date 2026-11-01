@@ -5,7 +5,8 @@ send). Requests never learn what a job resolved to (S6).
 
 Optional `params` a job may carry, beside its ids: `password_changed` `google_disconnected` (bool); `google_linked`
 and `google_unlinked` `google_email` (the Google address, masked; the linked identity's is used when it is missing);
-`receipt` `receipt_id`; `plan_reminder` `reminder` ("soon", "tomorrow" or "ended") and `period_id`."""
+`receipt` `receipt_id`; `plan_reminder` `reminder` ("soon", "tomorrow" or "ended") and `period_id`; `upi_submitted`
+and `upi_rejected` `order_id` (docs/briefs/upi-direct.md 8.7)."""
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models import (
+    BillingOrder,
     BillingReceipt,
     EmailOutbox,
     PendingEmail,
@@ -25,8 +27,10 @@ from app.models import (
     UserPreference,
     utcnow,
 )
+from app.schemas_billing import PlanSnapshot
 from app.services.auth import emails, tokens
-from app.services.billing import business, periods, receipts, reminders
+from app.services.billing import business, periods, receipts, reminders, upi
+from app.services.billing.money import PERIOD_DAYS, format_inr
 from app.services.mail import templates
 
 
@@ -256,6 +260,50 @@ async def _plan_reminder(db: AsyncSession, job: EmailOutbox, here: templates.Sit
     return Outgoing(user.email, mail)
 
 
+async def _order(db: AsyncSession, job: EmailOutbox) -> BillingOrder | None:
+    order_id = _param(job, "order_id")
+    order = await db.get(BillingOrder, order_id) if isinstance(order_id, int) else None
+    return order if order is not None and order.upi_reference is not None else None
+
+
+async def _upi_submitted(db: AsyncSession, job: EmailOutbox, here: templates.Site) -> Result:
+    """To the business contact email of the time: nothing once the UTR no longer waits."""
+    order = await _order(db, job)
+    if order is None or order.status != "submitted" or not order.upi_utr or not job.to_address:
+        return Skip("not_waiting")
+    plan = PlanSnapshot.model_validate(order.plan_snapshot).name
+    mail = templates.upi_submitted(
+        here,
+        username=order.username,
+        amount=format_inr(order.amount_paise),
+        plan=f"{plan}, {PERIOD_DAYS} days",
+        reference=order.upi_reference or "",
+        utr=upi.group_utr(order.upi_utr),
+    )
+    return Outgoing(job.to_address, mail)
+
+
+async def _upi_rejected(db: AsyncSession, job: EmailOutbox, here: templates.Site) -> Result:
+    user = await _account(db, job)
+    if user is None or not user.email:
+        return Skip("no_email")
+    if not await _switch(db, user.id, "email_receipts"):
+        return Skip("pref_off")
+    order = await _order(db, job)
+    if order is None or order.status != "rejected" or order.user_id != user.id or not order.upi_utr:
+        return Skip("not_rejected")
+    message, screenshot = upi.rejection_text(order.upi_rejection or "other", order.amount_paise, order.upi_utr)
+    mail = templates.upi_rejected(
+        here,
+        message=message,
+        screenshot=screenshot,
+        note=order.upi_rejection_note,
+        business_name=(await business.get_settings(db)).business_name,
+        link=f"{here.base}/billing/return?order={order.public_id}",
+    )
+    return Outgoing(user.email, mail)
+
+
 async def _test(db: AsyncSession, job: EmailOutbox, here: templates.Site) -> Result:
     if not job.to_address:
         return Skip("no_address")
@@ -274,6 +322,8 @@ _KINDS: Final[dict[str, Callable[[AsyncSession, EmailOutbox, templates.Site], Aw
     "google_unlinked": _notice,
     "receipt": _receipt,
     "plan_reminder": _plan_reminder,
+    "upi_submitted": _upi_submitted,
+    "upi_rejected": _upi_rejected,
     "test": _test,
 }
 

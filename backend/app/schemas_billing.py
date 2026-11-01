@@ -30,7 +30,11 @@ PlanStatus = Literal["active", "retired"]
 CheckoutKind = Literal["period", "now"]
 PaymentsMode = Literal["test", "live"]
 OrderMode = Literal["test", "live", "offline"]
-OrderStatus = Literal["pending", "paid", "expired", "cancelled", "review"]
+# submitted: a direct-UPI order whose UTR waits for the admin's check; rejected: the admin found no matching payment
+OrderStatus = Literal["pending", "paid", "expired", "cancelled", "review", "submitted", "rejected"]
+OrderChannel = Literal["razorpay", "upi_direct", "bank_transfer"]
+OpenOrderStatus = Literal["pending", "submitted"]
+UpiRejectReason = Literal["not_received", "amount_differs", "utr_used", "other"]
 PaymentStatus = Literal["captured", "refunded", "partially_refunded", "disputed"]
 PeriodSource = Literal["payment", "comp"]
 RefundStatus = Literal["creating", "pending", "processed", "failed"]
@@ -51,6 +55,7 @@ AttentionKind = Literal[
     "live_without_webhook",
     "keys_rejected",
     "paused_orders",
+    "upi_to_check",
 ]
 
 
@@ -97,6 +102,19 @@ def _not_test_prefix(value: str) -> str:
     return value
 
 
+def _no_spaces(value: object) -> object:
+    """A UTR as people copy it: "6305 1234 5678" becomes "630512345678"."""
+    return "".join(value.split()) if isinstance(value, str) else value
+
+
+def _lower(value: object) -> object:
+    return value.strip().lower() if isinstance(value, str) else value
+
+
+def _one_space(value: object) -> object:
+    return " ".join(value.split()) if isinstance(value, str) else value
+
+
 Id = Annotated[StrictInt, Field(ge=1, le=MAX_INT)]
 Paise = Annotated[StrictInt, Field(ge=MIN_PRICE_PAISE, le=MAX_INT)]
 Count = Annotated[StrictInt, Field(ge=0, le=MAX_INT)]
@@ -115,6 +133,20 @@ Reason = Annotated[
 Note = Annotated[str, StringConstraints(min_length=1, max_length=500), BeforeValidator(_strip), AfterValidator(_text)]
 Email = Annotated[str, StringConstraints(max_length=254, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")]
 ModelIds = Annotated[list[Id], Field(max_length=1000), AfterValidator(_unique)]
+# A UPI reference number: exactly 12 ASCII digits (spaces dropped first)
+Utr = Annotated[str, StringConstraints(pattern=r"^[0-9]{12}$"), BeforeValidator(_no_spaces)]
+# The owner's UPI ID (VPA), stored lowercase: "name@bank", "q123456789@ybl", "paytmqr2810050501abcd@paytm"
+UpiId = Annotated[
+    str,
+    StringConstraints(max_length=100, pattern=r"^[a-z0-9][a-z0-9._-]{0,79}@[a-z][a-z0-9]{1,63}$"),
+    BeforeValidator(_lower),
+]
+# The payee name in the UPI request (pn): ASCII, as the bank account's name reads
+PayeeName = Annotated[
+    str,
+    StringConstraints(min_length=1, max_length=50, pattern=r"^[A-Za-z0-9 .,&'()/-]+$"),
+    BeforeValidator(_one_space),
+]
 
 
 # ---------------- Shared: plans and what a user may do (Me.plan) ----------------
@@ -170,13 +202,37 @@ class PlanRef(BaseModel):
 
 
 class PendingOrder(BaseModel):
+    """The caller's open order: a Razorpay checkout or a direct-UPI order waiting for its UTR (pending, until it
+    expires) or for the admin's check (submitted)."""
+
     public_id: str
     kind: CheckoutKind
     plan: PlanRef
     amount_paise: int
     created_at: datetime
     expires_at: datetime
-    pay_url: str | None  # None once the link expired
+    pay_url: str | None  # None once the link expired; always None for direct UPI
+    channel: OrderChannel = "razorpay"
+    status: OpenOrderStatus = "pending"
+
+
+class UpiRejection(BaseModel):
+    reason: UpiRejectReason
+    message: str  # what the customer reads, by reason (SPEC.md, Billing, Direct UPI)
+    note: str | None  # the admin's own words, shown under it
+
+
+class RejectedOrder(BaseModel):
+    """The caller's newest direct-UPI order when the admin rejected it in the last 7 days and no newer order exists."""
+
+    public_id: str
+    kind: CheckoutKind
+    plan: PlanRef
+    amount_paise: int
+    reference: str
+    utr: str
+    rejected_at: datetime
+    rejection: UpiRejection
 
 
 class PlanUnlock(BaseModel):
@@ -208,6 +264,7 @@ class PlanAccess(BaseModel):
     pending_order: PendingOrder | None
     can_start_new_period: bool
     unlock: PlanUnlock
+    rejected_order: RejectedOrder | None = None  # a direct-UPI payment the admin couldn't confirm, for 7 days
 
 
 # ---------------- Billing: the user's ----------------
@@ -268,11 +325,12 @@ class PlanOffer(PublicPlan):
 
 
 class PaymentsInfo(BaseModel):
-    available: bool  # for this caller: keys set, and a tester under test keys
+    available: bool  # online payment (Razorpay) for this caller: keys set, and a tester under test keys
     mode: PaymentsMode | None  # None when not available to this caller
     contact_email: str | None
-    upi_limit_paise: int  # 0: no limit
+    upi_limit_paise: int  # 0: no limit (Razorpay's UPI only)
     email_reminders: bool  # the mailer is configured: receipts and reminders can be emailed
+    upi_direct: bool = False  # direct UPI to the owner's UPI ID is on, with its UPI ID and payee name
 
 
 class PlanCatalog(BaseModel):
@@ -283,6 +341,19 @@ class PlanCatalog(BaseModel):
 class ReceiptRef(BaseModel):
     id: int
     number: str
+
+
+class UpiOrderInfo(BaseModel):
+    """A direct-UPI order's payment request and its check (docs/briefs/upi-direct.md 4 and 7)."""
+
+    reference: str  # "AN-7K4M-Q9TX": the UPI note (tn), to match the credit
+    upi_id: str  # the payee UPI ID the order asks to pay, as it was when the order was made
+    payee_name: str
+    uri: str | None  # upi://pay?pa=…&pn=…&am=2000.00&cu=INR&tn=AN-…, while pending and not expired
+    utr: str | None  # as the customer submitted it
+    submitted_at: datetime | None
+    decided_at: datetime | None  # confirmed or rejected by the admin
+    rejection: UpiRejection | None
 
 
 class OrderView(BaseModel):
@@ -303,6 +374,8 @@ class OrderView(BaseModel):
     receipt: ReceiptRef | None
     method: str | None  # upi | card | netbanking | wallet | emi | bank_transfer
     test_mode: bool
+    channel: OrderChannel = "razorpay"
+    upi: UpiOrderInfo | None = None  # direct UPI only
 
 
 class CheckoutRequest(BaseModel):
@@ -316,6 +389,14 @@ class CheckoutRequest(BaseModel):
 class CheckoutStarted(BaseModel):
     order: OrderView
     pay_url: str
+
+
+class UtrSubmission(BaseModel):
+    """POST /billing/orders/{public_id}/utr: the 12-digit UPI reference number of the payment the customer made."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    utr: Utr
 
 
 class PaymentView(BaseModel):
@@ -332,6 +413,7 @@ class PaymentView(BaseModel):
     period_end: datetime | None
     receipt: ReceiptRef | None
     test_mode: bool
+    channel: OrderChannel = "razorpay"
 
 
 class PeriodView(BaseModel):
@@ -506,7 +588,8 @@ class CostInputs(BaseModel):
 
 
 class BillingSettings(BaseModel):
-    """app_state billing_settings; PUT /admin/billing/settings replaces it whole."""
+    """app_state billing_settings; PUT /admin/billing/settings replaces it whole. Direct UPI (docs/briefs/upi-direct.md
+    D1) is offered while `upi_enabled` with both its UPI ID and payee name."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -521,6 +604,15 @@ class BillingSettings(BaseModel):
     ]
     receipt_prefix: Annotated[str, StringConstraints(pattern=r"^[A-Z0-9]{1,4}$"), AfterValidator(_not_test_prefix)]
     upi_limit_paise: Annotated[StrictInt, Field(ge=0, le=MAX_PRICE_PAISE)]  # 0: no limit
+    upi_enabled: StrictBool = False
+    upi_id: Annotated[UpiId | None, BeforeValidator(_blank_to_none)] = None
+    upi_payee_name: Annotated[PayeeName | None, BeforeValidator(_blank_to_none)] = None
+
+    @model_validator(mode="after")
+    def _upi_complete(self) -> "BillingSettings":
+        if self.upi_enabled and not (self.upi_id and self.upi_payee_name):
+            raise ValueError("Add your UPI ID and the payee name to turn on UPI payments.")
+        return self
 
 
 class PaymentsSetup(BaseModel):
@@ -568,6 +660,7 @@ class AdminOrder(OrderView):
     next_check_at: datetime | None
     last_error: str | None
     paused: bool  # of the other mode than the server's keys
+    upi_decided_by: str | None = None  # direct UPI: the admin who confirmed or rejected it
 
 
 class OrderEvent(BaseModel):
@@ -654,6 +747,29 @@ class OfflinePaymentRequest(BaseModel):
 
 class ReconcileResult(BaseModel):
     checked: int
+
+
+class UpiConfirmRequest(BaseModel):
+    """POST /admin/billing/orders/{public_id}/upi-confirm: the UTR the admin checked, which must be the order's."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    utr: Utr
+
+
+class UpiRejectRequest(BaseModel):
+    """POST /admin/billing/orders/{public_id}/upi-reject: why; the customer reads the reason's sentence and the note."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: UpiRejectReason
+    note: Annotated[Reason | None, BeforeValidator(_blank_to_none)]  # required for "other"
+
+    @model_validator(mode="after")
+    def _note_for_other(self) -> "UpiRejectRequest":
+        if self.reason == "other" and not self.note:
+            raise ValueError("Say what happened: the customer reads this note.")
+        return self
 
 
 # ---------------- Admin: a user's plan ----------------

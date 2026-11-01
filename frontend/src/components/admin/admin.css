@@ -2179,6 +2179,225 @@
   text-decoration: underline;
 }
 
+/* Direct UPI (upi-direct.md 10.5, 10.7): the UTRs to check, the confirm and reject dialogs, the settings card. */
+.admin-billing-grid.admin-billing-grid-top {
+  align-items: start;
+}
+.admin-billing-column {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-width: 0;
+}
+.admin-upi-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+.admin-upi-late {
+  color: var(--warning);
+  font-size: 13px;
+  font-weight: 600;
+}
+.admin-upi-empty {
+  margin: 0;
+  padding: 10px 20px 22px;
+  color: var(--text-3);
+  font-size: 14.5px;
+}
+.admin-upi-actions {
+  gap: 6px;
+}
+.admin-upi-cards {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.admin-upi-row {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-top: 1px solid var(--border);
+}
+.admin-upi-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 10px;
+}
+.admin-upi-row-amount {
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.admin-upi-row-facts {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  font-size: 14px;
+}
+.admin-upi-row-facts > div {
+  display: grid;
+  grid-template-columns: 84px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+.admin-upi-row-facts dt {
+  color: var(--text-3);
+}
+.admin-upi-row-facts dd {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  min-width: 0;
+  margin: 0;
+}
+.admin-upi-row-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.admin-upi-row-actions .btn {
+  height: 40px;
+}
+.admin-card-header + .admin-upi-cards {
+  margin-top: 0;
+}
+.admin-card-header + .admin-upi-cards > .admin-upi-row:first-child {
+  border-top: 0;
+}
+.admin-upi-row-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+.admin-upi-row-foot .btn {
+  height: 40px;
+  padding: 0 16px;
+}
+.admin-form .admin-upi-lead {
+  margin: 0;
+}
+.admin-upi-lead {
+  margin: 0 0 16px;
+  color: var(--text-2);
+  font-size: 14.5px;
+  line-height: 1.45;
+}
+.admin-upi-amount {
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 28px;
+  font-weight: 600;
+  line-height: 1.1;
+  font-variant-numeric: lining-nums tabular-nums;
+}
+.admin-billing-facts.admin-upi-facts {
+  align-items: baseline;
+}
+.admin-upi-utr {
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+.admin-inline-check.admin-upi-tick {
+  display: flex;
+  margin-top: 18px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg);
+  font-weight: 600;
+}
+.admin-upi-error {
+  margin-top: 10px;
+}
+.admin-upi-reasons {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.admin-upi-reasons > legend {
+  padding: 0 0 4px;
+}
+.admin-upi-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.admin-upi-reason:has(:checked) {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  background: color-mix(in srgb, var(--accent-soft) 45%, var(--surface));
+}
+.admin-upi-reason .ui-radio {
+  flex: none;
+  margin-top: 2px;
+}
+.admin-upi-reason small {
+  display: block;
+  margin-top: 2px;
+  color: var(--text-3);
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+.admin-upi-form {
+  gap: var(--space-4);
+}
+.admin-upi-test {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin: 0 20px 18px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg);
+}
+.admin-upi-test-qr {
+  flex: none;
+  box-sizing: content-box;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.admin-upi-test-title {
+  margin: 0 0 4px;
+  color: var(--text);
+  font-size: 14.5px;
+  font-weight: 650;
+}
+.admin-upi-test .admin-subtext {
+  margin: 0;
+  line-height: 1.45;
+}
+.admin-upi-notes {
+  display: grid;
+  gap: 4px;
+  margin-top: auto;
+  list-style: none;
+}
+
 @media (max-width: 939.98px) {
   .admin-tiles.admin-tiles-billing {
     grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2243,6 +2462,16 @@
   }
   .admin-billing-facts dd + dt {
     margin-top: 8px;
+  }
+  .admin-upi-empty {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+  .admin-upi-test {
+    flex-direction: column;
+    align-items: flex-start;
+    margin-right: 16px;
+    margin-left: 16px;
   }
   .admin-plan-editor-form {
     padding: 4px 16px 20px;

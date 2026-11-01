@@ -4,9 +4,9 @@ import { formatInr } from "../../lib/billing";
 import { formatNumber, formatRelativeTime } from "../../lib/format";
 import { ButtonSpinner } from "../ui/Spinner";
 import { AlertCircleIcon, CheckCircleIcon, InfoIcon, RefreshIcon } from "../ui/icons";
-import { errorMessage, reconcileNow, saveBillingSettings } from "./adminApi";
+import { errorMessage, reconcileNow, saveBillingSettings, upiPreviewUrl } from "./adminApi";
 import { CopyButton, Fact, istToday, plural, TEST_LINK_CAP } from "./billingUi";
-import { Field } from "./Field";
+import { Field, SwitchField } from "./Field";
 import FlashMessage from "./FlashMessage";
 import { FormValidator, type FieldErrors } from "./form";
 import { useFlash, type Resource } from "./hooks";
@@ -15,6 +15,9 @@ import { ResourceGate } from "./StateViews";
 
 const EMAIL_PATTERN = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const PREFIX_PATTERN = /^[A-Z0-9]{1,4}$/;
+/** The server's checks of the direct-UPI settings (SPEC BillingSettings), after trimming and lowercasing. */
+const UPI_ID_PATTERN = /^[a-z0-9][a-z0-9._-]{0,79}@[a-z][a-z0-9]{1,63}$/;
+const PAYEE_PATTERN = /^[A-Za-z0-9 .,&'()/-]{1,50}$/;
 
 /** "26-27": the Indian financial year (April to March) of today in IST. */
 function financialYear(today: string): string {
@@ -33,7 +36,7 @@ export default function BillingBusiness({ config, onNavigate }: BillingBusinessP
       {(data) => (
         <div className="admin-stack">
           <FlashMessage flash={flash} />
-          <div className="admin-billing-grid admin-billing-grid-even">
+          <div className="admin-billing-grid admin-billing-grid-even admin-billing-grid-top">
             <BusinessForm
               settings={data.settings}
               onSaved={(saved) => {
@@ -41,17 +44,26 @@ export default function BillingBusiness({ config, onNavigate }: BillingBusinessP
                 flash.success("Saved the business details.");
               }}
             />
-            <PaymentsSetupCard
-              config={data}
-              onChecked={(checked) => {
-                flash.success(
-                  checked === 0 ? "No pending payments needed checking." : `Checked ${plural(checked, "order")}.`,
-                );
-                void config.reload();
-              }}
-              onError={flash.error}
-              onNavigate={onNavigate}
-            />
+            <div className="admin-billing-column">
+              <UpiCard
+                config={data}
+                onSaved={(saved) => {
+                  config.setData(saved);
+                  flash.success("Saved the UPI payments settings.");
+                }}
+              />
+              <PaymentsSetupCard
+                config={data}
+                onChecked={(checked) => {
+                  flash.success(
+                    checked === 0 ? "No pending payments needed checking." : `Checked ${plural(checked, "order")}.`,
+                  );
+                  void config.reload();
+                }}
+                onError={flash.error}
+                onNavigate={onNavigate}
+              />
+            </div>
           </div>
           <Checklist config={data} pages={policyPages.pages} onRecheckPages={policyPages.reload} />
         </div>
@@ -114,6 +126,9 @@ function BusinessForm({
       contact_phone: v.optionalText("contact_phone", form.contact_phone, 20),
       receipt_prefix: form.receipt_prefix.trim(),
       upi_limit_paise: v.integer("upi", form.upi.replace(/[,\s]/g, ""), 0, 100_000) * 100,
+      upi_enabled: settings.upi_enabled,
+      upi_id: settings.upi_id,
+      upi_payee_name: settings.upi_payee_name,
     };
     if (body.contact_email && !EMAIL_PATTERN.test(body.contact_email))
       v.fail("contact_email", "Enter an email address.");
@@ -252,6 +267,203 @@ function BusinessForm({
           </button>
         </div>
       </form>
+    </section>
+  );
+}
+
+/** The UPI ID as the server stores it: trimmed and lowercase. */
+const cleanUpiId = (raw: string) => raw.trim().toLowerCase();
+/** The payee name with runs of spaces collapsed. */
+const cleanPayee = (raw: string) => raw.replace(/\s+/g, " ").trim();
+
+function upiIdError(value: string): string | undefined {
+  if (!value || (value.length <= 100 && UPI_ID_PATTERN.test(value))) return undefined;
+  return "Enter a UPI ID like yourname@okhdfcbank: letters, digits, dots, hyphens or underscores, then @ and the bank's handle.";
+}
+
+function payeeError(value: string): string | undefined {
+  if (!value || PAYEE_PATTERN.test(value)) return undefined;
+  return value.length > 50
+    ? "Use at most 50 characters."
+    : "Use letters, digits, spaces and . , & ' ( ) / - only.";
+}
+
+type UpiErrorKey = "upi_enabled" | "upi_id" | "upi_payee_name";
+
+/**
+ * "UPI payments" (upi-direct.md 10.7): on/off, the owner's UPI ID and the payee name, saved with the latest saved
+ * business details; then a ₹1 test QR of the saved ID for the owner's own test.
+ */
+function UpiCard({ config, onSaved }: { config: BillingAdminConfig; onSaved: (config: BillingAdminConfig) => void }) {
+  const { settings } = config;
+  const [enabled, setEnabled] = useState(settings.upi_enabled);
+  const [upiId, setUpiId] = useState(settings.upi_id ?? "");
+  const [payee, setPayee] = useState(settings.upi_payee_name ?? "");
+  const [touched, setTouched] = useState(false);
+  const [errors, setErrors] = useState<FieldErrors<UpiErrorKey>>({});
+  const [serverError, setServerError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [invalidSubmits, setInvalidSubmits] = useState(0);
+  const formRef = useRef<HTMLFormElement>(null);
+  const titleId = useId();
+  const id = cleanUpiId(upiId);
+  // Checked as typed once it looks like a whole ID (or the field was left); the save checks everything again.
+  const liveIdError = touched || id.includes("@") ? upiIdError(id) : undefined;
+  const alerts = settings.contact_email !== null && config.payments.email_reminders;
+
+  useEffect(() => {
+    if (invalidSubmits === 0) return;
+    const form = formRef.current;
+    const invalid = form?.querySelector<HTMLElement>("[aria-invalid='true']");
+    (invalid ?? form?.querySelector<HTMLElement>("[role='switch']"))?.focus();
+  }, [invalidSubmits]);
+
+  async function onSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (saving) return;
+    const name = cleanPayee(payee);
+    const v = new FormValidator<UpiErrorKey>();
+    const idProblem = upiIdError(id);
+    const nameProblem = payeeError(name);
+    if (idProblem) v.fail("upi_id", idProblem);
+    if (nameProblem) v.fail("upi_payee_name", nameProblem);
+    if (enabled && (!id || !name)) v.fail("upi_enabled", "Add your UPI ID and the payee name to turn on UPI payments.");
+    setErrors(v.errors);
+    setTouched(true);
+    if (!v.valid) {
+      setInvalidSubmits((n) => n + 1);
+      return;
+    }
+    setSaving(true);
+    setServerError(null);
+    try {
+      const saved = await saveBillingSettings({
+        ...settings,
+        upi_enabled: enabled,
+        upi_id: id || null,
+        upi_payee_name: name || null,
+      });
+      setUpiId(saved.settings.upi_id ?? "");
+      setPayee(saved.settings.upi_payee_name ?? "");
+      onSaved(saved);
+    } catch (err) {
+      setServerError(errorMessage(err, "Couldn't save the UPI payments settings. Please try again."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section className="card admin-card" aria-labelledby={titleId}>
+      <div className="admin-card-header">
+        <div className="admin-card-heading">
+          <h2 id={titleId} className="admin-card-title">
+            UPI payments
+          </h2>
+          <p className="admin-card-subtitle">
+            Customers pay your UPI ID directly. You check each payment in your bank app, then confirm it here.
+          </p>
+        </div>
+      </div>
+      <form ref={formRef} className="admin-form admin-card-body admin-upi-form" onSubmit={onSubmit} noValidate>
+        <SwitchField
+          label="Accept UPI payments"
+          hint={
+            errors.upi_enabled ? (
+              <span className="error-text">
+                <AlertCircleIcon size={13} />
+                {errors.upi_enabled}
+              </span>
+            ) : undefined
+          }
+          checked={enabled}
+          onChange={(checked) => {
+            setEnabled(checked);
+            setErrors((current) => ({ ...current, upi_enabled: undefined }));
+          }}
+        />
+        <Field
+          label="UPI ID"
+          error={errors.upi_id ?? liveIdError}
+          hint="The UPI ID of the bank account the money should reach."
+        >
+          {(control) => (
+            <input
+              {...control}
+              className="input admin-mono"
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              inputMode="email"
+              placeholder="yourname@okhdfcbank"
+              maxLength={100}
+              value={upiId}
+              onChange={(e) => {
+                setUpiId(e.target.value.toLowerCase());
+                setErrors((current) => ({ ...current, upi_id: undefined, upi_enabled: undefined }));
+              }}
+              onBlur={() => setTouched(true)}
+            />
+          )}
+        </Field>
+        <Field
+          label="Payee name"
+          error={errors.upi_payee_name}
+          hint="As your bank shows the account's name: your customers' UPI apps show your bank's name for this UPI ID."
+        >
+          {(control) => (
+            <input
+              {...control}
+              className="input"
+              autoComplete="off"
+              maxLength={50}
+              value={payee}
+              onChange={(e) => {
+                setPayee(e.target.value);
+                setErrors((current) => ({ ...current, upi_payee_name: undefined, upi_enabled: undefined }));
+              }}
+            />
+          )}
+        </Field>
+        {serverError ? (
+          <div className="ui-notice ui-notice-danger" role="alert">
+            <AlertCircleIcon size={15} />
+            <span className="ui-notice-text">{serverError}</span>
+          </div>
+        ) : null}
+        <div className="admin-form-actions">
+          <button type="submit" className="btn btn-primary btn-sm" disabled={saving} aria-busy={saving || undefined}>
+            {saving ? <ButtonSpinner size={13} /> : null}
+            Save
+          </button>
+        </div>
+      </form>
+      {settings.upi_id && settings.upi_payee_name ? (
+        <div className="admin-upi-test">
+          <img
+            className="admin-upi-test-qr"
+            src={upiPreviewUrl(settings.upi_id, settings.upi_payee_name)}
+            width={140}
+            height={140}
+            alt={`QR code: pay ₹1 to ${settings.upi_payee_name} by UPI`}
+          />
+          <div>
+            <h3 className="admin-upi-test-title">Test it before customers use it</h3>
+            <p className="admin-subtext">
+              Scan this with another phone and pay ₹1. Check that your app shows your bank's name for this UPI ID and
+              that ₹1 reaches your account. Try Google Pay, PhonePe and Paytm.
+            </p>
+          </div>
+        </div>
+      ) : null}
+      <ul className="admin-card-footnote admin-upi-notes">
+        <li>Requests already made keep the UPI ID they were made with for up to 24 hours.</li>
+        <li>
+          {alerts
+            ? `Email alerts: on, to ${settings.contact_email}.`
+            : "Email alerts: off. Set the contact email in Business details and the mail settings."}
+        </li>
+      </ul>
     </section>
   );
 }
@@ -508,6 +720,9 @@ function Checklist({ config, pages, onRecheckPages }: ChecklistProps) {
         <ChecklistRow done={null}>
           Refund from here, not from Razorpay's Dashboard, so access follows the refund
         </ChecklistRow>
+        {settings.upi_enabled ? (
+          <ChecklistRow done={null}>Test direct UPI with ₹1 from Google Pay, PhonePe and Paytm</ChecklistRow>
+        ) : null}
         <ChecklistRow done={payments.email_reminders} optional>
           Reminder emails set up <span className="admin-subtext">(optional)</span>
         </ChecklistRow>

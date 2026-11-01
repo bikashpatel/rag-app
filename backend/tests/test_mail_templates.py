@@ -50,6 +50,30 @@ KINDS: dict[str, Callable[[Site], Rendered]] = {
     "plan_reminder": lambda site: templates.plan_reminder(
         site, which="soon", plan="Starter", last_day=date(2026, 11, 30), business_name="AskNuvexusDoc"
     ),
+    "upi_submitted": lambda site: templates.upi_submitted(
+        site,
+        username="maya.chen",
+        amount="₹2,000",
+        plan="Standard, 30 days",
+        reference="AN-7K4M-Q9TX",
+        utr="6305 1234 5678",
+    ),
+    "upi_rejected": lambda site: templates.upi_rejected(
+        site,
+        message="We couldn't find a payment of ₹2,000 with UTR 6305 1234 5678.",
+        screenshot=True,
+        note="Checked <twice> & found nothing",
+        business_name="Asha Rao",
+        link=f"{BASE}/billing/return?order=u7Kp2QwX9mN4bV6cZ8dA",
+    ),
+    "upi_rejected_other": lambda site: templates.upi_rejected(
+        site,
+        message="We couldn't confirm your payment of ₹2,000.",
+        screenshot=False,
+        note=None,
+        business_name="Asha Rao",
+        link=f"{BASE}/billing/return?order=u7Kp2QwX9mN4bV6cZ8dA",
+    ),
     "test": templates.admin_test,
 }
 BUTTONS = {
@@ -62,6 +86,9 @@ BUTTONS = {
     "email_confirm": "Confirm this email",
     "email_confirm_google": "Confirm this email",
     "email_changed": "This wasn't me: undo it",
+    "upi_submitted": "Confirm or reject it",
+    "upi_rejected": "Open the payment",
+    "upi_rejected_other": "Open the payment",
 }
 
 

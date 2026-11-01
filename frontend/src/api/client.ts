@@ -56,6 +56,7 @@ import type {
   SignupRequest,
   TokenRequest,
   UndoInfo,
+  UtrSubmission,
 } from "./types";
 
 /** The machine-readable part of an error body (SPEC 6, error codes): `plan_required`, `feature_not_in_plan`, … */
@@ -438,10 +439,14 @@ export const billingApi = {
   plans: (signal?: AbortSignal) => api.get<PlanCatalog>("/billing/plans", { signal }),
   status: (signal?: AbortSignal) => api.get<BillingStatus>("/billing/status", { signal }),
   checkout: (body: CheckoutRequest) => api.post<CheckoutStarted>("/billing/checkout", body),
+  /** A direct-UPI order to pay the owner's UPI ID: 201 with the order (pending, with its UPI request). */
+  upiCheckout: (body: CheckoutRequest) => api.post<OrderView>("/billing/upi/checkout", body),
   /** `refresh`: the server checks with Razorpay first (the return page's polling). */
   order: (id: string, refresh = false, signal?: AbortSignal) =>
     api.get<OrderView>(`${orderPath(id)}${refresh ? "?refresh=true" : ""}`, { signal }),
   cancel: (id: string) => api.post<OrderView>(`${orderPath(id)}/cancel`),
+  /** The UTR of a direct-UPI payment: the order then waits for the admin's check (submitted). */
+  submitUtr: (id: string, body: UtrSubmission) => api.post<OrderView>(`${orderPath(id)}/utr`, body),
   payments: (signal?: AbortSignal) => api.get<PaymentView[]>("/billing/payments", { signal }),
   profile: (signal?: AbortSignal) => api.get<BillingProfile>("/billing/profile", { signal }),
   saveProfile: (body: BillingProfile) => api.put<BillingProfile>("/billing/profile", body),
@@ -450,6 +455,11 @@ export const billingApi = {
 /** Same-origin link to a receipt PDF; the server sends it as an attachment. */
 export function receiptUrl(id: number): string {
   return `/api/billing/receipts/${id}`;
+}
+
+/** Same-origin QR code of a pending direct-UPI order: an SVG to show, or a PNG to save (an attachment). */
+export function upiQrUrl(id: string, format: "svg" | "png"): string {
+  return `/api${orderPath(id)}/upi-qr.${format}`;
 }
 
 /** GET a policy page's Markdown, a static file outside /api (frontend/public/legal/<slug>.md). */

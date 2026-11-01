@@ -7,7 +7,7 @@ import { formatInr, formatIstDate, formatIstRange } from "../../lib/billing";
 import { formatNumber } from "../../lib/format";
 import { useOpenSettings } from "../../lib/settingsLink";
 import "../billing/billing.css";
-import { PendingCheckoutNotice } from "../billing/PendingCheckoutBanner";
+import { PendingCheckoutNotice, RejectedOrderNotice } from "../billing/PendingCheckoutBanner";
 import {
   expiringDays,
   isStacked,
@@ -508,7 +508,7 @@ function History({ payments }: { payments: PaymentView[] }) {
               payment.period_start && payment.period_end
                 ? formatIstRange(payment.period_start, payment.period_end)
                 : null,
-              methodLabel(payment.method),
+              methodLabel(payment.method, payment.channel),
             ].filter(Boolean);
             return (
               <tr key={payment.id}>
@@ -604,18 +604,22 @@ export default function PlanBillingTab({ user, onClose }: { user: Me; onClose: (
           item.options.some((option) => option.kind === "now" && option.unavailable_reason === null),
       ) ?? false;
     const pending = status.plan.pending_order ?? status.open_order;
+    const rejected = status.plan.rejected_order;
     const contact = status.payments.contact_email;
     body = (
       <>
-        {pending ? (
+        {pending || rejected ? (
           <div className="billing-pending">
-            <PendingCheckoutNotice
-              order={pending}
-              onCancelled={() => {
-                data.reload();
-                void refresh().catch(() => undefined);
-              }}
-            />
+            {pending ? (
+              <PendingCheckoutNotice
+                order={pending}
+                onCancelled={() => {
+                  data.reload();
+                  void refresh().catch(() => undefined);
+                }}
+              />
+            ) : null}
+            {rejected ? <RejectedOrderNotice order={rejected} /> : null}
           </div>
         ) : null}
         <CurrentPlan user={user} status={status} offer={offer} upgradable={upgradable} />

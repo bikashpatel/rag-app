@@ -26,7 +26,10 @@ from app.schemas_billing import (
     RefundRequest,
     ResolveRequest,
     RevokeRequest,
+    UpiConfirmRequest,
+    UpiRejectRequest,
     UserPlanRow,
+    UtrSubmission,
     check_plan,
 )
 
@@ -291,6 +294,57 @@ def test_billing_settings_trim_blank_contacts_to_null_and_keep_a_multiline_addre
 )
 def test_billing_settings_with_a_bad_value_are_refused(change: dict[str, Any], message: str) -> None:
     assert message in refused(BillingSettings, {**SETTINGS, **change})
+
+
+def test_direct_upi_is_off_by_default_and_stores_a_lowercase_upi_id_and_a_tidy_name() -> None:
+    default = BillingSettings.model_validate(SETTINGS)
+    assert (default.upi_enabled, default.upi_id, default.upi_payee_name) == (False, None, None)
+    saved = BillingSettings.model_validate(
+        {**SETTINGS, "upi_enabled": True, "upi_id": " Asha.Rao@OKHDFCBank ", "upi_payee_name": "  Asha   Rao & Co. "}
+    )
+
+    assert (saved.upi_id, saved.upi_payee_name) == ("asha.rao@okhdfcbank", "Asha Rao & Co.")
+    blank = BillingSettings.model_validate({**SETTINGS, "upi_id": " ", "upi_payee_name": ""})
+    assert (blank.upi_id, blank.upi_payee_name) == (None, None)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"upi_enabled": True}, "Add your UPI ID and the payee name to turn on UPI payments."),
+        ({"upi_enabled": True, "upi_id": "asha@ybl"}, "Add your UPI ID and the payee name"),
+        ({"upi_enabled": 1, "upi_id": "asha@ybl", "upi_payee_name": "Asha"}, "valid boolean"),
+        ({"upi_id": "asha"}, "should match pattern"),
+        ({"upi_id": "asha@ybl@paytm"}, "should match pattern"),
+        ({"upi_id": "asha rao@ybl"}, "should match pattern"),
+        ({"upi_id": "asha@9bank"}, "should match pattern"),
+        ({"upi_id": f"{'a' * 81}@ybl"}, "should match pattern"),
+        ({"upi_payee_name": "Āsha"}, "should match pattern"),
+        ({"upi_payee_name": "Asha <Rao>"}, "should match pattern"),
+        ({"upi_payee_name": "a" * 51}, "at most 50 characters"),
+    ],
+)
+def test_direct_upi_settings_with_a_bad_value_are_refused(change: dict[str, Any], message: str) -> None:
+    assert message in refused(BillingSettings, {**SETTINGS, **change})
+
+
+def test_a_utr_is_twelve_ascii_digits_with_spaces_dropped() -> None:
+    assert UtrSubmission.model_validate({"utr": " 6305 1234 5678 "}).utr == "630512345678"
+    assert UpiConfirmRequest.model_validate({"utr": "630512345678"}).utr == "630512345678"
+    for utr in ("63051234567", "6305123456789", "6305-1234-5678", "63051234567a", "६३०५१२३४५६७८"):
+        assert "should match pattern" in refused(UtrSubmission, {"utr": utr})
+    assert "valid string" in refused(UtrSubmission, {"utr": 630512345678})
+    assert "Extra inputs" in refused(UtrSubmission, {"utr": "630512345678", "order": "x"})
+
+
+def test_rejecting_a_upi_payment_needs_a_note_only_for_something_else() -> None:
+    plain = UpiRejectRequest.model_validate({"reason": "not_received", "note": " "})
+
+    assert (plain.reason, plain.note) == ("not_received", None)
+    assert UpiRejectRequest.model_validate({"reason": "other", "note": " Paid twice "}).note == "Paid twice"
+    assert "Say what happened" in refused(UpiRejectRequest, {"reason": "other", "note": None})
+    assert "Field required" in refused(UpiRejectRequest, {"reason": "amount_differs"})
+    assert "Input should be" in refused(UpiRejectRequest, {"reason": "fraud", "note": None})
 
 
 def test_a_refund_is_all_that_is_refundable_or_at_least_one_rupee() -> None:

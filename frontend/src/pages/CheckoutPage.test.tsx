@@ -4,7 +4,16 @@ import { Route, Routes } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { CheckoutOption, PlanCatalog } from "../api/types";
 import { leaveFor } from "../components/billing/leave";
-import { makeCatalog, makeCheckoutOption, makeOrder, makePaymentsInfo, makeSeededOffers } from "../test/billing";
+import {
+  makeCatalog,
+  makeCheckoutOption,
+  makeOrder,
+  makePaymentsInfo,
+  makePendingOrder,
+  makePublicSite,
+  makeSeededOffers,
+  makeUpiOrder,
+} from "../test/billing";
 import { makeAdminMe, makeLapsedPlanAccess, makeMe, makePaidPlanAccess, NOW } from "../test/fixtures";
 import { errorResponse, jsonResponse, stubFetch, type FetchCall, type Route as Reply } from "../test/http";
 import { renderWithAuth } from "../test/render";
@@ -337,5 +346,147 @@ describe("CheckoutPage", () => {
     fail = false;
     await user.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByRole("heading", { name: "Standard" })).toBeInTheDocument();
+  });
+});
+
+describe("CheckoutPage with direct UPI", () => {
+  const both = makeCatalog({ payments: makePaymentsInfo({ upi_direct: true }) });
+  const upiOnly = makeCatalog({ payments: makePaymentsInfo({ upi_direct: true, available: false, mode: null }) });
+  const site = { "GET /public/site": makePublicSite({ business_name: "Asha Rao Docs" }) };
+  const upiPay = () => within(summary()).getByRole("button", { name: "Pay ₹2,000 with UPI" });
+  const onlinePay = () => within(summary()).getByRole("button", { name: "Pay online · ₹2,000" });
+
+  it("offers UPI first and online second, each with what happens next", async () => {
+    await setup({ catalog: both }, site);
+    expect(upiPay()).toHaveClass("btn-primary");
+    expect(summary()).toHaveTextContent(
+      "From any UPI app, straight to Asha Rao Docs. Your plan starts once we've checked the payment, usually within a few hours.",
+    );
+    expect(within(summary()).getByText("or")).toBeInTheDocument();
+    expect(onlinePay()).not.toHaveClass("btn-primary");
+    expect(summary()).toHaveTextContent(
+      "UPI, cards, netbanking or wallets on Razorpay's secure page. Starts as soon as you've paid.",
+    );
+    expect(within(summary()).getByRole("list", { name: "Ways to pay" })).toBeInTheDocument();
+    expect(summary()).toHaveTextContent(
+      "Your money goes straight to Asha Rao Docs's bank account. We never see your UPI PIN or bank details.",
+    );
+    expect(upiPay()).toHaveAccessibleDescription(expect.stringContaining("By paying you agree"));
+    const bar = document.querySelector(".plans-paybar") as HTMLElement;
+    expect(within(bar).getByRole("button", { name: "Pay with UPI" })).toBeInTheDocument();
+  });
+
+  it("offers UPI alone without online payment, and needs no email for it", async () => {
+    await setup({ catalog: upiOnly, me: makeMe({ plan: makeLapsedPlanAccess("none") }) });
+    expect(upiPay()).toBeInTheDocument();
+    expect(within(summary()).queryByRole("button", { name: /Pay online/ })).not.toBeInTheDocument();
+    expect(within(summary()).queryByText("or")).not.toBeInTheDocument();
+    expect(within(summary()).queryByRole("list", { name: "Ways to pay" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Add your email/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Paying online needs/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Online payment isn't set up yet/)).not.toBeInTheDocument();
+    expect(summary()).toHaveTextContent("From any UPI app, straight to us.");
+    expect(summary()).toHaveTextContent("Your money goes straight to our bank account.");
+  });
+
+  it("asks for an email only for paying online", async () => {
+    await setup({ catalog: both, me: makeMe({ plan: makeLapsedPlanAccess("none") }) });
+    const notice = within(summary()).getByText("Paying online needs a confirmed email.").closest(".ui-notice");
+    expect(within(notice as HTMLElement).getByRole("button", { name: "Add email" })).toBeInTheDocument();
+    expect(screen.queryByText("Add your email before you pay.")).not.toBeInTheDocument();
+    expect(upiPay()).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("starts a UPI order with the consent and opens its page", async () => {
+    let release: (value: Response) => void = () => undefined;
+    const { calls, user, view } = await setup(
+      { catalog: both },
+      {
+        ...site,
+        "POST /billing/upi/checkout": () =>
+          new Promise<Response>((resolve) => {
+            release = resolve;
+          }),
+      },
+    );
+    await user.click(upiPay());
+    const busy = within(summary()).getByRole("button", { name: "Preparing your UPI payment…" });
+    expect(busy).toHaveAttribute("aria-busy", "true");
+    expect(onlinePay()).toHaveAttribute("aria-disabled", "true");
+    release(jsonResponse(makeUpiOrder(), { status: 201 }));
+    await waitFor(() => expect(view.location()).toBe("/billing/return?order=u7Kp2QwX9mN4bV6cZ8dA"));
+    expect(calls.find((call) => call.path === "/billing/upi/checkout")?.body).toEqual({
+      plan_id: 2,
+      kind: "period",
+      accept_terms: true,
+    });
+    expect(calls.some((call) => call.path === "/billing/checkout")).toBe(false);
+  });
+
+  it("saves changed receipt details first, and stops when that fails", async () => {
+    const { calls, user } = await setup({ catalog: both }, { "PUT /billing/profile": () => errorResponse(422, "too long") });
+    await user.click(screen.getByRole("button", { name: "Receipt details (optional)" }));
+    await user.type(screen.getByLabelText("Name on the receipt"), "Maya");
+    await user.click(upiPay());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Couldn't save your receipt details. too long");
+    expect(calls.some((call) => call.path === "/billing/upi/checkout")).toBe(false);
+  });
+
+  it("opens the UPI payment that waits for the owner instead of a second one", async () => {
+    const waiting = makeMe({
+      email: "maya@example.com",
+      plan: makeLapsedPlanAccess("none", {
+        pending_order: makePendingOrder({ public_id: "u7Kp2QwX9mN4bV6cZ8dA", channel: "upi_direct", status: "submitted" }),
+      }),
+    });
+    let me = makeMe({ email: "maya@example.com", plan: makeLapsedPlanAccess("none") });
+    const detail = "We're still checking your UPI payment of ₹2,000 (AN-7K4M-Q9TX). You can start another payment once it's confirmed or rejected.";
+    const { calls, user } = await setup(
+      { catalog: both },
+      {
+        "GET /auth/me": () => me,
+        "POST /billing/checkout": () => {
+          me = waiting;
+          return jsonResponse({ detail, code: "upi_waiting" }, { status: 409 });
+        },
+      },
+    );
+    await user.click(onlinePay());
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent(detail);
+    expect(error).toHaveFocus();
+    expect(onlinePay()).toHaveAccessibleDescription(expect.stringContaining("We're still checking"));
+    expect(within(error).getByRole("link", { name: "Open it" })).toHaveAttribute(
+      "href",
+      "/billing/return?order=u7Kp2QwX9mN4bV6cZ8dA",
+    );
+    expect(calls.filter((call) => call.path === "/auth/me")).toHaveLength(2);
+    expect(leaveFor).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [409, "checkout_unavailable", "You already have a period paid ahead.", "Back to plans"],
+    [503, "upi_unavailable", "Paying by UPI isn't available right now. Contact billing@example.com.", null],
+    [429, "too_many_checkouts", "Too many payment requests today. Try again tomorrow.", null],
+  ])("explains a %i %s under Pay with UPI", async (status, code, detail, action) => {
+    const { user } = await setup(
+      { catalog: both },
+      { "POST /billing/upi/checkout": () => jsonResponse({ detail, code }, { status }) },
+    );
+    await user.click(upiPay());
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveTextContent(detail);
+    expect(upiPay()).toHaveAccessibleDescription(expect.stringContaining(detail));
+    if (action) expect(within(error).getByRole("link", { name: action })).toHaveAttribute("href", "/plans");
+    else expect(within(error).queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("says when the UPI order couldn't be started at all", async () => {
+    const { user } = await setup(
+      { catalog: both },
+      { "POST /billing/upi/checkout": () => Promise.reject(new TypeError("Failed to fetch")) },
+    );
+    await user.click(upiPay());
+    expect(await screen.findByRole("alert")).toHaveTextContent("Cannot reach the server.");
   });
 });

@@ -47,7 +47,7 @@ from app.models import (
 )
 from app.plugins import registry
 from app.services import account, storage, usage
-from app.services.billing import entitlements, periods
+from app.services.billing import entitlements, periods, upi
 from app.services.billing.entitlements import Entitlements
 
 FORMAT = "rag-assistant-export"
@@ -349,6 +349,17 @@ async def _account(db: AsyncSession, user: User, ent: Entitlements, exported_at:
     }
 
 
+def _upi_order(order: BillingOrder) -> dict[str, Any]:
+    """A direct-UPI order's reference, the UTR the user sent and the admin's decision (never the admin's name)."""
+    return {
+        "reference": order.upi_reference,
+        "utr": order.upi_utr,
+        "submitted_at": _time(order.upi_submitted_at),
+        "decided_at": _time(order.upi_decided_at),
+        "rejection": {"reason": order.upi_rejection, "note": order.upi_rejection_note} if order.upi_rejection else None,
+    }
+
+
 async def _billing(db: AsyncSession, user: User) -> dict[str, Any]:
     """The user's periods (every mode), open-ended plan, orders and payments with their receipt numbers, and billing
     profile: what they hold, never the admin's notes or Razorpay's fees."""
@@ -406,8 +417,10 @@ async def _billing(db: AsyncSession, user: User) -> dict[str, Any]:
                 "credit_paise": order.credit_paise,
                 "status": order.status,
                 "mode": order.mode,
+                "channel": upi.channel(order),
                 "created_at": _time(order.created_at),
                 "paid_at": _time(order.paid_at),
+                **(_upi_order(order) if order.upi_reference is not None else {}),
             }
             for order in orders
         ],

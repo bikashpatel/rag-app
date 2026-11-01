@@ -1,6 +1,7 @@
 """The reconciler and the worker's billing loop (docs/briefs/plans-billing.md B16 and 6.4): open checkouts are polled
 every 30 s while their link lives, then on a backing-off schedule until BILLING_LATE_CAPTURE_DAYS after it expired;
-woken webhook events are processed; pending refunds are followed up; reminders go out hourly. One check of an order
+woken webhook events are processed; pending refunds are followed up; direct-UPI orders without a UTR expire
+(docs/briefs/upi-direct.md 8.5); reminders go out hourly. One check of an order
 at a time (a Redis lock shared with the callback and "Check now"), and Razorpay is never called inside a transaction.
 """
 
@@ -249,17 +250,13 @@ async def run_due(*, limit: int | None = BATCH, source: str = "reconcile") -> in
 
 
 class BillingLoop:
-    """Runs in the worker beside the ingestion jobs: woken webhook events, the reconciler's tick every
-    BILLING_RECONCILE_SECONDS, refunds, and the hourly reminders. Every step catches its own errors."""
+    """Runs in the worker beside the ingestion jobs, always (direct UPI's settings live in the database): woken webhook
+    events, the reconciler's tick every BILLING_RECONCILE_SECONDS, refunds, direct-UPI expiry, and the hourly
+    reminders. Every step catches its own errors."""
 
     def __init__(self, stopping: asyncio.Event) -> None:
         self._stopping = stopping
         self._next_reminders = 0.0
-
-    @staticmethod
-    def wanted() -> bool:
-        """Payments are set up, or reminder emails can be sent: otherwise the loop would have nothing to do."""
-        return settings.razorpay_mode is not None or business.email_reminders()
 
     async def run(self) -> None:
         from app.services.billing import webhooks  # webhooks imports this module
@@ -286,9 +283,10 @@ class BillingLoop:
                 next_tick = loop.time() + settings.billing_reconcile_seconds
 
     async def tick(self) -> None:
-        from app.services.billing import refunds, reminders, webhooks
+        from app.services.billing import refunds, reminders, upi, webhooks
 
         await self._safely("reconcile", run_due())
+        await self._safely("upi", upi.expire_due())
         for event_id in await self._safely("events", webhooks.pending()) or []:
             await self._safely("webhook", webhooks.process(event_id))
         await self._safely("refunds", refunds.retry_creating())

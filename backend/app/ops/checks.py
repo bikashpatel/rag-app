@@ -276,18 +276,24 @@ async def gmail_reconnect_needed(timeout: float = CHECK_TIMEOUT_SECONDS) -> int 
 
 
 async def check_billing(timeout: float = CHECK_TIMEOUT_SECONDS) -> SystemCheck:
-    """Payments: orders to review, disputes near their deadline, a stalled reconciler, rejected keys, stuck or failed
-    refunds, bad signatures, failing or silent webhooks and risky key setups (counts only)."""
+    """Payments, while Razorpay or direct UPI is set up: orders to review, direct-UPI UTRs waiting over a day,
+    disputes near their deadline, a stalled reconciler, rejected keys, stuck or failed refunds, bad signatures, failing
+    or silent webhooks and risky key setups (counts only)."""
     from app.services.billing import summary  # it imports the plugin registry, which imports app.deps
 
-    if settings.razorpay_mode is None:
+    upi_on, error = await _guard(summary.upi_on(), timeout)
+    if error or upi_on is None:
+        return check("billing", "unknown", f"The billing records can't be read: {error}")
+    if settings.razorpay_mode is None and not upi_on:
         return check("billing", "ok", "Payments not set up")
     problems, error = await _guard(summary.problems(), timeout)
     if error or problems is None:
         return check("billing", "unknown", f"The billing records can't be read: {error}")
     if problems:
         return check("billing", "warning", "; ".join(problems))
-    return check("billing", "ok", f"Payments in {settings.razorpay_mode} mode; nothing needs attention")
+    parts = [f"Payments in {settings.razorpay_mode} mode"] if settings.razorpay_mode else []
+    detail = "; ".join([*parts, *(["direct UPI on"] if upi_on else []), "nothing needs attention"])
+    return check("billing", "ok", detail[0].upper() + detail[1:])
 
 
 # ---------------- Email (docs/briefs/signup-auth.md 14.1) ----------------

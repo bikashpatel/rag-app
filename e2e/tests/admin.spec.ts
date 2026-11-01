@@ -1,6 +1,7 @@
 import type { BrowserContext, Page } from "@playwright/test";
 import { INVALID_LOGIN, composer, loginHeading, openAvatarMenu, openChat, submitLogin } from "../support/app";
 import { ADMIN_SESSION_ENV, BASE_URL, sessionCookieName } from "../support/env";
+import { fakeAdminUpiOrder } from "../support/fakes";
 import { expect, guardAdminContext, randomPassword, randomUsername, signIn, test as base } from "../support/fixtures";
 
 // The admin's pages show every account, so this file records no traces or screenshots, and closes the admin's page
@@ -229,4 +230,49 @@ test("the admin guard blocks a write outside the test users, such as a model's E
   expect(leaked).toEqual([]);
   expect(await admin.listModels()).toEqual(before);
   await page.close();
+});
+
+test("the UPI payments to check: the confirm and reject dialogs (intercepted)", async ({ adminPage }) => {
+  // The lists and both decisions are intercepted: the made-up order belongs to no real account, and nothing is applied.
+  const order = fakeAdminUpiOrder("e2eUpiOrder000000002", "submitted");
+  const decisions: { path: string; body: unknown }[] = [];
+  await adminPage.route(
+    (url) => url.pathname === "/api/admin/billing/orders",
+    (route) => route.fulfill({ json: { items: [order], total: 1 } }),
+  );
+  await adminPage.route(/\/api\/admin\/billing\/orders\/[^/]+\/upi-(confirm|reject)$/, async (route) => {
+    decisions.push({ path: new URL(route.request().url()).pathname, body: route.request().postDataJSON() });
+    await route.fulfill({ json: { ...order, status: route.request().url().endsWith("confirm") ? "paid" : "rejected" } });
+  });
+
+  await adminPage.goto("/admin#billing/upi");
+  const list = adminPage.getByRole("region", { name: /UPI payments to check/ });
+  await expect(list.getByText("6305 1234 5678")).toBeVisible();
+  await expect(adminPage.getByRole("radio", { name: "UPI · 1" })).toBeChecked();
+
+  const confirmButton = list.getByRole("button", { name: "Confirm ₹2,000 from e2e-upi-payer" });
+  await confirmButton.click();
+  const confirm = adminPage.getByRole("dialog", { name: "Confirm UPI payment" });
+  await expect(confirm.getByRole("checkbox", { name: /I found a credit of exactly ₹2,000/ })).toBeFocused();
+  await adminPage.keyboard.press("Escape");
+  await expect(confirm).toHaveCount(0);
+  await expect(confirmButton).toBeFocused();
+
+  await confirmButton.click();
+  await confirm.getByRole("checkbox").check();
+  await confirm.getByRole("button", { name: "Confirm and start the plan" }).click();
+  await expect(adminPage.getByText("Confirmed ₹2,000 from e2e-upi-payer. Their plan has started.")).toBeVisible();
+
+  await list.getByRole("button", { name: "Reject ₹2,000 from e2e-upi-payer" }).click();
+  const reject = adminPage.getByRole("dialog", { name: "Reject UPI payment" });
+  await expect(reject.getByRole("group", { name: "Why" })).toBeVisible();
+  await reject.getByRole("radio", { name: /The amount is different/ }).check();
+  await expect(reject.getByText("Send what they paid back to the payer by UPI from your bank app.")).toBeVisible();
+  await reject.getByRole("button", { name: "Reject payment" }).click();
+  await expect(adminPage.getByText("Rejected ₹2,000 from e2e-upi-payer. They can start a new payment.")).toBeVisible();
+
+  expect(decisions).toEqual([
+    { path: "/api/admin/billing/orders/e2eUpiOrder000000002/upi-confirm", body: { utr: "630512345678" } },
+    { path: "/api/admin/billing/orders/e2eUpiOrder000000002/upi-reject", body: { reason: "amount_differs", note: null } },
+  ]);
 });

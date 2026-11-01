@@ -5,7 +5,7 @@ import type { AdminUser } from "../../api/types";
 import { makeSignupStatus } from "../../test/adminSignup";
 import { makeAdminUserPlan, makeSeededAdminPlans, markdownResponse } from "../../test/adminTabs";
 import { makeAuthConfig } from "../../test/auth";
-import { makeBillingAdminConfig, makeUserBilling, STARTER } from "../../test/billing";
+import { makeAdminOrder, makeBillingAdminConfig, makeUserBilling, STARTER } from "../../test/billing";
 import { makeAdminConfig, makeAdminModel, makeAdminUser, makeLimits } from "../../test/fixtures";
 import { errorResponse, stubFetch, type Route } from "../../test/http";
 import UsersTab from "./UsersTab";
@@ -342,6 +342,24 @@ describe("UsersTab", () => {
     const dialog = await screen.findByRole("dialog", { name: "Edit maya.chen" });
     expect(await within(dialog).findByRole("group", { name: "Grant a complimentary plan" })).toBeInTheDocument();
     expect(onNavigate).toHaveBeenCalledWith("users");
+  });
+
+  it("warns before deleting a user whose UPI payment waits for a check", async () => {
+    const waiting = makeAdminOrder({
+      status: "submitted",
+      channel: "upi_direct",
+      amount_paise: 200_000,
+      user: { id: maya.id, username: "maya.chen" },
+    });
+    stubAdmin([admin, maya], { "GET /admin/billing/orders?status=submitted&page=1": { items: [waiting], total: 1 } });
+    const user = userEvent.setup();
+    await renderTab();
+    await user.click(screen.getByRole("button", { name: "Delete maya.chen" }));
+    await waitFor(() =>
+      expect(screen.getByRole("group", { name: /Delete maya\.chen/ })).toHaveTextContent(
+        "maya.chen has a UPI payment of ₹2,000 waiting for your check. Confirm or reject it first.",
+      ),
+    );
   });
 
   it("ignores a hash naming the admin or an unknown user", async () => {

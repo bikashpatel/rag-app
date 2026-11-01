@@ -32,6 +32,8 @@ function setup(config: BillingAdminConfig | Route = live, routes: Record<string,
 }
 
 const field = (name: string) => screen.getByRole("textbox", { name });
+const businessSave = () =>
+  within(screen.getByRole("region", { name: "Business details" })).getByRole("button", { name: "Save" });
 const checklist = () => screen.getByRole("region", { name: "Going-live checklist" });
 const row = (text: string) => within(checklist()).getByText(text).closest("li") as HTMLElement;
 
@@ -69,7 +71,7 @@ describe("Billing → Business & payments", () => {
     await user.type(field("Receipt prefix"), "test");
     await user.clear(field("UPI limit per payment"));
     await user.type(field("UPI limit per payment"), "lots");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(businessSave());
     expect(field("Business name")).toHaveAccessibleDescription(expect.stringContaining("This field is required."));
     expect(field("Business name")).toHaveFocus();
     expect(field("Contact email")).toHaveAccessibleDescription(expect.stringContaining("Enter an email address."));
@@ -92,7 +94,7 @@ describe("Billing → Business & payments", () => {
     await user.clear(field("UPI limit per payment"));
     await user.type(field("UPI limit per payment"), "0");
     await user.type(field("Address"), "12 MG Road{Enter}Bengaluru");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(businessSave());
 
     expect(await screen.findByText("Saved the business details.")).toBeInTheDocument();
     expect(calls.filter((call) => call.method === "PUT").map((call) => call.body)).toEqual([
@@ -103,6 +105,9 @@ describe("Billing → Business & payments", () => {
         contact_phone: "+91 98765 43210",
         receipt_prefix: "RD",
         upi_limit_paise: 0,
+        upi_enabled: false,
+        upi_id: null,
+        upi_payee_name: null,
       },
     ]);
   });
@@ -110,7 +115,8 @@ describe("Billing → Business & payments", () => {
   it("shows a refused save in the form", async () => {
     setup(live, { "PUT /admin/billing/settings": () => errorResponse(422, "receipt_prefix: invalid") });
     const user = userEvent.setup();
-    await user.click(await screen.findByRole("button", { name: "Save" }));
+    await screen.findByRole("region", { name: "Business details" });
+    await user.click(businessSave());
     expect(await screen.findByRole("alert")).toHaveTextContent("receipt_prefix: invalid");
   });
 
@@ -243,5 +249,85 @@ describe("Billing → Business & payments", () => {
     expect(row("Business details filled")).toHaveTextContent("Done:");
     expect(row("Confirm the UPI limit with Razorpay and set it above")).toHaveTextContent("Now: no limit.");
     expect(row("Reminder emails set up")).toHaveTextContent("Done:");
+  });
+
+  describe("UPI payments", () => {
+    const card = () => screen.getByRole("region", { name: "UPI payments" });
+    const upiSave = () => within(card()).getByRole("button", { name: "Save" });
+    const withUpi = (overrides: Partial<BillingAdminConfig["settings"]> = {}) =>
+      makeBillingAdminConfig({
+        settings: { ...live.settings, upi_enabled: true, upi_id: "asha.rao@okhdfcbank", upi_payee_name: "Asha Rao", ...overrides },
+      });
+
+    it("checks the UPI ID and payee name as the server does, and won't turn on without both", async () => {
+      const { calls } = setup();
+      const user = userEvent.setup();
+      await screen.findByRole("region", { name: "UPI payments" });
+      expect(card()).toHaveTextContent(
+        "Customers pay your UPI ID directly. You check each payment in your bank app, then confirm it here.",
+      );
+      expect(within(card()).queryByRole("img")).not.toBeInTheDocument();
+      expect(card()).toHaveTextContent("Email alerts: off. Set the contact email in Business details and the mail settings.");
+
+      const upiId = within(card()).getByRole("textbox", { name: "UPI ID" });
+      await user.type(upiId, "Asha");
+      expect(upiId).toHaveValue("asha");
+      expect(upiId).not.toHaveAttribute("aria-invalid");
+      await user.type(upiId, "@1bank");
+      expect(upiId).toHaveAttribute("aria-invalid", "true");
+      expect(upiId).toHaveAccessibleDescription(expect.stringContaining("Enter a UPI ID like yourname@okhdfcbank"));
+      await user.clear(upiId);
+
+      await user.click(within(card()).getByRole("switch", { name: "Accept UPI payments" }));
+      await user.click(upiSave());
+      const toggle = within(card()).getByRole("switch", { name: "Accept UPI payments" });
+      expect(toggle).toHaveFocus();
+      expect(toggle).toHaveAccessibleDescription("Add your UPI ID and the payee name to turn on UPI payments.");
+
+      await user.type(within(card()).getByRole("textbox", { name: "Payee name" }), "Asha <Rao>");
+      await user.type(upiId, "asha.rao@okhdfcbank");
+      await user.click(upiSave());
+      expect(within(card()).getByRole("textbox", { name: "Payee name" })).toHaveAccessibleDescription(
+        expect.stringContaining("Use letters, digits, spaces and . , & ' ( ) / - only."),
+      );
+      expect(calls.some((call) => call.method === "PUT")).toBe(false);
+    });
+
+    it("saves the UPI settings with the saved business details, then offers the ₹1 test", async () => {
+      const saved = withUpi();
+      const { calls } = setup(live, { "PUT /admin/billing/settings": saved });
+      const user = userEvent.setup();
+      await screen.findByRole("region", { name: "UPI payments" });
+      await user.type(field("Business name"), " (unsaved)");
+      await user.click(within(card()).getByRole("switch", { name: "Accept UPI payments" }));
+      await user.type(within(card()).getByRole("textbox", { name: "UPI ID" }), "  Asha.Rao@OKHDFCBANK ");
+      await user.type(within(card()).getByRole("textbox", { name: "Payee name" }), "Asha   Rao ");
+      await user.click(upiSave());
+
+      expect(await screen.findByText("Saved the UPI payments settings.")).toBeInTheDocument();
+      expect(calls.filter((call) => call.method === "PUT").map((call) => call.body)).toEqual([
+        { ...live.settings, upi_enabled: true, upi_id: "asha.rao@okhdfcbank", upi_payee_name: "Asha Rao" },
+      ]);
+      const qr = within(card()).getByRole("img", { name: "QR code: pay ₹1 to Asha Rao by UPI" });
+      expect(qr).toHaveAttribute("src", "/api/admin/billing/upi-preview.svg?v=asha.rao%40okhdfcbank+Asha+Rao");
+      expect(card()).toHaveTextContent("Test it before customers use it");
+      expect(row("Test direct UPI with ₹1 from Google Pay, PhonePe and Paytm")).toBeInTheDocument();
+    });
+
+    it("says where email alerts go, and shows a refused save", async () => {
+      setup(
+        makeBillingAdminConfig({
+          ...withUpi({ contact_email: "owner@example.com" }),
+          payments: { ...setupDefaults, email_reminders: true },
+        }),
+        { "PUT /admin/billing/settings": () => errorResponse(422, "upi_id: not a UPI ID") },
+      );
+      const user = userEvent.setup();
+      await screen.findByRole("region", { name: "UPI payments" });
+      expect(card()).toHaveTextContent("Email alerts: on, to owner@example.com.");
+      expect(card()).toHaveTextContent("Requests already made keep the UPI ID they were made with for up to 24 hours.");
+      await user.click(upiSave());
+      expect(await within(card()).findByRole("alert")).toHaveTextContent("upi_id: not a UPI ID");
+    });
   });
 });

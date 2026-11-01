@@ -1,12 +1,14 @@
 """Applying a payment exactly once (docs/briefs/plans-billing.md 6.5, 6.6 and 4.9): a payment entity already fetched
-from Razorpay (or a bank transfer the admin records) buys its order's period under the user's row lock, only when its
-status, amount, currency, order and mode match; anything else goes to the admin's review. Its receipt is emailed through
-the outbox (receipts.issue queues it; the worker is woken after the commit). Also the payment views."""
+from Razorpay (or a bank transfer the admin records, or a direct-UPI payment the admin confirms, upi.py) buys its
+order's period under the user's row lock, only when its status, amount, currency, order and mode match; anything else
+goes to the admin's review. Its receipt is emailed through the outbox (receipts.issue queues it; the worker is woken
+after the commit). Also the payment views."""
 
 import logging
+import re
 import secrets
 from collections.abc import Mapping
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 from fractions import Fraction
 from typing import Any, Literal
 
@@ -16,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.errors import AppError
 from app.models import (
     BillingDispute,
     BillingOrder,
@@ -31,6 +34,7 @@ from app.schemas_billing import (
     AdminPayment,
     DisputeView,
     OfflinePaymentRequest,
+    OrderChannel,
     PaymentView,
     PlanSnapshot,
     ReceiptRef,
@@ -48,6 +52,7 @@ Outcome = Literal["applied", "done", "review", "failed", "waiting"]
 LISTED_STATUSES = ("captured", "refunded", "partially_refunded", "disputed")  # what a user's history shows
 _OWN_STATUSES = ("refunded", "partially_refunded", "disputed")  # set by our refunds and disputes, never by a fetch
 _HOLDING_STATUSES = ("creating", "pending", "processed")  # refunds that take from the refundable amount
+_MICROSECOND = timedelta(microseconds=1)
 
 
 def _int(value: object) -> int | None:
@@ -190,14 +195,33 @@ async def apply_payment(db: AsyncSession, order_id: int, entity: Mapping[str, An
         await _review(db, order, payment, reason, source=source, type=kind)
         await db.commit()
         return "review"
+    outcome = await apply_matched(db, order, payment, source=source)
+    await db.commit()
+    if outcome == "applied":
+        await outbox.wake()
+    return outcome
+
+
+async def apply_matched(
+    db: AsyncSession, order: BillingOrder, payment: BillingPayment, *, source: str
+) -> Literal["applied", "review"]:
+    """Applies a captured payment that matches its order, which the caller holds locked with the user (and commits):
+    a `period` order adds its days at max(now, paid through); a `now` order checks its credit again and replaces the
+    period it was priced against, or goes to review. A direct-UPI order (upi-direct.md D13) gets no credit from a
+    test-mode period, holds usage during the admin's check against its credit only beyond that wait's share of the
+    period and, when the replaced period ended by itself meanwhile, adds its 30 days (basis the amount paid) instead."""
     assert order.user_id is not None
     now = utcnow()
     snapshot = PlanSnapshot.model_validate(order.plan_snapshot)
     days = periods.TEST_PERIOD_DAYS if order.mode == "test" else PERIOD_DAYS
+    mode: Literal["test", "live", "offline"] = (
+        "test" if order.mode == "test" else "offline" if order.mode == "offline" else "live"
+    )
+    price = int(order.plan_snapshot.get("price_paise", order.amount_paise + order.credit_paise))
     if order.kind == "now":
-        if (fell := await _credit_fell(db, order, now)) is not None:
+        replaced = await db.get(PlanPeriod, order.replaces_period_id) if order.replaces_period_id else None
+        if (fell := _test_credit(order, replaced) or await _credit_fell(db, order, replaced, now)) is not None:
             await _review(db, order, payment, fell, source=source, type="order.review")
-            await db.commit()
             return "review"
         try:
             period = await periods.start_now(
@@ -205,8 +229,8 @@ async def apply_payment(db: AsyncSession, order_id: int, entity: Mapping[str, An
                 order.user_id,
                 snapshot=snapshot,
                 days=days,
-                basis_paise=int(order.plan_snapshot.get("price_paise", order.amount_paise + order.credit_paise)),
-                mode="test" if order.mode == "test" else "live",
+                basis_paise=price,
+                mode=mode,
                 order_id=order.id,
                 replaces_period_id=order.replaces_period_id,
                 replaces_plan_id=order.replaces_plan_id,
@@ -214,13 +238,24 @@ async def apply_payment(db: AsyncSession, order_id: int, entity: Mapping[str, An
                 now=now,
             )
         except periods.PeriodChanged:
-            reason = (
-                "The plan this payment was priced against has changed. Suggested: refund "
-                f"{format_inr(payment.amount_paise)} or grant instead."
+            if order.upi_reference is None or not _ended_by_itself(order, replaced, now):
+                reason = (
+                    "The plan this payment was priced against has changed. Suggested: refund "
+                    f"{format_inr(payment.amount_paise)} or grant instead."
+                )
+                await _review(db, order, payment, reason, source=source, type="order.review")
+                return "review"
+            period = await periods.add_period(
+                db,
+                order.user_id,
+                snapshot=snapshot,
+                days=days,
+                source="payment",
+                mode=mode,
+                basis_paise=payment.amount_paise,
+                order_id=order.id,
+                now=now,
             )
-            await _review(db, order, payment, reason, source=source, type="order.review")
-            await db.commit()
-            return "review"
     else:
         period = await periods.add_period(
             db,
@@ -228,30 +263,72 @@ async def apply_payment(db: AsyncSession, order_id: int, entity: Mapping[str, An
             snapshot=snapshot,
             days=days,
             source="payment",
-            mode="test" if order.mode == "test" else "live",
+            mode=mode,
             basis_paise=payment.amount_paise,
             order_id=order.id,
             now=now,
         )
     await _paid(db, order, payment, period, now, source=source)
-    await db.commit()
-    await outbox.wake()
     return "applied"
 
 
-async def _credit_fell(db: AsyncSession, order: BillingOrder, now: datetime) -> str | None:
-    """A `now` order's credit again (4.4), with the replaced period's usage and refunds now and the time left as
-    quoted: the reason for review when it fell below the quoted credit (the allowance was used up, or the payment
-    partly refunded, while the link was open). None when it holds, or when the period is no longer the user's
-    current one (start_now then refuses the order)."""
+def _as_quoted(order: BillingOrder, replaced: PlanPeriod) -> bool:
+    """The period a `now` order replaces is unrevoked, with the plan and end it was quoted with."""
+    return (
+        replaced.revoked_at is None
+        and replaced.plan_id == order.replaces_plan_id
+        and replaced.ends_at == order.replaces_ends_at
+    )
+
+
+def _ended_by_itself(order: BillingOrder, replaced: PlanPeriod | None, now: datetime) -> bool:
+    """The period a `now` order replaces ended on its own (unrevoked, with the plan and end as quoted)."""
+    return replaced is not None and _as_quoted(order, replaced) and replaced.ends_at <= now
+
+
+def _test_credit(order: BillingOrder, replaced: PlanPeriod | None) -> str | None:
+    """The reason for review when a direct-UPI order's credit came from a period paid with test keys (no real money);
+    None otherwise."""
+    if order.upi_reference is None or not order.credit_paise or replaced is None or replaced.mode != "test":
+        return None
+    return (
+        f"The credit of {format_inr(order.credit_paise)} came from a period paid in test mode. Suggested: refund "
+        f"{format_inr(order.amount_paise)} or grant instead."
+    )
+
+
+async def _used_while_checked(
+    db: AsyncSession, user: User, replaced: PlanPeriod, submitted_at: datetime, now: datetime
+) -> Fraction:
+    """The used share of the period a direct-UPI order replaces (D13): usage up to the UTR counts in full, usage while
+    the admin checks only beyond the share of the period that wait took (the allowance at the plan's pace)."""
+    ent = entitlements.of_period(user, replaced)
+    before = await entitlements.allowance_used(db, ent, until=submitted_at)
+    waited = max(min(now, replaced.ends_at) - submitted_at, timedelta(0))
+    pace = Fraction(waited // _MICROSECOND, (replaced.ends_at - replaced.starts_at) // _MICROSECOND)
+    return max(before, await entitlements.allowance_used(db, ent) - pace)
+
+
+async def _credit_fell(
+    db: AsyncSession, order: BillingOrder, replaced: PlanPeriod | None, now: datetime
+) -> str | None:
+    """A `now` order's credit again (4.4), with the replaced period's usage (for direct UPI, _used_while_checked) and
+    refunds now and the time left as quoted: the reason for review when it fell below the quoted credit (the
+    allowance was used up, or the payment partly refunded, since the quote). None when it holds, or when the period
+    changed (start_now then refuses the order; a direct-UPI order's period may have ended by itself)."""
     user = await db.get(User, order.user_id) if order.credit_paise and order.user_id is not None else None
-    replaced = await db.get(PlanPeriod, order.replaces_period_id) if order.replaces_period_id else None
     if user is None or replaced is None:
         return None
-    ent = await entitlements.load(db, user, now=now)
-    if ent.period_id != replaced.id:
-        return None
-    credit = await upgrade_credit(db, replaced, used=await entitlements.allowance_used(db, ent), at=order.created_at)
+    if order.upi_reference is not None:
+        if not _as_quoted(order, replaced):
+            return None
+        used = await _used_while_checked(db, user, replaced, order.upi_submitted_at or now, now)
+    else:
+        ent = await entitlements.load(db, user, now=now)
+        if ent.period_id != replaced.id:
+            return None
+        used = await entitlements.allowance_used(db, ent)
+    credit = await upgrade_credit(db, replaced, used=used, at=order.created_at)
     price = int(order.plan_snapshot.get("price_paise", order.amount_paise + order.credit_paise))
     given = price - now_charge(price, credit)
     if given >= order.credit_paise:
@@ -308,6 +385,50 @@ async def _paid(
 
 # ---------------- Bank transfers (4.9) ----------------
 
+_UTR_HELD = ("submitted", "paid", "review")  # direct-UPI orders whose UTR no other payment may use
+_UTR_RUN = re.compile(r"(?<![0-9])[0-9]{12}(?![0-9])")
+
+
+def reference_utrs(reference: str) -> set[str]:
+    """The UTRs a payment reference may carry: its digits when there are 12, and each run of exactly 12 digits."""
+    digits = re.sub(r"[^0-9]", "", reference)
+    return set(_UTR_RUN.findall(reference)) | ({digits} if len(digits) == 12 else set())
+
+
+async def recorded_with_utr(db: AsyncSession, utr: str) -> BillingPayment | None:
+    """A payment that didn't fail whose reference carries the UTR (a bank transfer, or a direct-UPI payment)."""
+    rows = await db.scalars(
+        select(BillingPayment)
+        .where(BillingPayment.status != "failed", BillingPayment.offline_reference.like(f"%{'%'.join(utr)}%"))
+        .order_by(BillingPayment.id)
+    )
+    return next((row for row in rows if utr in reference_utrs(row.offline_reference or "")), None)
+
+
+async def _refuse_upi_utr(db: AsyncSession, reference: str) -> None:
+    """409 utr_used when a bank transfer's reference is the UTR of a direct-UPI order that waits, was confirmed or is
+    under review: the same money would be credited twice."""
+    utrs = reference_utrs(reference)
+    if not utrs:
+        return
+    order = await db.scalar(
+        select(BillingOrder)
+        .where(BillingOrder.upi_utr.in_(utrs), BillingOrder.status.in_(_UTR_HELD))
+        .order_by(BillingOrder.id)
+        .limit(1)
+    )
+    if order is None:
+        return
+    state = {"submitted": "waits for your check in Billing → UPI", "paid": "you confirmed"}.get(
+        order.status, "is under review"
+    )
+    detail = (
+        f"This reference is the UTR of a UPI payment from {order.username} ({order.upi_reference}), which {state}. The "
+        "same payment can't be recorded twice."
+    )
+    await db.rollback()
+    raise AppError(409, detail, "utr_used")
+
 
 async def record_offline(db: AsyncSession, admin: User, body: OfflinePaymentRequest) -> BillingPayment:
     """A bank transfer the admin received: an order and a payment, then the same apply as a Razorpay payment (a period
@@ -324,6 +445,7 @@ async def record_offline(db: AsyncSession, admin: User, body: OfflinePaymentRequ
             f"Add a note: {format_inr(body.amount_paise)} is below the plan's price of {format_inr(plan.price_paise)}.",
         )
     await lock_user(db, user.id)
+    await _refuse_upi_utr(db, body.reference)
     now = utcnow()
     snapshot = periods.snapshot_of(plan)
     order = BillingOrder(
@@ -498,7 +620,16 @@ def _description(order: BillingOrder | None, payment: BillingPayment) -> str:
         text += ", started at once"
     if payment.method == "bank_transfer":
         text += f" (bank transfer, ref {payment.offline_reference})"
+    elif channel(payment) == "upi_direct":
+        text += f" (UPI direct, UTR {payment.offline_reference})"
     return text
+
+
+def channel(payment: BillingPayment) -> OrderChannel:
+    """How the payment came: an offline one is a direct-UPI payment the admin confirmed or a bank transfer."""
+    if payment.mode != "offline":
+        return "razorpay"
+    return "upi_direct" if payment.method == "upi" else "bank_transfer"
 
 
 async def payment_view(db: AsyncSession, payment: BillingPayment) -> PaymentView:
@@ -520,6 +651,7 @@ async def payment_view(db: AsyncSession, payment: BillingPayment) -> PaymentView
         period_end=period.ends_at if period else None,
         receipt=ReceiptRef(id=receipt.id, number=receipt.number) if receipt else None,
         test_mode=payment.mode == "test",
+        channel=channel(payment),
     )
 
 

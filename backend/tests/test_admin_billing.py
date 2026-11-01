@@ -205,6 +205,9 @@ async def test_billing_settings_and_the_payments_setup(
         "contact_phone": None,
         "receipt_prefix": "RA",
         "upi_limit_paise": 200_000,
+        "upi_enabled": False,
+        "upi_id": None,
+        "upi_payee_name": None,
     }
     payments = config["payments"]
     assert payments["configured"] is True and payments["mode"] == "test"

@@ -2,7 +2,15 @@ import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me, PlanCatalog, PlanOffer } from "../api/types";
-import { makeCatalog, makeCheckoutOption, makeOrder, makePaymentsInfo, makeSeededOffers } from "../test/billing";
+import {
+  makeCatalog,
+  makeCheckoutOption,
+  makeOrder,
+  makePaymentsInfo,
+  makePendingOrder,
+  makeRejectedOrder,
+  makeSeededOffers,
+} from "../test/billing";
 import { makeAdminMe, makeLapsedPlanAccess, makeMe, makePaidPlanAccess, makePlanAccess, NOW } from "../test/fixtures";
 import { errorResponse, stubFetch, type FetchCall, type Route } from "../test/http";
 import { renderWithAuth } from "../test/render";
@@ -242,7 +250,7 @@ describe("PlansPage", () => {
   });
 
   it("shows a payment in progress, and cancels it", async () => {
-    let me = makeMe({ plan: makeLapsedPlanAccess("none", { pending_order: makeOrder() }) });
+    let me = makeMe({ plan: makeLapsedPlanAccess("none", { pending_order: makePendingOrder() }) });
     const { calls, user } = await setup(me, makeCatalog(), {
       routes: {
         "GET /auth/me": () => me,
@@ -323,5 +331,49 @@ describe("PlansPage", () => {
     await setup(makeAdminMe());
     await screen.findByRole("list", { name: "Plans" });
     expect(screen.queryByText("Add your email before you pay.")).not.toBeInTheDocument();
+  });
+});
+
+describe("PlansPage with direct UPI", () => {
+  const upiOnly = makeCatalog({ payments: makePaymentsInfo({ upi_direct: true, available: false, mode: null }) });
+
+  it("explains paying by UPI and asks for no email while only direct UPI is open", async () => {
+    await setup(makeMe({ plan: makeLapsedPlanAccess("none") }), upiOnly);
+    const how = await screen.findByRole("list", { name: "How payment works" });
+    expect(how).toHaveTextContent(
+      "Pay by UPI from any appScan a QR code or pay to our UPI ID. We never see your UPI PIN or bank details.",
+    );
+    expect(screen.getByText("UPI payments go straight to our bank account.")).toBeInTheDocument();
+    expect(screen.queryByText(/Online payment isn't set up yet/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Add your email before you pay.")).not.toBeInTheDocument();
+  });
+
+  it("explains both ways when online payment is open too", async () => {
+    await setup(
+      makeMe({ email: "maya@example.com", plan: makeLapsedPlanAccess("none") }),
+      makeCatalog({ payments: makePaymentsInfo({ upi_direct: true }) }),
+    );
+    expect(await screen.findByRole("list", { name: "How payment works" })).toHaveTextContent("Pay by UPI or online");
+    expect(
+      screen.getByText("Online payments are processed by Razorpay; UPI payments go straight to our bank account."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a UPI payment being checked and one that was rejected", async () => {
+    const plan = makeLapsedPlanAccess("none", {
+      pending_order: makePendingOrder({ channel: "upi_direct", status: "submitted", pay_url: null }),
+      rejected_order: makeRejectedOrder({ plan: { id: 3, code: "professional", name: "Professional" } }),
+    });
+    await setup(makeMe({ email: "maya@example.com", plan }), upiOnly);
+    expect(await screen.findByText(/We're checking your UPI payment/)).toHaveTextContent(
+      "We're checking your UPI payment of ₹2,000 for Standard.",
+    );
+    expect(screen.getByText(/We couldn't confirm your UPI payment/)).toHaveTextContent(
+      "We couldn't confirm your UPI payment of ₹2,000 for Professional.",
+    );
+    expect(screen.getByRole("link", { name: "See why" })).toHaveAttribute(
+      "href",
+      "/billing/return?order=u7Kp2QwX9mN4bV6cZ8dA",
+    );
   });
 });

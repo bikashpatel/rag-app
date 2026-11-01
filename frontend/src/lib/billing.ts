@@ -79,5 +79,15 @@ export function isRazorpayUrl(url: string, testMode: boolean): boolean {
   return plain && (parsed.hostname === "rzp.io" || parsed.hostname.endsWith(".razorpay.com"));
 }
 
+/** A UTR in groups of four: "6305 1234 5678". */
+export function formatUtr(utr: string): string {
+  return utr.replace(/(\d{4})(?=\d)/g, "$1 ");
+}
+
+/** A UPI payment request the app may use as a link: only `upi://pay?…` (docs/briefs/upi-direct.md 9). */
+export function isUpiPayUri(uri: string | null): uri is string {
+  return uri !== null && uri.startsWith("upi://pay?");
+}
+
 /** The first line of a policy page that is still a placeholder (frontend/public/legal/*.md). */
 export const DRAFT_MARKER = "<!-- draft -->";

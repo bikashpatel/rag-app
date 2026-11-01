@@ -2,7 +2,8 @@
 numbered per mode and Indian financial year without gaps, kept as an immutable snapshot and rendered to PDF on demand
 (fpdf2 with the bundled Noto Sans, which has ₹). No GST line: version 1 is built for a seller without a GSTIN. Each is
 also emailed, PDF attached, to the account's verified email (docs/briefs/signup-auth.md S25: an outbox `receipt` job;
-the worker checks the user's switch when it sends)."""
+the worker checks the user's switch when it sends). A direct-UPI payment reads "UPI (direct)" with its UTR
+(docs/briefs/upi-direct.md D10)."""
 
 import asyncio
 from dataclasses import dataclass
@@ -67,6 +68,15 @@ def _days(days: int) -> str:
     return f"{days} day{'' if days == 1 else 's'}"
 
 
+def method_label(method: str | None, *, offline: bool) -> str | None:
+    """ "UPI", "Card", "Bank transfer"; a UPI payment the admin confirmed (offline) is "UPI (direct)"."""
+    if not method:
+        return None
+    if method == "upi" and offline:
+        return "UPI (direct)"
+    return _METHODS.get(method, method.replace("_", " ").capitalize())
+
+
 def _span(start: datetime, end: datetime) -> str:
     """ "26 Oct 2026 – 25 Nov 2026": the first and the last IST day."""
     return f"{format_ist_date(ist_date(start))} – {format_ist_date(periods.valid_through(end))}"
@@ -103,12 +113,16 @@ async def _lines(
     """The plan line, and for an upgrade the credit line (negative), so that they add up to the amount paid."""
     snapshot = PlanSnapshot.model_validate(order.plan_snapshot)
     days = periods.TEST_PERIOD_DAYS if order.mode == "test" else PERIOD_DAYS
-    bank = f"Bank transfer, ref {payment.offline_reference}" if payment.method == "bank_transfer" else None
+    offline = None
+    if payment.method == "bank_transfer":
+        offline = f"Bank transfer, ref {payment.offline_reference}"
+    elif payment.method == "upi" and payment.mode == "offline":
+        offline = f"UPI (direct), UTR {payment.offline_reference}"
     price = int(order.plan_snapshot.get("price_paise", payment.amount_paise)) if order.kind == "now" else None
     lines: list[dict[str, Any]] = [
         {
-            "description": f"{snapshot.name} plan, {_days(days)}" if period or not bank else f"{snapshot.name} plan",
-            "detail": bank or _NOTE.format(days=_days(days)),
+            "description": f"{snapshot.name} plan, {_days(days)}" if period or not offline else f"{snapshot.name} plan",
+            "detail": offline or _NOTE.format(days=_days(days)),
             "period": _span(period.starts_at, period.ends_at) if period else None,
             "amount_paise": price if price is not None else payment.amount_paise,
         }
@@ -195,12 +209,11 @@ async def facts(db: AsyncSession, receipt: BillingReceipt) -> Facts:
         else business.default_settings().business_name
     )
     period = next((line["period"] for line in receipt.lines if line.get("period")), None)
-    method = receipt.method or ""
     return Facts(
         plan=plan,
         amount=money(receipt.amount_paise),
         period=period,
-        method=_METHODS.get(method, method.replace("_", " ").capitalize()) or None,
+        method=method_label(receipt.method, offline=payment is not None and payment.mode == "offline"),
     )
 
 
@@ -218,6 +231,7 @@ class _Adjustment:
 class _Document:
     receipt: BillingReceipt
     status: str
+    method: str
     reference_label: str
     reference: str | None
     paid_at: datetime | None
@@ -253,10 +267,12 @@ async def _document(db: AsyncSession, receipt: BillingReceipt) -> _Document:
         for dispute in disputes
     ]
     offline = payment.razorpay_payment_id is None
+    direct = payment.method == "upi" and payment.mode == "offline"
     return _Document(
         receipt=receipt,
         status=_PILLS.get(payment.status, "PAID"),
-        reference_label="Bank reference" if offline else "Razorpay payment",
+        method=method_label(receipt.method, offline=payment.mode == "offline") or "—",
+        reference_label="UPI UTR" if direct else "Bank reference" if offline else "Razorpay payment",
         reference=payment.offline_reference if offline else payment.razorpay_payment_id,
         paid_at=payment.captured_at,
         adjustments=adjustments,
@@ -327,9 +343,8 @@ def _pdf(doc: _Document) -> bytes:
         text(LEFT, 67.2 + index * 4.6, line, 8.8, color=INK2)
     label(112, 57, "Payment")
     paid_on = doc.paid_at.astimezone(IST) if doc.paid_at else receipt.issued_at.astimezone(IST)
-    method = receipt.method or ""
     rows = [
-        ("Method", _METHODS.get(method, method.replace("_", " ").capitalize() or "—")),
+        ("Method", doc.method),
         (doc.reference_label, doc.reference or "—"),
         ("Paid on", f"{format_ist_date(paid_on.date())}, {paid_on:%H:%M} IST"),
     ]

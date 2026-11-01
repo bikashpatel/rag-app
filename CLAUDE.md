@@ -62,6 +62,10 @@ Decisions the user made when asked:
   fetched from Razorpay's API (after the return's signature check, a webhook's HMAC or the reconciler's poll) whose
   amount, currency, order and mode match the stored order; `payments.apply_payment` applies each payment exactly once,
   under the user's row lock.
+- Direct UPI (2026-11-02, `docs/briefs/upi-direct.md`), next to Razorpay: an order with channel `upi_direct` (mode
+  `offline`) whose QR / UPI link pays the owner's UPI ID; the customer's 12-digit UTR is unique across submitted, paid
+  and review orders and checked against bank-transfer references both ways; the admin's confirm must echo the UTR and
+  applies it through `apply_payment`'s path exactly once under the user and order locks. No confirmed email needed.
 - Schema changes go through Alembic (`backend/migrations/`, README there): `init_db` runs `upgrade head` at
   start-up in one transaction under the advisory lock. Every change, a new table included, needs a reviewed
   revision; migrations only go forward, and a rollback means restoring the backup taken before the deploy.

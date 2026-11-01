@@ -3,7 +3,7 @@
 
 Last updated: 1 November 2026
 
-This policy covers payments for AskNuvexusDoc plans, made through Razorpay or by bank transfer.
+This policy covers payments for AskNuvexusDoc plans, made through Razorpay, directly by UPI or by bank transfer.
 
 ## Cancellation
 
@@ -19,13 +19,15 @@ We refund the full amount you paid when:
 
 - you were charged twice for the same thing, or paid by mistake (for example a second payment while the first was still being confirmed);
 - you paid but your plan never started, for example because the payment arrived after your account was deleted or after your plan had changed in the meantime (such payments are held for our review rather than applied);
-- a period you paid for in advance hasn't started yet.
+- a period you paid for in advance hasn't started yet;
+- a UPI payment we couldn't match to your order (for example a different amount): it is sent back to you by UPI.
 
 Otherwise we don't refund a period once it has started, whether or not you have used it, except where the law requires a refund. We may make other refunds at our discretion. Complimentary periods are never refunded.
 
 ## How refunds are made
 
 - A refund goes back through Razorpay to the method you paid with (UPI, card, netbanking or wallet). Razorpay returns the money in 5 to 7 working days; your bank may take a little longer to show it.
+- A payment made directly by UPI is refunded by UPI to the UPI ID it came from, usually within 3 working days.
 - A payment made by bank transfer is refunded by bank transfer to the account it came from.
 - After a full refund, the period that payment bought ends at once (or is cancelled, if it hadn't started), and a period you had paid after it moves up to start earlier.
 - After a full refund of an upgrade, the upgraded period ends, and your earlier plan comes back until its original end date, if that date is still ahead.
@@ -44,7 +46,7 @@ Otherwise we don't refund a period once it has started, whether or not you have 
 Email support@asknuvexusdoc.com with:
 
 - your username or your account's email address;
-- the receipt number (for example RA/26-27/000001, in Settings → Plan & billing and on the emailed receipt), or the date and amount of the payment;
+- the receipt number (for example RA/26-27/000001, in Settings → Plan & billing and on the emailed receipt), or the date and amount of the payment, and for a direct UPI payment its 12-digit UTR;
 - what went wrong.
 
 We reply within 2 working days, and start an approved refund within 7 days. If you are not satisfied with our answer, you can write to our Grievance Officer (see the end of our [Privacy policy](/privacy)), who acknowledges complaints within 48 hours and resolves them within one month.

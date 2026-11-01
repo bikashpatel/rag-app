@@ -156,15 +156,13 @@ def test_which_reminder_is_due(left: timedelta, which: str | None) -> None:
 # ---------------- The worker's billing loop ----------------
 
 
-def test_the_loop_runs_only_with_something_to_do(monkeypatch: pytest.MonkeyPatch) -> None:
-    assert reconcile.BillingLoop.wanted() is False
-    monkeypatch.setattr(settings, "mail_smtp_host", "smtp.example.test")
-    monkeypatch.setattr(settings, "mail_from", "no-reply@example.test")
-    assert reconcile.BillingLoop.wanted() is True  # reminders can be emailed
-    monkeypatch.setattr(settings, "mail_smtp_host", "")
-    monkeypatch.setattr(settings, "razorpay_key_id", "rzp_test_AbCd")
-    monkeypatch.setattr(settings, "razorpay_key_secret", "secret")
-    assert reconcile.BillingLoop.wanted() is True
+async def test_the_tick_runs_without_payments_or_mail(app: object) -> None:
+    """The loop always runs (direct UPI's settings live in the database, docs/briefs/upi-direct.md D17)."""
+    assert settings.razorpay_mode is None and not settings.mail_configured
+
+    await reconcile.BillingLoop(asyncio.Event()).tick()
+
+    assert await business.reconciler_last_run() is not None
 
 
 @pytest.mark.usefixtures("fake_razorpay")

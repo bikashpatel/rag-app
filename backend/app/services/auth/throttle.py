@@ -17,7 +17,7 @@ from app.errors import AppError
 from app.redis_client import get_redis
 from app.services.auth import emails
 
-Rule = Literal["signup", "resend", "forgot", "token", "google_start", "email_change", "mail_test"]
+Rule = Literal["signup", "resend", "forgot", "token", "google_start", "email_change", "mail_test", "upi_unpaid"]
 AddressKind = Literal["signup", "reset", "confirm"]
 
 MINUTE, HOUR, DAY = 60, 3600, 86_400
@@ -46,6 +46,7 @@ RULES: Final[dict[Rule, Limit]] = {
     "google_start": Limit(True, (Window(MINUTE, 20),)),
     "email_change": Limit(False, (Window(DAY, 5),)),
     "mail_test": Limit(False, (Window(HOUR, 5),)),
+    "upi_unpaid": Limit(True, (Window(HOUR, 10), Window(DAY, 30))),  # direct-UPI orders of unpaid accounts
 }
 UNPAID_EMAIL_CHANGES: Final = 3  # a day, for an account that has never paid
 ADDRESS_WINDOWS: Final = (Window(MINUTE, 1), Window(HOUR, 3), Window(DAY, 6))  # mails per recipient and kind

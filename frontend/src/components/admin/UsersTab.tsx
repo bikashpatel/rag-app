@@ -2,13 +2,15 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type {
   AdminConfig,
   AdminModel,
+  AdminOrder,
   AdminPlan,
   AdminUser,
   AuthConfig,
   BillingAdminConfig,
+  Page,
   SignupSource,
 } from "../../api/types";
-import { formatIstDate } from "../../lib/billing";
+import { formatInr, formatIstDate } from "../../lib/billing";
 import {
   formatBytes,
   formatCompact,
@@ -33,7 +35,7 @@ import {
   SearchIcon,
 } from "../ui/icons";
 import { meterState } from "../ui/Meter";
-import { BILLING_CONFIG_PATH, deleteResource } from "./adminApi";
+import { BILLING_CONFIG_PATH, deleteResource, ordersPath } from "./adminApi";
 import { PlanLine } from "./billingUi";
 import ConfirmAction from "./ConfirmAction";
 import FlashMessage from "./FlashMessage";
@@ -131,6 +133,8 @@ export default function UsersTab({ onChanged, params, onNavigate }: UsersTabProp
   const models = useResource<AdminModel[]>("/admin/models", "Couldn't load the model list.");
   const plans = useResource<AdminPlan[]>("/admin/plans", "Couldn't load the plans.");
   const billing = useResource<BillingAdminConfig>(BILLING_CONFIG_PATH, "Couldn't load the payments setup.");
+  // Direct-UPI UTRs waiting for the admin: deleting their user is warned about (upi-direct.md 10.8).
+  const toCheck = useResource<Page<AdminOrder>>(ordersPath("submitted", 1), "");
   const authConfig = useResource<AuthConfig>("/auth/config", "");
   const flash = useFlash();
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -304,6 +308,7 @@ export default function UsersTab({ onChanged, params, onNavigate }: UsersTabProp
                           canEdit={config.data !== null}
                           onEdit={() => setEditing({ user, startGrant: false })}
                           onDelete={() => deleteUser(user)}
+                          upiWaiting={toCheck.data?.items.find((order) => order.user.id === user.id) ?? null}
                         />
                       ))}
                       {ordered.length === 0 ? (
@@ -382,9 +387,11 @@ type UserRowProps = {
   canEdit: boolean;
   onEdit: () => void;
   onDelete: () => Promise<void>;
+  /** The user's direct-UPI payment waiting for the admin's check, if any. */
+  upiWaiting: AdminOrder | null;
 };
 
-function UserRow({ user, modelNames, canEdit, onEdit, onDelete }: UserRowProps) {
+function UserRow({ user, modelNames, canEdit, onEdit, onDelete, upiWaiting }: UserRowProps) {
   const { limits } = user;
   const paid = paidUntil(user);
   return (
@@ -474,6 +481,13 @@ function UserRow({ user, modelNames, canEdit, onEdit, onDelete }: UserRowProps) 
                     <span className="admin-confirm-warning">
                       {" "}
                       {user.username} has a paid plan until {formatIstDate(paid)}. No refund is made automatically.
+                    </span>
+                  ) : null}
+                  {upiWaiting ? (
+                    <span className="admin-confirm-warning">
+                      {" "}
+                      {user.username} has a UPI payment of {formatInr(upiWaiting.amount_paise)} waiting for your check.
+                      Confirm or reject it first.
                     </span>
                   ) : null}
                 </>

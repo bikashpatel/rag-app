@@ -97,8 +97,12 @@ OPEN: set[Operation] = {
     ("GET", "/api/billing/plans"),
     ("GET", "/api/billing/status"),
     ("POST", "/api/billing/checkout"),
+    ("POST", "/api/billing/upi/checkout"),
     ("GET", "/api/billing/orders/{public_id}"),
     ("POST", "/api/billing/orders/{public_id}/cancel"),
+    ("POST", "/api/billing/orders/{public_id}/utr"),
+    ("GET", "/api/billing/orders/{public_id}/upi-qr.svg"),
+    ("GET", "/api/billing/orders/{public_id}/upi-qr.png"),
     ("GET", "/api/billing/payments"),
     ("GET", "/api/billing/receipts/{receipt_id}"),
     ("GET", "/api/billing/profile"),
@@ -131,7 +135,8 @@ OWNER_CHECKED: set[Operation] = {
     ("DELETE", "/api/conversations/{conversation_id}"),
 }
 # Checked with a connected Gmail account in test_gmail_sends.py::test_other_users_get_404, and another user's orders
-# and receipts in the billing tests (test_billing_checkout.py, test_billing_receipts.py).
+# and receipts in the billing tests (test_billing_checkout.py, test_billing_receipts.py, test_upi_request.py,
+# test_upi_utr.py).
 OWNER_CHECKED_ELSEWHERE: set[Operation] = {
     ("GET", "/api/plugins/gmail/sends/{send_id}"),
     ("POST", "/api/plugins/gmail/sends/{send_id}/send"),
@@ -139,6 +144,9 @@ OWNER_CHECKED_ELSEWHERE: set[Operation] = {
     ("POST", "/api/plugins/gmail/sends/{send_id}/revise"),
     ("GET", "/api/billing/orders/{public_id}"),
     ("POST", "/api/billing/orders/{public_id}/cancel"),
+    ("POST", "/api/billing/orders/{public_id}/utr"),
+    ("GET", "/api/billing/orders/{public_id}/upi-qr.svg"),
+    ("GET", "/api/billing/orders/{public_id}/upi-qr.png"),
     ("GET", "/api/billing/receipts/{receipt_id}"),
 }
 # Path parameters that aren't a user's resource: a plugin id, or a thread of the caller's own connected mailbox.

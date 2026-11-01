@@ -11,7 +11,7 @@ Email is the quickest way: write to support@asknuvexusdoc.com. We reply within 1
 
 - Your username or your account's email address. Never send us your password.
 - What you were doing, what you expected and what happened, with the time and, if it helps, a screenshot.
-- For a payment: the receipt number (Settings → Plan & billing), or the date and amount and Razorpay's payment ID.
+- For a payment: the receipt number (Settings → Plan & billing), or the date and amount and Razorpay's payment ID, or, for a UPI payment, the UTR and the reference (AN-…).
 - For a privacy request (a copy of your data, a correction, deleting your account): write from your account's email address, so we can tell the request is yours.
 
 ## Things you can do yourself

@@ -855,6 +855,351 @@
   text-align: center;
 }
 
+/* ---------- Checkout: Pay with UPI, then Pay online (upi-direct.md 10.1) ---------- */
+.plans-pay-note {
+  margin: 8px 0 0;
+  color: var(--text-3);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.plans-or {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 18px 0 0;
+  color: var(--text-3);
+  font-size: 13px;
+}
+.plans-or::before,
+.plans-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+.btn.plans-pay-online {
+  width: 100%;
+  height: 44px;
+  margin-top: 14px;
+  border-radius: var(--radius);
+  font-size: 15px;
+}
+.plans-summary .plans-pay-online ~ .plans-email-notice {
+  margin-top: 12px;
+}
+
+/* ---------- Direct UPI: the order page (upi-direct.md 10.2) ---------- */
+.plans-main-upi {
+  max-width: 760px;
+  padding-top: 48px;
+}
+.plans-upi-title {
+  margin: 0;
+  color: var(--text);
+  font-family: var(--font-serif);
+  font-size: 32px;
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+.plans-upi-title:focus-visible {
+  box-shadow: none;
+}
+.plans-upi-sub {
+  margin: 8px 0 0;
+  color: var(--text-2);
+  font-size: 15px;
+  line-height: 1.45;
+}
+.plans-upi {
+  margin-top: 24px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.plans-upi-grid {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 32px;
+}
+.plans-upi-qr {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+}
+.plans-upi-tile {
+  display: block;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.plans-upi-tile img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: var(--radius-xs);
+}
+.plans-upi-small {
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13.5px;
+  line-height: 1.45;
+}
+.plans-upi-steps {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.plans-upi-steps li {
+  display: flex;
+  gap: 12px;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.45;
+}
+.plans-upi-steps .plans-step-num {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-color: transparent;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.plans-upi-steps b {
+  font-weight: 650;
+}
+.plans-upi-facts {
+  margin: 20px 0 0;
+  border-top: 1px solid var(--border);
+}
+.plans-upi-facts > div {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 14.5px;
+}
+.plans-upi-facts dt {
+  padding-top: 1px;
+  color: var(--text-3);
+}
+.plans-upi-facts dd {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+}
+.plans-upi-value {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.plans-upi-value b {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.plans-upi-value small {
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.plans-upi-id,
+.plans-upi-ref,
+.plans-upi-mono {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+.plans-upi-id {
+  color: var(--text-2);
+  font-size: 14px;
+}
+.plans-upi-ref {
+  font-size: 14.5px;
+}
+.plans-receipt dd.plans-upi-mono {
+  font-size: 14px;
+}
+.btn.plans-upi-copy {
+  flex: none;
+  margin-top: -3px;
+}
+.plans-upi-utr {
+  display: grid;
+  gap: 6px;
+  margin-top: 24px;
+  padding-top: 22px;
+  border-top: 1px solid var(--border);
+}
+.plans-upi-utr-label {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+.input.plans-upi-utr-input {
+  max-width: 320px;
+  height: 48px;
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  font-size: 18px;
+  letter-spacing: 0.08em;
+}
+.plans-upi-utr .field-hint,
+.plans-upi-error {
+  margin: 0;
+}
+.plans-upi-echo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  color: var(--text-3);
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+.plans-upi-echo-done {
+  color: var(--success);
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.plans-upi-echo-issue {
+  align-items: flex-start;
+  gap: 6px;
+  color: var(--warning);
+  font-weight: 600;
+  line-height: 1.4;
+}
+.plans-upi-echo-issue > svg {
+  flex: none;
+  margin-top: 2px;
+}
+.btn.plans-upi-send {
+  justify-self: start;
+  height: 46px;
+  margin-top: 10px;
+  padding: 0 22px;
+  border-radius: var(--radius);
+  font-size: 15.5px;
+}
+.plans-upi-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 18px;
+  margin: 2px 0 0 -10px;
+}
+.plans-upi-online {
+  color: var(--accent-ink);
+  font-size: 14px;
+  font-weight: 600;
+}
+.plans-main-upi > .plans-result-note {
+  margin-top: 18px;
+}
+/* Phones and touch screens: Open UPI app first, then the UPI ID, and the QR code behind a toggle. */
+.plans-upi-phone {
+  display: grid;
+  gap: 8px;
+}
+.btn.plans-upi-open {
+  width: 100%;
+  height: 48px;
+  border-radius: var(--radius);
+  font-size: 16px;
+}
+.plans-upi-or {
+  margin: 14px 0 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 650;
+}
+.plans-upi-phone .plans-upi-facts {
+  margin-top: 0;
+}
+.plans-upi-phone .plans-upi-facts > div {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 2px;
+}
+.plans-upi-phone .plans-upi-facts dd {
+  align-items: center;
+}
+.plans-upi-phone .btn.plans-upi-copy {
+  height: 40px;
+  margin-top: 0;
+  padding: 0 12px;
+}
+.plans-upi-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.plans-upi-toggle > svg {
+  color: var(--text-3);
+  transition: transform var(--dur-2) var(--ease-out);
+}
+.plans-upi-toggle[aria-expanded="true"] > svg {
+  transform: rotate(180deg);
+}
+.plans-upi-phone .plans-upi-qr {
+  padding-bottom: 4px;
+}
+.plans-upi-phone + .plans-upi-utr {
+  margin-top: 8px;
+}
+.plans-upi-phone .plans-upi-qr .btn {
+  height: 40px;
+}
+/* Before the order's first answer. */
+.plans-result-loading .ui-skeleton {
+  margin: 0 auto;
+}
+.ui-skeleton.plans-result-skeleton-mark {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+}
+.ui-skeleton.plans-result-skeleton-title {
+  width: 62%;
+  height: 26px;
+  margin-top: 22px;
+}
+.ui-skeleton.plans-result-skeleton-line {
+  width: 78%;
+  margin-top: 16px;
+}
+/* A request that expired or was cancelled without a UTR: neither good nor bad news. */
+.plans-result-neutral .plans-result-mark {
+  background: var(--surface-2);
+  box-shadow: 0 0 0 9px color-mix(in srgb, var(--surface-2) 45%, transparent);
+  color: var(--text-2);
+}
+.plans-result-foot a {
+  color: var(--accent-ink);
+}
+
 /* ---------- Narrow windows and phones (14) ---------- */
 @media (max-width: 939.98px) {
   .plans-checkout {
@@ -1021,6 +1366,35 @@
   }
   .plans-receipt {
     padding: 2px 14px;
+  }
+  .plans-main-upi {
+    padding-top: 24px;
+  }
+  .plans-upi-title {
+    font-size: 27px;
+  }
+  .plans-upi {
+    margin-top: 18px;
+    padding: 20px 16px;
+    border-radius: var(--radius-lg);
+  }
+  .plans-upi-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .input.plans-upi-utr-input {
+    max-width: none;
+  }
+  .btn.plans-upi-send {
+    justify-self: stretch;
+    height: 48px;
+  }
+  .plans-upi-more {
+    justify-content: space-between;
+    margin-left: 0;
+  }
+  .plans-upi-more .btn {
+    height: 40px;
+    margin-left: -10px;
   }
 }
 

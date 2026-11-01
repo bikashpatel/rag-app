@@ -11,6 +11,7 @@ import {
   isStacked,
   istDayMonth,
   istDaysUntil,
+  istDayTime,
   istLongDay,
   istMoment,
   lastDayOf,
@@ -90,6 +91,15 @@ describe("plan words", () => {
     expect(methodLabel("bank_transfer")).toBe("Bank transfer");
     expect(methodLabel("paylater_plan")).toBe("Paylater plan");
     expect(methodLabel(null)).toBeNull();
+    expect(methodLabel("upi", "upi_direct")).toBe("UPI (direct)");
+    expect(methodLabel(null, "upi_direct")).toBe("UPI (direct)");
+    expect(methodLabel("upi", "razorpay")).toBe("UPI");
+  });
+
+  it("writes an IST date and time with the date even today", () => {
+    expect(istDayTime("2026-10-20T09:30:00Z")).toBe("20 Oct, 15:00");
+    expect(istDayTime("2026-10-21T09:28:00Z")).toBe("21 Oct, 14:58");
+    expect(istDayTime("soon")).toBe("—");
   });
 
   it("knows when a higher plan has more: a locked feature or more models", () => {

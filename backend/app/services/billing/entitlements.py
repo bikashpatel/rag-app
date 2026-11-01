@@ -15,15 +15,23 @@ from datetime import date, datetime, timedelta
 from fractions import Fraction
 from typing import Literal
 
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.errors import AppError
 from app.models import BillingOrder, LLMModel, Plan, PlanPeriod, UsageEvent, User, utcnow
 from app.schemas import UserLimits
-from app.schemas_billing import PendingOrder, PlanAccess, PlanFeatures, PlanRef, PlanSnapshot, PlanUnlock
-from app.services.billing import periods
+from app.schemas_billing import (
+    PendingOrder,
+    PlanAccess,
+    PlanFeatures,
+    PlanRef,
+    PlanSnapshot,
+    PlanUnlock,
+    RejectedOrder,
+)
+from app.services.billing import business, periods
 from app.services.billing.money import format_ist_date, used_share
 
 PlanState = Literal["exempt", "none", "active", "expired"]
@@ -258,6 +266,11 @@ async def load(db: AsyncSession, user: User, *, now: datetime | None = None) -> 
     return _build(user, standing, _fallback(await _plans(db)), now)
 
 
+def of_period(user: User, period: PlanPeriod) -> Entitlements:
+    """What `period` gives the user (its window, limits and features) whether it runs now or not."""
+    return _build(user, _Standing([period], None, None), periods.snapshot(period).limits, period.starts_at)
+
+
 async def load_many(db: AsyncSession, users: Sequence[User], *, now: datetime | None = None) -> dict[int, Entitlements]:
     """load() for many users at once (Admin → Users): one query for every user's periods."""
     now = now or utcnow()
@@ -374,9 +387,10 @@ async def _models_unlock(db: AsyncSession, ent: Entitlements, plans: Sequence[_C
 # ---------------- Me.plan ----------------
 
 
-async def allowance_used(db: AsyncSession, ent: Entitlements) -> Fraction:
-    """The largest share used of the user's limited allowances in the window (0..1): the chat allowance, images (when
-    the plan includes them) and vision tokens."""
+async def allowance_used(db: AsyncSession, ent: Entitlements, *, until: datetime | None = None) -> Fraction:
+    """The largest share used of the user's limited allowances in the window (0..1), or in its part before `until`:
+    the chat allowance, images (when the plan includes them) and vision tokens."""
+    end = min(ent.window_end, until) if until is not None else ent.window_end
     chat, images, vision = (
         await db.execute(
             select(
@@ -386,7 +400,7 @@ async def allowance_used(db: AsyncSession, ent: Entitlements) -> Fraction:
             ).where(
                 UsageEvent.user_id == ent.user_id,
                 UsageEvent.created_at >= ent.window_start,
-                UsageEvent.created_at < ent.window_end,
+                UsageEvent.created_at < end,
             )
         )
     ).one()
@@ -401,24 +415,81 @@ def _ref(snap: PlanSnapshot) -> PlanRef:
     return PlanRef(id=snap.plan_id, code=snap.code, name=snap.name)
 
 
-async def _pending_order(db: AsyncSession, user_id: int, now: datetime) -> PendingOrder | None:
-    order = await db.scalar(
+def _quoted(order: BillingOrder) -> PlanRef:
+    quoted = order.plan_snapshot
+    return PlanRef(id=quoted["plan_id"], code=quoted["code"], name=quoted["name"])
+
+
+async def open_order(db: AsyncSession, user_id: int, now: datetime) -> BillingOrder | None:
+    """The user's newest open order: a pending checkout, a direct-UPI order before it expires, or one whose UTR waits
+    for the admin (`submitted`)."""
+    order: BillingOrder | None = await db.scalar(
         select(BillingOrder)
-        .where(BillingOrder.user_id == user_id, BillingOrder.status == "pending")
+        .where(
+            BillingOrder.user_id == user_id,
+            or_(
+                BillingOrder.status == "submitted",
+                and_(
+                    BillingOrder.status == "pending",
+                    or_(BillingOrder.upi_reference.is_(None), BillingOrder.expires_at > now),
+                ),
+            ),
+        )
         .order_by(BillingOrder.created_at.desc(), BillingOrder.id.desc())
         .limit(1)
     )
+    return order
+
+
+async def _pending_order(db: AsyncSession, user_id: int, now: datetime) -> PendingOrder | None:
+    from app.services.billing import upi  # upi builds on this module
+
+    order = await open_order(db, user_id, now)
     if order is None:
         return None
-    quoted = order.plan_snapshot
     return PendingOrder(
         public_id=order.public_id,
         kind="now" if order.kind == "now" else "period",
-        plan=PlanRef(id=quoted["plan_id"], code=quoted["code"], name=quoted["name"]),
+        plan=_quoted(order),
         amount_paise=order.amount_paise,
         created_at=order.created_at,
         expires_at=order.expires_at,
         pay_url=order.pay_url if order.expires_at > now else None,
+        channel=upi.channel(order),
+        status="submitted" if order.status == "submitted" else "pending",
+    )
+
+
+async def _rejected_order(db: AsyncSession, user_id: int, now: datetime) -> RejectedOrder | None:
+    """The user's newest order when it is a direct-UPI order the admin rejected in the last 7 days."""
+    from app.services.billing import upi  # upi builds on this module
+
+    order = await db.scalar(
+        select(BillingOrder)
+        .where(BillingOrder.user_id == user_id)
+        .order_by(BillingOrder.created_at.desc(), BillingOrder.id.desc())
+        .limit(1)
+    )
+    if (
+        order is None
+        or order.status != "rejected"
+        or order.upi_reference is None
+        or order.upi_utr is None
+        or order.upi_decided_at is None
+        or order.upi_decided_at < now - upi.REJECTION_SHOWN
+    ):
+        return None
+    found = upi.rejection(order, (await business.get_settings(db)).contact_email)
+    assert found is not None
+    return RejectedOrder(
+        public_id=order.public_id,
+        kind="now" if order.kind == "now" else "period",
+        plan=_quoted(order),
+        amount_paise=order.amount_paise,
+        reference=order.upi_reference,
+        utr=order.upi_utr,
+        rejected_at=order.upi_decided_at,
+        rejection=found,
     )
 
 
@@ -485,4 +556,5 @@ async def plan_access(db: AsyncSession, user: User, ent: Entitlements) -> PlanAc
         pending_order=await _pending_order(db, user.id, now),
         can_start_new_period=current is not None and await allowance_used(db, ent) >= NEW_PERIOD_SHARE,
         unlock=unlocked,
+        rejected_order=await _rejected_order(db, user.id, now),
     )

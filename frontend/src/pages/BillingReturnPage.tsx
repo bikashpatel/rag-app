@@ -5,6 +5,7 @@ import type { OrderView } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { checkoutPath, istMoment, lastDayOf, methodLabel } from "../components/billing/planText";
 import PlansFrame from "../components/billing/PlansFrame";
+import UpiOrder, { upiStateOf } from "../components/billing/UpiOrder";
 import {
   AlertCircleIcon,
   ArrowRightIcon,
@@ -73,10 +74,10 @@ function PaidSlip({ order }: { order: OrderView }) {
           <dd>{formatIstRange(order.period_start, order.period_end)}</dd>
         </div>
       ) : null}
-      {order.method ? (
+      {order.method || order.channel === "upi_direct" ? (
         <div>
           <dt>Paid with</dt>
-          <dd>{methodLabel(order.method)}</dd>
+          <dd>{methodLabel(order.method, order.channel)}</dd>
         </div>
       ) : null}
       {order.receipt ? (
@@ -128,7 +129,10 @@ function EmailLine() {
   );
 }
 
-/** /billing/return?order=… (functional brief 8.4, visual brief 6): back from Razorpay, the order's outcome. */
+/**
+ * /billing/return?order=… (functional brief 8.4, visual brief 6): back from Razorpay, the order's outcome; for a
+ * direct-UPI order also its payment request and the owner's check (docs/briefs/upi-direct.md 10.2).
+ */
 export default function BillingReturnPage() {
   const { refresh } = useAuth();
   const navigate = useNavigate();
@@ -137,6 +141,8 @@ export default function BillingReturnPage() {
   const checkFailed = params.get("check") === "failed";
   const [order, setOrder] = useState<OrderView | null>(null);
   const [missing, setMissing] = useState(orderId === "");
+  // Until the first answer, which may be a direct-UPI order, the page shows a skeleton rather than "Confirming…".
+  const [answered, setAnswered] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [stopped, setStopped] = useState(false);
   const [round, setRound] = useState(0);
@@ -166,10 +172,12 @@ export default function BillingReturnPage() {
         }
       }
       if (controller.signal.aborted) return;
+      setAnswered(true);
       const spent = Date.now() - started;
       setElapsed(spent);
       if (next) setOrder(next);
-      if (next && next.status !== "pending") return;
+      // Settled, or a direct-UPI order, which Razorpay never confirms: its own page takes over.
+      if (next && (next.status !== "pending" || next.channel === "upi_direct")) return;
       if (spent >= STOP_AFTER_MS) {
         setStopped(true);
         return;
@@ -215,6 +223,32 @@ export default function BillingReturnPage() {
   async function startChatting() {
     await (refreshed.current ?? refresh().catch(() => undefined));
     navigate("/");
+  }
+
+  if (!answered && !missing) {
+    return (
+      <PlansFrame title="Your payment" mainClassName="plans-main plans-main-result" live>
+        <section className="plans-result plans-result-loading" aria-busy="true">
+          <span className="sr-only">Loading your payment…</span>
+          <span className="ui-skeleton plans-result-skeleton-mark" aria-hidden="true" />
+          <span className="ui-skeleton plans-result-skeleton-title" aria-hidden="true" />
+          <span className="ui-skeleton plans-result-skeleton-line" aria-hidden="true" />
+        </section>
+      </PlansFrame>
+    );
+  }
+
+  const upiState = order?.channel === "upi_direct" && order.upi && !missing ? upiStateOf(order) : null;
+  if (order && upiState) {
+    return (
+      <PlansFrame
+        title="Your payment"
+        mainClassName={upiState === "pending" ? "plans-main plans-main-upi" : "plans-main plans-main-result"}
+        live={upiState !== "pending"}
+      >
+        <UpiOrder order={order} state={upiState} onChange={setOrder} />
+      </PlansFrame>
+    );
   }
 
   const resume = order?.pay_url && isRazorpayUrl(order.pay_url, order.test_mode) ? order.pay_url : null;
@@ -280,7 +314,10 @@ export default function BillingReturnPage() {
           </button>
         </>
       );
-      foot = "Razorpay also emails a confirmation to the address you gave it.";
+      foot =
+        order?.channel === "upi_direct"
+          ? "Your receipt is in Settings → Plan & billing."
+          : "Razorpay also emails a confirmation to the address you gave it.";
       break;
     }
     case "failed":

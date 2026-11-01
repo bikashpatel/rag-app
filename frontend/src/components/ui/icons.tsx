@@ -353,3 +353,11 @@ export const AtSignIcon = icon(
     <path d="M15.6 12v1.4a2.5 2.5 0 0 0 5 0V12a8.6 8.6 0 1 0-3.4 6.9" />
   </>,
 );
+export const QrIcon = icon(
+  <>
+    <rect x="3.5" y="3.5" width="6.5" height="6.5" rx="1" />
+    <rect x="14" y="3.5" width="6.5" height="6.5" rx="1" />
+    <rect x="3.5" y="14" width="6.5" height="6.5" rx="1" />
+    <path d="M14 14h2.5v2.5H14zM18 18h2.5v2.5H18zM14 20.5h2.5M20.5 14v2.5" />
+  </>,
+);

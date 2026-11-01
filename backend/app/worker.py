@@ -53,9 +53,10 @@ class Worker:
     A job is popped only when a slot is free, so stopping never strands a popped id: running jobs get a
     grace period, and anything still unfinished stays "processing" until recover_pending() on the next start.
     While it takes jobs it refreshes its heartbeat in Redis (app.ops.heartbeat), and removes it when it stops. Beside
-    the jobs runs the billing loop (services/billing/reconcile.py): webhooks, the payment reconciler and reminders; the
-    mail loop (services/mail/drain.py) while the mailer is configured; and the hourly sign-up and mail clean-up. On
-    shutdown those loops get a few seconds to end on their own (the mail loop finishes the mail it is sending).
+    the jobs runs the billing loop (services/billing/reconcile.py): webhooks, the payment reconciler, direct-UPI expiry
+    and reminders; the mail loop (services/mail/drain.py) while the mailer is configured; and the hourly sign-up and
+    mail clean-up. On shutdown those loops get a few seconds to end on their own (the mail loop finishes the mail it
+    is sending).
     A job that ends without recording a result (e.g. the database failed its final update) leaves its document
     "processing" too; the periodic sweep retries it. A job reading pages with the vision model (network waits) gives
     its slot back until it leaves that phase.
@@ -80,8 +81,7 @@ class Worker:
         set_vision_phase_listener(self._vision_phase_changed)
         beating = asyncio.create_task(self._beat(), name="worker-heartbeat")
         background = [beating]
-        if BillingLoop.wanted():
-            background.append(asyncio.create_task(BillingLoop(self._stopping).run(), name="worker-billing"))
+        background.append(asyncio.create_task(BillingLoop(self._stopping).run(), name="worker-billing"))
         if MailLoop.wanted():
             background.append(asyncio.create_task(MailLoop(self._stopping).run(), name="worker-mail"))
         background.append(asyncio.create_task(self._sweep_mail(), name="worker-mail-sweeps"))

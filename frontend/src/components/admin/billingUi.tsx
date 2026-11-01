@@ -1,9 +1,10 @@
 // Small pieces shared by Admin → Plans, Billing and the plan parts of Users (plans-billing-visual.md 3.3, 9).
 
 import { useEffect, useState, type ReactNode } from "react";
-import type { AdminUserPlan, CheckoutKind, OrderStatus, PaymentView, UserRef } from "../../api/types";
+import type { AdminUserPlan, CheckoutKind, OrderChannel, OrderStatus, PaymentView, UserRef } from "../../api/types";
 import { formatInr, formatIstDate } from "../../lib/billing";
 import { formatNumber } from "../../lib/format";
+import { methodLabel as textMethodLabel } from "../billing/planText";
 import Avatar from "../ui/Avatar";
 import { ButtonSpinner } from "../ui/Spinner";
 import { CheckIcon, ChevronLeftIcon, ChevronRightIcon, ClockIcon, CopyIcon, FlaskIcon, GiftIcon } from "../ui/icons";
@@ -45,18 +46,8 @@ export function percent(share: number): string {
   return `${Math.round(share * 100)}%`;
 }
 
-const METHODS: Record<string, string> = {
-  upi: "UPI",
-  card: "Card",
-  netbanking: "Netbanking",
-  wallet: "Wallet",
-  emi: "EMI",
-  bank_transfer: "Bank transfer",
-};
-
-export function methodLabel(method: string | null): string {
-  if (!method) return "—";
-  return METHODS[method] ?? method;
+export function methodLabel(method: string | null, channel?: OrderChannel): string {
+  return textMethodLabel(method, channel) ?? "—";
 }
 
 export function kindLabel(kind: CheckoutKind): string {
@@ -86,9 +77,13 @@ const ORDER_STATUS: Record<OrderStatus, { label: string; className: string }> = 
   expired: { label: "Expired", className: "badge badge-neutral" },
   cancelled: { label: "Cancelled", className: "badge badge-neutral" },
   review: { label: "Review", className: "badge badge-warning" },
+  submitted: { label: "To check", className: "badge badge-warning" },
+  rejected: { label: "Rejected", className: "badge badge-danger" },
 };
 
-export function OrderStatusBadge({ status }: { status: OrderStatus }) {
+/** A direct-UPI order waits for the customer's UTR, not for a check with Razorpay: no spinner. */
+export function OrderStatusBadge({ status, channel }: { status: OrderStatus; channel?: OrderChannel }) {
+  if (status === "pending" && channel === "upi_direct") return <span className="badge badge-info">Waiting for UTR</span>;
   const { label, className } = ORDER_STATUS[status];
   return (
     <span className={className}>
@@ -97,6 +92,13 @@ export function OrderStatusBadge({ status }: { status: OrderStatus }) {
     </span>
   );
 }
+
+/** How an order was paid, for the Orders list and dialog. */
+export const CHANNEL_LABELS: Record<OrderChannel, string> = {
+  razorpay: "Razorpay",
+  upi_direct: "UPI (direct)",
+  bank_transfer: "Bank transfer",
+};
 
 export function TestBadge() {
   return (

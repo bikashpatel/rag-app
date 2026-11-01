@@ -38,7 +38,8 @@ describe("billing formats", () => {
     expect(istDateTime("soon")).toBe("—");
     expect(roundedInr(66_616)).toBe("₹666");
     expect(methodLabel("bank_transfer")).toBe("Bank transfer");
-    expect(methodLabel("paylater")).toBe("paylater");
+    expect(methodLabel("paylater")).toBe("Paylater");
+    expect(methodLabel("upi", "upi_direct")).toBe("UPI (direct)");
     expect(methodLabel(null)).toBe("—");
   });
 

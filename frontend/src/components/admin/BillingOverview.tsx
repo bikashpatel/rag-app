@@ -29,6 +29,7 @@ const INFO: ReadonlySet<AttentionKind> = new Set(["test_mode", "payments_not_con
 const NOTICE_KINDS: ReadonlySet<AttentionKind> = new Set(["test_mode", "payments_not_configured"]);
 
 function attentionAction(item: AttentionItem): { label: string; target: string } {
+  if (item.kind === "upi_to_check") return { label: "Check payments", target: "billing/upi" };
   const order = item.order_public_id ? encodeURIComponent(item.order_public_id) : null;
   if (order && (item.kind === "review" || item.kind === "duplicate"))
     return { label: "Review", target: `billing/orders?order=${order}` };
@@ -90,7 +91,9 @@ export default function BillingOverview({ month, config, onNavigate, onRecord, v
         <div className="ui-notice">
           <InfoIcon size={15} />
           <span className="ui-notice-text">
-            Online payment isn't set up yet: users can't pay until the Razorpay keys are in .env.
+            {config.data?.settings.upi_enabled
+              ? "Online payment isn't set up yet: users pay by direct UPI until the Razorpay keys are in .env."
+              : "Online payment isn't set up yet: users can't pay until the Razorpay keys are in .env."}
           </span>
           <button type="button" className="btn btn-sm" onClick={() => onNavigate("billing/business")}>
             Set up payments

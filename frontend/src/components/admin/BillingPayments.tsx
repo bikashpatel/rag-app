@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from "react";
 import type { AdminPayment, AdminUser, DisputeStatus, Page, PaymentStatus, RefundView } from "../../api/types";
-import { formatInr, formatIstDate, formatIstRange } from "../../lib/billing";
+import { formatInr, formatIstDate, formatIstRange, formatUtr } from "../../lib/billing";
 import Modal from "../ui/Modal";
 import SegmentedControl from "../ui/SegmentedControl";
 import { ButtonSpinner } from "../ui/Spinner";
@@ -79,7 +79,7 @@ export function PaymentsTable({ payments, onOpen }: PaymentsTableProps) {
                   </>
                 ) : null}
               </td>
-              <td className="admin-nowrap">{methodLabel(payment.method)}</td>
+              <td className="admin-nowrap">{methodLabel(payment.method, payment.channel)}</td>
               <td>
                 <PaymentStatusBadge payment={payment} />
               </td>
@@ -314,6 +314,7 @@ type PaymentDialogProps = {
 export function PaymentDialog({ payment, onClose, onChanged }: PaymentDialogProps) {
   const [refunding, setRefunding] = useState(false);
   const offline = payment.mode === "offline";
+  const upi = payment.channel === "upi_direct";
   const canRefund = payment.refundable_paise > 0 && payment.status !== "disputed";
   const footer = refunding ? null : (
     <>
@@ -362,7 +363,7 @@ export function PaymentDialog({ payment, onClose, onChanged }: PaymentDialogProp
             </span>
           ) : null}
         </Fact>
-        <Fact term="Method">{methodLabel(payment.method)}</Fact>
+        <Fact term="Method">{methodLabel(payment.method, payment.channel)}</Fact>
         {payment.razorpay_payment_id ? (
           <Fact term="Razorpay payment">
             <span className="admin-copy-row">
@@ -371,12 +372,23 @@ export function PaymentDialog({ payment, onClose, onChanged }: PaymentDialogProp
             </span>
           </Fact>
         ) : null}
-        {payment.offline_reference ? <Fact term="Bank reference">{payment.offline_reference}</Fact> : null}
+        {payment.offline_reference && upi ? (
+          <Fact term="UTR">
+            <span className="admin-copy-row">
+              <code className="admin-code">{formatUtr(payment.offline_reference)}</code>
+              <CopyButton value={payment.offline_reference} label="Copy the UTR" />
+            </span>
+          </Fact>
+        ) : payment.offline_reference ? (
+          <Fact term="Bank reference">{payment.offline_reference}</Fact>
+        ) : null}
         {payment.fee_paise !== null ? (
           <Fact term="Razorpay fee">
             {formatInr(payment.fee_paise)}
             {payment.fee_tax_paise ? ` incl. ${formatInr(payment.fee_tax_paise)} GST` : ""}
           </Fact>
+        ) : upi ? (
+          <Fact term="Fee">—</Fact>
         ) : null}
         <Fact term="Status">
           <PaymentStatusBadge payment={payment} />
@@ -454,6 +466,7 @@ export function PaymentDialog({ payment, onClose, onChanged }: PaymentDialogProp
           payment={payment}
           offline={offline}
           onCancel={() => setRefunding(false)}
+          upi={upi}
           onDone={(updated, amount) => {
             setRefunding(false);
             onChanged(
@@ -470,6 +483,8 @@ export function PaymentDialog({ payment, onClose, onChanged }: PaymentDialogProp
 type RefundFormProps = {
   payment: AdminPayment;
   offline: boolean;
+  /** A direct-UPI payment: paid back by UPI from the owner's bank app, then recorded here (upi-direct.md 10.9). */
+  upi: boolean;
   onCancel: () => void;
   onDone: (payment: AdminPayment, amountPaise: number) => void;
 };
@@ -484,7 +499,7 @@ function rupeesToPaise(raw: string): number {
 
 const asRupees = (paise: number) => (paise % 100 ? (paise / 100).toFixed(2) : String(paise / 100));
 
-function RefundForm({ payment, offline, onCancel, onDone }: RefundFormProps) {
+function RefundForm({ payment, offline, upi, onCancel, onDone }: RefundFormProps) {
   const [amount, setAmount] = useState(asRupees(payment.refundable_paise));
   const [reason, setReason] = useState("");
   const [endAccess, setEndAccess] = useState(false);
@@ -559,7 +574,11 @@ function RefundForm({ payment, offline, onCancel, onDone }: RefundFormProps) {
           </div>
         )}
       </Field>
-      <Field label="Reason" error={errors.reason} hint="Kept with the refund in the billing record.">
+      <Field
+        label="Reason"
+        error={errors.reason}
+        hint={upi ? "For example the UTR of your refund payment." : "Kept with the refund in the billing record."}
+      >
         {(control) => (
           <input
             {...control}
@@ -587,9 +606,13 @@ function RefundForm({ payment, offline, onCancel, onDone }: RefundFormProps) {
       <div className="ui-notice ui-notice-warning">
         <AlertIcon size={15} />
         <span className="ui-notice-text">
-          {offline
-            ? "This records a refund you make by bank transfer yourself; no money moves through Razorpay."
-            : "The refund goes back to the payer's account in 5 to 7 working days."}
+          {upi
+            ? `Pay ${formatInr(Number.isNaN(paise) ? payment.refundable_paise : paise)} back to the payer by UPI from ` +
+              `your bank app first (the payment with UTR ${formatUtr(payment.offline_reference ?? "")}), then record ` +
+              "it here. No money moves through the app."
+            : offline
+              ? "This records a refund you make by bank transfer yourself; no money moves through Razorpay."
+              : "The refund goes back to the payer's account in 5 to 7 working days."}
         </span>
       </div>
       {serverError ? (
@@ -604,7 +627,7 @@ function RefundForm({ payment, offline, onCancel, onDone }: RefundFormProps) {
         </button>
         <button type="submit" className="btn btn-danger" disabled={busy} aria-busy={busy || undefined}>
           {busy ? <ButtonSpinner size={14} /> : null}
-          Refund {Number.isNaN(paise) ? "" : formatInr(paise)}
+          {upi ? "Record refund of" : "Refund"} {Number.isNaN(paise) ? "" : formatInr(paise)}
         </button>
       </div>
     </form>

@@ -506,14 +506,29 @@ class PlanPeriod(Base):
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
 
 
+_UTR_HELD = "upi_utr IS NOT NULL AND status IN ('submitted', 'paid', 'review')"
+
+
 class BillingOrder(Base):
-    """One checkout attempt (a Razorpay Payment Link), or one bank transfer the admin recorded."""
+    """One checkout attempt (a Razorpay Payment Link), one direct-UPI order (upi_reference set: the customer pays the
+    owner's UPI ID and sends the UTR, the admin confirms it; docs/briefs/upi-direct.md), or one bank transfer the admin
+    recorded."""
 
     __tablename__ = "billing_orders"
     __table_args__ = (
         UniqueConstraint("public_id", name="uq_billing_orders_public_id"),
         UniqueConstraint("razorpay_link_id", name="uq_billing_orders_razorpay_link_id"),
+        UniqueConstraint("upi_reference", name="uq_billing_orders_upi_reference"),
         Index("ix_billing_orders_user_status", "user_id", "status"),
+        # A UTR waits, is confirmed or is under review on one order only; a rejected order's UTR is free again
+        Index(
+            "uq_billing_orders_upi_utr",
+            "upi_utr",
+            unique=True,
+            sqlite_where=text(_UTR_HELD),
+            postgresql_where=text(_UTR_HELD),
+        ),
+        Index("ix_billing_orders_status_submitted", "status", "upi_submitted_at"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -536,7 +551,8 @@ class BillingOrder(Base):
     amount_paise: Mapped[int] = mapped_column(BigInteger)
     currency: Mapped[str] = mapped_column(String(3), default="INR")
     mode: Mapped[str] = mapped_column(String(8))  # "test" | "live" | "offline"
-    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending | paid | expired | cancelled | review
+    # pending | paid | expired | cancelled | review; direct UPI also submitted (the UTR waits for the admin) | rejected
+    status: Mapped[str] = mapped_column(String(16), default="pending")
     review_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     reviewed_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -561,6 +577,18 @@ class BillingOrder(Base):
     )
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow, onupdate=utcnow)
+
+    # Direct UPI (migration 0005): the reference "AN-XXXX-XXXX" (the UPI note), the payee the order asks to pay (from
+    # the settings when it was made), the customer's UTR and the admin's decision
+    upi_reference: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    upi_vpa: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    upi_payee_name: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    upi_utr: Mapped[str | None] = mapped_column(String(12), nullable=True)
+    upi_submitted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)  # the payment's captured_at
+    upi_decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)  # confirmed or rejected
+    upi_decided_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    upi_rejection: Mapped[str | None] = mapped_column(String(16), nullable=True)  # schemas_billing.UpiRejectReason
+    upi_rejection_note: Mapped[str | None] = mapped_column(String(200), nullable=True)  # shown to the customer
 
 
 class BillingPayment(Base):

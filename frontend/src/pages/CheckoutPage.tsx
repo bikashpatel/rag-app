@@ -1,6 +1,6 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
-import { ApiError, billingApi } from "../api/client";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { ApiError, billingApi, publicApi } from "../api/client";
 import type { BillingProfile, CheckoutKind, CheckoutOption, Me, PaymentsInfo, PlanOffer } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import { PaymentsUnavailable, TestModeNotice } from "../components/billing/BillingNotices";
@@ -18,6 +18,7 @@ import {
   InfoIcon,
   LockIcon,
   MinusIcon,
+  QrIcon,
   ShieldIcon,
   TagIcon,
 } from "../components/ui/icons";
@@ -31,7 +32,9 @@ import "./plans.css";
 const CONTINUE_AFTER_MS = 3_000;
 const NO_PROFILE: BillingProfile = { name: null };
 
-type PayError = { message: string; code: string | null; orderId?: string };
+/** Direct UPI to the owner's UPI ID, or online on Razorpay's page (docs/briefs/upi-direct.md 10.1). */
+type Channel = "upi" | "online";
+type PayError = { message: string; code: string | null; channel: Channel; orderId?: string };
 
 function Steps() {
   return (
@@ -93,20 +96,27 @@ type ReviewProps = {
   option: CheckoutOption;
   payments: PaymentsInfo;
   profile: BillingProfile;
+  /** The seller's name from the public site details; null when it couldn't load. */
+  business: string | null;
 };
 
-function Review({ user, offer, option, payments, profile }: ReviewProps) {
+function Review({ user, offer, option, payments, profile, business }: ReviewProps) {
   const id = useId();
   const openSettings = useOpenSettings();
+  const navigate = useNavigate();
+  const { refresh } = useAuth();
   const errorRef = useRef<HTMLParagraphElement>(null);
   const addEmailRef = useRef<HTMLButtonElement>(null);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [name, setName] = useState(profile.name ?? "");
-  const [paying, setPaying] = useState(false);
+  const [paying, setPaying] = useState<Channel | null>(null);
   const [error, setError] = useState<PayError | null>(null);
   const [payUrl, setPayUrl] = useState<string | null>(null);
   const [showContinue, setShowContinue] = useState(false);
   const testMode = payments.mode === "test";
+  const upi = payments.upi_direct;
+  const online = payments.available;
+  const seller = business ?? "us";
   const length = testMode ? "1 day" : "30 days";
   const starts = Date.parse(option.starts_at);
   const later = starts > Date.now() + 60_000;
@@ -137,34 +147,50 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
       if (!event.persisted) return;
       setPayUrl(null);
       setShowContinue(false);
-      setPaying(false);
+      setPaying(null);
     };
     window.addEventListener("pageshow", onPageShow);
     return () => window.removeEventListener("pageshow", onPageShow);
   }, []);
 
+  /** Saves a changed receipt name first; false (with the error shown) when that fails. */
+  async function saveName(channel: Channel): Promise<boolean> {
+    const next: BillingProfile = { name: name.trim() || null };
+    if (next.name === profile.name) return true;
+    try {
+      await billingApi.saveProfile(next);
+      return true;
+    } catch (err) {
+      setDetailsOpen(true);
+      const reason = err instanceof ApiError ? err.message : "Please try again.";
+      setError({ message: `Couldn't save your receipt details. ${reason}`, code: null, channel });
+      return false;
+    }
+  }
+
+  async function failed(err: unknown, channel: Channel) {
+    if (!(err instanceof ApiError)) {
+      setError({ message: "Couldn't start the payment. Please try again.", code: null, channel });
+      return;
+    }
+    // A UPI payment waits for the owner's check: Me then has it as the pending order, for "Open it".
+    if (err.code === "upi_waiting") await refresh().catch(() => undefined);
+    setError({ message: err.message, code: err.code, channel });
+  }
+
   async function pay() {
     if (paying) return;
-    setPaying(true);
+    setPaying("online");
     setError(null);
     let leaving = false;
     try {
-      const next: BillingProfile = { name: name.trim() || null };
-      if (next.name !== profile.name) {
-        try {
-          await billingApi.saveProfile(next);
-        } catch (err) {
-          setDetailsOpen(true);
-          const reason = err instanceof ApiError ? err.message : "Please try again.";
-          setError({ message: `Couldn't save your receipt details. ${reason}`, code: null });
-          return;
-        }
-      }
+      if (!(await saveName("online"))) return;
       const started = await billingApi.checkout({ plan_id: offer.id, kind: option.kind, accept_terms: true });
       if (!isRazorpayUrl(started.pay_url, testMode)) {
         setError({
           message: "The payment page's address didn't look right, so it wasn't opened.",
           code: "bad_pay_url",
+          channel: "online",
           orderId: started.order.public_id,
         });
         return;
@@ -173,37 +199,68 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
       setPayUrl(started.pay_url);
       leaveFor(started.pay_url);
     } catch (err) {
-      setError(
-        err instanceof ApiError
-          ? { message: err.message, code: err.code }
-          : { message: "Couldn't start the payment. Please try again.", code: null },
-      );
+      await failed(err, "online");
     } finally {
-      if (!leaving) setPaying(false);
+      if (!leaving) setPaying(null);
     }
   }
 
-  const payLabel = (
-    <>
-      {paying ? <ButtonSpinner size={14} /> : <LockIcon size={17} />}
-      {paying ? "Opening Razorpay…" : `Pay ${formatInr(option.amount_paise)}`}
-    </>
-  );
-  const payButton = (className: string) => (
+  async function payUpi() {
+    if (paying) return;
+    setPaying("upi");
+    setError(null);
+    let leaving = false;
+    try {
+      if (!(await saveName("upi"))) return;
+      const order = await billingApi.upiCheckout({ plan_id: offer.id, kind: option.kind, accept_terms: true });
+      leaving = true;
+      navigate(returnPath(order.public_id));
+    } catch (err) {
+      await failed(err, "upi");
+    } finally {
+      if (!leaving) setPaying(null);
+    }
+  }
+
+  const amount = formatInr(option.amount_paise);
+  const describedBy = (channel: Channel) =>
+    shownError?.channel === channel ? `${id}-error-${channel}` : `${id}-consent`;
+  const payButton = (className: string, label: string) => (
     <button
       type="button"
       className={className}
       onClick={() => void pay()}
-      aria-disabled={paying || undefined}
-      aria-busy={paying || undefined}
-      aria-describedby={shownError ? `${id}-error` : `${id}-consent`}
+      aria-disabled={paying !== null || undefined}
+      aria-busy={paying === "online" || undefined}
+      aria-describedby={describedBy("online")}
     >
-      {payLabel}
+      {paying === "online" ? <ButtonSpinner size={14} /> : <LockIcon size={17} />}
+      {paying === "online" ? "Opening Razorpay…" : label}
+    </button>
+  );
+  const upiButton = (className: string, label: ReactNode) => (
+    <button
+      type="button"
+      className={className}
+      onClick={() => void payUpi()}
+      aria-disabled={paying !== null || undefined}
+      aria-busy={paying === "upi" || undefined}
+      aria-describedby={describedBy("upi")}
+    >
+      {paying === "upi" ? <ButtonSpinner size={14} /> : <QrIcon size={17} />}
+      {paying === "upi" ? "Preparing your UPI payment…" : label}
     </button>
   );
 
   let errorAction: ReactNode = null;
-  if (error?.code === "email_required") {
+  const waiting = user.plan.pending_order;
+  if (error?.code === "upi_waiting") {
+    errorAction = waiting ? (
+      <Link className="btn btn-xs" to={returnPath(waiting.public_id)}>
+        Open it
+      </Link>
+    ) : null;
+  } else if (error?.code === "email_required") {
     errorAction = (
       <button type="button" className="btn btn-xs" onClick={() => openSettings("account")}>
         Add email
@@ -228,6 +285,41 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
       </Link>
     );
   }
+
+  const errorText = (channel: Channel) =>
+    shownError?.channel === channel ? (
+      <p
+        ref={errorRef}
+        id={`${id}-error-${channel}`}
+        className="error-text plans-pay-error"
+        role="alert"
+        tabIndex={-1}
+      >
+        <AlertCircleIcon size={13} />
+        <span>
+          {shownError.message} {errorAction}
+        </span>
+      </p>
+    ) : null;
+  const upiLimitNote =
+    payments.upi_limit_paise > 0 && option.amount_paise > payments.upi_limit_paise ? (
+      <p className="ui-notice ui-notice-info plans-upi-note">
+        <InfoIcon size={15} />
+        <span className="ui-notice-text">
+          UPI is limited to {formatInr(payments.upi_limit_paise)} per payment for now. Pay {amount} by netbanking,
+          debit card or credit card on the next page.
+        </span>
+      </p>
+    ) : null;
+  const methods = (
+    <ul className="plans-methods" aria-label="Ways to pay">
+      {["UPI", "Cards", "Netbanking", "Wallets"].map((method) => (
+        <li key={method} className="plans-method">
+          {method}
+        </li>
+      ))}
+    </ul>
+  );
 
   let datesNote: string;
   if (option.kind === "now") {
@@ -353,7 +445,7 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
         </div>
 
         <aside className="plans-summary" aria-labelledby={`${id}-summary`}>
-          {user.email ? null : <EmailNeededNotice buttonRef={addEmailRef} />}
+          {user.email || upi ? null : <EmailNeededNotice buttonRef={addEmailRef} />}
           <h2 className="plans-label" id={`${id}-summary`}>
             Summary
           </h2>
@@ -382,24 +474,39 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
             <span className="plans-total-label">Total</span>
             <span className="plans-total-value">{formatInr(option.amount_paise)}</span>
           </div>
-          {payments.upi_limit_paise > 0 && option.amount_paise > payments.upi_limit_paise ? (
-            <p className="ui-notice ui-notice-info plans-upi-note">
-              <InfoIcon size={15} />
-              <span className="ui-notice-text">
-                UPI is limited to {formatInr(payments.upi_limit_paise)} per payment for now. Pay{" "}
-                {formatInr(option.amount_paise)} by netbanking, debit card or credit card on the next page.
-              </span>
-            </p>
-          ) : null}
-          {payButton("btn btn-primary plans-pay")}
-          {shownError ? (
-            <p ref={errorRef} id={`${id}-error`} className="error-text plans-pay-error" role="alert" tabIndex={-1}>
-              <AlertCircleIcon size={13} />
-              <span>
-                {shownError.message} {errorAction}
-              </span>
-            </p>
-          ) : null}
+          {upi ? (
+            <>
+              {upiButton("btn btn-primary plans-pay", `Pay ${amount} with UPI`)}
+              <p className="plans-pay-note">
+                From any UPI app, straight to {seller}. Your plan starts once we've checked the payment, usually
+                within a few hours.
+              </p>
+              {errorText("upi")}
+              {online ? (
+                <>
+                  <p className="plans-or">
+                    <span>or</span>
+                  </p>
+                  {payButton("btn plans-pay-online", `Pay online · ${amount}`)}
+                  <p className="plans-pay-note">
+                    UPI, cards, netbanking or wallets on Razorpay's secure page. Starts as soon as you've paid.
+                  </p>
+                  {upiLimitNote}
+                  {methods}
+                  {user.email ? null : (
+                    <EmailNeededNotice buttonRef={addEmailRef}>Paying online needs a confirmed email.</EmailNeededNotice>
+                  )}
+                  {errorText("online")}
+                </>
+              ) : null}
+            </>
+          ) : (
+            <>
+              {upiLimitNote}
+              {payButton("btn btn-primary plans-pay", `Pay ${amount}`)}
+              {errorText("online")}
+            </>
+          )}
           <p className="plans-consent" id={`${id}-consent`}>
             By paying you agree to the{" "}
             <a href="/terms" target="_blank" rel="noopener">
@@ -413,23 +520,21 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
           </p>
           <p className="plans-secure">
             <ShieldIcon size={16} />
-            <span>You'll pay on Razorpay's secure page, then come back here.</span>
+            <span>
+              {upi
+                ? `Your money goes straight to ${business ? `${business}'s` : "our"} bank account. We never see your UPI PIN or bank details.`
+                : "You'll pay on Razorpay's secure page, then come back here."}
+            </span>
           </p>
-          <ul className="plans-methods" aria-label="Ways to pay">
-            {["UPI", "Cards", "Netbanking", "Wallets"].map((method) => (
-              <li key={method} className="plans-method">
-                {method}
-              </li>
-            ))}
-          </ul>
+          {upi ? null : methods}
         </aside>
       </div>
       <div className="plans-paybar">
         <div className="plans-paybar-total">
-          <b>{formatInr(option.amount_paise)}</b>
+          <b>{amount}</b>
           <span>{length}, paid in advance</span>
         </div>
-        {payButton("btn btn-primary")}
+        {upi ? upiButton("btn btn-primary", "Pay with UPI") : payButton("btn btn-primary", `Pay ${amount}`)}
       </div>
 
       {payUrl ? (
@@ -440,7 +545,7 @@ function Review({ user, offer, option, payments, profile }: ReviewProps) {
             </div>
             <h2 className="plans-redirect-title">Opening Razorpay…</h2>
             <p className="plans-redirect-text">
-              You'll pay {formatInr(option.amount_paise)} on Razorpay's secure page, then come back here automatically.
+              You'll pay {amount} on Razorpay's secure page, then come back here automatically.
             </p>
             {showContinue ? (
               <p className="plans-redirect-later">
@@ -461,17 +566,18 @@ export default function CheckoutPage() {
   const [params] = useSearchParams();
   const kind: CheckoutKind = params.get("kind") === "now" ? "now" : "period";
   const data = useLoad(async (signal) => {
-    const [catalog, profile] = await Promise.all([
+    const [catalog, profile, site] = await Promise.all([
       billingApi.plans(signal),
       billingApi.profile(signal).catch(() => NO_PROFILE),
+      publicApi.site(signal).catch(() => null),
     ]);
-    return { catalog, profile };
+    return { catalog, profile, business: site?.business_name || null };
   }, "Couldn't load this checkout.");
 
   if (!user) return null;
   let body: ReactNode;
   if (data.data) {
-    const { catalog, profile } = data.data;
+    const { catalog, profile, business } = data.data;
     const offer = catalog.plans.find((item) => item.code === code);
     const option = offer?.options.find((item) => item.kind === kind);
     if (user.is_admin) body = <Unavailable reason="The admin doesn't need a plan." />;
@@ -480,7 +586,7 @@ export default function CheckoutPage() {
     else if (option.unavailable_reason !== null) {
       body = (
         <>
-          {catalog.payments.available ? null : (
+          {catalog.payments.available || catalog.payments.upi_direct ? null : (
             <div className="plans-notices plans-notices-wide">
               <PaymentsUnavailable payments={catalog.payments} admin={false} />
             </div>
@@ -489,7 +595,16 @@ export default function CheckoutPage() {
         </>
       );
     } else {
-      body = <Review user={user} offer={offer} option={option} payments={catalog.payments} profile={profile} />;
+      body = (
+        <Review
+          user={user}
+          offer={offer}
+          option={option}
+          payments={catalog.payments}
+          profile={profile}
+          business={business}
+        />
+      );
     }
   } else if (data.error) {
     body = (

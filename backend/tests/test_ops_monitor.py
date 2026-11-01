@@ -620,9 +620,20 @@ def test_the_healthcheck_command(monkeypatch: pytest.MonkeyPatch) -> None:
     assert heartbeat.main() == 1
 
 
+class IdleBillingLoop:
+    """The worker's billing loop, idle until the worker stops (test_billing_reminders covers it)."""
+
+    def __init__(self, stopping: asyncio.Event) -> None:
+        self._stopping = stopping
+
+    async def run(self) -> None:
+        await self._stopping.wait()
+
+
 @pytest.fixture
 def fast_worker(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker, "_POLL_SECONDS", 0.05)
+    monkeypatch.setattr(worker, "BillingLoop", IdleBillingLoop)
     monkeypatch.setattr(ops_settings, "worker_heartbeat_seconds", 0.02)
 
 

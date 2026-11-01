@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AdminOrderDetail } from "../../api/types";
-import { makeAdminOrder } from "../../test/billing";
+import { makeAdminOrder, makeUpiInfo } from "../../test/billing";
 import { NOW } from "../../test/fixtures";
 import { errorResponse, stubFetch, type FetchCall, type Route } from "../../test/http";
 import BillingOrders from "./BillingOrders";
@@ -32,6 +32,7 @@ const offline = makeAdminOrder({
   public_id: "off789",
   status: "paid",
   mode: "offline",
+  channel: "bank_transfer",
   razorpay_link_id: null,
 });
 const detail: AdminOrderDetail = {
@@ -57,8 +58,17 @@ function setup(routes: Record<string, Route> = {}, orderParam: string | null = n
   });
   const onParamsRead = vi.fn();
   const onGrant = vi.fn();
-  render(<BillingOrders orderParam={orderParam} onParamsRead={onParamsRead} onGrant={onGrant} />);
-  return { calls, onParamsRead, onGrant };
+  const onUpiDecided = vi.fn();
+  render(
+    <BillingOrders
+      orderParam={orderParam}
+      onParamsRead={onParamsRead}
+      onGrant={onGrant}
+      contact="billing@example.com"
+      onUpiDecided={onUpiDecided}
+    />,
+  );
+  return { calls, onParamsRead, onGrant, onUpiDecided };
 }
 
 const requests = (calls: FetchCall[], method = "GET") =>
@@ -203,5 +213,46 @@ describe("BillingOrders", () => {
     await user.click(within(dialog).getByRole("button", { name: "Try again" }));
     await user.click(await within(dialog).findByRole("button", { name: "Check now" }));
     expect(await within(dialog).findByRole("alert")).toHaveTextContent("The payment service didn't answer.");
+  });
+
+  it("lists a direct-UPI order by its channel and confirms it from its dialog", async () => {
+    const upi = makeAdminOrder({
+      id: 75,
+      public_id: "upi321",
+      status: "submitted",
+      channel: "upi_direct",
+      mode: "offline",
+      pay_url: null,
+      razorpay_link_id: null,
+      checks: 0,
+      next_check_at: null,
+      upi: makeUpiInfo({ uri: null, utr: "630512345678", submitted_at: "2026-10-20T08:00:00Z" }),
+    });
+    const { calls, onUpiDecided } = setup({
+      "GET /admin/billing/orders": { items: [upi], total: 1 },
+      "GET /admin/billing/orders/upi321": { ...upi, events: [] },
+      "POST /admin/billing/orders/upi321/upi-confirm": { ...upi, status: "paid", upi_decided_by: "admin" },
+    });
+    const user = userEvent.setup();
+    const row = (await screen.findAllByRole("row"))[1];
+    expect(row).toHaveTextContent("PeriodUPI");
+    expect(row).toHaveTextContent("To check");
+    expect(within(row).getAllByText("—").length).toBeGreaterThan(0);
+    const filter = screen.getByRole("radiogroup", { name: "Order status" });
+    expect(within(filter).getByRole("radio", { name: "To check" })).toBeInTheDocument();
+    expect(within(filter).getByRole("radio", { name: "Rejected" })).toBeInTheDocument();
+
+    await user.click(within(row).getByRole("button", { name: /^Open/ }));
+    const dialog = await screen.findByRole("dialog", { name: "Standard order of maya.chen" });
+    expect(await within(dialog).findByText("Sent")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Link expires")).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Confirm…" }));
+    const confirm = screen.getByRole("dialog", { name: "Confirm UPI payment" });
+    await user.click(within(confirm).getByRole("checkbox"));
+    await user.click(within(confirm).getByRole("button", { name: "Confirm and start the plan" }));
+    expect(await screen.findByText("Confirmed ₹2,000 from maya.chen. Their plan has started.")).toBeInTheDocument();
+    expect(onUpiDecided).toHaveBeenCalledOnce();
+    expect(requests(calls, "POST")).toEqual(["/admin/billing/orders/upi321/upi-confirm"]);
+    expect(within(screen.getAllByRole("row")[1]).getByText("Paid")).toBeInTheDocument();
   });
 });

@@ -195,7 +195,11 @@ def snapshot(connection: Connection) -> dict[str, Any]:
     shape: dict[str, Any] = {}
     for name in sorted(inspector.get_table_names()):
         columns = [(c["name"], str(c["type"]), c["nullable"], c.get("default")) for c in inspector.get_columns(name)]
-        indexes = [index for index in inspector.get_indexes(name) if not (index["name"] or "").startswith("ex_")]
+        indexes = [
+            {**index, "dialect_options": {key: str(value) for key, value in index.get("dialect_options", {}).items()}}
+            for index in inspector.get_indexes(name)
+            if not (index["name"] or "").startswith("ex_")
+        ]  # a partial index's WHERE (reflected as a clause object) as its text
         shape[name] = (
             columns,
             inspector.get_pk_constraint(name),

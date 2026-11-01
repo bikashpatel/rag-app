@@ -1,7 +1,9 @@
 """What a user can buy and starting a checkout (docs/briefs/plans-billing.md 4.3 to 4.5 and 6.3): the options per
 plan with their dates, amounts, credit, changes and reasons; the caps; the Payment Link; cancelling a checkout; and
 the views of an order. Since sign-up (docs/briefs/signup-auth.md 4.12): checkout needs a verified email, and unpaid
-accounts (no live or offline payment applied yet) get smaller caps, plus one for all of them together."""
+accounts (no live or offline payment applied yet) get smaller caps, plus one for all of them together. Since direct UPI
+(docs/briefs/upi-direct.md): an option can be bought with either channel (upi.py starts the direct-UPI order), and while
+a UTR waits for the admin no checkout starts."""
 
 import asyncio
 import logging
@@ -10,7 +12,7 @@ import secrets
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from fractions import Fraction
-from typing import Any, Final, Literal
+from typing import Any, Final, Literal, get_args
 
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
@@ -36,6 +38,7 @@ from app.schemas_billing import (
     CheckoutRequest,
     CheckoutStarted,
     CreditLine,
+    OrderStatus,
     OrderView,
     PlanCatalog,
     PlanFeatures,
@@ -77,9 +80,10 @@ _MIB = 1024 * 1024
 _background: set[asyncio.Task[None]] = set()
 
 
-def period_days() -> int:
-    """A paid period's length: 30 days, 1 under test keys."""
-    return periods.TEST_PERIOD_DAYS if settings.razorpay_mode == "test" else PERIOD_DAYS
+def period_days(user: User) -> int:
+    """A paid period's length for the caller: 1 day when they pay online under test keys (a tester), else 30 (a
+    direct-UPI order always buys 30)."""
+    return periods.TEST_PERIOD_DAYS if settings.razorpay_mode == "test" and business.can_pay(user) else PERIOD_DAYS
 
 
 def _days_text(days: int) -> str:
@@ -103,8 +107,9 @@ class Context:
     used: Fraction  # the largest share used of the current period's allowances
     credit: int  # the credit for the rest of the current period (4.4)
     ranks: dict[int, int]
-    can_pay: bool
+    can_pay: bool  # online, or by direct UPI
     no_payments: str  # why the user can't pay, when they can't
+    days: int  # the length the options quote (period_days)
     documents: tuple[int, int]  # the user's own documents: count and bytes
     connected: set[str]  # plugin ids the user has a connection for
     enabled_models: dict[int, str]  # enabled chat model id -> name
@@ -130,8 +135,9 @@ async def context(db: AsyncSession, user: User, *, now: datetime | None = None) 
         used=used,
         credit=await payments.upgrade_credit(db, current, used=used, at=now) if current is not None else 0,
         ranks=dict((await db.execute(select(Plan.id, Plan.rank))).tuples().all()),
-        can_pay=business.can_pay(user) and not user.is_admin,
+        can_pay=(business.can_pay(user) or business.upi_ready(await business.get_settings(db))) and not user.is_admin,
         no_payments=_NO_PAYMENTS if user.billing_tester or user.is_admin else _OPENS_SOON,
+        days=period_days(user),
         documents=await storage.owned_totals(db, user.id),
         connected=set(await db.scalars(select(PluginConnection.plugin_id).where(PluginConnection.user_id == user.id))),
         enabled_models={model.id: model.display_name for model in cat.models},
@@ -184,7 +190,7 @@ def changes(ctx: Context, plan: Plan) -> list[str]:
 
 def _period_option(ctx: Context, plan: Plan) -> CheckoutOption:
     start = periods.next_start(ctx.periods, ctx.now)
-    end = periods.period_end(start, period_days())
+    end = periods.period_end(start, ctx.days)
     current = ctx.current
     if current is None:
         label = f"Renew {plan.name}" if plan.id == ctx.last_plan_id else f"Choose {plan.name}"
@@ -234,7 +240,7 @@ def _now_option(ctx: Context, plan: Plan) -> CheckoutOption | None:
     amount = now_charge(plan.price_paise, ctx.credit)
     given = plan.price_paise - amount
     name = periods.snapshot(current).name
-    end = periods.period_end(ctx.now, period_days())
+    end = periods.period_end(ctx.now, ctx.days)
     notes = []
     if current.source == "comp":
         notes.append(f"Your complimentary {name} period ends when {plan.name} starts.")
@@ -262,6 +268,17 @@ def options(ctx: Context, plan: Plan) -> list[CheckoutOption]:
         return []
     found = [option for option in (_now_option(ctx, plan),) if option is not None]
     return [*found, _period_option(ctx, plan)]
+
+
+async def chosen_option(db: AsyncSession, ctx: Context, plan: Plan, kind: str) -> CheckoutOption:
+    """The option of `kind` the caller may buy now; else the transaction is rolled back and 409 checkout_unavailable
+    carries its reason."""
+    option = next((item for item in options(ctx, plan) if item.kind == kind), None)
+    if option is None or option.unavailable_reason:
+        reason = option.unavailable_reason if option else _RETIRED if plan.status != "active" else _NOT_HIGHER
+        await db.rollback()
+        raise AppError(409, reason or _NOT_HIGHER, "checkout_unavailable")
+    return option
 
 
 async def plan_catalog(db: AsyncSession, user: User) -> PlanCatalog:
@@ -407,6 +424,8 @@ async def _reusable(
 
 async def start(db: AsyncSession, user: User, body: CheckoutRequest, origin: str | None) -> CheckoutStarted:
     """POST /billing/checkout. No transaction is open while Razorpay is called."""
+    from app.services.billing import upi  # upi builds on this module
+
     if user.is_admin:
         raise AppError(403, "The admin doesn't need a plan.", "admin_exempt")
     if not business.can_pay(user):
@@ -420,11 +439,8 @@ async def start(db: AsyncSession, user: User, body: CheckoutRequest, origin: str
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Plan not found")
     await lock_user(db, user.id)
     ctx = await context(db, user, now=now)
-    option = next((item for item in options(ctx, plan) if item.kind == body.kind), None)
-    if option is None or option.unavailable_reason:
-        reason = option.unavailable_reason if option else _RETIRED if plan.status != "active" else _NOT_HIGHER
-        await db.rollback()
-        raise AppError(409, reason or _NOT_HIGHER, "checkout_unavailable")
+    option = await chosen_option(db, ctx, plan, body.kind)
+    await upi.refuse_while_waiting(db, user)
     reused = await _reusable(db, user, plan, body.kind, option.amount_paise, now)
     if reused is not None and reused.pay_url:
         await db.commit()
@@ -434,7 +450,7 @@ async def start(db: AsyncSession, user: User, body: CheckoutRequest, origin: str
     except AppError:
         await db.rollback()
         raise
-    days = period_days()
+    days = ctx.days
     expires = now + timedelta(minutes=settings.billing_checkout_minutes)
     current = ctx.current if body.kind == "now" else None
     order = BillingOrder(
@@ -470,10 +486,10 @@ async def start(db: AsyncSession, user: User, body: CheckoutRequest, origin: str
         raise AppError(502, PROVIDER_ERROR, "payment_provider_error") from None
     replaced = await _store_link(db, user, order, plan, link)
     if replaced is None:
-        await _cancel_link(link["id"])
+        await cancel_link(link["id"])
         raise AppError(409, _SUPERSEDED, "checkout_unavailable")
     for link_id in replaced:
-        await _cancel_link(link_id)
+        await cancel_link(link_id)
     order = await db.get(BillingOrder, order.id, populate_existing=True) or order
     return CheckoutStarted(order=await order_view(db, order), pay_url=link["short_url"])
 
@@ -524,6 +540,14 @@ async def _store_link(
         order_id=order.id,
         detail={"public_id": order.public_id, "plan": plan.code, "kind": order.kind, "amount": order.amount_paise},
     )
+    links = await cancel_others(db, user, order)
+    await db.commit()
+    return links
+
+
+async def cancel_others(db: AsyncSession, user: User, order: BillingOrder) -> list[str]:
+    """The user's other pending orders (either channel) are cancelled by `order` (a conditional update); returns
+    their Razorpay links of the current mode, to cancel at Razorpay after the commit. The caller holds the lock."""
     previous = (
         await db.execute(
             update(BillingOrder)
@@ -543,7 +567,6 @@ async def _store_link(
             order_id=order_id,
             detail={"public_id": public_id, "replaced_by": order.public_id},
         )
-    await db.commit()
     return [link_id for _, _, link_id, mode in previous if link_id and mode == settings.razorpay_mode]
 
 
@@ -574,10 +597,10 @@ async def _create_failed(db: AsyncSession, order: BillingOrder, exc: razorpay.Ra
     await db.commit()
     logger.warning("Creating a payment link failed (%s %s)", exc.status, exc.code)
     if found_id:
-        await _cancel_link(found_id)
+        await cancel_link(found_id)
 
 
-async def _cancel_link(link_id: str) -> None:
+async def cancel_link(link_id: str) -> None:
     try:
         await razorpay.cancel_link(link_id)
     except razorpay.RazorpayError as exc:
@@ -612,7 +635,7 @@ async def cancel(db: AsyncSession, user: User, order: BillingOrder) -> OrderView
     await db.commit()
     link_id, mode = row
     if link_id and mode == settings.razorpay_mode:
-        await _cancel_link(link_id)
+        await cancel_link(link_id)
     return await order_view(db, await db.get(BillingOrder, order.id, populate_existing=True) or order)
 
 
@@ -638,7 +661,7 @@ async def cancel_user_links(db: AsyncSession, user: User) -> None:
 
 async def _cancel_links(link_ids: list[str]) -> None:
     for link_id in link_ids:
-        await _cancel_link(link_id)
+        await cancel_link(link_id)
 
 
 # ---------------- Order views ----------------
@@ -660,22 +683,28 @@ async def _bought(db: AsyncSession, order: BillingOrder) -> _Bought:
     return _Bought(period, payment, receipt)
 
 
-def _status(order: BillingOrder) -> Literal["pending", "paid", "expired", "cancelled", "review"]:
-    known = ("pending", "paid", "expired", "cancelled", "review")
+def _status(order: BillingOrder, now: datetime) -> OrderStatus:
+    """The order's status; a direct-UPI order past its expiry reads `expired` before the billing loop writes it."""
+    if order.upi_reference is not None and order.status == "pending" and order.expires_at <= now:
+        return "expired"
+    known = get_args(OrderStatus)
     return order.status if order.status in known else "pending"  # type: ignore[return-value]
 
 
 async def order_view(db: AsyncSession, order: BillingOrder) -> OrderView:
+    from app.services.billing import upi  # upi builds on this module
+
     bought = await _bought(db, order)
     now = utcnow()
     period = bought.period
+    contact = (await business.get_settings(db)).contact_email if order.upi_rejection else None
     return OrderView(
         public_id=order.public_id,
         kind="now" if order.kind == "now" else "period",
         plan=plans.snapshot_ref(order.plan_snapshot),
         amount_paise=order.amount_paise,
         credit_paise=order.credit_paise,
-        status=_status(order),
+        status=_status(order, now),
         created_at=order.created_at,
         expires_at=order.expires_at,
         paid_at=order.paid_at,
@@ -687,6 +716,8 @@ async def order_view(db: AsyncSession, order: BillingOrder) -> OrderView:
         receipt=ReceiptRef(id=bought.receipt.id, number=bought.receipt.number) if bought.receipt else None,
         method=bought.payment.method if bought.payment else None,
         test_mode=order.mode == "test",
+        channel=upi.channel(order),
+        upi=upi.info(order, contact, now) if order.upi_reference is not None else None,
     )
 
 
@@ -714,4 +745,5 @@ async def admin_order(db: AsyncSession, order: BillingOrder) -> AdminOrder:
         next_check_at=order.next_check_at,
         last_error=order.last_error,
         paused=paused(order),
+        upi_decided_by=order.upi_decided_by,
     )

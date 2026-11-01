@@ -1,6 +1,7 @@
 import type { Page } from "@playwright/test";
 import type {
   Accepted,
+  AdminOrder,
   AuthConfig,
   ChatModel,
   CheckoutOption,
@@ -155,7 +156,14 @@ export function fakeCatalog(): PlanCatalog {
         features: { files: true, images: false, plugins: [] },
       }),
     ],
-    payments: { available: true, mode: "test", contact_email: null, upi_limit_paise: 200_000, email_reminders: false },
+    payments: {
+      available: true,
+      mode: "test",
+      contact_email: null,
+      upi_limit_paise: 200_000,
+      email_reminders: false,
+      upi_direct: false,
+    },
   };
 }
 
@@ -182,6 +190,46 @@ export function fakeOrder(publicId: string, status: OrderView["status"]): OrderV
     receipt: paid ? { id: fakeId(), number: "TEST/26-27/000001" } : null,
     method: paid ? "card" : null,
     test_mode: true,
+    channel: "razorpay",
+    upi: null,
+  };
+}
+
+/** A direct-UPI order of Standard (docs/briefs/upi-direct.md 5): pending (waiting for the UTR), submitted (waiting for
+ * the admin), paid or rejected. */
+export function fakeUpiOrder(publicId: string, status: "pending" | "submitted" | "paid" | "rejected"): OrderView {
+  const now = new Date().toISOString();
+  const paid = status === "paid";
+  const submitted = status !== "pending";
+  const end = new Date(Date.now() + 30 * DAY_MS).toISOString();
+  return {
+    ...fakeOrder(publicId, status),
+    expires_at: new Date(Date.now() + DAY_MS).toISOString(),
+    pay_url: null,
+    period_start: paid ? now : null,
+    period_end: paid ? end : null,
+    valid_through: paid ? end.slice(0, 10) : null,
+    receipt: paid ? { id: fakeId(), number: "RA/26-27/000001" } : null,
+    method: paid ? "upi" : null,
+    test_mode: false,
+    channel: "upi_direct",
+    upi: {
+      reference: "AN-7K4M-Q9TX",
+      upi_id: "asha.rao@okhdfcbank",
+      payee_name: "Asha Rao",
+      uri: submitted ? null : "upi://pay?pa=asha.rao@okhdfcbank&pn=Asha%20Rao&am=2000.00&cu=INR&tn=AN-7K4M-Q9TX",
+      utr: submitted ? "630512345678" : null,
+      submitted_at: submitted ? now : null,
+      decided_at: paid || status === "rejected" ? now : null,
+      rejection:
+        status === "rejected"
+          ? {
+              reason: "not_received",
+              message: "We couldn't find a payment of ₹2,000 with UTR 6305 1234 5678.",
+              note: null,
+            }
+          : null,
+    },
   };
 }
 
@@ -195,6 +243,31 @@ function fromNow(ms: number): string {
 }
 
 /** Sign-up open with both methods, Google sign-in and reset available, Cloudflare's always-passing test sitekey. */
+/** The same order as the admin lists it (Billing → UPI), for a made-up e2e-… user that no test signs in as. */
+export function fakeAdminUpiOrder(publicId: string, status: "submitted" | "paid" | "rejected"): AdminOrder {
+  return {
+    ...fakeUpiOrder(publicId, status),
+    id: fakeId(),
+    user: { id: fakeId(), username: "e2e-upi-payer", email: null },
+    mode: "offline",
+    razorpay_link_id: null,
+    razorpay_order_id: null,
+    review_reason: null,
+    review_note: null,
+    checks: 0,
+    last_checked_at: null,
+    next_check_at: null,
+    last_error: null,
+    paused: false,
+    upi_decided_by: status === "submitted" ? null : "admin",
+  };
+}
+
+/** A QR-like SVG for the intercepted QR endpoints (the real one is drawn by the server). */
+export const FAKE_QR_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 29 29"><rect width="29" height="29" fill="#fff"/>' +
+  '<path d="M4 4h7v7H4zM18 4h7v7h-7zM4 18h7v7H4zM13 13h3v3h-3z"/></svg>';
+
 export function fakeAuthConfig(overrides: Partial<AuthConfig> = {}): AuthConfig {
   return {
     signup: { open: true, email: true, google: true },
@@ -289,6 +362,7 @@ export function fakeNewMe(overrides: Partial<Me> & Pick<Me, "username" | "email"
       pending_order: null,
       can_start_new_period: false,
       unlock: { files: "Standard", images: "Professional", plugins: { gmail: "Professional" }, models: null },
+      rejected_order: null,
     },
     ...overrides,
   };

@@ -269,6 +269,49 @@ describe("BillingPayments", () => {
     expect(await screen.findByText("Recorded a refund of ₹2,000.")).toBeInTheDocument();
   });
 
+  it("records the refund of a direct-UPI payment paid back by UPI", async () => {
+    const upi = makeAdminPayment({
+      id: 62,
+      method: "upi",
+      channel: "upi_direct",
+      mode: "offline",
+      razorpay_payment_id: null,
+      offline_reference: "630512345678",
+      fee_paise: null,
+      fee_tax_paise: null,
+    });
+    const { calls } = setup({
+      "GET /admin/billing/payments": page([upi]),
+      "POST /admin/billing/payments/62/refund": { ...upi, refundable_paise: 0, status: "refunded", refunded_paise: 200_000 },
+    });
+    const user = userEvent.setup();
+    const rows = await screen.findAllByRole("row");
+    expect(rows[1]).toHaveTextContent("UPI (direct)");
+    await user.click(within(rows[1]).getByRole("button", { name: /^Open/ }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toHaveTextContent("MethodUPI (direct)");
+    expect(dialog).toHaveTextContent("UTR6305 1234 5678");
+    expect(dialog).toHaveTextContent("Fee—");
+    expect(within(dialog).queryByText(/Razorpay payment/)).not.toBeInTheDocument();
+    await user.click(within(dialog).getByRole("button", { name: "Copy the UTR" }));
+    expect(await navigator.clipboard.readText()).toBe("630512345678");
+
+    await user.click(within(dialog).getByRole("button", { name: "Refund…" }));
+    expect(dialog).toHaveTextContent(
+      "Pay ₹2,000 back to the payer by UPI from your bank app first (the payment with UTR 6305 1234 5678), then record it here. No money moves through the app.",
+    );
+    const reason = within(dialog).getByRole("textbox", { name: "Reason" });
+    expect(reason).toHaveAccessibleDescription("For example the UTR of your refund payment.");
+    await user.type(reason, "UTR 998877665544");
+    await user.click(within(dialog).getByRole("button", { name: "Record refund of ₹2,000" }));
+    expect(await screen.findByText("Recorded a refund of ₹2,000.")).toBeInTheDocument();
+    expect(calls.find((call) => call.method === "POST")?.body).toEqual({
+      amount_paise: null,
+      reason: "UTR 998877665544",
+      end_access: true,
+    });
+  });
+
   it("opens the payment named in the hash", async () => {
     const { onParamsRead } = setup({ "GET /admin/billing/payments/60": upgrade }, { paymentParam: 60 });
     expect(await screen.findByRole("dialog", { name: "Payment of ₹1,700" })).toBeInTheDocument();

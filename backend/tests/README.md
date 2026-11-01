@@ -79,7 +79,7 @@ docker run -d --rm --name "$name" -e POSTGRES_USER=rag -e POSTGRES_PASSWORD="$pa
   postgres:17.11-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24  # docker-compose.yml's
 until docker exec "$name" pg_isready -q -h 127.0.0.1 -U rag; do sleep 1; done
 export TEST_POSTGRES_URL="postgresql+asyncpg://rag:$password@127.0.0.1:$(docker port "$name" 5432 | head -1 | cut -d: -f2)/scratch"
-.venv/bin/python -m pytest -q -m postgres                      # 57 tests, seconds
+.venv/bin/python -m pytest -q -m postgres                      # 62 tests, seconds
 TEST_DATABASE=postgres .venv/bin/python -m pytest -q           # everything on Postgres, about 17 minutes
 docker stop "$name"
 ```

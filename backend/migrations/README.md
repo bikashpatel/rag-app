@@ -11,6 +11,7 @@ starts: you never run a migration by hand on a deploy.
 | `versions/0002_align_legacy_schema.py` | repairs what a database made before migrations may lack (see below); does nothing on a new database |
 | `versions/0003_plans_billing.py` | plans and billing (`docs/briefs/plans-billing.md` 11.1): the billing tables, the users' limits as nullable overrides, `usage_events.allowance_tokens`, one `rollout.limits_cleared` event per user before their limits are cleared, and on Postgres the exclusion constraint `ex_plan_periods_no_overlap`. It can't be downgraded |
 | `versions/0004_signup_auth.py` | sign-up, sign-in by email and Google, password reset and mail (`docs/briefs/signup-auth.md` 9.2): the pending sign-up and email, token, identity, outbox, account-event, suppression and tombstone tables; `users.email` (unique by its canonical form), `signup_source` and the terms record, `password_hash` nullable; `login_events.method`. The env admin's `signup_source` becomes `env`, the usernames kept on billing records of deleted users are tombstoned, and `user_billing_profiles.email` is dropped (counts only in the log). It can't be downgraded |
+| `versions/0005_upi_direct.py` | direct UPI payments (`docs/briefs/upi-direct.md` 5): nine nullable `upi_*` columns on `billing_orders` (the reference, unique; the payee UPI ID and name; the UTR and when it came; the admin's decision), the partial unique index `uq_billing_orders_upi_utr` (a UTR on one order that is submitted, paid or under review) and `ix_billing_orders_status_submitted`. It changes no row and can't be downgraded |
 | `script.py.mako` | the template for new revisions |
 
 ## At start-up
@@ -31,8 +32,8 @@ throughout.)
 
 | The database | What happens |
 |---|---|
-| empty | `upgrade head`: 0001 creates every table, 0002 has nothing to do, 0003 adds the billing tables, 0004 the sign-up and mail tables. Log: `Database schema migrated from an empty database to revision 0004` |
-| has an `alembic_version` table | `upgrade head` (nothing when it is at head: `Database schema up to date (revision 0004)`) |
+| empty | `upgrade head`: 0001 creates every table, 0002 has nothing to do, 0003 adds the billing tables, 0004 the sign-up and mail tables, 0005 the direct-UPI columns. Log: `Database schema migrated from an empty database to revision 0005` |
+| has an `alembic_version` table | `upgrade head` (nothing when it is at head: `Database schema up to date (revision 0005)`) |
 | has tables but no `alembic_version` (made before migrations) | compared with the baseline, then stamped and aligned, or refused (next section) |
 
 ## Databases made before migrations
@@ -118,7 +119,7 @@ when it is reviewed and tested like the upgrade, and still prefer the backup for
    export DATABASE_URL="postgresql+asyncpg://rag:$password@127.0.0.1:$port/scratch" \
      SECRET_KEY=$(openssl rand -hex 32) ADMIN_USERNAME=admin ADMIN_PASSWORD=placeholder-password LITELLM_MODE=PRODUCTION
    .venv/bin/alembic upgrade head
-   .venv/bin/alembic revision --autogenerate --rev-id 0005 -m "add users.nickname"
+   .venv/bin/alembic revision --autogenerate --rev-id 0006 -m "add users.nickname"
    ```
 
 3. Review it by hand. Autogenerate writes batch operations (`render_as_batch`), which SQLite runs as a table copy and

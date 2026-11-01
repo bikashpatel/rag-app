@@ -1,6 +1,7 @@
 """The business behind the payments (docs/briefs/plans-billing.md 6.9, 6.10 and 10): the billing settings in
-app_state, whether a caller can pay now, what the admin and the public pages see of the setup, and the Redis state of
-the payment flows (counters, the keys-rejected stop, the reconciler's last run, the worker's wake-up list)."""
+app_state (direct UPI's too, docs/briefs/upi-direct.md D1), whether a caller can pay now, what the admin and the public
+pages see of the setup, and the Redis state of the payment flows (counters, the keys-rejected stop, the reconciler's
+last run, the worker's wake-up list)."""
 
 import json
 import logging
@@ -112,6 +113,11 @@ def can_pay(user: User) -> bool:
     return current == "live" or (current == "test" and (user.billing_tester or user.is_admin))
 
 
+def upi_ready(current: BillingSettings) -> bool:
+    """Direct UPI is offered: switched on, with its UPI ID and payee name (docs/briefs/upi-direct.md D1)."""
+    return current.upi_enabled and bool(current.upi_id and current.upi_payee_name)
+
+
 def email_reminders() -> bool:
     """Receipt and reminder emails can be sent: the mailer is configured (MAIL_SMTP_HOST and MAIL_FROM)."""
     return settings.mail_configured
@@ -126,6 +132,7 @@ async def payments_info(db: AsyncSession, user: User) -> PaymentsInfo:
         contact_email=current.contact_email,
         upi_limit_paise=current.upi_limit_paise,
         email_reminders=email_reminders(),
+        upi_direct=upi_ready(current),
     )
 
 

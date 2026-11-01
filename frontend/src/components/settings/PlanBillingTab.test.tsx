@@ -10,7 +10,9 @@ import {
   makePaymentsInfo,
   makePaymentView,
   makePeriodView,
+  makeRejectedOrder,
   makeSeededOffers,
+  makeUpiOrder,
   STANDARD,
   STARTER,
 } from "../../test/billing";
@@ -371,6 +373,32 @@ describe("PlanBillingTab", () => {
     expect(calls.filter((call) => call.path === "/billing/status")).toHaveLength(2);
     expect(await screen.findByRole("region", { name: STANDARD.name })).toBeInTheDocument();
     expect(screen.queryByText(/is in progress/)).not.toBeInTheDocument();
+  });
+
+  it("marks direct-UPI payments in the history and shows a UPI order with a rejected one", async () => {
+    const upiPayment = makePaymentView({
+      description: "Standard plan, 30 days (UPI direct, UTR 630512345678)",
+      channel: "upi_direct",
+    });
+    await setup(
+      makeBillingStatus({
+        plan: makePaidPlanAccess({ rejected_order: makeRejectedOrder() }),
+        open_order: makeUpiOrder(),
+      }),
+      { "GET /billing/payments": [upiPayment] },
+    );
+    const row = (await screen.findByText("Standard plan, 30 days (UPI direct, UTR 630512345678)")).closest("tr");
+    expect(row).toHaveTextContent("8 Oct to 7 Nov 2026 · UPI (direct)");
+    expect(screen.getByText(/Finish your UPI payment/)).toHaveTextContent(
+      "Finish your UPI payment for Standard: send its UTR.",
+    );
+    expect(screen.getByRole("link", { name: "Continue" })).toHaveAttribute(
+      "href",
+      "/billing/return?order=u7Kp2QwX9mN4bV6cZ8dA",
+    );
+    expect(screen.getByText(/We couldn't confirm your UPI payment/)).toHaveTextContent(
+      "We couldn't confirm your UPI payment of ₹2,000 for Standard.",
+    );
   });
 
   it("reports a failed load with Try again", async () => {

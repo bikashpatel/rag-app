@@ -325,7 +325,7 @@ async def start_now(
     snapshot: PlanSnapshot,
     days: int,
     basis_paise: int,
-    mode: Literal["test", "live"],
+    mode: Literal["test", "live", "offline"],
     order_id: int,
     replaces_period_id: int | None,
     replaces_plan_id: int | None,
