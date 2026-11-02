@@ -1,4 +1,3 @@
-<!-- draft -->
 # Contact us
 
 Last updated: 1 November 2026

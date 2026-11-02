@@ -1,4 +1,3 @@
-<!-- draft -->
 # Cancellation and refunds
 
 Last updated: 1 November 2026

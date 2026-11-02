@@ -1,4 +1,3 @@
-<!-- draft -->
 # About us
 
 Last updated: 1 November 2026
@@ -20,6 +19,6 @@ Your documents and chats are private to your account; other users can't see them
 
 ## Who runs it
 
-AskNuvexusDoc is run by Elarxsys Ai Hub Pvt Ltd, based in [City], India, on a server we operate in India. To get in touch, see [Contact us](/contact).
+AskNuvexusDoc is run by Elarxsys Ai Hub Pvt Ltd, based in Hyderabad, India, on a server we operate in India. To get in touch, see [Contact us](/contact).
 
 Designed, developed and maintained by ELARXSYS.COM.

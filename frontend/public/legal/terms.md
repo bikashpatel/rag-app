@@ -1,4 +1,3 @@
-<!-- draft -->
 # Terms of service
 
 Last updated: 1 November 2026
@@ -94,7 +93,7 @@ We may change these terms. The "Last updated" date at the top identifies each ve
 
 ## Law and disputes
 
-These terms are governed by the laws of India. The courts at [City] have exclusive jurisdiction, subject to any right you have under consumer protection law to bring a complaint elsewhere. Before going to court, please write to us or to our Grievance Officer (see the privacy policy): most problems can be solved quickly.
+These terms are governed by the laws of India. The courts at Hyderabad have exclusive jurisdiction, subject to any right you have under consumer protection law to bring a complaint elsewhere. Before going to court, please write to us or to our Grievance Officer (see the privacy policy): most problems can be solved quickly.
 
 ## Contact
 

@@ -1,4 +1,3 @@
-<!-- draft -->
 # Pricing
 
 Last updated: 1 November 2026

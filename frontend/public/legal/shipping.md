@@ -1,4 +1,3 @@
-<!-- draft -->
 # Shipping and delivery
 
 Last updated: 1 November 2026
