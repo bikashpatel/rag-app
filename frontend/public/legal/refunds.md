@@ -43,7 +43,7 @@ Otherwise we don't refund a period once it has started, whether or not you have 
 
 ## How to ask for a refund
 
-Email support@asknuvexusdoc.com with:
+Email admin@elarxsys.com with:
 
 - your username or your account's email address;
 - the receipt number (for example RA/26-27/000001, in Settings → Plan & billing and on the emailed receipt), or the date and amount of the payment, and for a direct UPI payment its 12-digit UTR;

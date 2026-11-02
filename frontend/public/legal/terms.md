@@ -3,7 +3,7 @@
 
 Last updated: 1 November 2026
 
-These terms are the agreement between you and [Business legal name] ("we", "us"), which runs AskNuvexusDoc at asknuvexusdoc.com. By creating an account or using the service you accept them and our [Privacy policy](/privacy). When you pay, you also accept our [Cancellation and refunds policy](/refunds).
+These terms are the agreement between you and Elarxsys Ai Hub Pvt Ltd ("we", "us"), which runs AskNuvexusDoc at asknuvexusdoc.com. By creating an account or using the service you accept them and our [Privacy policy](/privacy). When you pay, you also accept our [Cancellation and refunds policy](/refunds).
 
 ## The service
 
@@ -98,4 +98,4 @@ These terms are governed by the laws of India. The courts at [City] have exclusi
 
 ## Contact
 
-Email support@asknuvexusdoc.com, or see our [Contact](/contact) page. Our Grievance Officer's details are at the end of the [Privacy policy](/privacy).
+Email admin@elarxsys.com, or see our [Contact](/contact) page. Our Grievance Officer's details are at the end of the [Privacy policy](/privacy).

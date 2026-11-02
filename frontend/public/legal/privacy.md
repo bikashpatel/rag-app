@@ -7,9 +7,9 @@ This policy explains what personal data AskNuvexusDoc collects, why we use it, w
 
 ## Who we are
 
-AskNuvexusDoc (asknuvexusdoc.com) is run by [Business legal name], [Registered address] ("we", "us"). We decide why and how your personal data is used, so we are the data fiduciary for it.
+AskNuvexusDoc (asknuvexusdoc.com) is run by Elarxsys Ai Hub Pvt Ltd, [Registered address] ("we", "us"). We decide why and how your personal data is used, so we are the data fiduciary for it.
 
-Questions about this policy go to support@asknuvexusdoc.com or to our Grievance Officer (at the end of this page).
+Questions about this policy go to admin@elarxsys.com or to our Grievance Officer (at the end of this page).
 
 ## In short
 
@@ -196,7 +196,7 @@ Under the Digital Personal Data Protection Act, 2023, you have the right to:
 
 - **Get a copy of your data**: Settings → Plugins & data → Export my data. You get a ZIP file with your account details (including your email, Google connection, terms record, sign-ins and account changes), your plans and payments, the details of your documents, and your chats as Markdown and JSON. It doesn't contain the document files themselves: download those from the documents panel. A very large export holds your newest chats up to a size limit and says what it left out. The export works with or without a plan.
 - **Delete chats and documents**: delete a chat from the chat list, every chat with Settings → Plugins & data → Delete all chats, and a document from the documents panel. Deleting removes it from the app at once, and from the backups within about five weeks.
-- **Delete your account**: the app has no button for this yet. Email support@asknuvexusdoc.com from your account's email address, or give your username. We may ask you to confirm the request.
+- **Delete your account**: the app has no button for this yet. Email admin@elarxsys.com from your account's email address, or give your username. We may ask you to confirm the request.
 - **Anything else**, including a complaint: write to the Grievance Officer below.
 
 We acknowledge every request within 48 hours and resolve it within one month.
@@ -237,7 +237,7 @@ When we change this policy, we post the new version here with a new "Last update
 ## Grievance Officer
 
 - Name: [Grievance officer name]
-- Email: [Grievance officer email]
-- Address: [Business legal name], [Registered address]
+- Email: admin@elarxsys.com
+- Address: Elarxsys Ai Hub Pvt Ltd, [Registered address]
 
 Include your username or account email and what you are asking for. We acknowledge every grievance within 48 hours and resolve it within one month of receiving it. If you are not satisfied with our answer, you can complain to the Data Protection Board of India.

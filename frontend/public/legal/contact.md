@@ -5,7 +5,7 @@ Last updated: 1 November 2026
 
 ## How to reach us
 
-Email is the quickest way: write to support@asknuvexusdoc.com. We reply within 1 to 2 working days. Our phone number and postal address are below.
+Email is the quickest way: write to admin@elarxsys.com. We reply within 1 to 2 working days. Our phone number and postal address are below.
 
 ## What to include
 
