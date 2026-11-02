@@ -1115,9 +1115,9 @@ smoke and browser run used a fake Google.
 3. **Settings:** add them to `config.py`, `.env.example` and `SPEC.md` section 3.
 4. **OAuth:** register `<base>/api/plugins/<id>/oauth/callback` at the provider for every `PUBLIC_BASE_URLS` entry.
    nginx's callback location already matches any plugin id.
-5. **In tools,** use `answer.AnswerContext`: `request_check.allows(...)` before any side effect, `registry.live_access`
-   before each action, `taint` when returning untrusted text, `cards.put` and `cards.track`, `audit.record`,
-   `connections.access_token(..., expected_subject=...)` and `http.client()`.
+5. **Business details and the contact email: done (2026-11-02).** Admin → Billing → Business & payments holds
+   Elarxsys Ai Hub Pvt Ltd, the registered office address and admin@elarxsys.com (a Zoho Mail mailbox); the receipts,
+   the Contact page and every email show them.
 6. **What is still Gmail- or Google-shaped** and needs a contract change (`SPEC.md`, `schemas_plugins.py`,
    `frontend/src/api/types.ts` together):
    - `PluginCard` is a union of the four Gmail card types, and the frontend's `chat/plugins/PluginCard.tsx` switches
@@ -1977,19 +1977,19 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
    `https://www.asknuvexusdoc.com` from `PUBLIC_BASE_URLS` (step 11). Leave Rocket Loader, Email Address Obfuscation,
    Zaraz and the automatic Web Analytics snippet off: each would inject a script into our pages. HSTS already comes
    from nginx, and `NGINX_REAL_IP_FROM=172.16.0.0/12` is set (item 5; the Sign-up card checks it).
-8. **Email: Resend and Cloudflare DNS** (brief 17.2, items 1 to 6): a Resend account; **Domains → Add domain**
-   `asknuvexusdoc.com`, region Tokyo (ap-northeast-1); in Cloudflare → DNS, each **DNS only**, exactly what Resend's
-   Records tab shows (expected: MX `send` → `feedback-smtp.ap-northeast-1.amazonses.com` priority 10, TXT `send`
-   `v=spf1 include:amazonses.com ~all`, TXT `resend._domainkey` with the DKIM key, and your own TXT `_dmarc`
-   `v=DMARC1; p=none; rua=mailto:dmarc@asknuvexusdoc.com;`; keep the `google-site-verification` TXT on `@`), then
-   **Verify**. Cloudflare → Email → **Email Routing** for the apex: verify your own mailbox as a destination and route
-   `support@` and `dmarc@` to it. In Resend: open and click tracking off; **API Keys → Create** "AskNuvexusDoc SMTP"
-   with **Sending access** for the domain (shown once: `MAIL_SMTP_PASSWORD`); **Webhooks → Add endpoint**
-   `https://asknuvexusdoc.com/api/mail/resend-events` with **email.bounced** and **email.complained** (its `whsec_…`
-   signing secret: `MAIL_WEBHOOK_SECRET`).
-9. **Turnstile** (brief 17.3): Cloudflare → **Turnstile → Add widget** "AskNuvexusDoc", hostname `asknuvexusdoc.com`
-   only (no `www`, no `localhost`), mode **Managed**, pre-clearance **No**; the Site key is `TURNSTILE_SITE_KEY`, the
-   Secret key `TURNSTILE_SECRET_KEY`.
+8. **Email: Resend and Cloudflare DNS: done (2026-11-02), except DMARC.** Resend account and domain `asknuvexusdoc.com`
+   verified; its current records differ from brief 17.2's (a CNAME `send` → `send.forge.rmta.net`, which carries the MX
+   and SPF, and the TXT `resend._domainkey`). The `.env` has the `MAIL_*` block (`smtp.resend.com:465` ssl, user
+   `resend`, a **Sending access** key, `MAIL_FROM=AskNuvexusDoc <no-reply@asknuvexusdoc.com>`,
+   `MAIL_REPLY_TO=admin@elarxsys.com`, the webhook's `MAIL_WEBHOOK_SECRET`; the webhook
+   `https://asknuvexusdoc.com/api/mail/resend-events` sends **email.bounced** and **email.complained**). A test email to
+   admin@elarxsys.com was sent in 2.7 s; Zoho delivered it after a first-sender delay. **Still to add:** the TXT
+   `_dmarc` `v=DMARC1; p=none;` in Cloudflare → DNS (none is published yet), later with `rua=` once a reporting mailbox
+   exists (Cloudflare Email Routing for `support@` and `dmarc@` is optional).
+9. **Turnstile: done (2026-11-02).** Widget "AskNuvexusDoc", mode Managed, pre-clearance No, hostnames
+   `asknuvexusdoc.com` **and** `www.asknuvexusdoc.com` (the backend accepts every host of `PUBLIC_BASE_URLS`, and `www`
+   isn't redirected yet); `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` in `.env`. `/api/auth/config` now offers the
+   site key and password reset.
 10. **Google sign-in, in a new and separate Google Cloud project** (brief 17.4; the Gmail plugin's project stays in
    Testing and isn't touched): a Search Console **Domain** property for `asknuvexusdoc.com` (TXT on `@`, DNS only),
    with the Google account that will own the project; **New project** "AskNuvexusDoc"; Google Auth Platform → **Get
@@ -2008,10 +2008,10 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
     when administering only from this Mac) and `MAIL_DAILY_LIMIT`. Remove `BILLING_EMAIL_FROM` if present, and make
     `ADMIN_PASSWORD` at least 15 characters and not a common one. Then `docker compose up -d backend worker monitor`
     and `docker compose up -d --force-recreate frontend`.
-12. **Checks and a test email** (brief 17.5, item 2): Admin → Users → **Sign-up** shows every check configured and no
-    warning; **Edit… → Send a test email…** to your address arrives, isn't in spam, and Gmail's "Show original" says
-    SPF, DKIM and DMARC "PASS"; Admin → System's Email check is `ok`. With the keys in place, run the spikes of brief
-    18.2 (known limitations) and record what differs.
+12. **Checks and a test email: done (2026-11-02).** Admin → Users → Sign-up: mail, the mail webhook and Turnstile
+    configured; the only warning is `payments_not_live` (Razorpay; direct UPI works). Google sign-in isn't configured
+    (step 10), so only email sign-up can open. Still worth doing: Gmail's or Zoho's "Show original" (SPF, DKIM and DMARC
+    PASS once `_dmarc` exists) and the spikes of brief 18.2 with the real keys.
 13. **`bikash`'s email** (brief 17.5, item 3): as `bikash`, Settings → Account → **Add email…**, then open the
     confirmation link while signed in as `bikash`. Receipts, reminders and checkout need it; an address saved earlier
     for reminders was not carried over.
@@ -2030,11 +2030,11 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
     02:30 UTC backup, encrypted (rclone with a `crypt` remote, an encrypted drive, or restic; `scripts/README.md`,
     "Off-site copies"), and keep `.env` in a password manager. Test a restore from the copy on a throwaway Compose
     project now and then.
-18. **Install the watchdog** (optional; `scripts/watchdog/README.md`): the LaunchAgent on this Mac (and keep the Mac
-    awake, Docker Desktop starting at sign-in), or the systemd timer on a server. On this Mac, install it with
-    `RAG_PUBLIC_URL=https://asknuvexusdoc.com/api/health` and `RAG_TUNNEL_LAUNCHD_LABEL=com.asknuvexusdoc.tunnel`, so
-    a stalled tunnel is restarted (the commands, with `plutil`, are in that README). Check it with
-    `scripts/watchdog/watchdog.sh --test` once an alert channel is set.
+18. **Watchdog: installed (2026-11-02)** on this Mac (`scripts/watchdog/README.md`): the LaunchAgent
+    `local.rag-assistant.watchdog` every 5 minutes, with `RAG_PUBLIC_URL=https://asknuvexusdoc.com/api/health` and
+    `RAG_TUNNEL_LAUNCHD_LABEL=com.asknuvexusdoc.tunnel`; its first run found the app and the public address up. Alerts
+    go nowhere until an alert channel is set (step 16); then run `scripts/watchdog/watchdog.sh --test`. The Mac must stay
+    awake: on battery it idle-slept every 7 to 8 minutes on 2026-11-02 and the public address dropped each time.
 19. **Gmail's Google app** (the owner): it is in Google's testing mode, so connections end every 7 days and only
     listed test users can connect; `bikash`'s connection needs a reconnect now (Settings → Plugins & data → Gmail →
     **Reconnect**). Register `https://asknuvexusdoc.com/api/plugins/gmail/oauth/callback` in the Gmail project (only the
