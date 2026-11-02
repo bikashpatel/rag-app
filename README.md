@@ -823,6 +823,15 @@ After setting a channel, run `docker compose up -d monitor`, then press **Send a
   never a build) and alerts through the same channels. It leaves the stack alone while `.maintenance` exists (a deploy,
   a running restore, an app left stopped on purpose). Install it as a macOS LaunchAgent or a Linux systemd timer
   (`scripts/watchdog/README.md`), then check the channels with `scripts/watchdog/watchdog.sh --test`.
+- **The public address in the watchdog** (optional, off by default): the tunnel can stall while the app runs (on
+  2026-11-02 cloudflared stopped reconnecting and the site showed Cloudflare's 530 until the tunnel was restarted by
+  hand). With `RAG_PUBLIC_URL=https://asknuvexusdoc.com/api/health` and
+  `RAG_TUNNEL_LAUNCHD_LABEL=com.asknuvexusdoc.tunnel` (or `RAG_TUNNEL_SYSTEMD_UNIT` on Linux) in its LaunchAgent or
+  unit, the watchdog also asks the public address whenever the app answers locally. When that fails twice, 30 s apart
+  (no answer, or a status outside 2xx and 3xx), it restarts the tunnel (`launchctl kickstart -k`, or `systemctl
+  restart`), never Docker or the stack, and alerts once when the address went down (saying whether the restart
+  worked), every `ALERT_REPEAT_HOURS` while it stays down and once when it answers again; `.maintenance` keeps it away
+  too. The install commands for this Mac are in `scripts/watchdog/README.md`.
 
 ### Web server logs
 

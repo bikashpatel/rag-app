@@ -3,7 +3,8 @@
 # itself stopping (Docker Desktop quitting, the Mac restarting); this runs outside Docker, every 5 minutes, from launchd
 # (macOS) or a systemd timer (Linux):
 #
-#   1. GET $RAG_APP_URL (default http://127.0.0.1:8080/api/health). Answering: done (and "resolved" if it was down).
+#   1. GET $RAG_APP_URL (default http://127.0.0.1:8080/api/health). Answering: on to step 5 (and "resolved" if it was
+#      down).
 #   2. Otherwise ask again $RAG_WATCHDOG_RETRY_SECONDS (30) later: one slow answer restarts nothing.
 #   3. Still nothing: start Docker (Docker Desktop on macOS) if it isn't running, then start the stack's containers as
 #      they are (`docker compose start`, then `docker compose restart` if that wasn't enough) in $RAG_APP_DIR. It never
@@ -11,6 +12,12 @@
 #      decided by asking the app again, for up to $RAG_WATCHDOG_WAIT_SECONDS (300).
 #   4. Alert through the same channels as the monitor (ALERT_WEBHOOK_URL, ALERT_NTFY_URL, ALERT_SMTP_* in .env): once
 #      when it went down (restarted or not), every ALERT_REPEAT_HOURS while it stays down, and when it is back.
+#   5. Only with $RAG_PUBLIC_URL (off by default): the public address, through the tunnel, is asked while the app
+#      answers here. Anything but a 2xx or 3xx answer (Cloudflare's 530 or 502 pages, or no answer) is asked again
+#      $RAG_WATCHDOG_RETRY_SECONDS later; still failing, the tunnel is restarted (the launchd job
+#      $RAG_TUNNEL_LAUNCHD_LABEL with `launchctl kickstart -k`, or the systemd unit $RAG_TUNNEL_SYSTEMD_UNIT; without
+#      either it only alerts), never Docker or the stack, and asked for up to $RAG_WATCHDOG_WAIT_SECONDS. It alerts as
+#      in step 4, with a state of its own.
 #
 #   watchdog.sh            # one check (what launchd and systemd run)
 #   watchdog.sh --test     # send a test alert to every configured channel
@@ -19,7 +26,7 @@
 # deploys set it (README.md section 8), and so does scripts/restore.sh, writing "pid=<its process id>" while it runs
 # and "hold" when it leaves the app stopped on purpose. A maintenance file older than $RAG_MAINTENANCE_MAX_MINUTES (120)
 # is taken as left behind and ignored, unless it says "hold" or names a process that still runs. State lives in
-# $RAG_WATCHDOG_STATE (default ~/.rag-watchdog-state).
+# $RAG_WATCHDOG_STATE (default ~/.rag-watchdog-state): the app's on the first line, the public address's on a second.
 set -uo pipefail
 
 APP_DIR=${RAG_APP_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
@@ -29,6 +36,9 @@ MAINTENANCE_MAX_MINUTES=${RAG_MAINTENANCE_MAX_MINUTES:-120}
 STATE=${RAG_WATCHDOG_STATE:-$HOME/.rag-watchdog-state}
 RETRY_SECONDS=${RAG_WATCHDOG_RETRY_SECONDS:-30}
 WAIT_SECONDS=${RAG_WATCHDOG_WAIT_SECONDS:-300}
+PUBLIC_URL=${RAG_PUBLIC_URL:-}
+TUNNEL_LABEL=${RAG_TUNNEL_LAUNCHD_LABEL:-}
+TUNNEL_UNIT=${RAG_TUNNEL_SYSTEMD_UNIT:-}
 ENV_FILE=$APP_DIR/.env
 DOCKER_START_SECONDS=180
 # Appended: launchd's and systemd's PATH lack Docker Desktop's folder; one already on PATH comes first.
@@ -126,9 +136,9 @@ send_email() { # host title body: curl's SMTP client; the password goes through 
 
 healthy() { curl -fsS -m 10 -o /dev/null "$URL" 2> /dev/null; }
 
-healthy_within() { # seconds: ask every 5 s until the app answers
+within() { # seconds probe: ask every 5 s until the probe succeeds
   local waited=0
-  until healthy; do
+  until "$2"; do
     [ "$waited" -ge "$1" ] && return 1
     sleep 5
     waited=$((waited + 5))
@@ -162,10 +172,10 @@ in_maintenance() {
 # Starts the stack's existing containers as they are: never a build, never a recreated container.
 start_stack() {
   (cd "$APP_DIR" && docker compose start > /dev/null 2>&1)
-  healthy_within "$WAIT_SECONDS" && return 0
+  within "$WAIT_SECONDS" healthy && return 0
   log "Still no answer after starting the containers; restarting them"
   (cd "$APP_DIR" && docker compose restart > /dev/null 2>&1)
-  healthy_within "$WAIT_SECONDS"
+  within "$WAIT_SECONDS" healthy
 }
 
 start_docker() {
@@ -187,6 +197,116 @@ start_docker() {
   done
 }
 
+reminder_due() { # time of the last alert: ALERT_REPEAT_HOURS (6; 0: never) have passed since
+  local repeat
+  repeat=$(setting ALERT_REPEAT_HOURS 6)
+  repeat=${repeat%%.*}
+  [ "${repeat:-0}" -gt 0 ] && [ $((now - $1)) -ge $((repeat * 3600)) ]
+}
+
+save_state() { # the app's state, then the public address's while it is checked
+  if [ -n "$PUBLIC_URL" ]; then
+    printf '%s %s %s\npublic %s %s %s\n' "$state" "$since" "$notified" "$public" "$public_since" "$public_notified" \
+      > "$STATE"
+  else
+    echo "$state $since $notified" > "$STATE"
+  fi
+}
+
+# A launchd label or systemd unit: ASCII letters, digits, dots, dashes, underscores and @, starting with a letter or
+# a digit (so it can't pass for an option).
+job_name() {
+  local alnum=abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789
+  case $1 in
+    "" | [!$alnum]* | *[!$alnum._@-]*) return 1 ;;
+  esac
+}
+
+public_code=000
+public_answers() { # a 2xx or 3xx status; Cloudflare's error pages (530, 502) and no answer at all are failures
+  public_code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' "$PUBLIC_URL" 2> /dev/null) || public_code=000
+  case $public_code in
+    [23][0-9][0-9]) return 0 ;;
+  esac
+  return 1
+}
+
+public_failure() { # the last public answer, for the log and the alerts
+  if [ "$public_code" = 000 ]; then echo "doesn't answer"; else echo "answers HTTP $public_code"; fi
+}
+
+restart_tunnel() { # the tunnel's own launchd job or systemd unit; never Docker or the stack
+  if [ -n "$TUNNEL_LABEL" ]; then
+    launchctl kickstart -k "gui/$(id -u)/$TUNNEL_LABEL" > /dev/null
+  else
+    systemctl --no-ask-password restart "$TUNNEL_UNIT" > /dev/null
+  fi
+}
+
+public_up() { # [how it came back]
+  if [ "$public" = down ]; then
+    log "The public address answers again"
+    send recovery "[$name] Resolved: the public address answers again" \
+      "$PUBLIC_URL answers again after $(((now - public_since) / 60)) min${1:-}."
+  fi
+  public=up public_since=$now public_notified=0
+  save_state
+  exit 0
+}
+
+# Step 5: only while the app answers here, so a failure is the tunnel's or Cloudflare's.
+check_public() {
+  local reason outcome
+  public_answers && public_up
+  log "The public address $PUBLIC_URL $(public_failure); asking again in $RETRY_SECONDS s"
+  sleep "$RETRY_SECONDS"
+  if public_answers; then
+    log "It answered the second time"
+    public_up
+  fi
+  if in_maintenance; then
+    exit 0
+  fi
+  if ! healthy; then
+    log "The app stopped answering at $URL meanwhile; leaving the tunnel alone"
+    exit 1
+  fi
+  reason="$PUBLIC_URL $(public_failure) while the app answers at $URL"
+  if [ -z "$tunnel" ]; then
+    log "The public address still $(public_failure); no way to restart the tunnel is set"
+    outcome="The watchdog on $(hostname) has no way to restart the tunnel (RAG_TUNNEL_LAUNCHD_LABEL or"
+    outcome+=" RAG_TUNNEL_SYSTEMD_UNIT): restart it by hand."
+  else
+    log "The public address still $(public_failure); restarting the tunnel ($tunnel)"
+    if ! restart_tunnel; then
+      log "The tunnel restart failed"
+      outcome="The watchdog on $(hostname) couldn't restart the tunnel ($tunnel): see the watchdog's log."
+    elif within "$WAIT_SECONDS" public_answers; then
+      log "Restarted the tunnel; the public address answers"
+      if [ "$public" != down ]; then
+        send problem "[$name] Problem: the public address was down and the tunnel was restarted" \
+          "$reason, so the watchdog on $(hostname) restarted the tunnel ($tunnel); it answers now."
+      fi
+      public_up " (the watchdog on $(hostname) restarted the tunnel, $tunnel)"
+    else
+      log "It still $(public_failure) $WAIT_SECONDS s after the restart"
+      outcome="The watchdog on $(hostname) restarted the tunnel ($tunnel), but it still $(public_failure)"
+      outcome+=" after $WAIT_SECONDS s: see the tunnel's log."
+    fi
+  fi
+  if [ "$public" != down ]; then
+    send problem "[$name] Problem: the public address is down" "$reason. $outcome"
+    public=down public_since=$now public_notified=$now
+    save_state
+  elif reminder_due "${public_notified:-0}"; then
+    send reminder "[$name] Still failing: the public address is down" \
+      "$PUBLIC_URL has been down for $(((now - public_since) / 60)) min while the app answers at $URL. $outcome"
+    public_notified=$now
+    save_state
+  fi
+  exit 1
+}
+
 name=$(setting ALERT_NAME "AskNuvexusDoc")
 if [ "${1:-}" = --test ]; then
   send test "[$name] Test alert (watchdog)" "This is a test alert from the host watchdog on $(hostname). If you can read it, this channel works."
@@ -196,17 +316,41 @@ if in_maintenance; then
   exit 0
 fi
 
+tunnel="" # how step 5 restarts the tunnel, for the log and the alerts
+if [ -n "$PUBLIC_URL" ]; then
+  case $PUBLIC_URL in
+    http://?* | https://?*) ;;
+    *)
+      log "Refusing RAG_PUBLIC_URL: it isn't an http:// or https:// address, so the public address isn't checked"
+      PUBLIC_URL=""
+      ;;
+  esac
+  if [ -n "$TUNNEL_LABEL" ] && ! job_name "$TUNNEL_LABEL"; then
+    log "Refusing RAG_TUNNEL_LAUNCHD_LABEL: not a launchd label (letters, digits, '.', '-', '_', '@')"
+    TUNNEL_LABEL=""
+  fi
+  if [ -n "$TUNNEL_UNIT" ] && ! job_name "$TUNNEL_UNIT"; then
+    log "Refusing RAG_TUNNEL_SYSTEMD_UNIT: not a systemd unit (letters, digits, '.', '-', '_', '@')"
+    TUNNEL_UNIT=""
+  fi
+  [ -n "$TUNNEL_UNIT" ] && tunnel="systemd unit $TUNNEL_UNIT"
+  [ -n "$TUNNEL_LABEL" ] && tunnel="launchd job $TUNNEL_LABEL"
+fi
+
 state=up since=0 notified=0
 if [ -r "$STATE" ]; then
-  read -r state since notified < "$STATE"
+  { read -r state since notified; read -r _ public public_since public_notified; } < "$STATE"
 fi
+public=${public:-up} public_since=${public_since:-0} public_notified=${public_notified:-0}
 now=$(date +%s)
 answers() {
   if [ "$state" = down ]; then
     log "The app answers again"
     send recovery "[$name] Resolved: the app answers again" "The app at $URL answers again after $(((now - since) / 60)) min."
   fi
-  echo "up $now 0" > "$STATE"
+  state=up since=$now notified=0
+  save_state
+  [ -n "$PUBLIC_URL" ] && check_public
   exit 0
 }
 if healthy; then
@@ -232,19 +376,20 @@ if start_docker && start_stack; then
   log "Restarted; the app answers"
   send problem "[$name] Problem: the app was down and was restarted" \
     "$reason at $URL, so the watchdog on $(hostname) started it again; it answers now. See docker compose logs."
-  echo "up $now 0" > "$STATE"
+  state=up since=$now notified=0
+  save_state
   exit 0
 fi
 
-repeat=$(setting ALERT_REPEAT_HOURS 6)
-repeat=${repeat%%.*}
 if [ "$state" != down ]; then
   log "Still down after a restart"
   send problem "[$name] Problem: the app is down" \
     "$reason at $URL, and the watchdog on $(hostname) couldn't start it again. Check Docker and docker compose logs."
-  echo "down $now $now" > "$STATE"
-elif [ "${repeat:-0}" -gt 0 ] && [ $((now - notified)) -ge $((repeat * 3600)) ]; then
+  state=down since=$now notified=$now
+  save_state
+elif reminder_due "${notified:-0}"; then
   send reminder "[$name] Still failing: the app is down" "The app at $URL has been down for $(((now - since) / 60)) min."
-  echo "down $since $now" > "$STATE"
+  notified=$now
+  save_state
 fi
 exit 1

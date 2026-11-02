@@ -14,7 +14,9 @@ reviewed and deployed to the live stack (committed in `10ecd35`), and on 2026-11
 sign-in, password reset and transactional email were built, tested and deployed to the live stack with sign-up closed
 (not committed yet), and on 2026-11-02 after direct UPI payments to the owner's UPI ID were built, reviewed, fixed and
 deployed to the live stack the same day (committed in `1dcb624` and `f8f79a8`, CI green; turned off until the owner
-sets the UPI ID). `SPEC.md` is the binding contract; `README.md`
+sets the UPI ID). Later on 2026-11-02 the Cloudflare tunnel stalled (next step 22): cloudflared now runs with
+`protocol: http2`, and the host watchdog can check the public address and restart the tunnel (built and tested, not
+installed). `SPEC.md` is the binding contract; `README.md`
 has setup, commands, the test suites, operations (section 8), plans and billing (section 9), sign-up and email (section
 10), the architecture and how to use the app.
 
@@ -143,7 +145,8 @@ until the owner sets the UPI ID):
     `test_ops_*.py`, `test_system_api.py`, `SystemTab.test.tsx`, and `integration/tests/test_15_monitoring.py` with a
     fake alert receiver (`integration/fake_alerts/`).
   - **Watchdog** (`scripts/watchdog/`, optional, not installed): a host LaunchAgent or systemd timer that restarts
-    Docker and the stack when the app stops answering.
+    Docker and the stack when the app stops answering. Since 2026-11-02 it can also check the public address
+    (`RAG_PUBLIC_URL`, off by default) and restart the Cloudflare tunnel when only that fails.
   - **Review fixes** (2026-10-25/26): the 8 confirmed findings of the operations review are fixed, with failure
     injection in the restore drill and `integration/tests/test_16_watchdog.py` (see "Operations" below and "How it
     was verified"). Redeployed to the live stack on 2026-10-26; CI green on all five jobs at `c58622b`.
@@ -1478,6 +1481,14 @@ fixed, and deployed to the live stack. Migrations are under "Database" above.
   half a CPU the old way failed 16 of 24 uploads, the new one none (the drill's upload test).
 - **The watchdog never deploys:** two failed probes 30 s apart, then `docker compose start` / `restart`, success
   decided by the app answering, and nothing while `.maintenance` is there (deploys create it).
+- **The watchdog's public check only restarts the tunnel** (2026-11-02, after the tunnel stall in next step 22). It
+  runs only while the app answers locally, so a failure is the tunnel's or Cloudflare's: two failures 30 s apart (no
+  answer, or a status outside 2xx and 3xx) restart the tunnel's launchd job (`RAG_TUNNEL_LAUNCHD_LABEL`, `launchctl
+  kickstart -k`) or systemd unit (`RAG_TUNNEL_SYSTEMD_UNIT`), plain names only, and never Docker or the stack. Its
+  alerts have their own state (the state file's second line), so the app's and the public address's never clear each
+  other. Off unless `RAG_PUBLIC_URL` is set; unset, the script behaves as before (the old and new scripts were run
+  through the same scenarios and gave identical logs, alerts, Docker calls and state). Tests:
+  `integration/tests/test_16_watchdog.py` with launchctl and systemctl stand-ins.
 - **The monitor is the only service that sends alerts.** It runs the same checks as `GET /api/admin/system`
   (`app/ops/checks.py`) plus the proxy check, and publishes its results, alert states and last 50 alerts in Redis
   (`rag:monitor:status`), which the backend reads. "Send a test alert" only asks the monitor (through Redis) to send one
@@ -1852,6 +1863,9 @@ maintaining it:
   restarted). `.env` is in no backup by design: keep it in a password manager.
 - The monitor runs inside Docker, so Docker or the whole machine stopping is reported only by the host watchdog (not
   installed, next step 18) or an external uptime check on `https://asknuvexusdoc.com/api/health/ready` (next step 16).
+- **The tunnel can stall while the app runs** (2026-11-02, next step 22): the site showed Cloudflare's 530 until the
+  tunnel was restarted by hand. Whether `protocol: http2` prevents another stall isn't known yet. Once the watchdog
+  is installed with `RAG_PUBLIC_URL`, it restarts the tunnel on its next run (every 5 minutes) and alerts.
 - A backup is taken while the app runs, part after part (uploads, Qdrant, Postgres), not as one snapshot. A document
   added or deleted meanwhile can come back with only some of its parts; the restore's reconcile step marks it failed
   (file missing: the user uploads it again) or re-indexes it (vectors missing), which costs embedding tokens for those
@@ -2018,7 +2032,9 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
     "Off-site copies"), and keep `.env` in a password manager. Test a restore from the copy on a throwaway Compose
     project now and then.
 18. **Install the watchdog** (optional; `scripts/watchdog/README.md`): the LaunchAgent on this Mac (and keep the Mac
-    awake, Docker Desktop starting at sign-in), or the systemd timer on a server. Check it with
+    awake, Docker Desktop starting at sign-in), or the systemd timer on a server. On this Mac, install it with
+    `RAG_PUBLIC_URL=https://asknuvexusdoc.com/api/health` and `RAG_TUNNEL_LAUNCHD_LABEL=com.asknuvexusdoc.tunnel`, so
+    a stalled tunnel is restarted (the commands, with `plutil`, are in that README). Check it with
     `scripts/watchdog/watchdog.sh --test` once an alert channel is set.
 19. **Gmail's Google app** (the owner): it is in Google's testing mode, so connections end every 7 days and only
     listed test users can connect; `bikash`'s connection needs a reconnect now (Settings → Plugins & data → Gmail →
@@ -2040,7 +2056,11 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
     origins and localhost, and `NGINX_REAL_IP_FROM=172.16.0.0/12` (`frontend/real-ip.envsh`: nginx takes the visitor's
     address from `CF-Connecting-IP` for connections from Docker's network, so throttles, billing rate limits and the
     sign-in history see real visitors; verified). What was left of it is in steps 6, 7, 16 and 19. The site is up only
-    while this Mac and Docker run (step 20).
+    while this Mac and Docker run (step 20). **On 2026-11-02 the tunnel stalled:** its connections dropped ("no recent
+    network activity") and cloudflared stopped retrying, so the app answered on `127.0.0.1:8080` while the public
+    address returned Cloudflare's 530, until `launchctl kickstart -k gui/$(id -u)/com.asknuvexusdoc.tunnel` restarted
+    it by hand. The same day `~/.cloudflared/config.yml` got `protocol: http2` (HTTP/2 over TCP; the default tries QUIC
+    first), and the watchdog got its public check (step 18).
 23. Done: the worker has `mem_limit`/`memswap_limit` `${WORKER_MEM_LIMIT:-4g}` (verified with `docker inspect`).
     An OOM kill stays inside the worker, and the attempt counter fails the document after 3 kills.
 24. Later: move the remaining parsing (pypdf, Office formats, HTML) into a child process with a hard kill, as

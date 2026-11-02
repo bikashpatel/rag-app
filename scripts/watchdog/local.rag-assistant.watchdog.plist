@@ -17,6 +17,12 @@
     <string>__RAG_APP_DIR__</string>
     <key>RAG_APP_URL</key>
     <string>http://127.0.0.1:8080/api/health</string>
+    <!-- Optional, empty is off: the public address and the tunnel's LaunchAgent label, filled in the installed copy
+         with plutil (scripts/watchdog/README.md, "The public address and the tunnel"). -->
+    <key>RAG_PUBLIC_URL</key>
+    <string></string>
+    <key>RAG_TUNNEL_LAUNCHD_LABEL</key>
+    <string></string>
     <key>PATH</key>
     <string>__HOME__/.docker/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>

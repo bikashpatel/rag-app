@@ -5,7 +5,7 @@
 | `scripts/backup.sh` | back up now (the `backup` service also does it daily) |
 | `scripts/restore.sh NAME --yes` | restore a backup into this stack, after verifying it (destructive) |
 | `scripts/backup/backup.sh` | the backup and restore steps, run inside the `backup` and `restore` services, never on the host |
-| `scripts/watchdog/` | an optional host watchdog that restarts Docker and the stack ([README](watchdog/README.md)) |
+| `scripts/watchdog/` | an optional host watchdog that restarts Docker and the stack, and optionally the Cloudflare tunnel ([README](watchdog/README.md)) |
 
 ## What a backup holds, and what it doesn't
 

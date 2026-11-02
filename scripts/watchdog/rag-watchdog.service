@@ -1,7 +1,7 @@
 # The watchdog as a systemd service, started by rag-watchdog.timer (scripts/watchdog/README.md). Copy both files to
 # /etc/systemd/system/ and set User and RAG_APP_DIR: a user in the docker group that owns the checkout.
 [Unit]
-Description=AskNuvexusDoc watchdog (restart the stack when the app doesn't answer)
+Description=AskNuvexusDoc watchdog (restart the stack, or the tunnel, when it doesn't answer)
 After=docker.service network-online.target
 Wants=network-online.target
 
@@ -10,6 +10,9 @@ Type=oneshot
 User=rag
 Environment=RAG_APP_DIR=/opt/rag-app
 Environment=RAG_APP_URL=http://127.0.0.1:8080/api/health
+# Optional: the public address and the tunnel's unit, which User must be allowed to restart (README.md there).
+#Environment=RAG_PUBLIC_URL=https://example.com/api/health
+#Environment=RAG_TUNNEL_SYSTEMD_UNIT=cloudflared.service
 ExecStart=/bin/bash /opt/rag-app/scripts/watchdog/watchdog.sh
-# The app being down is what this reports, not a failure of the unit itself.
+# The app or the public address being down is what this reports, not a failure of the unit itself.
 SuccessExitStatus=1

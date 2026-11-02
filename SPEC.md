@@ -3213,4 +3213,8 @@ needed and the stack's containers as they are (`docker compose start`, then `doc
 a recreated container), decides whether that worked by the app answering within 5 minutes, and alerts through the same
 channels on a state change. It skips its checks while `.maintenance` exists: deploys create it, and `restore.sh` writes
 `pid=<its process id>` into it while it runs and `hold` when it leaves the app stopped on purpose. A file older than 2
-hours is ignored as left behind, unless it says `hold` or names a running process.
+hours is ignored as left behind, unless it says `hold` or names a running process. With `RAG_PUBLIC_URL` set (off by
+default) it also asks the public address whenever the app answers: two failures 30 s apart (no answer, or a status
+outside 2xx and 3xx) restart the tunnel, its launchd job (`RAG_TUNNEL_LAUNCHD_LABEL`) or systemd unit
+(`RAG_TUNNEL_SYSTEMD_UNIT`, both plain names only), never Docker or the stack; without either it only alerts. It
+alerts on a state change and every `ALERT_REPEAT_HOURS`, with a state of its own (the second line of the state file).
