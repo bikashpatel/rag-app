@@ -82,6 +82,7 @@ function UpiConfirmDialog({ order, onClose, onDone }: DialogProps) {
       open
       title="Confirm UPI payment"
       onClose={onClose}
+      initialFocus={checkRef}
       width={520}
       footer={
         <>

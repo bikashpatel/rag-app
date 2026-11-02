@@ -1,4 +1,4 @@
-import { act, screen, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OrderView } from "../../api/types";
@@ -64,7 +64,7 @@ describe("The direct-UPI order page", () => {
   it("shows the QR code, the steps and what to pay on a wide screen, without Razorpay's polling", async () => {
     const { calls } = await setup(makeUpiOrder());
     expect(title()).toHaveTextContent("Pay ₹2,000 by UPI");
-    expect(title()).toHaveFocus();
+    await waitFor(() => expect(title()).toHaveFocus());
     expect(screen.getByText(/this request is open until/)).toHaveTextContent(
       "Standard plan, 30 days · this request is open until 21 Oct, 14:58 IST",
     );
@@ -152,7 +152,7 @@ describe("The direct-UPI order page", () => {
     await user.click(send());
     const error = screen.getByRole("alert");
     expect(error).toHaveTextContent(long);
-    expect(error).toHaveFocus();
+    await waitFor(() => expect(error).toHaveFocus());
     expect(screen.getAllByText(long)).toEqual([error]);
     expect(calls.some((call) => call.method === "POST")).toBe(false);
 
@@ -178,7 +178,7 @@ describe("The direct-UPI order page", () => {
     await user.keyboard("{Enter}");
     const error = screen.getByRole("alert");
     expect(error).toHaveTextContent(id);
-    expect(error).toHaveFocus();
+    await waitFor(() => expect(error).toHaveFocus());
     expect(screen.getAllByText(id)).toEqual([error]);
 
     await paste(user, "6305१२341234");
@@ -221,7 +221,7 @@ describe("The direct-UPI order page", () => {
     await user.click(send());
     const error = screen.getByRole("alert");
     expect(error).toHaveTextContent("Enter all 12 digits.");
-    expect(error).toHaveFocus();
+    await waitFor(() => expect(error).toHaveFocus());
     expect(utrField()).toHaveAttribute("aria-invalid", "true");
     expect(calls.some((call) => call.method === "POST")).toBe(false);
     await user.type(utrField(), "3");
@@ -240,7 +240,8 @@ describe("The direct-UPI order page", () => {
     });
     await user.type(utrField(), "6305 1234 5678{Enter}");
     expect(calls.find((call) => call.path === `${ORDER}/utr`)?.body).toEqual({ utr: "630512345678" });
-    expect(await screen.findByRole("heading", { level: 1, name: "We're checking your payment" })).toHaveFocus();
+    const checking = await screen.findByRole("heading", { level: 1, name: "We're checking your payment" });
+    await waitFor(() => expect(checking).toHaveFocus());
     expect(screen.getByRole("main")).toHaveAttribute("aria-live", "polite");
     expect(screen.getByText(/We'll match your UTR/)).toHaveTextContent(
       "We'll match your UTR with the ₹2,000 that reached Asha Rao's account. This usually takes a few hours during the day (Indian time). Your Standard plan starts as soon as it's confirmed.",
@@ -267,7 +268,7 @@ describe("The direct-UPI order page", () => {
     await user.click(send());
     const error = await screen.findByRole("alert");
     expect(error).toHaveTextContent("This UTR is already used for another payment.");
-    expect(error).toHaveFocus();
+    await waitFor(() => expect(error).toHaveFocus());
     expect(title()).toHaveTextContent("Pay ₹2,000 by UPI");
   });
 
@@ -286,7 +287,8 @@ describe("The direct-UPI order page", () => {
     });
     await user.type(utrField(), "630512345678");
     await user.click(send());
-    expect(await screen.findByRole("heading", { level: 1, name: "This payment request has expired" })).toHaveFocus();
+    const expired = await screen.findByRole("heading", { level: 1, name: "This payment request has expired" });
+    await waitFor(() => expect(expired).toHaveFocus());
     expect(screen.getByText(/No UTR was sent/)).toHaveTextContent(
       "No UTR was sent, so your plan hasn't changed. If you already paid, start a new payment for the same plan and enter that payment's UTR there.",
     );

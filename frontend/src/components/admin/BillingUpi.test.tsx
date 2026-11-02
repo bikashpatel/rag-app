@@ -164,13 +164,14 @@ describe("Billing → UPI", () => {
     expect(dialog).toHaveTextContent("Frommaya.chenmaya.chen@example.com");
     expect(dialog).toHaveTextContent("PlanStandard, 30 days");
     expect(dialog).toHaveTextContent("Sent20 Oct 2026, 13:00 IST");
+    const tick = within(dialog).getByRole("checkbox", {
+      name: "I found a credit of exactly ₹2,000 with UTR 6305 1234 5678.",
+    });
+    await waitFor(() => expect(tick).toHaveFocus());
     const confirm = within(dialog).getByRole("button", { name: "Confirm and start the plan" });
     expect(confirm).toHaveAttribute("aria-disabled", "true");
     await user.click(confirm);
     expect(within(dialog).getByRole("alert")).toHaveTextContent("Tick the box once you've found this payment.");
-    const tick = within(dialog).getByRole("checkbox", {
-      name: "I found a credit of exactly ₹2,000 with UTR 6305 1234 5678.",
-    });
     expect(tick).toHaveFocus();
     expect(posts(calls)).toHaveLength(0);
 
