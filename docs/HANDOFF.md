@@ -13,7 +13,8 @@ stack (committed in `91e20bc`). Updated on 2026-10-27 after plans, Razorpay chec
 reviewed and deployed to the live stack (committed in `10ecd35`), and on 2026-11-01 after self-service sign-up, Google
 sign-in, password reset and transactional email were built, tested and deployed to the live stack with sign-up closed
 (not committed yet), and on 2026-11-02 after direct UPI payments to the owner's UPI ID were built, reviewed, fixed and
-verified on the working tree (**not deployed and not committed yet**). `SPEC.md` is the binding contract; `README.md`
+deployed to the live stack the same day (committed in `1dcb624` and `f8f79a8`, CI green; turned off until the owner
+sets the UPI ID). `SPEC.md` is the binding contract; `README.md`
 has setup, commands, the test suites, operations (section 8), plans and billing (section 9), sign-up and email (section
 10), the architecture and how to use the app.
 
@@ -26,8 +27,8 @@ the old name until changed there; the receipt prefix stays `RA`.
 
 ## Status
 
-Everything in `SPEC.md` is built, tested, reviewed and running in Docker, except direct UPI, which is built, reviewed
-and verified but not deployed yet (below):
+Everything in `SPEC.md` is built, tested, reviewed and running in Docker (direct UPI is deployed but switched off
+until the owner sets the UPI ID):
 
 - **Backend:** auth and admin (`bootstrap.py`, `routers/{auth,models,admin}.py`), ingestion
   (`services/{parsing,chunking,ingestion}.py`, `worker.py`, `routers/documents.py`), chat
@@ -199,7 +200,8 @@ and verified but not deployed yet (below):
     `test_ops_mail.py`, `test_schemas_auth.py`, `test_migration_0004.py`) with fakes for SMTP, Turnstile, HIBP and
     Google OpenID Connect; `integration/tests/test_18_signup.py` and `test_19_mail.py` against `integration/fake_mail/`
     and `integration/fake_turnstile/`; `e2e/tests/signup.spec.ts`.
-- **Direct UPI payments** (2026-11-02, in the working tree, **not deployed and not committed yet**;
+- **Direct UPI payments** (2026-11-02, deployed live with migration 0005, rollback backup `20261102T000810Z-manual`;
+  switched off until the owner sets the UPI ID;
   `docs/briefs/upi-direct.md` revision 1, `README.md` section 9 "Direct UPI", `SPEC.md`; see "Direct UPI" below).
   Customers pay the owner's own UPI ID by QR code or a UPI app link, enter the payment's 12-digit UTR, and the owner
   confirms it in Admin → Billing → UPI; only then the plan starts, through the same exactly-once apply. Built, reviewed
@@ -1800,7 +1802,7 @@ maintaining it:
     daily sign-up digest; asking existing users to accept changed terms.
   - **`bikash`'s Gmail plugin connection needs a reconnect**: the Gmail Google project is in Testing mode, whose tokens
     last 7 days (next step 19). Signing in with Google doesn't touch it.
-- **Direct UPI, not yet checked and limits by design** (built 2026-11-02, not deployed):
+- **Direct UPI, not yet checked and limits by design** (deployed 2026-11-02, switched off until set up):
   - **No real UPI payment has gone through it**: every suite uses made-up UTRs. The owner's ₹1 tests (brief 11 and
     14.2) settle what Google Pay, PhonePe and Paytm do with the link and the QR code for the chosen UPI ID, whether
     the note reaches the owner's bank app, and what an iPhone opens for `upi://`.
@@ -1922,15 +1924,9 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
    and `d4eada1`, operations (migrations, backups, monitoring) in `91e20bc` (CI green at `c58622b`), plans and billing
    in `10ecd35`, and the rename to AskNuvexusDoc in `28b7fe5`.
 2. Rotate the OpenAI API key, update `.env`, and run `docker compose up -d`.
-3. **Deploy direct UPI (owner's approval), then set the UPI ID in Admin and test with the ₹1 QR.** Built, reviewed and
-   verified on 2026-11-02 in the working tree; migration 0005 rehearsed on `20261101T170805Z-manual`. Commit it and
-   let CI run, then, with the owner's go-ahead: `touch .maintenance`; `scripts/backup.sh` (keep the `BACKUP_NAME` it
-   prints: the way back); `APP_VERSION=$(git describe --always --dirty) docker compose up -d --build` (rebuilds the
-   backend image for `backend`, `worker` and `monitor`, with segno, and the `frontend` image; the backend runs
-   migration 0005 while it starts: "Database schema migrated from 0004 to revision 0005"); `docker compose up -d
-   --force-recreate frontend`; `docker compose exec backend alembic current` (0005 (head)); `rm .maintenance`; then
-   the e2e suite against the live stack (80 tests, the `@live` one skipped). Direct UPI stays off until it is turned
-   on. Then, by `README.md` section 9 ("Direct UPI"): choose the UPI ID (brief 14.1: a business ID with the
+3. **Set the UPI ID in Admin and test with the ₹1 QR.** Direct UPI was deployed on 2026-11-02 with the owner's
+   go-ahead (backup `20261102T000810Z-manual` first; migration 0005 applied; pre-existing row counts unchanged; the
+   e2e suite against the live stack: 79 passed, the `@live` one skipped). It stays off until it is turned on. By `README.md` section 9 ("Direct UPI"): choose the UPI ID (brief 14.1: a business ID with the
    small-merchant limits, or a personal one), save it and the payee name in Admin → Billing → Business & payments with
    **Accept UPI payments** off, pay the ₹1 test QR from another phone with Google Pay, PhonePe and Paytm (the name
    shown, the ₹1 credit, where the UTR and the note `AN-TEST` appear), set the contact email (step 5) and the mailer
@@ -2053,7 +2049,7 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
 25. Later: read images in DOCX and PPTX files with the vision model (PDFs only for now), and remove
     `llm._allow_effort` once LiteLLM's bundled model map lists `claude-sonnet-5-5`.
 
-Direct UPI is built, reviewed and verified (2026-11-02), not yet deployed or committed. What is left beyond step 3:
+Direct UPI is deployed (2026-11-02) and switched off. What is left beyond step 3:
 
 - The owner's answers to brief 14.1: which UPI ID (and so which limits), how fast payments are checked (the copy
   promises "usually within a few hours during the day"), refunds by UPI within 3 working days, the pause after 3

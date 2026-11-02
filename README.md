@@ -1504,10 +1504,10 @@ sign-in works only at the public address: sign up there. Before any announcement
     sees an empty page.
   - No GST and no tax invoices; no automatic renewal (each period is paid again); no coupons or annual plans. A new
     Razorpay account may cap UPI at ₹2,000 per payment, and test mode allows about 30 payment links.
-  - Direct UPI is built but not deployed yet, and no real UPI payment has gone through it: the ₹1 tests (section 9,
-    "Direct UPI") settle what the apps do with the link and the note. The confirm dialog can't see the bank: the admin
-    finds the credit by hand. "Open UPI app" can fail in some apps for a personal UPI ID (the QR code and the copied ID
-    still work).
+  - Direct UPI is deployed but switched off until the owner sets it up, and no real UPI payment has gone through it: the
+    ₹1 tests (section 9, "Direct UPI") settle what the apps do with the link and the note. The confirm dialog can't see
+    the bank: the admin finds the credit by hand. "Open UPI app" can fail in some apps for a personal UPI ID (the QR
+    code and the copied ID still work).
 - **Sign-up and email:**
   - Built and tested against fakes only: no real Resend, Turnstile or Google sign-in keys have been used yet, so the
     checks of `docs/briefs/signup-auth.md` 18.2 (Turnstile under the CSP, Google's consent screens and step-up,

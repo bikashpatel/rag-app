@@ -9,7 +9,7 @@
 > fixed.
 >
 > **Revision 1** (2026-11-01): designed, contract applied (stage 0). **Built 2026-11-02** (stage 1 and the review
-> fixes; not deployed yet); sections 2.3 and 10.2 describe the UTR field and the payment notes as built. Nothing here
+> fixes; deployed 2026-11-02, off until the owner sets the UPI ID); sections 2.3 and 10.2 describe the UTR field and the payment notes as built. Nothing here
 > is legal or tax advice; the policy texts and anything about tax are for the owner and their accountant (section 14).
 
 The owner decided (D1 to D10, binding): add direct UPI next to Razorpay; the customer pays by QR or app link and
