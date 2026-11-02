@@ -336,7 +336,7 @@ describe("Turnstile", () => {
     expect(onFailed).toHaveBeenLastCalledWith(false);
     act(() => scripts()[0].dispatchEvent(new Event("error")));
     await screen.findByRole("alert");
-    expect(onFailed).toHaveBeenLastCalledWith(true);
+    await waitFor(() => expect(onFailed).toHaveBeenLastCalledWith(true));
 
     const retry = screen.getByRole("button", { name: "Try again" });
     expect(retry).toHaveAccessibleDescription(COULD_NOT_LOAD);
@@ -345,7 +345,7 @@ describe("Turnstile", () => {
     expect(retry).toHaveFocus();
 
     await user.click(retry);
-    expect(onFailed).toHaveBeenLastCalledWith(false);
+    await waitFor(() => expect(onFailed).toHaveBeenLastCalledWith(false));
     onFailed.mockClear();
     unmount();
     expect(onFailed).toHaveBeenCalledWith(false);
