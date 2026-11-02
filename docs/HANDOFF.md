@@ -1946,17 +1946,16 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
    shown, the ₹1 credit, where the UTR and the note `AN-TEST` appear), set the contact email (step 5) and the mailer
    for the alerts, switch it on, and run the `smoke-*` purchase of brief 11 (Starter by UPI from a phone, the UTR, the
    confirm, the receipt, a refund paid by UPI and recorded). Record what the apps do in the brief (14.2) and here.
-4. **Policy pages** (`frontend/public/legal/*.md`): drafted on 2026-11-01 from what the app does, with the owner's
-   decisions (refunds only for duplicate or mistaken payments and periods that never started; users 18 and over; no
-   GST; replies within 1 to 2 working days; accounts with no plan and no sign-in deleted after 12 months, with an email
-   30 days before; billing records kept 8 years; web server logs 30 days; liability capped at 30 days' fees; 30 days'
-   notice and a refund of unused days if the service closes; 15 days' notice of important changes to the terms; bank
-   transfers on request). Still open: `[Business legal name]`, `[Registered address]`, `[City]` (courts) and the
-   Grievance Officer's name and email, then remove the `<!-- draft -->` lines, rebuild the frontend
-   (`docker compose up -d --build frontend`) and set `TERMS_VERSION` to the terms' date (step 11). A lawyer's read of
-   the privacy policy and terms is advisable. The app doesn't yet delete accounts with no plan by itself: until it
-   does, check Admin → Users once a month for accounts with no plan and no sign-in for 11 months, email them, and
-   delete them a month later.
+4. **Policy pages: done (2026-11-02).** Published without draft markers: Elarxsys Ai Hub Pvt Ltd, VSR Classic, #201,
+   RYC, Hyderabad 500090 (courts at Hyderabad); contact and Grievance Officer Bikash Patel, admin@elarxsys.com (also in
+   Admin → Billing → Business details). The owner's decisions are in them (refunds only for duplicate or mistaken
+   payments and periods that never started; users 18 and over; no GST; replies within 1 to 2 working days; accounts
+   with no plan and no sign-in deleted after 12 months, with an email 30 days before; billing records kept 8 years; web
+   server logs 30 days; liability capped at 30 days' fees; 30 days' notice and a refund of unused days if the service
+   closes; 15 days' notice of important changes to the terms; bank transfers on request). `TERMS_VERSION` stays
+   2026-11-01, the terms' date. A lawyer's read is still advisable. The app doesn't yet delete accounts with no plan by
+   itself: until it does, check Admin → Users once a month for accounts with no plan and no sign-in for 11 months,
+   email them, and delete them a month later.
 5. **Business details and the contact email** in Admin → Billing → Business & payments (name, address, contact email,
    phone): receipts, the public pages, every email and the error pages show them.
 6. **Razorpay** (`README.md` section 9):
