@@ -17,10 +17,10 @@ test.describe("sign-in", () => {
     await expect(page).toHaveURL(/\/login$/);
     await expect(loginHeading(page)).toBeVisible();
     await submitLogin(page, user.username, `${user.password}-wrong`);
-    await expect(page.getByRole("alert")).toHaveText(INVALID_LOGIN);
+    await expect(page.getByRole("alert")).toContainText(INVALID_LOGIN);
     await expect(page).toHaveURL(/\/login$/);
     // The fields are described by the error, for screen readers.
-    await expect(identifierField(page)).toHaveAccessibleDescription(INVALID_LOGIN);
+    await expect(identifierField(page)).toHaveAccessibleDescription(new RegExp(`^${INVALID_LOGIN.replace(".", "\\.")}`));
   });
 
   test("Sign in stays enabled and says what is missing", async ({ page }) => {

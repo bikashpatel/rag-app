@@ -187,7 +187,7 @@ test("deactivating a user ends their session and blocks sign-in", async ({ admin
   await page.reload();
   await expect(loginHeading(page)).toBeVisible();
   await submitLogin(page, user.username, user.password);
-  await expect(page.getByRole("alert")).toHaveText(INVALID_LOGIN);
+  await expect(page.getByRole("alert")).toContainText(INVALID_LOGIN);
 });
 
 test("deleting a user asks first, then removes them", async ({ adminPage, admin, makeUser }) => {

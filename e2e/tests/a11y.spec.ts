@@ -39,8 +39,11 @@ test("the sign-up, reset and emailed-link pages: one main landmark, one h1, and 
   // A submit with nothing filled in: each field says what it needs, linked to it, and focus goes to the first.
   await page.goto("/signup");
   await page.getByRole("button", { name: "Create account" }).click();
+  const name = page.getByRole("textbox", { name: "Your name" });
+  await expect(name).toBeFocused();
+  await expect(name).toHaveAttribute("aria-invalid", "true");
+  await expect(name).toHaveAccessibleDescription("Enter your name.");
   const email = page.getByRole("textbox", { name: "Email" });
-  await expect(email).toBeFocused();
   await expect(email).toHaveAttribute("aria-invalid", "true");
   await expect(email).toHaveAccessibleDescription("Enter your email.");
   await expect(page.getByRole("checkbox", { name: /I agree to the Terms/ })).toHaveAccessibleDescription(

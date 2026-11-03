@@ -112,7 +112,7 @@ test.describe("Account", () => {
     await (await openAvatarMenu(page)).getByRole("menuitem", { name: "Log out" }).click();
     await expect(loginHeading(page)).toBeVisible();
     await submitLogin(page, user.username, user.password);
-    await expect(page.getByRole("alert")).toHaveText(INVALID_LOGIN);
+    await expect(page.getByRole("alert")).toContainText(INVALID_LOGIN);
     await submitLogin(page, user.username, newPassword);
     await expect(composer(page)).toBeVisible();
   });

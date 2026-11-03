@@ -15,10 +15,11 @@ sign-in, password reset and transactional email were built, tested and deployed 
 (not committed yet), and on 2026-11-02 after direct UPI payments to the owner's UPI ID were built, reviewed, fixed and
 deployed to the live stack the same day (committed in `1dcb624` and `f8f79a8`, CI green; turned off until the owner
 sets the UPI ID). Later on 2026-11-02 the Cloudflare tunnel stalled (next step 22): cloudflared now runs with
-`protocol: http2`, and the host watchdog can check the public address and restart the tunnel (built and tested, not
-installed). Later still on 2026-11-02, **people's names** were added to accounts (asked at sign-up, changed in Settings
-→ Account, set by the admin; migration 0006): built and tested, **not deployed and not committed** (the deploy waits for
-the owner; see "Names" under Status). `SPEC.md` is the binding contract; `README.md`
+`protocol: http2`, and the host watchdog can check the public address and restart the tunnel (installed on this Mac the same day). Later still on 2026-11-02, **people's names** were added to accounts (asked at sign-up, changed in Settings
+→ Account, set by the admin; migration 0006), with the owner's "Pure RAG" tagline and the Elarxsys AI Hub Pvt. Ltd.
+credit and © line on the sign-in pages: committed in `ea08231` and deployed on 2026-11-03 (backup
+`20261103T001750Z-manual` first; 0005 → 0006, every other row count unchanged; the e2e suite against the live stack:
+79 passed, the `@live` one skipped). Sign-up is open (email and password; Google sign-in not set up). `SPEC.md` is the binding contract; `README.md`
 has setup, commands, the test suites, operations (section 8), plans and billing (section 9), sign-up and email (section
 10), the architecture and how to use the app.
 
@@ -238,7 +239,7 @@ until the owner sets the UPI ID):
     `integration/tests/test_21_upi_direct.py` (the whole flow through nginx, with the fake mail server),
     `e2e/tests/upi.spec.ts` (4 tests) and one in `admin.spec.ts`, and Vitest for the new components.
 
-- **Names** (2026-11-02; built and tested, not deployed or committed; `SPEC.md` sections 4, 6 and 8, `README.md`
+- **Names** (2026-11-02; deployed 2026-11-03 in `ea08231`; `SPEC.md` sections 4, 6 and 8, `README.md`
   section 10 "Names", the dated note at the top of `docs/briefs/signup-auth.md`). Sign-up asked for nothing personal,
   so the chat greeted people by their random handle ("How can I help, user-xtimkcnf?"). Now the email form and
   Google's "Create your account" step ask for **Your name**, Settings → Account has a **Name** row with an inline edit
