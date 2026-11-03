@@ -47,7 +47,7 @@ describe("ResetPasswordPage", () => {
     expect(await screen.findByRole("heading", { name: "Choose a new password" })).toBeInTheDocument();
     expect(window.location.hash).toBe("");
     expect(screen.getByText("Saving it signs you out on every device.")).toBeInTheDocument();
-    expect(screen.getByText("user-k3m9q2xa")).toBeInTheDocument();
+    expect(screen.getByText("user-k3m7q2xa")).toBeInTheDocument();
     expect(await screen.findByText("At least 10 characters")).toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
 

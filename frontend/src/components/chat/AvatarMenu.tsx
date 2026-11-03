@@ -3,6 +3,7 @@ import { ApiError } from "../../api/client";
 import type { Me, ThemePreference } from "../../api/types";
 import { useAuth } from "../../auth/AuthContext";
 import { formatCompact, formatNumber } from "../../lib/format";
+import { personName } from "../../lib/names";
 import { THEMES } from "../../theme/appearance";
 import { daysLeftBadge, expiringDays, planLine } from "../billing/planText";
 import Avatar from "../ui/Avatar";
@@ -82,8 +83,7 @@ export default function AvatarMenu({ user, imagesOffered, onOpenSettings, onPref
   const themeAttempt = useRef(0);
   const menuOpen = useRef(false);
   const role = user.is_admin ? "Administrator" : "Member";
-  // The display name: the verified email when there is one, else the username (functional S45).
-  const name = user.email ?? user.username;
+  const name = personName(user);
   const usage = usageOf(user, imagesOffered);
   const lapsed = !user.is_admin && !user.plan.access;
   const days = user.is_admin ? null : expiringDays(user.plan);
@@ -125,7 +125,12 @@ export default function AvatarMenu({ user, imagesOffered, onOpenSettings, onPref
         className="chat-avatar-menu-head"
         icon={<Avatar name={name} size={40} />}
         title={name}
-        subtitle={user.is_admin ? role : planLine(user.plan)}
+        subtitle={
+          <>
+            {user.email ? <span className="chat-avatar-email">{user.email}</span> : null}
+            {user.is_admin ? role : planLine(user.plan)}
+          </>
+        }
       />
       {usage ? (
         <div className="chat-avatar-usage" aria-hidden="true">

@@ -157,8 +157,10 @@ async def test_a_turnstile_outage_refuses_sign_up(client: ApiClient, turnstile: 
         (ADDRESS, {"accept_terms": False}, None),
         (ADDRESS, {"password": ""}, None),
         (ADDRESS, {"extra": 1}, None),
+        (ADDRESS, {"name": "  "}, None),
+        (ADDRESS, {"name": "<script>"}, None),
     ],
-    ids=["invalid address", "too long", "terms", "no password", "unknown field"],
+    ids=["invalid address", "too long", "terms", "no password", "unknown field", "blank name", "markup in the name"],
 )
 async def test_invalid_sign_ups_get_422(
     address: str, fields: dict[str, object], detail: str | None, client: ApiClient, turnstile: FakeTurnstile
@@ -242,7 +244,8 @@ async def test_at_most_three_live_pending_rows_per_address(
 async def test_the_same_browser_finishes_with_one_click_and_is_signed_in(
     client: ApiClient, turnstile: FakeTurnstile
 ) -> None:
-    await signup(client, ADDRESS, next="/plans/checkout/standard")
+    await signup(client, ADDRESS, next="/plans/checkout/standard", name="  Meera\tKrishnan ")
+    assert [row.display_name for row in await pending_signups()] == ["Meera Krishnan"]
     token = await signup_token(ADDRESS)
 
     check = await client.post("/api/auth/signup/check", json={"token": token})
@@ -256,13 +259,19 @@ async def test_the_same_browser_finishes_with_one_click_and_is_signed_in(
     }
     assert response.status_code == 200, response.text
     me = response.json()
-    assert (me["email"], me["is_admin"], me["plan"]["state"]) == (ADDRESS, False, "none")
+    assert (me["email"], me["is_admin"], me["plan"]["state"], me["display_name"]) == (
+        ADDRESS,
+        False,
+        "none",
+        "Meera Krishnan",
+    )
     assert me["username"].startswith("user-") and len(me["username"]) == 13
     cookies = set_cookies(response)
     assert session_cookie_name() in cookies and cookies["rag_signup"]["max-age"] == "0"
     assert (await client.get("/api/auth/me")).json()["id"] == me["id"]
     user = await user_row(me["id"])
     assert (user.signup_source, user.email_canonical, user.terms_version) == ("email", ADDRESS, "2026-11-01")
+    assert user.display_name == "Meera Krishnan"
     assert user.email_verified_at is not None and user.terms_accepted_at is not None
     assert await pending_signups() == []
     async with SessionLocal() as session:
@@ -296,13 +305,13 @@ async def test_a_database_error_logs_neither_the_address_nor_the_password_hash(
     event.listen(engine, "do_execute", failing)
     try:
         with caplog.at_level(logging.INFO), pytest.raises(OperationalError) as raised:
-            await signup(client, "Victim.Person@example.com")
+            await signup(client, "Victim.Person@example.com", name="Vimala Pillai")
     finally:
         event.remove(engine, "do_execute", failing)
 
     logged = "".join(traceback.format_exception_only(raised.value)) + caplog.text  # the error log's last lines
     assert "INSERT INTO pending_signups" in logged
-    assert "victim.person" not in logged.lower() and "$argon2" not in logged
+    assert "victim.person" not in logged.lower() and "$argon2" not in logged and "vimala" not in logged.lower()
 
 
 async def test_another_device_finishes_with_the_chosen_password(
@@ -320,7 +329,7 @@ async def test_another_device_finishes_with_the_chosen_password(
     assert check.json()["needs_password"] is True
     detail = "That isn't the password you chose when you signed up."
     assert missing.json() == wrong.json() == {"detail": detail, "code": "wrong_password"}
-    assert right.status_code == 200
+    assert right.status_code == 200 and right.json()["display_name"] == "Maya Rao"  # the name given at sign-up
     assert (await phone.get("/api/auth/me")).json()["email"] == ADDRESS
 
 

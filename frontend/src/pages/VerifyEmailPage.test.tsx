@@ -112,9 +112,10 @@ describe("VerifyEmailPage", () => {
   });
 
   it("tells a signed-in visitor that finishing signs them out", async () => {
-    stubFetch({ "GET /auth/me": makeMe({ email: "sam@example.com" }), "POST /auth/signup/check": makeSignupCheck() });
+    const me = makeMe({ display_name: "Sam Lee", email: "sam@example.com" });
+    stubFetch({ "GET /auth/me": me, "POST /auth/signup/check": makeSignupCheck() });
     await openLink();
-    expect(await screen.findByText("Finishing signs you out of sam@example.com.")).toBeInTheDocument();
+    expect(await screen.findByText("Finishing signs you out of Sam Lee.")).toBeInTheDocument();
   });
 
   it.each([

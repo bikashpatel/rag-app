@@ -51,7 +51,8 @@ export type Me = {
   usage: UsageSummary;
   preferences: Preferences;
   plan: PlanAccess;
-  email: string | null; // the verified email; the display name when set (else the username)
+  email: string | null; // the verified email
+  display_name: string | null; // the person's name as they wrote it (NameRules); null: not given. Shown by lib/names
 };
 
 export type ChatModel = {
@@ -335,7 +336,8 @@ export type AccountInfo = {
   last_login_at: string | null; // also set for sign-ins from before the history existed
   conversation_count: number;
   recent_logins: LoginEvent[]; // newest first, at most 20
-  email: string | null; // verified; the display name when set
+  display_name: string | null; // the person's name; null: not given (PUT /me/name sets it)
+  email: string | null; // verified
   email_verified_at: string | null;
   pending_email: PendingEmailInfo | null; // an address waiting for its confirmation link
   has_password: boolean;
@@ -413,8 +415,16 @@ export type LoginRequest = {
   turnstile_token?: string | null; // after 401 challenge_required
 };
 
+/**
+ * A person's name (users.display_name): NFC, trimmed, inner whitespace collapsed to one space, 1-80 characters, no
+ * control or invisible characters (ZWJ and ZWNJ allowed), no "<" or ">"; any script. The server normalizes it the same
+ * way (app.schemas_auth.person_name; here lib/names.ts) and answers 422 otherwise.
+ */
+export type PersonName = string;
+
 /** POST /auth/signup → 202 Accepted and the rag_signup cookie. */
 export type SignupRequest = {
+  name: PersonName; // kept with the pending sign-up, then the account's display_name
   email: string;
   password: string;
   accept_terms: true;
@@ -476,7 +486,7 @@ export type GooglePending = {
   expires_at: string;
 };
 /** POST /auth/google/finish → Me and the session cookie. */
-export type GoogleFinish = { accept_terms: true };
+export type GoogleFinish = { name: PersonName; accept_terms: true };
 
 export type SignupSource = "env" | "admin" | "email" | "google";
 export type PendingEmailInfo = {
@@ -493,6 +503,9 @@ export type EmailChange = { email: string; password?: string | null /* required 
 export type NewPassword = { new_password: string };
 /** DELETE /me/google → 204. */
 export type PasswordConfirm = { password: string };
+/** PUT /me/name → DisplayName (10 an hour and 30 a day per user: 429 too_many_attempts). */
+export type NameChange = { name: PersonName };
+export type DisplayName = { display_name: string }; // as stored (normalized)
 
 /** POST /admin/mail/test → 202. */
 export type MailTest = { to: string };
@@ -745,6 +758,7 @@ export type AdminUserPlan = {
 export type AdminUser = {
   id: number;
   username: string;
+  display_name: string | null; // the person's name; null: not given
   is_admin: boolean;
   is_active: boolean;
   restrict_models: boolean;
@@ -784,6 +798,7 @@ export type AdminUser = {
 export type AdminUserCreate = {
   username: string; // 3-64, ^[a-zA-Z0-9_.-]+$, lowercased; not a retired one (409 username_retired)
   password: string; // the password policy (422 password_rejected)
+  display_name?: PersonName | null; // optional; null or blank: none
   is_active?: boolean;
   restrict_models?: boolean;
   allowed_model_ids?: number[];
@@ -795,6 +810,7 @@ export type AdminUserCreate = {
 
 export type AdminUserUpdate = {
   password?: string; // = reset; the password policy
+  display_name?: PersonName | null; // omitted: unchanged; null or blank: cleared
   is_active?: boolean;
   restrict_models?: boolean;
   allowed_model_ids?: number[];

@@ -148,6 +148,7 @@ async def me(db: AsyncSession, user: User) -> Me:
         preferences=await account.read_preferences(db, user, ent),
         plan=await entitlements.plan_access(db, user, ent),
         email=user.email,
+        display_name=user.display_name,
     )
 
 

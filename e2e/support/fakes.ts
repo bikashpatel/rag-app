@@ -364,6 +364,7 @@ export function fakeNewMe(overrides: Partial<Me> & Pick<Me, "username" | "email"
       unlock: { files: "Standard", images: "Professional", plugins: { gmail: "Professional" }, models: null },
       rejected_order: null,
     },
+    display_name: null,
     ...overrides,
   };
 }

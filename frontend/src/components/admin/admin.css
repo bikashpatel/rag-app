@@ -2605,6 +2605,12 @@
   align-items: center;
   gap: 4px 8px;
 }
+.admin-user-username {
+  color: var(--text-2);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
 .admin-user-email {
   position: relative; /* containing block for the sr-only "Confirmed:" */
   display: inline-flex;

@@ -92,6 +92,7 @@ OPEN: set[Operation] = {
     ("GET", "/api/me/preferences"),
     ("PATCH", "/api/me/preferences"),
     ("GET", "/api/me/account"),
+    ("PUT", "/api/me/name"),
     ("GET", "/api/me/usage"),
     ("POST", "/api/me/export"),
     ("GET", "/api/billing/plans"),

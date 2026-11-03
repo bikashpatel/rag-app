@@ -70,6 +70,7 @@ MISSING = object()
 ADMIN_USER_KEYS = {
     "id",
     "username",
+    "display_name",
     "is_admin",
     "is_active",
     "restrict_models",

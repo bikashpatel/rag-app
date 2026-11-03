@@ -197,6 +197,7 @@ async def populate(client: ApiClient) -> dict[str, int]:
     _, events = await chat(client, "What do my notes say about the tides?")
     conversation_id = events[0][1]["conversation_id"]
     assert (await client.patch("/api/me/preferences", json={"theme": "dark"})).status_code == 200
+    assert (await client.put("/api/me/name", json={"name": name_of(client)})).status_code == 200
     async with SessionLocal() as db:
         answer = await db.scalar(
             select(Message.id).where(Message.conversation_id == conversation_id, Message.role == "assistant")
@@ -319,6 +320,20 @@ async def populate(client: ApiClient) -> dict[str, int]:
     return {"document": document["id"], "conversation": conversation_id, "answer": answer}
 
 
+def name_of(client: ApiClient) -> str:
+    return f"{client.username} Zephyrine"
+
+
+async def tables_mentioning(text: str) -> list[str]:
+    """The tables with a row any of whose values mentions `text`."""
+    async with SessionLocal() as db:
+        return [
+            table.name
+            for table in Base.metadata.sorted_tables
+            if any(text in str(tuple(row)) for row in await db.execute(select(table)))
+        ]
+
+
 async def snapshot(root: str, ids: set[int]) -> Reached:
     """The rows deleting `ids` reaches; asserts that they include a row of every table and SET NULL key it can reach,
     so the checks after the deletion cover them all."""
@@ -377,6 +392,7 @@ async def test_deleting_a_user_removes_every_row_file_and_vector_of_theirs_and_n
     alice_file = storage.stored_path(await stored_name(alices["document"]))
     bob_file = storage.stored_path(await stored_name(bobs["document"]))
     assert alice_file.is_file() and bob_file.is_file() and await vector_count(alices["document"]) > 0
+    assert await tables_mentioning(name_of(alice)) == ["users"]  # her name lives on her account only
 
     response = await admin_client.delete(f"/api/admin/users/{alice.user_id}")
 
@@ -388,6 +404,7 @@ async def test_deleting_a_user_removes_every_row_file_and_vector_of_theirs_and_n
         # Her username is never issued again (signup-auth 3.3)
         assert [row.username for row in await db.scalars(select(UsernameTombstone))] == ["alice"]
     assert not alice_file.exists() and bob_file.is_file()
+    assert await tables_mentioning(name_of(alice)) == [] and await tables_mentioning(name_of(bob)) == ["users"]
     assert await vector_count(alices["document"]) == 0 and await vector_count(bobs["document"]) > 0
     assert (await bob.get(f"/api/conversations/{bobs['conversation']}")).status_code == 200
 

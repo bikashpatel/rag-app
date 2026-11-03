@@ -109,6 +109,16 @@ describe("ChatPage", () => {
     expect(document.title).toBe("AskNuvexusDoc");
   });
 
+  it("greets by the first word of the person's name, or the fallback name without one", async () => {
+    const first = await setup({ me: makeMe({ display_name: "Bikash Kumar Patel" }) });
+    expect(screen.getByRole("heading", { level: 2, name: /How can I help/ })).toHaveTextContent("How can I help, Bikash?");
+    first.unmount();
+    await setup({ me: makeMe({ username: "user-xtimkcnf", email: "bikash.patel@example.com" }) });
+    expect(screen.getByRole("heading", { level: 2, name: /How can I help/ })).toHaveTextContent(
+      "How can I help, bikash.patel?",
+    );
+  });
+
   it("says when there are no conversations yet, and retries a failed list", async () => {
     let fail = true;
     const { user } = await setup({

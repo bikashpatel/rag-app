@@ -272,6 +272,22 @@ async def test_the_name_on_the_receipt_is_the_username_without_a_profile(
     assert receipt.seller["name"] == "AskNuvexusDoc" and receipt.lines[0]["description"] == "Starter plan, 1 day"
 
 
+async def test_the_name_on_the_receipt_is_the_profiles_else_the_display_name(
+    create_user: CreateUser, fake_razorpay: FakeRazorpay
+) -> None:
+    jo, amy = await new_tester(create_user, "jomarch"), await new_tester(create_user, "amy")
+    for client, name in ((jo, "Jo March"), (amy, "Amy March")):
+        assert (await client.put("/api/me/name", json={"name": name})).status_code == 200
+    assert (await amy.put("/api/billing/profile", json={"name": "March Studio"})).is_success
+    await buy(jo, fake_razorpay, "starter")
+    await buy(amy, fake_razorpay, "starter")
+
+    first, second = await receipt_rows()
+
+    assert first.buyer == {"name": "Jo March", "username": "jomarch", "email": "jomarch@account.example.test"}
+    assert second.buyer["name"] == "March Studio"
+
+
 @pytest.mark.postgres
 async def test_no_gaps_under_concurrency_across_the_year_boundary(create_user: CreateUser) -> None:
     jan = await create_user("jan", plan=None)

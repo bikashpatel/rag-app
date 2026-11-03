@@ -16,7 +16,9 @@ sign-in, password reset and transactional email were built, tested and deployed 
 deployed to the live stack the same day (committed in `1dcb624` and `f8f79a8`, CI green; turned off until the owner
 sets the UPI ID). Later on 2026-11-02 the Cloudflare tunnel stalled (next step 22): cloudflared now runs with
 `protocol: http2`, and the host watchdog can check the public address and restart the tunnel (built and tested, not
-installed). `SPEC.md` is the binding contract; `README.md`
+installed). Later still on 2026-11-02, **people's names** were added to accounts (asked at sign-up, changed in Settings
+→ Account, set by the admin; migration 0006): built and tested, **not deployed and not committed** (the deploy waits for
+the owner; see "Names" under Status). `SPEC.md` is the binding contract; `README.md`
 has setup, commands, the test suites, operations (section 8), plans and billing (section 9), sign-up and email (section
 10), the architecture and how to use the app.
 
@@ -236,6 +238,18 @@ until the owner sets the UPI ID):
     `integration/tests/test_21_upi_direct.py` (the whole flow through nginx, with the fake mail server),
     `e2e/tests/upi.spec.ts` (4 tests) and one in `admin.spec.ts`, and Vitest for the new components.
 
+- **Names** (2026-11-02; built and tested, not deployed or committed; `SPEC.md` sections 4, 6 and 8, `README.md`
+  section 10 "Names", the dated note at the top of `docs/briefs/signup-auth.md`). Sign-up asked for nothing personal,
+  so the chat greeted people by their random handle ("How can I help, user-xtimkcnf?"). Now the email form and
+  Google's "Create your account" step ask for **Your name**, Settings → Account has a **Name** row with an inline edit
+  (`PUT /me/name`, 10 an hour and 30 a day per user), and the admin's user form has an optional Name. The name is
+  `users.display_name` (migration `0006_person_names.py`: `users.display_name` and `pending_signups.display_name`,
+  VARCHAR(80), nullable, no row changed), checked in one place (`app.schemas_auth.person_name`, mirrored by
+  `frontend/src/lib/names.ts`). One helper (`personName`) shows it everywhere (the name; else a username that isn't a
+  generated `user-xxxxxxxx` handle; else the email's local part; else the username), and the greeting uses its first
+  word ("How can I help, Bikash?"). Receipts name the billing profile's name, else the display name, else the
+  username. Existing accounts keep NULL until someone sets a name. Deploying runs 0006 when the backend starts.
+
 How the work went: the lead wrote `SPEC.md` and the foundation code. Agents then built the
 feature areas in parallel from `docs/briefs/`, followed by backend integration tests, frontend
 verification, an adversarial review against `docs/briefs/review-checklist.md` (46 confirmed
@@ -308,6 +322,14 @@ agents' smoke and browser-pass scripts lived in scratch directories and are not 
 | Direct UPI: frontend (2026-11-02) | `tsc` clean; `npm run test:coverage` **1488 passed in 101 files**; 94.88 % of statements, 90.53 % of branches, 94.42 % of functions, 96.75 % of lines, over the thresholds (92, 87, 91, 94); `vite build` into a scratch directory clean (only the old chunk-size warning) |
 | Direct UPI: end-to-end (2026-11-02) | `e2e` `tsc --noEmit` clean; Playwright lists **80 tests in 13 files** (the new `upi.spec.ts` with 4, and the admin's confirm and reject dialogs in `admin.spec.ts`). Not run here: the live stack serves the previous build; run them after the deploy |
 | Direct UPI: integration (2026-11-02; `integration/run.sh --rmi`, project `rag-it-upifinal`, ports 20000 to 20005) | **188 passed in 22 files** (614 s of tests), including `test_21_upi_direct.py` (the settings, a customer without an email, the QR codes through nginx with their headers, the UTR and its mail to the owner, Needs attention, another customer's same UTR refused, the confirm and its receipt, the billing check, a reject and its mail, a recorded refund ending access). Teardown left no container, volume, network or image of the project |
+| Names: lint and types (2026-11-03) | ruff 0.13.0 clean on app, tests, migrations and integration (format too); mypy 1.18.2 clean on app and migrations (151 files) |
+| Names: backend (2026-11-03) | `pytest -q --cov --cov-fail-under=94` **4004 passed, 65 skipped** (the `postgres`-marked tests) in 990 s, coverage 95.85 %. New: `test_person_names.py` (the rules: normalization, NFC, Indic scripts and joiners, the 80-character bound, `<>`, control and invisible characters; Me and the account; `PUT /me/name`, its 422s, 401 and the 10-an-hour limit; a Google sign-up's name keeping the ticket on a 422; the admin's create, set, keep and clear, and no name in billing events; the export) and `test_migration_0006.py`; additions to `test_signup.py` (the pending row's name, the account's, no name in the error log), `test_signup_enumeration.py` (a different name per address, the same answer), `test_schemas_auth.py`, `test_billing_receipts.py` (profile name, else the display name) and `test_deletion_completeness.py` (the name lives on `users` only and is gone after the deletion) |
+| Names: backend on Postgres (2026-11-03; a throwaway `postgres:17.11-alpine` at `docker-compose.yml`'s digest, tmpfs, random port and password, removed afterwards) | `pytest -m postgres` **65 passed** (39 s): the 62 earlier ones plus migration 0006's three (rows kept and no name invented, the schema against the models, 80 characters of Devanagari fitting and 81 refused) |
+| Names: migrations (2026-11-03; the same throwaway Postgres, a fresh database) | `alembic upgrade head` ran 0001 to 0006; `alembic check` "No new upgrade operations detected"; `alembic current` 0006 (head) |
+| Names: migration 0006 rehearsal (2026-11-03) | The newest backup `20261102T023122Z-scheduled` (revision 0005) restored into a throwaway Postgres and migrated through `app.db.init_db`: 38 tables, 209 rows, every table's row count and the checksum of its existing columns unchanged, `display_name` added to `users` and `pending_signups` and NULL everywhere, zero differences from the models, `alembic check` clean |
+| Names: frontend (2026-11-03) | `tsc` clean; `npm run test:coverage` **1520 passed in 102 files**; 94.92 % of statements, 90.6 % of branches, 94.43 % of functions, 96.79 % of lines; `vite build` into a scratch directory clean (only the old chunk-size warning); screenshots of the changed screens (light and dark, 390 and 1440 px) against mocked APIs looked over |
+| Names: end-to-end (2026-11-03) | `e2e` `tsc --noEmit` clean; Playwright lists **80 tests in 13 files** (`signup.spec.ts` fills Your name and checks the bodies). Not run here: the live stack serves the previous build |
+| Names: integration (2026-11-03; `integration/run.sh --rmi`, project `rag-it-name`, ports 20100 to 20105) | **208 passed in 22 files** (627 s), including `test_18_signup.py` (the name through nginx: normalized, on the pending row, on the account, changed with `PUT /me/name`, a markup name refused; a Google sign-up's Devanagari name). The restore drill's "revision 0001" backup now also undoes 0006 (`UNDO_0006` in `test_14_backup_restore.py`): without it the column survived and `--migrate` failed at 0006. Teardown left no container, volume, network or image of the project |
 | Sign-up: backend (2026-11-01) | `pytest -q --cov --cov-fail-under=94` **3834 passed, 57 skipped** (the `postgres`-marked tests), coverage 95.75 %. The 57 `postgres`-marked tests now include migration 0004, the sign-up races (two completions of one sign-up, a completion against a Google finish, two accounts confirming one address, an undo against a new change), two mail loops never sending one mail twice and two bounce reports for one address. Google sign-in, the mailer, Turnstile and the breach check run against fakes (`google_oidc.py` and `fake_google.py`, `fake_mail.py`, `fake_turnstile.py`, `fake_hibp.py`); `test_signup_enumeration.py` checks the same status, headers and bytes for every address |
 | Sign-up: frontend (2026-11-01) | Vitest **1422 passed in 98 files**; coverage 94.8 % of statements, 90.4 % of branches, 94.5 % of functions, 96.7 % of lines, over the thresholds (92, 87, 91, 94) |
 | Sign-up: integration (2026-11-01; `integration/run.sh`) | **182 passed in 20 files**, including `test_18_signup.py` (email sign-up in the same browser and elsewhere, an existing address, a stranger's sign-up leaving the first link working, resend and its limits, sign-in by email and username with the challenge and its outage fallback, forgot and reset, Google sign-up, automatic linking of a Gmail address, `link_required` for Workspace, an unverified Google address, linking, unlinking, the step-up and a first password, an email change and its undo) and `test_19_mail.py` (deferrals, a refused recipient suppressed, a lost connection kept once by its idempotency key, a mail interrupted by a worker stop sent once, the daily cap holding sign-up mail while a reset and a receipt go out, a receipt with its PDF, a plan reminder, checkout refused without a confirmed email, bounces pausing sign-up mail, the clean-up), against `integration/fake_mail/` and `integration/fake_turnstile/` beside the fake Google, the fake model server and the fake Razorpay |
@@ -1116,7 +1138,7 @@ smoke and browser run used a fake Google.
 4. **OAuth:** register `<base>/api/plugins/<id>/oauth/callback` at the provider for every `PUBLIC_BASE_URLS` entry.
    nginx's callback location already matches any plugin id.
 5. **Business details and the contact email: done (2026-11-02).** Admin → Billing → Business & payments holds
-   Elarxsys Ai Hub Pvt Ltd, the registered office address and admin@elarxsys.com (a Zoho Mail mailbox); the receipts,
+   Elarxsys AI Hub Pvt. Ltd., the registered office address and admin@elarxsys.com (a Zoho Mail mailbox); the receipts,
    the Contact page and every email show them.
 6. **What is still Gmail- or Google-shaped** and needs a contract change (`SPEC.md`, `schemas_plugins.py`,
    `frontend/src/api/types.ts` together):
@@ -1929,7 +1951,11 @@ maintaining it:
 Self-service sign-up is built, tested and deployed to the live stack (2026-11-01) with sign-up closed, and
 committed in `f30adcd` (CI green at `81ca2d1`). The steps are in order: 1 to 3 first, then the owner's actions of
 `docs/briefs/signup-auth.md` section 17 (steps 4 to 14; every click is there, `README.md` section 10 has the summary),
-which end with sign-up open, then the rest. The owner edits `.env`; never print it.
+which end with sign-up open, then the rest. The owner edits `.env`; never print it. **People's names** (2026-11-02,
+not deployed or committed) wait for the owner's go-ahead: `touch .maintenance`, `scripts/backup.sh` (keep the
+`BACKUP_NAME`), `APP_VERSION=$(git describe --always --dirty) docker compose up -d --build` (the backend runs migration
+0006 while it starts), `docker compose up -d --force-recreate frontend`, `docker compose exec backend alembic current`
+(0006), `rm .maintenance`, then the e2e suite against the stack.
 
 1. Done: sign-up is committed in `f30adcd`, and CI is green at `81ca2d1` (the backend job runs in about 24 minutes
    with test-only argon2 parameters). Before it: the
@@ -1946,7 +1972,7 @@ which end with sign-up open, then the rest. The owner edits `.env`; never print 
    shown, the ₹1 credit, where the UTR and the note `AN-TEST` appear), set the contact email (step 5) and the mailer
    for the alerts, switch it on, and run the `smoke-*` purchase of brief 11 (Starter by UPI from a phone, the UTR, the
    confirm, the receipt, a refund paid by UPI and recorded). Record what the apps do in the brief (14.2) and here.
-4. **Policy pages: done (2026-11-02).** Published without draft markers: Elarxsys Ai Hub Pvt Ltd, VSR Classic, #201,
+4. **Policy pages: done (2026-11-02).** Published without draft markers: Elarxsys AI Hub Pvt. Ltd., VSR Classic, #201,
    RYC, Hyderabad 500090 (courts at Hyderabad); contact and Grievance Officer Bikash Patel, admin@elarxsys.com (also in
    Admin → Billing → Business details). The owner's decisions are in them (refunds only for duplicate or mistaken
    payments and periods that never started; users 18 and over; no GST; replies within 1 to 2 working days; accounts

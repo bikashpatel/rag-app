@@ -46,12 +46,22 @@ describe("AvatarMenu", () => {
     expect(screen.queryByRole("menuitem", { name: "Admin" })).not.toBeInTheDocument();
   });
 
-  it("names the account by its verified email when it has one", async () => {
-    const { user } = await setup(makeMe({ username: "user-k3m9q2xa", email: "maya@example.com" }));
-    const button = screen.getByRole("button", { name: "Account: maya@example.com" });
-    expect(button).toHaveAttribute("title", "maya@example.com");
-    await openMenu(user, "Account: maya@example.com");
-    expect(screen.getByRole("menu", { name: "Account: maya@example.com, Member" })).toBeInTheDocument();
+  it("names the person, with the email under the name", async () => {
+    const { user } = await setup(makeMe({ display_name: "Maya Chen", email: "maya@example.com" }));
+    const button = screen.getByRole("button", { name: "Account: Maya Chen" });
+    expect(button).toHaveAttribute("title", "Maya Chen");
+    expect(button).toHaveTextContent("MC");
+    await openMenu(user, "Account: Maya Chen");
+    expect(screen.getByRole("menu", { name: "Account: Maya Chen, Member" })).toHaveTextContent(
+      /Maya Chenmaya@example\.com/,
+    );
+  });
+
+  it("names a generated handle without a name by its email's local part", async () => {
+    const { user } = await setup(makeMe({ username: "user-k3m7q2xa", email: "maya@example.com" }));
+    expect(screen.getByRole("button", { name: "Account: maya" })).toHaveAttribute("title", "maya");
+    await openMenu(user, "Account: maya");
+    expect(screen.getByRole("menu", { name: "Account: maya, Member" })).toHaveTextContent("maya@example.com");
   });
 
   it("counts the chat allowance in standard tokens, not plain tokens", async () => {

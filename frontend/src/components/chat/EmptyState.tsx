@@ -23,7 +23,8 @@ function useDocumentsNote(selection: DocumentSelection): string {
 }
 
 type EmptyStateProps = {
-  username: string | null;
+  /** Who the greeting addresses (lib/names greetingName); null: no name. */
+  name: string | null;
   disabled: boolean;
   /** The selected model can create files and the plan includes them: adds an example that asks for one. */
   canCreateFiles: boolean;
@@ -37,11 +38,11 @@ type EmptyStateProps = {
 };
 
 /**
- * A new chat (visual spec 6.20): the greeting with the username (never a guessed first name), an italic serif
- * sub-line, and a "contents page" of example prompts that send at a click.
+ * A new chat (visual spec 6.20): the greeting with the person's name (greetingName: the first word of their name, or
+ * the fallback name), an italic serif sub-line, and a "contents page" of example prompts that send at a click.
  */
 export default function EmptyState({
-  username,
+  name,
   disabled,
   canCreateFiles,
   canCreateImages,
@@ -63,9 +64,9 @@ export default function EmptyState({
         <SparkleIcon size={24} />
       </div>
       <h2 className="chat-empty-title">
-        {username ? (
+        {name ? (
           <>
-            How can I help, <em>{username}</em>?
+            How can I help, <em>{name}</em>?
           </>
         ) : (
           "How can I help?"

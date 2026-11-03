@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
-from conftest import USER_PASSWORD, ApiClient, OutsideHosts, open_signup, signup
+from conftest import GOOGLE_FINISH, USER_PASSWORD, ApiClient, OutsideHosts, open_signup, signup
 from fake_google import FakeGoogleSignin
 from fake_turnstile import FakeTurnstile
 from google_oidc import GoogleOidc
@@ -54,7 +54,7 @@ async def google_only(client: ApiClient, google: FakeGoogleSignin) -> ApiClient:
     """`client` signed up with Google (a gmail address, no password)."""
     await open_signup(email=False)
     assert landed(await google_callback(client, google)) == "/signup/google"
-    finished = await client.post("/api/auth/google/finish", json={"accept_terms": True})
+    finished = await client.post("/api/auth/google/finish", json=GOOGLE_FINISH)
     assert finished.status_code == 200, finished.text
     client.user_id = finished.json()["id"]
     return client
@@ -332,7 +332,7 @@ async def test_classic_federated_merge_an_attackers_email_sign_up_never_becomes_
     victim = new_client()
 
     assert landed(await google_callback(victim, google)) == "/signup/google"
-    finished = await victim.post("/api/auth/google/finish", json={"accept_terms": True})
+    finished = await victim.post("/api/auth/google/finish", json=GOOGLE_FINISH)
 
     assert finished.status_code == 200
     assert await pending_signups(GMAIL) == []  # the attacker's link is dead
@@ -356,7 +356,7 @@ async def test_trojan_identifier_and_unexpired_email_change_a_pending_address_id
     victim = new_client()
 
     assert landed(await google_callback(victim, google)) == "/signup/google"  # not the attacker's account
-    victim_id = (await victim.post("/api/auth/google/finish", json={"accept_terms": True})).json()["id"]
+    victim_id = (await victim.post("/api/auth/google/finish", json=GOOGLE_FINISH)).json()["id"]
     confirmed = await attacker.post("/api/auth/email/verify", json={"token": token})
 
     assert (confirmed.status_code, confirmed.json()["code"]) == (409, "email_taken")
@@ -375,7 +375,7 @@ async def test_a_non_verifying_claim_never_reaches_the_account_holding_the_addre
     attacker = new_client()
 
     assert landed(await google_callback(attacker, google)) == "/signup/google"
-    created = (await attacker.post("/api/auth/google/finish", json={"accept_terms": True})).json()
+    created = (await attacker.post("/api/auth/google/finish", json=GOOGLE_FINISH)).json()
 
     assert created["id"] != victim.user_id and created["email"] is None
     assert await identity_of(victim.user_id) is None

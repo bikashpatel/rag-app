@@ -168,7 +168,7 @@ async def issue(
             "phone": seller.contact_phone,
         },
         buyer={
-            "name": (profile.name if profile and profile.name else None) or order.username,
+            "name": (profile.name if profile else None) or (user.display_name if user else None) or order.username,
             "username": order.username,
             "email": user.email if user else None,
         },

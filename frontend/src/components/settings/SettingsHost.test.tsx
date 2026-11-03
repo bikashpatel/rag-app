@@ -29,10 +29,21 @@ describe("SettingsHost", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("names the account by its verified email beside the tabs", async () => {
-    await renderHost("/?settings=usage", { "GET /auth/me": makeMe({ email: "maya@example.com" }) });
+  it("names the person beside the tabs, with the email under the name", async () => {
+    const me = makeMe({ display_name: "Maya Chen", email: "maya@example.com" });
+    await renderHost("/?settings=usage", { "GET /auth/me": me });
     const dialog = screen.getByRole("dialog", { name: "Settings" });
-    expect(within(dialog).getByText("maya@example.com", { selector: "strong" })).toBeInTheDocument();
+    expect(within(dialog).getByText("Maya Chen", { selector: "strong" })).toBeInTheDocument();
+    expect(within(dialog).getByText("maya@example.com", { selector: ".settings-nav-email" })).toBeInTheDocument();
+    expect(within(dialog).queryByText("Saved to your account")).not.toBeInTheDocument();
+  });
+
+  it("says settings are saved to the account when it has no email", async () => {
+    await renderHost("/?settings=usage");
+    const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(within(dialog).getByText("maya.chen", { selector: "strong" }).parentElement).toHaveTextContent(
+      "maya.chenSaved to your account",
+    );
   });
 
   it("shows nothing while signed out", async () => {

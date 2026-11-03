@@ -6,7 +6,7 @@ This policy explains what personal data AskNuvexusDoc collects, why we use it, w
 
 ## Who we are
 
-AskNuvexusDoc (asknuvexusdoc.com) is run by Elarxsys Ai Hub Pvt Ltd, VSR Classic, #201, RYC, Hyderabad 500090, Telangana, India ("we", "us"). We decide why and how your personal data is used, so we are the data fiduciary for it.
+AskNuvexusDoc (asknuvexusdoc.com) is run by Elarxsys AI Hub Pvt. Ltd., VSR Classic, #201, RYC, Hyderabad 500090, Telangana, India ("we", "us"). We decide why and how your personal data is used, so we are the data fiduciary for it.
 
 Questions about this policy go to admin@elarxsys.com or to our Grievance Officer (at the end of this page).
 
@@ -23,6 +23,7 @@ Questions about this policy go to admin@elarxsys.com or to our Grievance Officer
 
 **Your account**
 
+- Your name, as you give it when you sign up or later in Settings → Account (you can change it there).
 - A username the app generates for you (for example `user-k3m9q2xa`).
 - Your password, stored only as an argon2 hash, never in readable form.
 - Your email address once you have confirmed it, and when you confirmed it.
@@ -237,6 +238,6 @@ When we change this policy, we post the new version here with a new "Last update
 
 - Name: Bikash Patel
 - Email: admin@elarxsys.com
-- Address: Elarxsys Ai Hub Pvt Ltd, VSR Classic, #201, RYC, Hyderabad 500090, Telangana, India
+- Address: Elarxsys AI Hub Pvt. Ltd., VSR Classic, #201, RYC, Hyderabad 500090, Telangana, India
 
 Include your username or account email and what you are asking for. We acknowledge every grievance within 48 hours and resolve it within one month of receiving it. If you are not satisfied with our answer, you can complain to the Data Protection Board of India.

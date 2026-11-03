@@ -199,7 +199,10 @@ and `test_migration_0004.py`; the flows in `test_signup.py`, `test_signup_enumer
 (Postgres), `test_login_identifier.py`, `test_google_signin.py`, `test_google_linking.py`, `test_password_reset.py`,
 `test_password_setup.py`, `test_email_change.py` and `test_admin_signup.py`, with the helpers of `signup_support.py`;
 the mailer in `test_mail_transport.py`, `test_mail_templates.py`, `test_mail_outbox.py` (the worker's drain and the
-sweeps) and `test_mail_webhook.py`, and its monitor check in `test_ops_mail.py`.
+sweeps) and `test_mail_webhook.py`, and its monitor check in `test_ops_mail.py`. People's names (`users.display_name`):
+the rules, `PUT /me/name` and its limit, a Google sign-up's name, the admin's create and update and the export in
+`test_person_names.py`, and `test_migration_0006.py`; the name at email sign-up is in `test_signup.py`, on receipts in
+`test_billing_receipts.py`, and its removal with the account in `test_deletion_completeness.py`.
 
 The tests never read the repository's `.env`: `conftest.py` sets `LITELLM_MODE=PRODUCTION`, because in its default DEV
 mode importing LiteLLM loads the nearest `.env`, which would give the tests the owner's real settings (a test checks it).

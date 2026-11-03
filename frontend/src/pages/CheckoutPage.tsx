@@ -434,7 +434,7 @@ function Review({ user, offer, option, payments, profile, business }: ReviewProp
                       value={name}
                       maxLength={100}
                       autoComplete="name"
-                      placeholder={user.username}
+                      placeholder={user.display_name ?? user.username}
                       onChange={(event) => setName(event.target.value)}
                     />
                   </div>

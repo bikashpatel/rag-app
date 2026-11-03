@@ -12,7 +12,7 @@ from typing import Any
 
 import httpx
 import pytest
-from conftest import ApiClient, OutsideHosts, open_signup, signup
+from conftest import GOOGLE_FINISH, ApiClient, OutsideHosts, open_signup, signup
 from cryptography.hazmat.primitives.asymmetric import rsa
 from fake_google import FakeGoogleSignin
 from fake_turnstile import FakeTurnstile
@@ -517,7 +517,7 @@ async def test_a_new_gmail_account_finishes_the_sign_up(
     )
 
     pending = await client.get("/api/auth/google/pending")
-    finished = await client.post("/api/auth/google/finish", json={"accept_terms": True})
+    finished = await client.post("/api/auth/google/finish", json=GOOGLE_FINISH)
 
     assert pending.status_code == 200
     body = pending.json()
@@ -545,7 +545,7 @@ async def test_an_unverified_address_becomes_a_pending_email_with_a_confirmation
     google_signup.choose(email="Person@Company.example", email_verified=False)
     await google_callback(client, google_signup)
 
-    finished = await client.post("/api/auth/google/finish", json={"accept_terms": True})
+    finished = await client.post("/api/auth/google/finish", json=GOOGLE_FINISH)
 
     assert finished.status_code == 200
     me = finished.json()
@@ -573,7 +573,7 @@ async def test_an_unverified_addresss_confirmation_needs_the_days_room_and_keeps
         google_signup.choose(sub=sub, email=email, email_verified=False)
         browser = new_client()
         await google_callback(browser, google_signup)
-        finished = await browser.post("/api/auth/google/finish", json={"accept_terms": True})
+        finished = await browser.post("/api/auth/google/finish", json=GOOGLE_FINISH)
         assert finished.status_code == 200, finished.text
         user_id: int = finished.json()["id"]
         assert await pending_email(user_id) is not None  # Settings → Account resends it later
@@ -593,9 +593,9 @@ async def test_finish_checks_everything_again(
     taken, closed, used = new_client(), new_client(), new_client()
     for browser in (taken, closed, used):
         assert landed(await google_callback(browser, google_signup)) == "/signup/google"
-    assert (await used.post("/api/auth/google/finish", json={"accept_terms": True})).status_code == 200
+    assert (await used.post("/api/auth/google/finish", json=GOOGLE_FINISH)).status_code == 200
 
-    duplicate = await taken.post("/api/auth/google/finish", json={"accept_terms": True})
+    duplicate = await taken.post("/api/auth/google/finish", json=GOOGLE_FINISH)
 
     assert duplicate.json()["code"] == "link_invalid"  # the identity has an account now
 
@@ -605,7 +605,7 @@ async def test_finish_checks_everything_again(
     bob = await create_user("bob")
     assert bob.user_id is not None
     await give_email(bob.user_id, "second@gmail.com")
-    response = await second.post("/api/auth/google/finish", json={"accept_terms": True})
+    response = await second.post("/api/auth/google/finish", json=GOOGLE_FINISH)
     assert response.status_code == 409
     assert response.json() == {
         "detail": "This address already has an account. Sign in with your password, then connect Google in Settings.",
@@ -615,18 +615,18 @@ async def test_finish_checks_everything_again(
     google_signup.choose(sub="100000000000000000666", email="third@gmail.com")
     assert landed(await google_callback(closed, google_signup)) == "/signup/google"
     await open_signup(google=False)
-    response = await closed.post("/api/auth/google/finish", json={"accept_terms": True})
+    response = await closed.post("/api/auth/google/finish", json=GOOGLE_FINISH)
     assert (response.status_code, response.json()["code"]) == (403, "signup_closed")
 
 
 async def test_finish_needs_the_terms_and_a_live_ticket(client: ApiClient, google_signup: FakeGoogleSignin) -> None:
     assert (await client.post("/api/auth/google/finish", json={"accept_terms": False})).status_code == 422
-    assert (await client.post("/api/auth/google/finish", json={"accept_terms": True})).json()["code"] == "link_invalid"
+    assert (await client.post("/api/auth/google/finish", json=GOOGLE_FINISH)).json()["code"] == "link_invalid"
     await google_callback(client, google_signup)
     for key in await get_redis().keys("auth:gticket:*"):
         await get_redis().delete(key)
 
-    expired = await client.post("/api/auth/google/finish", json={"accept_terms": True})
+    expired = await client.post("/api/auth/google/finish", json=GOOGLE_FINISH)
 
     assert expired.json()["code"] == "link_invalid"
 
@@ -639,7 +639,7 @@ async def test_cancel_drops_the_ticket(client: ApiClient, google_signup: FakeGoo
     assert response.status_code == 204
     assert set_cookies(response)["rag_gticket"]["max-age"] == "0"
     assert await get_redis().keys("auth:gticket:*") == []
-    assert (await client.post("/api/auth/google/finish", json={"accept_terms": True})).json()["code"] == "link_invalid"
+    assert (await client.post("/api/auth/google/finish", json=GOOGLE_FINISH)).json()["code"] == "link_invalid"
 
 
 async def test_the_ticket_lives_fifteen_minutes(client: ApiClient, google_signup: FakeGoogleSignin) -> None:
@@ -665,7 +665,7 @@ async def test_no_google_token_is_kept_anywhere(
     google_signup.mint = recording
     browser = new_client()
     await google_callback(browser, google_signup)
-    await browser.post("/api/auth/google/finish", json={"accept_terms": True})
+    await browser.post("/api/auth/google/finish", json=GOOGLE_FINISH)
     await google_callback(new_client(), google_signup)
 
     secrets = [*issued, *(request["code"] for request in google_signup.token_requests)]
@@ -713,7 +713,7 @@ async def test_the_pending_email_of_a_google_sign_up_expires_in_a_day(
 ) -> None:
     google_signup.choose(email="someone@company.example", email_verified=False)
     await google_callback(client, google_signup)
-    me = (await client.post("/api/auth/google/finish", json={"accept_terms": True})).json()
+    me = (await client.post("/api/auth/google/finish", json=GOOGLE_FINISH)).json()
 
     pending = await pending_email(me["id"])
 
@@ -724,7 +724,7 @@ async def test_users_signed_up_with_google_have_no_password_to_sign_in_with(
     client: ApiClient, new_client: NewClient, google_signup: FakeGoogleSignin
 ) -> None:
     await google_callback(client, google_signup)
-    me = (await client.post("/api/auth/google/finish", json={"accept_terms": True})).json()
+    me = (await client.post("/api/auth/google/finish", json=GOOGLE_FINISH)).json()
 
     response = await new_client().post("/api/auth/login", json={"identifier": GMAIL, "password": "anything-at-all"})
 

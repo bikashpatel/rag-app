@@ -30,7 +30,8 @@ class Me(BaseModel):
     usage: UsageSummary  # in the allowance window
     preferences: Preferences = Field(default_factory=Preferences)
     plan: PlanAccess
-    email: str | None = None  # the verified email (users.email); the display name when set
+    email: str | None = None  # the verified email (users.email)
+    display_name: str | None = None  # the person's name (users.display_name); None: not given
 
 
 class PreferencesUpdate(BaseModel):
@@ -87,6 +88,7 @@ class AccountInfo(BaseModel):
     last_login_at: datetime | None  # also set for sign-ins from before login_events existed
     conversation_count: int
     recent_logins: list[LoginEvent]  # newest first, at most 20 (older ones are deleted)
+    display_name: str | None  # the person's name; None: not given (PUT /me/name sets it)
     email: str | None  # verified
     email_verified_at: datetime | None
     pending_email: PendingEmailInfo | None

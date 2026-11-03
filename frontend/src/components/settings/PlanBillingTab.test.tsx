@@ -288,6 +288,11 @@ describe("PlanBillingTab", () => {
     expect(save).toHaveFocus();
   });
 
+  it("shows the person's name as the receipts' name until one is saved", async () => {
+    await setup(makeBillingStatus(), {}, makeMe({ display_name: "Maya Chen" }));
+    expect(await screen.findByLabelText("Name on receipts")).toHaveAttribute("placeholder", "Maya Chen");
+  });
+
   it("reports a refused name", async () => {
     const { user } = await setup(makeBillingStatus(), {
       "PUT /billing/profile": () => errorResponse(422, "name: too long"),

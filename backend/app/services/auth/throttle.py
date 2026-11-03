@@ -17,7 +17,9 @@ from app.errors import AppError
 from app.redis_client import get_redis
 from app.services.auth import emails
 
-Rule = Literal["signup", "resend", "forgot", "token", "google_start", "email_change", "mail_test", "upi_unpaid"]
+Rule = Literal[
+    "signup", "resend", "forgot", "token", "google_start", "email_change", "mail_test", "upi_unpaid", "name_change"
+]
 AddressKind = Literal["signup", "reset", "confirm"]
 
 MINUTE, HOUR, DAY = 60, 3600, 86_400
@@ -47,6 +49,7 @@ RULES: Final[dict[Rule, Limit]] = {
     "email_change": Limit(False, (Window(DAY, 5),)),
     "mail_test": Limit(False, (Window(HOUR, 5),)),
     "upi_unpaid": Limit(True, (Window(HOUR, 10), Window(DAY, 30))),  # direct-UPI orders of unpaid accounts
+    "name_change": Limit(False, (Window(HOUR, 10), Window(DAY, 30))),  # PUT /me/name
 }
 UNPAID_EMAIL_CHANGES: Final = 3  # a day, for an account that has never paid
 ADDRESS_WINDOWS: Final = (Window(MINUTE, 1), Window(HOUR, 3), Window(DAY, 6))  # mails per recipient and kind
@@ -173,7 +176,8 @@ def _rule_keys(request: Request, rule: Rule, subject: str | None, unpaid: bool) 
 
 
 async def check(request: Request, rule: Rule, *, subject: str | None = None, unpaid: bool = False) -> None:
-    """Counts the request under `rule` (per network, or per `subject`, a user id, for email_change and mail_test;
+    """Counts the request under `rule` (per network, or per `subject`, a user id, for email_change, mail_test and
+    name_change;
     `unpaid` gives an account that never paid its smaller email_change limit). Over the limit: 429 too_many_attempts
     with Retry-After, and the request isn't counted."""
     wait = await _take(_rule_keys(request, rule, subject, unpaid))

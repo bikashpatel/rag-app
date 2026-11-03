@@ -99,6 +99,7 @@ export default function PublicLayout({ children }: { children: ReactNode }) {
             <div className="public-footer-links">
               <PolicyLinks />
               <p>Payments are processed by Razorpay.</p>
+              <p>© {new Date().getFullYear()} asknuvexusdoc.com. All rights reserved.</p>
             </div>
           </div>
         </footer>

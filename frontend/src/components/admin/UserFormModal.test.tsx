@@ -344,6 +344,27 @@ describe("UserFormModal: creating", () => {
     await user.click(screen.getByRole("button", { name: "Create user" }));
     await waitFor(() => expect(calls).toHaveLength(1));
     expect(sent(calls, "POST")[0]).not.toHaveProperty("grant");
+    expect(sent(calls, "POST")[0]).not.toHaveProperty("display_name");
+  });
+
+  it("creates with an optional name, normalized, after checking it as the server does", async () => {
+    const calls = stubFetch({ "POST /admin/users": makeAdminUser() });
+    const user = setupUser();
+    renderForm();
+    await fillAccount(user, "bikash");
+    const name = field("Name");
+    expect(name).toHaveAccessibleDescription(/^Optional\./);
+    await user.type(name, "Bikash <Patel>");
+    await user.click(screen.getByRole("button", { name: "Create user" }));
+    expect(name).toHaveAccessibleDescription(/^Leave out < and >\./);
+    expect(name).toHaveFocus();
+    expect(calls).toHaveLength(0);
+
+    await user.clear(name);
+    await user.type(name, "  Bikash   Patel ");
+    await user.click(screen.getByRole("button", { name: "Create user" }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(sent(calls, "POST")[0]).toMatchObject({ username: "bikash", display_name: "Bikash Patel" });
   });
 
   it("restricts the user to the checked chat models", async () => {
@@ -509,6 +530,32 @@ describe("UserFormModal: editing", () => {
     };
     await waitFor(() => expect(props.onSaved).toHaveBeenCalledWith(saved, false));
     expect(sent(calls, "PATCH")).toEqual([body]);
+  });
+
+  it("leaves the name out of the update when it didn't change", async () => {
+    const named = makeAdminUser({ display_name: "Maya Chen" });
+    const calls = stubEdit({ "PATCH /admin/users/7": named });
+    const user = setupUser();
+    renderForm({ user: named });
+    expect(field("Name")).toHaveValue("Maya Chen");
+    await user.type(field("Name"), "  ");
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(sent(calls, "PATCH")).toHaveLength(1));
+    expect(sent(calls, "PATCH")[0]).not.toHaveProperty("display_name");
+  });
+
+  it.each([
+    ["Maya C.", "Maya C."],
+    ["", null],
+  ])("sends the name %j as %j", async (typed, display_name) => {
+    const calls = stubEdit({ "PATCH /admin/users/7": makeAdminUser() });
+    const user = setupUser();
+    renderForm({ user: makeAdminUser({ display_name: "Maya Chen" }) });
+    await user.clear(field("Name"));
+    if (typed) await user.type(field("Name"), typed);
+    await user.click(screen.getByRole("button", { name: "Save changes" }));
+    await waitFor(() => expect(sent(calls, "PATCH")).toHaveLength(1));
+    expect(sent(calls, "PATCH")[0]).toMatchObject({ display_name });
   });
 
   it("keeps the server's Above plan flag for an unchanged override and needs no confirmation for an existing 0", async () => {

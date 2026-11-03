@@ -49,7 +49,7 @@ export function makeSignupCheck(overrides: Partial<SignupCheck> = {}): SignupChe
 export function makePasswordTokenInfo(overrides: Partial<PasswordTokenInfo> = {}): PasswordTokenInfo {
   return {
     email: "maya@example.com",
-    username: "user-k3m9q2xa",
+    username: "user-k3m7q2xa",
     has_password: true,
     expires_at: "2026-10-20T10:00:00Z",
     google: null,

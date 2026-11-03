@@ -347,7 +347,9 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   uniqueness and linking), `email_verified_at` (set whenever `email` is),
   `signup_source` ("env"|"admin"|"email"|"google"; server default `'admin'`),
   `terms_version, terms_accepted_at` (a self sign-up's consent; NULL for `env`
-  and `admin` users), `is_admin, is_active, token_version, monthly_token_limit, rate_limit_per_min,
+  and `admin` users), `display_name` (≤ 80, the person's name as they write it,
+  under the **name rules** below; NULL: none given, as for every account made
+  before revision 0006 until the person or the admin sets one), `is_admin, is_active, token_version, monthly_token_limit, rate_limit_per_min,
   max_upload_mb, max_documents, max_storage_mb, monthly_image_limit,
   vision_monthly_token_limit` (the seven limit **overrides**, all nullable:
   NULL = the plan's value, 0 = unlimited), `restrict_models, billing_tester`
@@ -361,6 +363,17 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   account is created, `users.email` is written only by a confirmed change, an
   undo, or a Google link of an account that has none (section 6, Sign-up).
   Relationship `identities` (`user_identities`).
+  **Name rules** (`app.schemas_auth.person_name`, the one place; the frontend's
+  `lib/names.ts` mirrors it): NFC; runs of whitespace (tab, line breaks, space,
+  no-break and the other Unicode spaces) become one space; trimmed; then 1 to 80
+  characters (code points) of any script, without `<` or `>` and without any
+  control, format, surrogate, private-use or unassigned character (Unicode
+  category C) except the joiners U+200C and U+200D. Refused names answer 422
+  ("Enter your name.", "Use at most 80 characters.", "Leave out < and >.",
+  "Remove the invisible or control characters."). The **shown name** of an
+  account (frontend `personName`) is its `display_name`; else its username unless
+  that is a generated sign-up handle (`^user-[a-z2-7]{8}$`); else its email's
+  local part; else the username.
 - **llm_models**: `id, display_name, litellm_model (e.g. "openai/gpt-5.4-mini",
   "anthropic/claude-sonnet-5-5", "ollama/llama3.1"), kind ("chat"|"embedding"|"vision"|"image"),
   enabled, is_default, api_base, api_key_env, max_output_tokens, temperature,
@@ -496,7 +509,9 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   chosen password), `browser_sha256` (SHA-256 of the browser's `rag_signup`
   cookie), `next_path, terms_version, terms_accepted_at, password_failures`
   (wrong passwords at completion; the 5th deletes the row), `ip`
-  (approximate), `created_at, expires_at` (7 days after creation); indexes
+  (approximate), `created_at, expires_at` (7 days after creation),
+  `display_name` (the name given, under the name rules; it becomes the
+  account's); indexes
   `(canonical, created_at)` and `expires_at`. One per sign-up attempt, at most
   three live rows per canonical address (a fourth deletes the oldest). Never a
   user: it signs in nowhere and reserves nothing.
@@ -666,7 +681,9 @@ All timestamps are timezone-aware UTC. Integer primary keys.
   `upi_payee_name`, `upi_utr`, `upi_submitted_at`, `upi_decided_at`,
   `upi_decided_by`, `upi_rejection` and `upi_rejection_note`, the partial unique
   index `uq_billing_orders_upi_utr` and the index
-  `ix_billing_orders_status_submitted`; it changes no row. Up to revision 0002
+  `ix_billing_orders_status_submitted`; it changes no row. Revision 0006 (person
+  names) adds the nullable `users.display_name` and `pending_signups.display_name`
+  (VARCHAR(80)); it changes no row and invents no name. Up to revision 0002
   the schema is exactly what `create_all` made; releases up to `c1da1d0` predate migrations, ignore `alembic_version` and
   start on any schema, so go back to one only with a database at 0002 or from
   before migrations. Rolling back past plugins needs the SQL in
@@ -771,7 +788,8 @@ type Preferences = { theme: ThemePreference /* default "system" */; accent: Acce
 type Me = { id: number; username: string; is_admin: boolean;
   limits: UserLimits /* the plan's, merged with the user's overrides */; usage: UsageSummary;
   preferences: Preferences; plan: PlanAccess;
-  email: string|null /* the verified email; the display name when set (else the username) */ }
+  email: string|null /* the verified email */;
+  display_name: string|null /* the person's name (section 4, name rules); null: none given */ }
 type ChatModel = { id: number; display_name: string; provider: string; is_default: boolean;
   can_create_files: boolean /* CHAT_FILE_TOOLS is on and LiteLLM says the model supports function calling */;
   can_create_images: boolean /* CHAT_IMAGE_TOOLS is on, a usable image model is active and the model gets tools */;
@@ -976,7 +994,8 @@ unused.
 Brief `docs/briefs/signup-auth.md` sections 3 to 8 hold the rules in full;
 `app/schemas_auth.py` holds these shapes. Every request body refuses unknown
 fields (422); an address field holds 1 to 320 characters before it is parsed,
-a password 1 to 1,024, a Turnstile token 1 to 2,048, `next` at most 512.
+a password 1 to 1,024, a Turnstile token 1 to 2,048, `next` at most 512, a
+`name` follows the name rules (section 4).
 
 ```ts
 type PasswordReason = "too_short"|"too_long"|"common"|"context"|"breached"   // the reason of 422 password_rejected
@@ -988,7 +1007,8 @@ type AuthConfig = { signup: SignupAvailability;
   terms_version: string; contact_email: string|null /* Admin → Billing → Business & payments */ }
 type LoginRequest = { identifier: string /* email or username; "username" accepted as an alias */; password: string;
   turnstile_token?: string|null }
-type SignupRequest = { email: string; password: string; accept_terms: true; turnstile_token: string;
+type SignupRequest = { name: string /* the name rules; kept with the pending sign-up, then the account's */;
+  email: string; password: string; accept_terms: true; turnstile_token: string;
   next?: string|null /* a path on this site, kept through verification */ }
 type EmailWithChallenge = { email: string; turnstile_token: string }      // resend and forgot
 type Accepted = { status: "accepted" }                                     // 202, the same for every address
@@ -1008,7 +1028,7 @@ type GoogleStart = { intent: "signin"|"link"|"reauth"; next?: string|null /* sig
 type GoogleStarted = { authorize_url: string }
 type GooglePending = { email: string; email_verified: boolean /* gmail or workspace: confirmed at once */;
   from: "login"|"signup"; expires_at: string }
-type GoogleFinish = { accept_terms: true }
+type GoogleFinish = { name: string /* the name rules */; accept_terms: true }
 ```
 
 **Common rules.**
@@ -1065,6 +1085,7 @@ type GoogleFinish = { accept_terms: true }
   | `token` per network (`signup/check`, `signup/complete`, `password/check`, `password/reset`, `email/check`, `email/verify`, `email/undo-check`, `email/undo`, `google/pending`) | 30 an hour |
   | `google_start` per network | 20 a minute |
   | `upi_unpaid` per network (direct-UPI orders made by unpaid accounts) | 10 an hour, 30 a day |
+  | `name_change` per user (`PUT /me/name`) | 10 an hour, 30 a day |
   | mails per recipient **and kind** (`signup`: sign-up and resend; `reset`: forgot; `confirm`: email changes, their resends and a Google sign-up's unverified address), by `sha256(delivery key)` | 1 a minute, 3 an hour, 6 a day each; **silent**: the request answers as usual and enqueues nothing |
   | security notices per account (`password_changed`, `password_added`, `google_linked`, `google_unlinked`) | 3 an hour, 10 a day; **silent**: the change goes ahead without its notice (as when the notice's class has no room today) |
   | email changes per user | 5 a day; 3 for an unpaid account |
@@ -1110,13 +1131,16 @@ type GoogleFinish = { accept_terms: true }
 
 - `POST /auth/signup` `SignupRequest` → 202 `Accepted` and `rag_signup`. In
   order: validation (`accept_terms` must be true: 422 "Accept the terms to
-  create an account."); email sign-up available, else 403 `signup_closed`;
+  create an account."; `name` under the name rules, which change nothing
+  else: the same answer for every address whatever the name); email sign-up
+  available, else 403 `signup_closed`;
   the network limit `signup`; Turnstile (`signup`); parse the address (422);
   the password policy with the address and its local part as context (422
   `password_rejected`); `available("public")`, else 503 `mail_unavailable`;
   hash the password (always); the cookie; then, within the silent per-address
   limit (kind `signup`), in one transaction: a `pending_signups` row (the hash,
-  `browser_sha256`, `safe_next(next)`, the terms record, the approximate IP),
+  `browser_sha256`, `safe_next(next)`, the terms record, the approximate IP,
+  the name),
   the oldest live rows for the address beyond three deleted, and one outbox
   job `signup`. The worker sends the "already have an account" mail when a
   user holds the verified address (and deletes that row), else a verification
@@ -1138,8 +1162,9 @@ type GoogleFinish = { accept_terms: true }
   deletes the row and its tokens: 400 `signup_reset`); sign-up still open
   (403 `signup_closed`); the address not held by a user (else every pending
   row for it is deleted: 409 `email_taken`); then the user is created (a
-  generated username, the row's hash, the verified email, `signup_source`
-  `email`, the terms record), every pending row for the address deleted,
+  generated username, the row's name as `display_name`, the row's hash, the
+  verified email, `signup_source` `email`, the terms record), every pending row
+  for the address deleted,
   `signup.completed` and a sign-in recorded; `rag_signup` cleared. `Me.plan`
   is `none`.
 
@@ -1255,8 +1280,10 @@ links a sign-in identity.
   (network limit `signup`): the ticket taken once and everything checked again
   in one transaction (the identity unused; for `gmail` and `workspace`, the
   address not held by a user, else 409 `email_taken`; sign-up open, else 403
-  `signup_closed`); the user (a generated username, no password,
-  `signup_source` `google`, the terms record) and the identity are created; for
+  `signup_closed`); the user (a generated username, the `name` as
+  `display_name`, no password, `signup_source` `google`, the terms record) and
+  the identity are created (a body without a valid `name` is a 422 before the
+  ticket is taken: it stays for the next try); for
   `gmail` and `workspace` the email is verified at once and every pending
   sign-up for it deleted; for `unverified` a `pending_emails` row (`source`
   `google`) and, while `available("public")` and within the silent
@@ -1338,6 +1365,7 @@ type AccountInfo = { id: number; username: string; is_admin: boolean;
   password_managed_by_env: boolean /* the env admin: change-password answers 400 */;
   created_at: string; last_login_at: string|null; conversation_count: number;
   recent_logins: LoginEvent[] /* newest first, at most 20 */;
+  display_name: string|null /* the person's name; null: none given */;
   email: string|null; email_verified_at: string|null; pending_email: PendingEmailInfo|null;
   has_password: boolean; google: GoogleLink|null; signup_source: SignupSource; terms_accepted_at: string|null;
   email_change_needs: "password"|"google"|"not_allowed" /* google: a step-up; not_allowed: the env admin, or no way
@@ -1346,6 +1374,8 @@ type AccountInfo = { id: number; username: string; is_admin: boolean;
 type EmailChange = { email: string; password?: string|null /* required when email_change_needs is "password" */ }
 type NewPassword = { new_password: string }
 type PasswordConfirm = { password: string }
+type NameChange = { name: string /* the name rules */ }
+type DisplayName = { display_name: string /* as stored */ }
 type UsageAmount = { used: number; limit: number /* 0 = unlimited; always 0 for the admin */ }
 type MyUsage = { month: string /* "YYYY-MM" of period_start */;
   period_start: string; resets_at: string /* the allowance window's start and end (the period, or the UTC month) */;
@@ -1371,6 +1401,11 @@ type MyUsage = { month: string /* "YYYY-MM" of period_start */;
   `email_plan_reminders` and `email_receipts` (default true) are the switches
   of Settings → Plan & billing.
 - `GET /me/account` → `AccountInfo`.
+- `PUT /me/name` `NameChange` → `DisplayName`: the caller's name, normalized
+  by the name rules (422 otherwise), within `name_change` (10 an hour, 30 a day
+  per user: 429 `too_many_attempts`, the 422s not counted). Every account, the
+  env admin's included (the name isn't managed in `.env`); no event records the
+  name. There is no way to remove one's own name (the admin can clear it).
 
 The account's email, password and Google sign-in (Sign-up above; the env admin
 gets 400 "The admin account is managed in .env" on each):
@@ -1407,7 +1442,7 @@ gets 400 "The admin account is managed in .env" on each):
   `DocumentConfig`.
 - `POST /me/export` (no body; a POST so nginx's cross-site check applies) →
   `200 application/zip` (a download): `README.txt`,
-  `account.json` (profile, preferences, limits, the usage of the allowance
+  `account.json` (profile with `display_name`, preferences, limits, the usage of the allowance
   window, plugin connections without tokens, sign-ins, `email`, `pending_email`,
   `google` (the linked address and date), `terms` (version and time) and
   `security_events` (the user's `auth_events`), and the counts of included
@@ -2147,7 +2182,9 @@ keys run.
 numbered `<prefix>/<yy>-<yy+1>/<seq:06d>` per Indian financial year (1 April to
 31 March, IST) and mode: `RA/26-27/000001`, `TEST/26-27/000001` under test keys
 (with a watermark); live and offline payments share the live series, with no
-gaps. The row is a snapshot (seller, buyer, lines, amount, method); the PDF
+gaps. The row is a snapshot (seller, buyer, lines, amount, method; the buyer's
+name is the billing profile's name, else the account's `display_name`, else
+the username); the PDF
 (fpdf2, Noto Sans) is rendered on demand and shows refunds and lost disputes;
 a direct-UPI payment reads "UPI (direct)" as the method, its line's detail
 "UPI (direct), UTR 630512345678" and its reference row "UPI UTR". No
@@ -2167,7 +2204,8 @@ max-age=60`):
 type LimitOverrides = { [K in keyof UserLimits]: number|null }   // null: the plan's value; 0 = unlimited
 type AdminUserPlan = { state: PlanState; plan: PlanRef|null; valid_through: string|null; paid_through: string|null;
   complimentary: boolean; open_ended: boolean; test_mode: boolean; expiring_soon: boolean; ended_at: string|null }
-type AdminUser = { id: number; username: string; is_admin: boolean; is_active: boolean;
+type AdminUser = { id: number; username: string; display_name: string|null /* the person's name */;
+  is_admin: boolean; is_active: boolean;
   restrict_models: boolean; allowed_model_ids: number[]; created_at: string; last_login_at: string|null;
   usage: { chat_tokens: number; chat_allowance_used: number; embedding_tokens: number; vision_tokens: number;
     images: number; cost_usd: number; window_start: string; window_end: string } /* the user's allowance window */;
@@ -2182,10 +2220,13 @@ type AdminUser = { id: number; username: string; is_admin: boolean; is_active: b
   google_email: string|null /* the linked Google account's address; null when none */; terms_accepted_at: string|null;
   terms_version: string|null /* the terms version the user accepted; null for admin-created users */ }
 type AdminUserCreate = { username: string /* 3-64, ^[a-zA-Z0-9_.-]+$, lowercased; not a retired one */;
-  password: string /* the password policy */; is_active?: boolean; restrict_models?: boolean; allowed_model_ids?: number[];
+  password: string /* the password policy */; display_name?: string|null /* the name rules; null or blank: none */;
+  is_active?: boolean; restrict_models?: boolean; allowed_model_ids?: number[];
   billing_tester?: boolean; overrides?: Partial<LimitOverrides>;
   grant?: Omit<GrantRequest, "start"> /* a complimentary plan from now */; confirm_unlimited?: boolean }
-type AdminUserUpdate = { password?: string /* = reset; the password policy */; is_active?: boolean; restrict_models?: boolean;
+type AdminUserUpdate = { password?: string /* = reset; the password policy */;
+  display_name?: string|null /* omitted: unchanged; null or blank: cleared; else the name rules */;
+  is_active?: boolean; restrict_models?: boolean;
   allowed_model_ids?: number[]; billing_tester?: boolean;
   overrides?: Partial<LimitOverrides> /* a key present sets it, null clears it; absent keys stay */;
   confirm_unlimited?: boolean /* required when an override sets monthly_token_limit to 0 */ }
@@ -2747,8 +2788,17 @@ type AlertTestQueued = { queued_at: string }
   enabled and explain what is missing on submit; email fields suggest "Did you
   mean …?" for common domain typos; inside in-app browsers (Instagram,
   Facebook, LinkedIn and the like) the Google button becomes a notice with
-  **Copy link**. The display name is `Me.email` when set, else the username
-  (the avatar menu, the Settings header and profile). While sign-up is open the
+  **Copy link**. `/signup`'s form starts with **Your name** (required,
+  `autocomplete="name"`, checked with the name rules before sending), and
+  `/signup/google`'s "Create your account" step has the same field above the
+  terms. Every place that shows a person's name uses `lib/names.ts`
+  `personName` (section 4, the shown name): the avatar (initials), the avatar
+  menu and the Settings dialog's foot (the name with the email under it),
+  Settings → Account's profile, Admin → Users and "Finishing signs you out of
+  …"; the chat's new-chat greeting ("How can I help, Bikash?") uses
+  `greetingName`: the first word of `display_name` (all of it when that word
+  ends with ".", as "Dr."), else the shown name. The receipt-name fields'
+  placeholder is `display_name`, else the username. While sign-up is open the
   public top bar has **Sign up** beside Sign in, and `/pricing`'s button reads
   "Create an account to choose a plan" (`/signup?next=/plans`).
 - **Turnstile and page loads** (`lib/authDocument.ts`): nginx gives only
@@ -2804,8 +2854,11 @@ type AlertTestQueued = { queued_at: string }
   underneath (a new chat getting `/c/<id>`, a deleted one going to `/`) keep it
   open; a full-screen sheet under 800px.
   Tabs: General (theme, accent, chat font size, default chat model, Enter to
-  send), Account (profile with the display name, the sign-up source, the
-  username and the email's state; Email: add, change (password or a Google
+  send), Account (profile with the shown name and the email under it, the
+  sign-up source, the username and the email's state; **Name**: the
+  `display_name` or "Not set" with **Edit name…**/**Add name…** opening an
+  inline form (Save, Cancel; `PUT /me/name`, then `Me` refreshed), for every
+  account; Email: add, change (password or a Google
   step-up), the pending address with Resend and Cancel; Sign-in methods:
   change or set a password, connect or disconnect Google, the
   `?google=<result>` messages; sign-ins "with Google" or "with password"; log
@@ -2967,7 +3020,9 @@ type AlertTestQueued = { queued_at: string }
   (Open or Closed, the Methods, Sign-ups, Email today and Checks tiles, the
   warnings, **Edit…** with the dialog: open sign-up (a second click while a
   warning stands), the two methods, the checks, **Send a test email…**), a
-  search box (username or email), the email as the user cell's second line, a
+  search box (name, username or email), the user cell's shown name with the
+  username (when it differs) and the email under it, an optional **Name** in the
+  user form (create and edit; blank clears it), a
   Signed up column and a sign-up filter, a Plan column and filters, the user's
   plan with grants, change plan and revoke, "Can make test payments", the
   read-only sign-in facts, and the

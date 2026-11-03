@@ -11,6 +11,7 @@ import type {
   UserLimits,
 } from "../../api/types";
 import { formatDate, formatNumber, formatRelativeTime } from "../../lib/format";
+import { nameProblem, normalizeName } from "../../lib/names";
 import { GoogleMark } from "../auth/GoogleButton";
 import Modal from "../ui/Modal";
 import PasswordInput from "../ui/PasswordInput";
@@ -25,7 +26,7 @@ const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 const MAX_GRANT_DAYS = 90;
 
 type LimitKey = keyof UserLimits;
-type ErrorKey = "username" | "password" | "grantDays" | "grantReason" | LimitKey;
+type ErrorKey = "display_name" | "username" | "password" | "grantDays" | "grantReason" | LimitKey;
 
 const LIMIT_FIELDS: { key: LimitKey; label: string; max: number; min?: number }[] = [
   { key: "monthly_token_limit", label: "Chat allowance (standard tokens)", max: Number.MAX_SAFE_INTEGER },
@@ -38,6 +39,8 @@ const LIMIT_FIELDS: { key: LimitKey; label: string; max: number; min?: number }[
 ];
 
 type FormState = {
+  /** "" = no name. */
+  display_name: string;
   username: string;
   password: string;
   is_active: boolean;
@@ -62,6 +65,7 @@ function initialState(user: AdminUser | null, plans: AdminPlan[], paymentsOpen: 
   const professional =
     plans.find((plan) => plan.code === "professional") ?? [...plans].sort((a, b) => b.rank - a.rank)[0];
   return {
+    display_name: user?.display_name ?? "",
     username: user?.username ?? "",
     password: "",
     is_active: user?.is_active ?? true,
@@ -178,6 +182,10 @@ export default function UserFormModal({
 
   function validate(): { username: string; fields: AdminUserUpdate; grant: AdminUserCreate["grant"] } | null {
     const v = new FormValidator<ErrorKey>();
+    const displayName = normalizeName(form.display_name) || null;
+    const nameError = displayName ? nameProblem(displayName) : null;
+    if (nameError) v.fail("display_name", nameError);
+    const nameChanged = creating ? displayName !== null : displayName !== user.display_name;
     const username = creating ? v.text("username", form.username, 3, 64).toLowerCase() : "";
     if (creating && !USERNAME_PATTERN.test(username)) {
       v.fail("username", "Use only letters, digits, dots, dashes and underscores.");
@@ -212,6 +220,7 @@ export default function UserFormModal({
       return null;
     }
     const fields: AdminUserUpdate = {
+      ...(nameChanged ? { display_name: displayName } : {}),
       is_active: form.is_active,
       restrict_models: form.restrict_models,
       allowed_model_ids: form.allowed_model_ids,
@@ -324,6 +333,22 @@ export default function UserFormModal({
                   autoComplete="new-password"
                   value={form.password}
                   onChange={(e) => update("password", e.target.value)}
+                />
+              )}
+            </Field>
+            <Field
+              label="Name"
+              hint="Optional. How the app greets them and shows their account, e.g. Bikash Patel."
+              error={errors.display_name}
+              className="admin-span-2"
+            >
+              {(control) => (
+                <input
+                  {...control}
+                  className="input"
+                  autoComplete="off"
+                  value={form.display_name}
+                  onChange={(e) => update("display_name", e.target.value)}
                 />
               )}
             </Field>

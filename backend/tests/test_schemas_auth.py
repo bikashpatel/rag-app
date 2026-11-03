@@ -28,7 +28,13 @@ from app.schemas_billing import UserRef
 
 CreateUser = Callable[..., Awaitable[ApiClient]]
 
-SIGNUP = {"email": "maya@example.com", "password": "a long passphrase", "accept_terms": True, "turnstile_token": "t"}
+SIGNUP = {
+    "name": "Maya Rao",
+    "email": "maya@example.com",
+    "password": "a long passphrase",
+    "accept_terms": True,
+    "turnstile_token": "t",
+}
 
 
 def refused(model: type[BaseModel], body: Any) -> list[str]:
@@ -74,9 +80,13 @@ def test_sign_up_needs_the_ticked_terms_and_bounds_every_field() -> None:
         {"turnstile_token": "t" * 2049},
         {"next": "/" * 513},
         {"plan": "starter"},
+        {"name": " "},
+        {"name": "m" * 81},
+        {"name": None},
     ):
         assert refused(SignupRequest, {**SIGNUP, **change}), change
-    assert refused(SignupRequest, {key: value for key, value in SIGNUP.items() if key != "turnstile_token"})
+    for field in ("turnstile_token", "name"):
+        assert refused(SignupRequest, {key: value for key, value in SIGNUP.items() if key != field}) == ["missing"]
 
 
 def test_tokens_and_resets_are_bounded_and_strict() -> None:

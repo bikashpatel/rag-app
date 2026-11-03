@@ -3,6 +3,8 @@
 body refuses unknown fields (422). Addresses are parsed by app.services.auth.emails after the cheaper checks (its
 error is a 422 "Enter a valid email address."), so here they are only bounded."""
 
+import re
+import unicodedata
 from datetime import datetime
 from typing import Annotated, Literal
 
@@ -18,6 +20,7 @@ from pydantic import (
 )
 
 PASSWORD_MAX_LENGTH = 256  # code points after NFC, where a password is set (the policy's too_long)
+NAME_MAX_LENGTH = 80  # code points after normalizing (users.display_name)
 SIGNIN_PASSWORD_MAX_LENGTH = 1024  # accepted wherever a password is typed, so a long ADMIN_PASSWORD still works
 
 PasswordReason = Literal["too_short", "too_long", "common", "context", "breached"]
@@ -32,6 +35,33 @@ EmailChangeNeeds = Literal["password", "google", "not_allowed"]
 def _identifier(value: object) -> object:
     # Postgres text can't hold NUL characters (the lookup would fail instead of finding no user).
     return value.replace("\x00", "").strip() if isinstance(value, str) else value
+
+
+# The whitespace a name's runs of collapse to one space, and the joiners its scripts may need (frontend lib/names.ts has
+# the same sets).
+_SPACES = re.compile(r"[\t\n\v\f\r \xa0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+")
+_JOINERS = frozenset("\u200c\u200d")
+
+
+def person_name(value: object) -> object:
+    """A person's name (users.display_name) as stored: NFC, inner whitespace collapsed to one space, trimmed; 1 to 80
+    characters, any script, no control or invisible character (category C, except the joiners) and no "<" or ">"."""
+    if not isinstance(value, str):
+        return value
+    name = _SPACES.sub(" ", unicodedata.normalize("NFC", value)).strip(" ")
+    if not name:
+        raise ValueError("Enter your name.")
+    if len(name) > NAME_MAX_LENGTH:
+        raise ValueError(f"Use at most {NAME_MAX_LENGTH} characters.")
+    if "<" in name or ">" in name:
+        raise ValueError("Leave out < and >.")
+    if any(unicodedata.category(char)[0] == "C" and char not in _JOINERS for char in name):
+        raise ValueError("Remove the invisible or control characters.")
+    return name
+
+
+def _blank_to_none(value: object) -> object:
+    return None if isinstance(value, str) and not value.strip() else value
 
 
 def _accepted(value: bool) -> bool:
@@ -49,6 +79,9 @@ NextPath = Annotated[str, StringConstraints(max_length=512)]
 # Ours are 43 base64url characters; any other string is simply not found (400 link_invalid).
 Token = Annotated[str, StringConstraints(min_length=1, max_length=128)]
 TermsAccepted = Annotated[StrictBool, AfterValidator(_accepted)]
+PersonName = Annotated[str, BeforeValidator(person_name)]
+# Optional where a name may be left out (the admin's forms): blank is None
+OptionalPersonName = Annotated[PersonName | None, BeforeValidator(_blank_to_none)]
 
 
 class _Request(BaseModel):
@@ -96,6 +129,7 @@ class LoginRequest(_Request):
 class SignupRequest(_Request):
     """POST /auth/signup."""
 
+    name: PersonName  # kept with the pending sign-up, then the account's display_name
     email: EmailInput
     password: Password
     accept_terms: TermsAccepted
@@ -213,6 +247,7 @@ class GooglePending(BaseModel):
 class GoogleFinish(_Request):
     """POST /auth/google/finish."""
 
+    name: PersonName
     accept_terms: TermsAccepted
 
 
@@ -260,6 +295,18 @@ class PasswordConfirm(_Request):
     """DELETE /me/google."""
 
     password: Password
+
+
+class NameChange(_Request):
+    """PUT /me/name."""
+
+    name: PersonName
+
+
+class DisplayName(BaseModel):
+    """PUT /me/name: the name as stored."""
+
+    display_name: str
 
 
 # ---------------- Admin: sign-up settings ----------------

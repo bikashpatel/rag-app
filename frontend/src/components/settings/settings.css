@@ -106,6 +106,12 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.settings-nav-email {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* ---------- Panel ---------- */
 .settings-panel {
@@ -673,14 +679,18 @@
   min-width: 0;
 }
 .settings-profile-name {
-  overflow: hidden;
   font-family: var(--font-serif);
   font-size: 23px;
   font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.25;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+.settings-profile-email {
+  margin-top: 2px;
+  color: var(--text-2);
+  font-size: 14.5px;
+  overflow-wrap: anywhere;
 }
 .settings-profile-meta {
   display: flex;
@@ -1388,10 +1398,17 @@
 }
 
 /* ---------- Account: the email, the sign-in methods (docs/briefs/signup-auth-visual.md 7) ---------- */
-/* The display name is the email when there is one: it wraps rather than being cut. */
-.settings-profile-name.settings-profile-email {
-  white-space: normal;
+/* Account → Name: the name as saved, or "Not set". */
+.settings-name {
+  margin: 4px 0 0;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
   overflow-wrap: anywhere;
+}
+.settings-name-none {
+  color: var(--text-3);
+  font-weight: 400;
 }
 /* The profile's Email fact: its state ("Confirmed" since …, or "No email"). */
 .settings-email-value {

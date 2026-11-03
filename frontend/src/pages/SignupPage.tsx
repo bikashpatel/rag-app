@@ -5,6 +5,7 @@ import type { AuthConfig, PasswordReason } from "../api/types";
 import { useAuthConfig } from "../auth/AuthContext";
 import EmailField from "../components/auth/EmailField";
 import GoogleButton, { OrRule } from "../components/auth/GoogleButton";
+import NameField from "../components/auth/NameField";
 import PasswordRules from "../components/auth/PasswordRules";
 import TermsCheck from "../components/auth/TermsCheck";
 import Turnstile, { TurnstileWait } from "../components/auth/Turnstile";
@@ -12,6 +13,7 @@ import { AlertCircleIcon, CheckIcon, InfoIcon, MailCheckIcon, RefreshIcon } from
 import PasswordInput from "../components/ui/PasswordInput";
 import Spinner, { ButtonSpinner } from "../components/ui/Spinner";
 import { safeNextPath, take } from "../lib/authDocument";
+import { nameProblem, nameRefusal, normalizeName } from "../lib/names";
 import { FormError, messageOf, rememberGoogleNext, useChallenge, type Challenge } from "./authShared";
 import AuthSplit from "./login/AuthSplit";
 
@@ -131,21 +133,25 @@ type FormProps = {
   config: AuthConfig;
   siteKey: string;
   next: string | null;
+  initialName: string;
   initialEmail: string;
   sent: Sent | null;
-  onSent: (address: string) => void;
+  onSent: (address: string, name: string) => void;
 };
 
-/** Email, password, the terms and the robot check; Google above when it is on. */
-function SignupForm({ config, siteKey, next, initialEmail, sent, onSent }: FormProps) {
+/** Name, email, password, the terms and the robot check; Google above when it is on. */
+function SignupForm({ config, siteKey, next, initialName, initialEmail, sent, onSent }: FormProps) {
   const ids = useId();
+  const nameId = `${ids}-name`;
   const emailId = `${ids}-email`;
   const passwordId = `${ids}-password`;
   const rulesId = `${ids}-rules`;
   const formRef = useRef<HTMLFormElement>(null);
+  const [name, setName] = useState(initialName);
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState("");
   const [terms, setTerms] = useState(false);
+  const [nameError, setNameError] = useState<string | null>(null);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [termsError, setTermsError] = useState<string | null>(null);
   const [refusal, setRefusal] = useState<{ reason: PasswordReason; message: string } | null>(null);
@@ -165,20 +171,32 @@ function SignupForm({ config, siteKey, next, initialEmail, sent, onSent }: FormP
   async function send(token: string) {
     setSubmitting(true);
     try {
-      await authApi.signup({ email: email.trim(), password, accept_terms: true, turnstile_token: token, next });
-      onSent(email.trim());
+      await authApi.signup({
+        name: normalizeName(name),
+        email: email.trim(),
+        password,
+        accept_terms: true,
+        turnstile_token: token,
+        next,
+      });
+      onSent(email.trim(), name);
     } catch (err) {
       setSubmitting(false);
       challenge.spent();
       const code = authErrorCode(err);
       const rejected = passwordRefusal(err);
+      const invalid = code === null && err instanceof ApiError && err.status === 422;
+      const badName = invalid ? nameRefusal(err.message, name) : null;
       if (code === "challenge_failed" && !retried.current) {
         retried.current = true;
         challenge.submit((value) => void send(value));
       } else if (rejected) {
         setRefusal(rejected);
         focus("password");
-      } else if (code === null && err instanceof ApiError && err.status === 422) {
+      } else if (badName) {
+        setNameError(badName);
+        focus("name");
+      } else if (invalid) {
         setEmailError(err.message);
         focus("email");
       } else {
@@ -191,15 +209,17 @@ function SignupForm({ config, siteKey, next, initialEmail, sent, onSent }: FormP
     event.preventDefault();
     if (submitting || wait > 0) return;
     const address = email.trim();
+    const badName = nameProblem(name);
     let badEmail: string | null = null;
     if (!address) badEmail = "Enter your email.";
     else if (!EMAIL_SHAPE.test(address)) badEmail = "Enter a valid email address.";
     const short = Array.from(password.normalize("NFC")).length < minimum;
+    setNameError(badName);
     setEmailError(badEmail);
     setRefusal(short ? { reason: "too_short", message: `Use at least ${minimum} characters.` } : null);
     setTermsError(terms ? null : "Tick the box to accept the terms.");
     setFailure(null);
-    const first = [badEmail && "email", short && "password", !terms && "accept_terms"].find(Boolean);
+    const first = [badName && "name", badEmail && "email", short && "password", !terms && "accept_terms"].find(Boolean);
     if (first) {
       focus(first);
       return;
@@ -221,6 +241,16 @@ function SignupForm({ config, siteKey, next, initialEmail, sent, onSent }: FormP
       ) : null}
       {config.signup.email ? (
         <form ref={formRef} className="login-form" onSubmit={onSubmit} noValidate aria-label="Sign up with email">
+          <NameField
+            id={nameId}
+            label="Your name"
+            value={name}
+            onChange={(value) => {
+              setName(value);
+              setNameError(null);
+            }}
+            error={nameError}
+          />
           <EmailField
             id={emailId}
             label="Email"
@@ -477,6 +507,7 @@ export default function SignupPage() {
     return { address: carried, sends: [] };
   });
   const [view, setView] = useState<"form" | "sent">(record ? "sent" : "form");
+  const [formName, setFormName] = useState("");
   const [formEmail, setFormEmail] = useState("");
   const shownView = useRef(view);
 
@@ -611,9 +642,13 @@ export default function SignupPage() {
           config={config}
           siteKey={config.turnstile_site_key ?? ""}
           next={next}
+          initialName={formName}
           initialEmail={formEmail}
           sent={record}
-          onSent={sentTo}
+          onSent={(address, name) => {
+            setFormName(name);
+            sentTo(address);
+          }}
         />
       </div>
     );

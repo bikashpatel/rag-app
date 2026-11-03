@@ -854,6 +854,7 @@ async def test_the_account_view(create_user: CreateUser, admin_client: ApiClient
     assert set(info) == {
         "id",
         "username",
+        "display_name",
         "is_admin",
         "password_managed_by_env",
         "created_at",

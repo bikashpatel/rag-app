@@ -34,6 +34,7 @@ import DocumentPanel from "../components/documents/DocumentPanel";
 import { AlertCircleIcon, AlertIcon, CloseIcon, InfoIcon, LockIcon } from "../components/ui/icons";
 import { onConversationsDeleted } from "../lib/appEvents";
 import { formatNumber } from "../lib/format";
+import { greetingName } from "../lib/names";
 import { useOpenSettings, useReplacePath, type SettingsTab } from "../lib/settingsLink";
 
 // Keep in sync with the breakpoints in chat.css.
@@ -425,7 +426,7 @@ export default function ChatPage() {
     body = (
       <div className="chat-thread chat-thread-empty">
         <EmptyState
-          username={user?.username ?? null}
+          name={user ? greetingName(user) : null}
           disabled={disabledReason !== null || thread.streaming || attachments.waiting !== null}
           canCreateFiles={canCreateFiles}
           canCreateImages={canCreateImages && imagesLeft !== 0}

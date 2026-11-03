@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import type { Me, PluginInfo } from "../../api/types";
+import { personName } from "../../lib/names";
 import { SETTINGS_TABS, type SettingsTab } from "../../lib/settingsLink";
 import Avatar from "../ui/Avatar";
 import { CardIcon, ChartIcon, CloseIcon, PlugIcon, SlidersIcon, UserIcon } from "../ui/icons";
@@ -66,6 +67,7 @@ export default function SettingsModal({
   const tabRefs = useRef(new Map<SettingsTab, HTMLButtonElement>());
   const selectedRef = useRef<HTMLButtonElement | null>(null);
   const isPhone = useIsPhone();
+  const name = personName(user);
 
   // On phones, keep the selected tab in view in the scrolling strip.
   useEffect(() => {
@@ -186,10 +188,10 @@ export default function SettingsModal({
           </div>
         </div>
         <p className="settings-nav-foot">
-          <Avatar name={user.email ?? user.username} />
+          <Avatar name={name} />
           <span>
-            <strong>{user.email ?? user.username}</strong>
-            Saved to your account
+            <strong>{name}</strong>
+            {user.email ? <span className="settings-nav-email">{user.email}</span> : "Saved to your account"}
           </span>
         </p>
       </div>

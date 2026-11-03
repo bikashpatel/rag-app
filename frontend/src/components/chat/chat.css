@@ -603,6 +603,13 @@
   font-weight: 650;
   letter-spacing: 0;
 }
+.chat-avatar-email {
+  display: block;
+  overflow: hidden;
+  color: var(--text-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .chat-avatar-usage {
   display: flex;
   flex-direction: column;

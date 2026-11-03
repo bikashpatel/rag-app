@@ -43,7 +43,7 @@ const methods = () => screen.getByRole("list", { name: "Sign-in methods" });
 /** A self-signed-up account with a confirmed email, a password and Google connected. */
 function emailAccount(overrides: Partial<AccountInfo> = {}): AccountInfo {
   return makeAccount({
-    username: "user-k3m9q2xa",
+    username: "user-k3m7q2xa",
     email: "maya@example.com",
     email_verified_at: "2026-10-01T10:00:00Z",
     signup_source: "email",
@@ -86,18 +86,19 @@ describe("AccountTab", () => {
     expect(logins[1]).not.toHaveTextContent("This device");
   });
 
-  it("names the account by its email, says how it signed up and that the email is confirmed", async () => {
+  it("names the person with the email under it, says how they signed up and that the email is confirmed", async () => {
     await renderAccount(
       emailAccount({ recent_logins: [makeLoginEvent({ method: "google" })], signup_source: "google" }),
     );
-    expect(screen.getByText("maya@example.com")).toHaveClass("settings-profile-name");
+    expect(screen.getByText("maya", { selector: ".settings-profile-name" })).toBeInTheDocument();
+    expect(screen.getByText("maya@example.com")).toHaveClass("settings-profile-email");
     expect(screen.getByText("You signed up with Google")).toBeInTheDocument();
-    expect(screen.getByText("user-k3m9q2xa")).toBeInTheDocument();
+    expect(screen.getByText("user-k3m7q2xa")).toBeInTheDocument();
     expect(screen.getByText("Confirmed")).toBeInTheDocument();
     expect(screen.getByText("since 1 Oct 2026")).toBeInTheDocument();
     expect(screen.getByText(/Firefox 144 on macOS · desktop · with Google · 203.0.113.x/)).toBeInTheDocument();
     expect(within(signIns()).getByRole("listitem")).toHaveTextContent("with Google · 203.0.113.x");
-    // The address appears once, as the name (the pending one only in its notice).
+    // The address appears once, under the name (the pending one only in its notice).
     expect(screen.getAllByText("maya@example.com")).toHaveLength(1);
   });
 
@@ -156,6 +157,7 @@ describe("AccountTab", () => {
     expect(screen.queryByRole("button", { name: "Change password…" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /email…/ })).not.toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Sign-in methods" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Add name…" })).toBeInTheDocument();
   });
 
   it("reports a failed load and loads again on Try again", async () => {
@@ -174,6 +176,89 @@ describe("AccountTab", () => {
     await user.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByText("Recent sign-ins")).toBeInTheDocument();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  describe("Name", () => {
+    const named = (calls: FetchCall[]) => calls.filter((call) => call.method === "PUT" && call.path === "/me/name");
+    const gets = (calls: FetchCall[], path: string) => calls.filter((call) => call.method === "GET" && call.path === path);
+
+    it("adds a name inline, checks it as the server does, saves it and updates the account and the greeting", async () => {
+      const user = userEvent.setup();
+      let account = makeAccount();
+      const { calls } = await renderAccount(account, {
+        "GET /me/account": () => account,
+        "PUT /me/name": (call) => {
+          account = makeAccount({ display_name: (call.body as { name: string }).name });
+          return { display_name: account.display_name };
+        },
+      });
+      const group = screen.getByRole("heading", { name: "Name" }).closest(".settings-group") as HTMLElement;
+      expect(within(group).getByText("Not set")).toBeInTheDocument();
+      const toggle = within(group).getByRole("button", { name: "Add name…" });
+      await user.click(toggle);
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      const form = screen.getByRole("form", { name: "Add your name" });
+      const field = within(form).getByRole("textbox", { name: "Name" });
+      expect(field).toHaveFocus();
+      expect(field).toHaveAttribute("autocomplete", "name");
+
+      await user.click(within(form).getByRole("button", { name: "Save" }));
+      expect(within(form).getByRole("alert")).toHaveTextContent("Enter your name.");
+      expect(field).toHaveFocus();
+      await user.type(field, "  Maya   Chen ");
+      await user.click(within(form).getByRole("button", { name: "Save" }));
+
+      expect(await within(group).findByRole("status")).toHaveTextContent("Name saved");
+      expect(toggle).toHaveFocus();
+      expect(toggle).toHaveTextContent("Edit name…");
+      expect(within(group).getByText("Maya Chen")).toHaveClass("settings-name");
+      expect(named(calls).map((call) => call.body)).toEqual([{ name: "Maya Chen" }]);
+      await waitFor(() => expect(gets(calls, "/me/account")).toHaveLength(2));
+      await waitFor(() => expect(gets(calls, "/auth/me")).toHaveLength(2));
+      expect(await screen.findByText("Maya Chen", { selector: ".settings-profile-name" })).toBeInTheDocument();
+    });
+
+    it("edits a name, and closes without a request on Cancel or when nothing changed", async () => {
+      const user = userEvent.setup();
+      const { calls } = await renderAccount(makeAccount({ display_name: "Maya Chen" }));
+      const toggle = screen.getByRole("button", { name: "Edit name…" });
+      await user.click(toggle);
+      const form = screen.getByRole("form", { name: "Change your name" });
+      expect(within(form).getByRole("textbox", { name: "Name" })).toHaveValue("Maya Chen");
+      await user.click(within(form).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("form", { name: "Change your name" })).not.toBeInTheDocument();
+      expect(toggle).toHaveFocus();
+
+      await user.click(toggle);
+      await user.type(screen.getByRole("textbox", { name: "Name" }), " ");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(screen.queryByRole("form", { name: "Change your name" })).not.toBeInTheDocument();
+      expect(toggle).toHaveFocus();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+      expect(named(calls)).toEqual([]);
+    });
+
+    it("puts the server's refusal of the name on the field, and other refusals above the buttons", async () => {
+      const user = userEvent.setup();
+      const replies = [
+        jsonResponse({ detail: [{ loc: ["body", "name"], msg: "Value error, Use at most 80 characters." }] }, { status: 422 }),
+        jsonResponse({ detail: "Too many attempts. Try again in 40 minutes.", code: "too_many_attempts" }, { status: 429 }),
+      ];
+      await renderAccount(makeAccount({ display_name: "Maya" }), { "PUT /me/name": () => replies.shift() });
+      await user.click(screen.getByRole("button", { name: "Edit name…" }));
+      const field = screen.getByRole("textbox", { name: "Name" });
+      await user.type(field, " Chen");
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(await screen.findByText("Use at most 80 characters.")).toBeInTheDocument();
+      expect(field).toHaveAttribute("aria-invalid", "true");
+      expect(field).toHaveFocus();
+
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      expect(await screen.findByText("Too many attempts. Try again in 40 minutes.")).toBeInTheDocument();
+      expect(field).not.toHaveAttribute("aria-invalid");
+      expect(screen.getByRole("form", { name: "Change your name" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Save" })).not.toHaveAttribute("aria-busy");
+    });
   });
 
   describe("Change password", () => {

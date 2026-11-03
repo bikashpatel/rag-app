@@ -1,4 +1,4 @@
-import { BookIcon, LockIcon, SearchIcon } from "../../components/ui/icons";
+import { BookIcon, LockIcon, SearchIcon, SparkleIcon } from "../../components/ui/icons";
 
 // The owner's words for the sign-in page (visual spec 6.28), kept verbatim. On desktops the hero picture and the deck
 // lead the aside over the product tour and the pitch follows it; on phones the picture sits above the form and the
@@ -7,6 +7,24 @@ import { BookIcon, LockIcon, SearchIcon } from "../../components/ui/icons";
 /** The tagline. The hero picture shows it, so it is a heading for assistive technology only. */
 export function Headline() {
   return <h2 className="sr-only">Your documents. Your AI. Your answers.</h2>;
+}
+
+/** What kind of app this is (the owner's words, 2026-11-03): under the brand on desktops, above the deck on phones. */
+export function Tagline() {
+  return (
+    <div className="login-tagline">
+      <p className="login-tagline-badge">
+        <SparkleIcon size={13} />
+        Pure RAG
+      </p>
+      <p className="login-tagline-title">
+        A modern, pure &amp; powerful <span className="login-tagline-rag">RAG</span> application.
+      </p>
+      <p className="login-tagline-text">
+        Retrieval-Augmented Generation: answers drawn from your own documents, with every source cited.
+      </p>
+    </div>
+  );
 }
 
 export function Deck() {

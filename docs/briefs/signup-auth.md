@@ -21,6 +21,14 @@
 > of the visual brief). Section 0.2 records the response to each; 0.3 the parts not taken and why.
 >
 > Nothing here is legal advice. The privacy policy and terms are the owner's to write (section 17).
+>
+> **Names, 2026-11-02 (the owner's decision, after the build):** sign-up asks for the person's name, "Your name", on
+> the email form and on Google's "Create your account" step, and Settings → Account → **Name** changes it. It is
+> `users.display_name` (migration 0006; `pending_signups.display_name` until the account exists), shown by one helper:
+> the name, else a username that isn't a generated handle, else the email's local part, else the username; the chat
+> greets with its first word. This supersedes S3's and S45's "people see their email as their name" (3.1 and 3.3):
+> the generated handle stays, but people now see their name. `SPEC.md` (sections 4, 6 and 8) has the rules; mails
+> still name the account by its address, and Google's `profile` scope is still not asked for (the name is typed).
 
 The owner asked for (2026-10-28):
 
@@ -293,7 +301,8 @@ billing:    apply_payment → receipt row → outbox "receipt" (PDF attached); r
 `users.email` changes only through a confirmed change (4.8) or an undo (4.8); nothing else writes it.
 
 **Display name** (S45): `email` when set, else `username`. The UI uses it for the avatar menu, the Settings header and
-profile; mails address the account by its email.
+profile; mails address the account by its email. (Superseded on 2026-11-02 by the person's name: see "Names" at the
+top.)
 
 ### 3.2 Email addresses: validation, canonical form and delivery key (`services/auth/emails.py`)
 
@@ -323,7 +332,7 @@ Invalid input answers 422 with `detail` "Enter a valid email address." The UI sh
   admin's create form refuses one (409 `username_retired` "That username belonged to a deleted account. Choose
   another."). Migration 0004 backfills the usernames kept on billing records of already-deleted users.
 - Users rarely see the handle: the display name is the email (3.1); Settings → Account shows it as a fact ("also works
-  for sign-in").
+  for sign-in"). Since 2026-11-02 they see their own name instead ("Names" at the top).
 
 ### 3.4 Google identities (`user_identities`)
 

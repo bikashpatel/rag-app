@@ -7,7 +7,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
-from conftest import USER_PASSWORD, ApiClient, OutsideHosts, open_signup, signup
+from conftest import GOOGLE_FINISH, USER_PASSWORD, ApiClient, OutsideHosts, open_signup, signup
 from fake_google import FakeGoogleSignin
 from fake_turnstile import FakeTurnstile
 from google_oidc import GoogleOidc
@@ -85,7 +85,7 @@ async def test_a_completion_racing_a_google_finish_for_the_same_address(
 
     responses = await asyncio.gather(
         by_email.post("/api/auth/signup/complete", json={"token": token}),
-        by_google.post("/api/auth/google/finish", json={"accept_terms": True}),
+        by_google.post("/api/auth/google/finish", json=GOOGLE_FINISH),
     )
 
     assert sorted(response.status_code for response in responses) == [200, 409]

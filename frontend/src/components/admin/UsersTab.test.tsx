@@ -235,6 +235,35 @@ describe("UsersTab", () => {
     expect(row("sam.ortiz").querySelector(".admin-source .auth-google-g")).not.toBeNull();
   });
 
+  it("shows the person's name, with the username and the email under it, and finds them by name", async () => {
+    const bikash = makeAdminUser({
+      id: 13,
+      username: "user-xtimkcnf",
+      display_name: "Bikash Patel",
+      email: "bikash@example.com",
+      signup_source: "email",
+    });
+    const handle = makeAdminUser({ id: 14, username: "user-qq2rr3ss", email: "lata.rao@example.com", signup_source: "google" });
+    stubAdmin([admin, maya, bikash, handle]);
+    const user = userEvent.setup();
+    await renderTab();
+
+    const cell = row("Bikash Patel").querySelector(".admin-user-ident") as HTMLElement;
+    expect([...cell.children].map((line) => line.textContent)).toEqual([
+      "Bikash Patel",
+      "user-xtimkcnf",
+      "Confirmed: bikash@example.com",
+    ]);
+    expect(row("Bikash Patel").querySelector(".ui-avatar")).toHaveTextContent("BP");
+    expect(within(row("lata.rao")).getByText("user-qq2rr3ss")).toHaveClass("admin-user-username");
+    expect(row("maya.chen").querySelector(".admin-user-username")).toBeNull();
+
+    const search = screen.getByRole("searchbox", { name: "Search users by name, username or email" });
+    await user.type(search, "patel");
+    expect(screen.getAllByRole("row")).toHaveLength(2);
+    expect(row("Bikash Patel")).toBeInTheDocument();
+  });
+
   it("lists the newest sign-ups first and sorts by sign-up date either way", async () => {
     stubAdmin([admin, maya, sam, lee, ana]);
     const user = userEvent.setup();

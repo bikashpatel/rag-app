@@ -11,6 +11,7 @@ import type {
   CheckoutRequest,
   CheckoutStarted,
   ConversationsDeleted,
+  DisplayName,
   EmailChange,
   EmailConfirmed,
   EmailTokenInfo,
@@ -27,6 +28,7 @@ import type {
   GoogleStarted,
   Me,
   MyUsage,
+  NameChange,
   NewPassword,
   OrderView,
   PageSlug,
@@ -257,6 +259,11 @@ export function patchPreferences(update: PreferencesUpdate): Promise<Preferences
 
 export function getAccount(signal?: AbortSignal): Promise<AccountInfo> {
   return api.get<AccountInfo>("/me/account", { signal });
+}
+
+/** PUT /me/name: the caller's name, as the server stored it (normalized). */
+export function setDisplayName(body: NameChange): Promise<DisplayName> {
+  return api.put<DisplayName>("/me/name", body);
 }
 
 export function getMyUsage(signal?: AbortSignal): Promise<MyUsage> {

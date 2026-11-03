@@ -11,6 +11,7 @@ import type {
   SignupSource,
 } from "../../api/types";
 import { formatInr, formatIstDate } from "../../lib/billing";
+import { personName } from "../../lib/names";
 import {
   formatBytes,
   formatCompact,
@@ -79,10 +80,10 @@ const SOURCES: { value: Source; label: string; test: (user: AdminUser, now: numb
 
 const SOURCE_LABELS: Record<SignupSource, string> = { env: "Env", admin: "Admin", email: "Email", google: "Google" };
 
-/** The search box: the username, the email or a pending address contains the text. */
+/** The search box: the name, the username, the email or a pending address contains the text. */
 function matchesSearch(user: AdminUser, query: string): boolean {
   if (!query) return true;
-  return [user.username, user.email, user.pending_email?.address].some((value) =>
+  return [user.display_name, user.username, user.email, user.pending_email?.address].some((value) =>
     value?.toLowerCase().includes(query),
   );
 }
@@ -248,7 +249,7 @@ export default function UsersTab({ onChanged, params, onNavigate }: UsersTabProp
                       type="search"
                       className="input"
                       placeholder="Search name or email"
-                      aria-label="Search users by username or email"
+                      aria-label="Search users by name, username or email"
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
                     />
@@ -394,20 +395,22 @@ type UserRowProps = {
 function UserRow({ user, modelNames, canEdit, onEdit, onDelete, upiWaiting }: UserRowProps) {
   const { limits } = user;
   const paid = paidUntil(user);
+  const name = personName(user);
   return (
     <tr>
       <td>
         <div className="admin-user-cell">
-          <Avatar name={user.username} />
+          <Avatar name={name} />
           <span className="admin-user-ident">
             <span className="admin-user-line">
-              <span className="admin-user-name" title={user.username}>
-                {user.username}
+              <span className="admin-user-name" title={name}>
+                {name}
               </span>
               {user.is_admin ? <span className="badge badge-accent">admin</span> : null}
               {user.is_active ? null : <span className="badge badge-neutral">inactive</span>}
               {user.billing_tester ? <span className="badge badge-neutral">tester</span> : null}
             </span>
+            {name === user.username ? null : <span className="admin-user-username">{user.username}</span>}
             <EmailLine user={user} />
           </span>
         </div>

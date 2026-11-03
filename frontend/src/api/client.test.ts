@@ -26,6 +26,7 @@ import {
   receiptUrl,
   saveBlob,
   searchGmailThreads,
+  setDisplayName,
   setPlanRequiredHandler,
   setUnauthorizedHandler,
   updatePluginConnection,
@@ -275,6 +276,7 @@ describe("sign-up and sign-in errors", () => {
 });
 
 const signupBody = {
+  name: "Maya Chen",
   email: "maya@example.com",
   password: "correct horse battery",
   accept_terms: true as const,
@@ -353,12 +355,12 @@ describe("authApi", () => {
       authorize_url: "https://accounts.google.com/o/oauth2/v2/auth?state=s",
     });
     await expect(authApi.googlePending()).resolves.toEqual(makeGooglePending());
-    await expect(authApi.googleFinish({ accept_terms: true })).resolves.toEqual(me);
+    await expect(authApi.googleFinish({ name: "Maya Chen", accept_terms: true })).resolves.toEqual(me);
     await expect(authApi.googleCancel()).resolves.toBeUndefined();
     expect(calls.map(({ method, path, body }) => [method, path, body])).toEqual([
       ["POST", "/auth/google/start", { intent: "signin", from: "login", next: "/plans" }],
       ["GET", "/auth/google/pending", undefined],
-      ["POST", "/auth/google/finish", { accept_terms: true }],
+      ["POST", "/auth/google/finish", { name: "Maya Chen", accept_terms: true }],
       ["POST", "/auth/google/cancel", {}],
     ]);
   });
@@ -389,6 +391,12 @@ describe("accountEmailApi", () => {
       ["DELETE", "/me/google", { password: "pw" }],
     ]);
     expect(vi.mocked(fetch).mock.calls[4][1]?.headers).toEqual({ "Content-Type": "application/json" });
+  });
+
+  it("saves the caller's name with PUT /me/name", async () => {
+    const calls = stubFetch({ "PUT /me/name": { display_name: "Maya Chen" } });
+    await expect(setDisplayName({ name: "Maya Chen" })).resolves.toEqual({ display_name: "Maya Chen" });
+    expect(calls.map(({ method, path, body }) => [method, path, body])).toEqual([["PUT", "/me/name", { name: "Maya Chen" }]]);
   });
 
   it("reports a 401 as an ended session", async () => {

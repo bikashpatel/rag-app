@@ -25,6 +25,7 @@ import { expect, signIn, test } from "../support/fixtures";
 
 const TOKEN = "q3Zx8LmP0aB2cD4eF6gHq3Zx8LmP0aB2cD4eF6gH123";
 const EMAIL = "e2e-maya@example.com";
+const NAME = "E2E Maya";
 const SENT_KEY = "rag.auth.signupSent";
 
 /** The configuration the signed-out pages read, mocked (the stack ships with sign-up closed). */
@@ -45,7 +46,7 @@ function cloudflareRequests(page: Page): Request[] {
 async function signedInAsNewAccount(page: Page, signedIn: () => boolean): Promise<void> {
   await page.route("**/api/auth/me", (route) =>
     signedIn()
-      ? route.fulfill({ json: fakeNewMe({ username: "user-e2emaya1", email: EMAIL }) })
+      ? route.fulfill({ json: fakeNewMe({ username: "user-e2emaya1", email: EMAIL, display_name: NAME }) })
       : route.fulfill({ status: 401, json: { detail: "Not authenticated" } }),
   );
   await serveJson(page, "/billing/plans", fakeCatalog());
@@ -64,9 +65,14 @@ test.describe("sign-up", () => {
     const create = page.getByRole("button", { name: "Create account" });
     await expect(create).toBeEnabled();
     await create.click();
+    const name = page.getByRole("textbox", { name: "Your name" });
+    await expect(name).toBeFocused();
+    await expect(name).toHaveAttribute("autocomplete", "name");
+    await expect(page.getByText("Enter your name.")).toBeVisible();
     await expect(page.getByText("Enter your email.")).toBeVisible();
     await expect(page.getByText("Tick the box to accept the terms.")).toBeVisible();
 
+    await name.fill(`  E2E   Maya `);
     await page.getByRole("textbox", { name: "Email" }).fill(EMAIL);
     await page.getByLabel("Password", { exact: true }).fill("correct horse battery");
     await page.getByRole("checkbox", { name: /I agree to the Terms/ }).check();
@@ -77,6 +83,7 @@ test.describe("sign-up", () => {
     await expect(page.getByRole("button", { name: /^Resend in / })).toHaveAttribute("aria-disabled", "true");
     expect(signups).toEqual([
       {
+        name: NAME,
         email: EMAIL,
         password: "correct horse battery",
         accept_terms: true,
@@ -111,6 +118,7 @@ test.describe("sign-up", () => {
     await page.goto("/signup");
 
     await expect(page.getByText("The security check couldn't load.", { exact: false })).toBeVisible();
+    await page.getByRole("textbox", { name: "Your name" }).fill(NAME);
     await page.getByRole("textbox", { name: "Email" }).fill(EMAIL);
     await page.getByLabel("Password", { exact: true }).fill("correct horse battery");
     await page.getByRole("checkbox", { name: /I agree to the Terms/ }).check();
@@ -248,23 +256,26 @@ test.describe("email confirmation and undo", () => {
 });
 
 test.describe("Google sign-up", () => {
-  test("from the sign-up page: the terms, then the account and the plans", async ({ page }) => {
+  test("from the sign-up page: the name and the terms, then the account and the plans", async ({ page }) => {
     let created = false;
     await signedInAsNewAccount(page, () => created);
     await mockApi(page, "GET", "/auth/google/pending", { body: fakeGooglePending({ email: "e2e.maya@gmail.com" }) });
     const finishes = await mockApi(page, "POST", "/auth/google/finish", () => {
       created = true;
-      return { body: fakeNewMe({ username: "user-e2emaya1", email: "e2e.maya@gmail.com" }) };
+      return { body: fakeNewMe({ username: "user-e2emaya1", email: "e2e.maya@gmail.com", display_name: NAME }) };
     });
     await page.goto("/signup/google");
 
     await expect(page.getByRole("heading", { name: "Create your AskNuvexusDoc account" })).toBeVisible();
     await page.getByRole("button", { name: "Create account" }).click();
+    await expect(page.getByText("Enter your name.")).toBeVisible();
     await expect(page.getByText("Tick the box to accept the terms.")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Your name" })).toBeFocused();
+    await page.getByRole("textbox", { name: "Your name" }).fill(NAME);
     await page.getByRole("checkbox", { name: /I agree to the Terms/ }).check();
     await page.getByRole("button", { name: "Create account" }).click();
     await expect(page).toHaveURL(/\/plans$/);
-    expect(finishes).toEqual([{ accept_terms: true }]);
+    expect(finishes).toEqual([{ name: NAME, accept_terms: true }]);
   });
 
   test("from the sign-in page: I already have an account goes back to sign in", async ({ page }) => {
@@ -359,6 +370,7 @@ test.describe("Settings → Account", () => {
     const account: AccountInfo = {
       id: user.id,
       username: user.username,
+      display_name: null,
       is_admin: false,
       password_managed_by_env: false,
       created_at: new Date().toISOString(),

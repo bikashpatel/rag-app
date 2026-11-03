@@ -1,6 +1,6 @@
 """The caller's own account (SPEC.md section 6, "Account"; docs/briefs/ui-shell-settings.md, section 4): preferences,
-the account with its sign-in history, the allowance window's usage, the data export, and the account's email, first
-password and Google sign-in (docs/briefs/signup-auth.md 4.6, 4.8, 4.9). Only the caller's own rows; no ids in the
+the account with its sign-in history and name, the allowance window's usage, the data export, and the account's email,
+first password and Google sign-in (docs/briefs/signup-auth.md 4.6, 4.8, 4.9). Only the caller's own rows; no ids in the
 paths. Open to users without a plan (their account and Settings, plans-billing B4)."""
 
 from fastapi import APIRouter, Depends, Request, Response, status
@@ -11,7 +11,7 @@ from app.deps import current_session_id, get_current_user, get_entitlements
 from app.models import User
 from app.schemas import Preferences
 from app.schemas_account import AccountInfo, MyUsage, PreferencesUpdate
-from app.schemas_auth import Accepted, EmailChange, NewPassword, PasswordConfirm
+from app.schemas_auth import Accepted, DisplayName, EmailChange, NameChange, NewPassword, PasswordConfirm
 from app.services import account, export
 from app.services.auth import email_change, identities, reset
 from app.services.billing.entitlements import Entitlements
@@ -43,6 +43,14 @@ async def get_account(
     request: Request, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ) -> AccountInfo:
     return await account.account_info(db, user, current_session_id(request))
+
+
+@router.put("/name")
+async def set_name(
+    body: NameChange, request: Request, user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
+) -> DisplayName:
+    """The env admin too: the name isn't managed in .env."""
+    return await account.set_name(db, request, user, body.name)
 
 
 @router.get("/usage")

@@ -33,6 +33,8 @@ _ROOT = Path(tempfile.mkdtemp(prefix="rag-tests-"))
 ADMIN_USERNAME = "admin"
 ADMIN_PASSWORD = "admin-password-123"
 USER_PASSWORD = "user-password-123"
+SIGNUP_NAME = "Maya Rao"  # the name every sign-up in the tests gives
+GOOGLE_FINISH = {"name": SIGNUP_NAME, "accept_terms": True}  # POST /api/auth/google/finish
 os.environ.update(
     {
         "SECRET_KEY": "test-secret-key-with-at-least-32-characters",
@@ -858,6 +860,7 @@ async def signup(client: httpx.AsyncClient, email: str, password: str = USER_PAS
     """POST /api/auth/signup with the terms accepted and a token the fake Turnstile passes (`fake_turnstile`);
     `fields` add to or replace the body's."""
     body = {
+        "name": SIGNUP_NAME,
         "email": email,
         "password": password,
         "accept_terms": True,

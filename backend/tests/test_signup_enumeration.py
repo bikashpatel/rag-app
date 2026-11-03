@@ -1,7 +1,7 @@
 """Sign-up, resend and "forgot password" reveal nothing about an address (docs/briefs/signup-auth.md S6, 8.2): for a new
 address, an active account's, a Google-only account's, a turned-off account's and a pending sign-up's, the request
 answers the same status, headers (but the cookie's random value) and bytes, never reads `users`, and adds one job of
-the same class; only the worker's result differs."""
+the same class, whatever name it gives; only the worker's result differs."""
 
 import re
 from collections.abc import Awaitable, Callable, Iterator
@@ -115,7 +115,7 @@ async def answers(new_client: NewClient, send: Callable[[ApiClient, str], Awaita
 
 
 async def test_sign_up_answers_every_address_the_same(new_client: NewClient, accounts: FakeMail) -> None:
-    found = await answers(new_client, lambda client, address: signup(client, address))
+    found = await answers(new_client, lambda client, address: signup(client, address, name=f"Person {address[:4]}"))
 
     assert all(entry == found[0] for entry in found), found
     assert found[0][1:] == ("signup", "public")

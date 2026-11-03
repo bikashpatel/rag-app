@@ -210,7 +210,7 @@ describe("LoginPage", () => {
     expect(precedes(fields().submit, headline)).toBe(true);
     expect(headline.parentElement).toHaveClass("login-mobile-hero");
     expect(headline.parentElement).toContainElement(hero);
-    expect(precedes(rest[rest.length - 1], screen.getByText(/designed, developed/))).toBe(true);
+    expect(precedes(rest[rest.length - 1], screen.getByText(/Designed and developed by Elarxsys/))).toBe(true);
     expect(fields().username).toHaveFocus();
 
     act(() => setMediaQueries(() => false));

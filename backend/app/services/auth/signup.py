@@ -101,6 +101,7 @@ async def start(db: AsyncSession, request: Request, response: Response, body: Si
     row = PendingSignup(
         address=address.address,
         canonical=address.canonical,
+        display_name=body.name,
         password_hash=password_hash,
         browser_sha256=_sha256(browser),
         next_path=safe_next(body.next),
@@ -191,19 +192,22 @@ async def new_account(
     db: AsyncSession,
     source: Literal["email", "google"],
     *,
+    display_name: str | None,
     password_hash: str | None,
     address: str | None,
     canonical: str | None,
     terms_version: str,
     terms_accepted_at: datetime,
 ) -> User | None:
-    """A self-signed-up user with a generated username (flushed in a savepoint, so the caller's locks stay), the
-    verified address when given; None when a user holds that address (checked again by the unique index)."""
+    """A self-signed-up user with a generated username and the given name (flushed in a savepoint, so the caller's
+    locks stay), the verified address when given; None when a user holds that address (checked again by the unique
+    index)."""
     if canonical is not None and await email_held(db, canonical):
         return None
     for attempt in range(2):
         user = User(
             username=await usernames.generate(db),
+            display_name=display_name,
             password_hash=password_hash,
             is_admin=False,
             is_active=True,
@@ -254,6 +258,7 @@ async def complete(db: AsyncSession, request: Request, response: Response, body:
     user = await new_account(
         db,
         "email",
+        display_name=pending.display_name,
         password_hash=pending.password_hash,
         address=pending.address,
         canonical=canonical,

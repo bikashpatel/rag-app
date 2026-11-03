@@ -10,7 +10,7 @@ type Props = ComponentProps<typeof EmptyState>;
 
 function renderEmpty(overrides: Partial<Props> = {}) {
   const props: Props = {
-    username: "maya.chen",
+    name: "Maya",
     disabled: false,
     canCreateFiles: false,
     canCreateImages: false,
@@ -34,14 +34,14 @@ describe("EmptyState", () => {
   it("greets the user and sends an example at a click", async () => {
     const user = userEvent.setup();
     const { onPick } = renderEmpty();
-    expect(screen.getByRole("heading", { name: /How can I help/ })).toHaveTextContent("How can I help, maya.chen?");
+    expect(screen.getByRole("heading", { name: /How can I help/ })).toHaveTextContent("How can I help, Maya?");
     expect(within(screen.getByRole("list", { name: "Example questions" })).getAllByRole("button")).toHaveLength(3);
     await user.click(example("Which dates, deadlines or figures are mentioned\\?"));
     expect(onPick).toHaveBeenCalledWith("Which dates, deadlines or figures are mentioned?");
   });
 
   it("greets without a name and disables the examples while chat is unavailable", () => {
-    renderEmpty({ username: null, disabled: true });
+    renderEmpty({ name: null, disabled: true });
     expect(screen.getByRole("heading", { name: "How can I help?" })).toBeInTheDocument();
     for (const button of screen.getAllByRole("button")) expect(button).toBeDisabled();
   });

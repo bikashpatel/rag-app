@@ -125,6 +125,7 @@ describe("CheckoutPage", () => {
     await user.click(toggle);
     expect(screen.getByText("Saved to your account for next time.")).toBeInTheDocument();
     expect(screen.queryByLabelText("Email for reminders")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Name on the receipt")).toHaveAttribute("placeholder", "maya.chen");
     await user.type(screen.getByLabelText("Name on the receipt"), "Maya Chen");
     await user.click(payIn(summary(), "₹2,000"));
     const sent = calls.filter((call) => call.method !== "GET").map((call) => [call.method, call.path, call.body]);

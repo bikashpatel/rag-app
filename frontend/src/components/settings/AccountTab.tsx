@@ -4,6 +4,7 @@ import { ApiError, getAccount, logoutOtherSessions } from "../../api/client";
 import type { AccountInfo, DeviceType, LoginEvent, SignupSource } from "../../api/types";
 import { useAuth, useAuthConfig } from "../../auth/AuthContext";
 import { formatDate, formatRelativeTime } from "../../lib/format";
+import { personName } from "../../lib/names";
 import Avatar from "../ui/Avatar";
 import {
   AlertIcon,
@@ -19,6 +20,7 @@ import {
 } from "../ui/icons";
 import { ButtonSpinner } from "../ui/Spinner";
 import EmailSection from "./EmailSection";
+import NameSection from "./NameSection";
 import { AccountSkeleton, PanelError, PanelHead } from "./PanelParts";
 import SignInMethods from "./SignInMethods";
 import { useLoad } from "./useLoad";
@@ -147,15 +149,14 @@ function Profile({ account }: { account: AccountInfo }) {
   const current = logins.find((event) => event.current) ?? null;
   const lastSignIn = last?.created_at ?? account.last_login_at;
   const env = managedByEnv(account);
-  const name = env ? account.username : (account.email ?? account.username);
+  const name = personName(account);
   return (
     <>
       <div className="settings-profile">
         <Avatar name={name} size={56} />
         <div>
-          <div className={account.email ? "settings-profile-name settings-profile-email" : "settings-profile-name"}>
-            {name}
-          </div>
+          <div className="settings-profile-name">{name}</div>
+          {account.email ? <div className="settings-profile-email">{account.email}</div> : null}
           <div className="settings-profile-meta">
             <span className={account.is_admin ? "badge badge-accent" : "badge"}>{roleLabel(account.is_admin)}</span>
             <span>{SOURCE_LINE[env ? "env" : account.signup_source]}</span>
@@ -442,7 +443,7 @@ function useAccountReturn(): { google: string | null; change: boolean; setup: bo
   return value;
 }
 
-/** Settings → Account: profile, email, sign-in methods, sign-in activity, sessions (functional 13.7). */
+/** Settings → Account: profile, name, email, sign-in methods, sign-in activity, sessions (functional 13.7). */
 export default function AccountTab({ onClose }: { onClose: () => void }) {
   const account = useLoad((signal) => getAccount(signal), "Couldn't load your account.");
   const { config } = useAuthConfig();
@@ -464,6 +465,7 @@ export default function AccountTab({ onClose }: { onClose: () => void }) {
     body = managedByEnv(data) ? (
       <>
         <Profile account={data} />
+        <NameSection account={data} onChanged={changed} />
         <AdminSections />
         <SignIns account={data} />
         <SessionsSection />
@@ -471,6 +473,7 @@ export default function AccountTab({ onClose }: { onClose: () => void }) {
     ) : (
       <>
         <Profile account={data} />
+        <NameSection account={data} onChanged={changed} />
         {showEmail ? (
           <EmailSection account={data} resumeChange={returned.change} onAction={dismissResult} onChanged={changed} />
         ) : null}

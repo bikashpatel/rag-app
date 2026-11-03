@@ -398,10 +398,11 @@ function Emails({ user }: { user: Me }) {
   );
 }
 
-type DetailsProps = { status: BillingStatus; username: string; onSaved: () => void };
+/** `placeholder`: the receipt's name without one saved here (the display name, else the username). */
+type DetailsProps = { status: BillingStatus; placeholder: string; onSaved: () => void };
 
 /** The name on receipts (visual 8.3). */
-function ReceiptDetails({ status, username, onSaved }: DetailsProps) {
+function ReceiptDetails({ status, placeholder, onSaved }: DetailsProps) {
   const id = useId();
   const [saved, setSaved] = useState<BillingProfile>(status.profile);
   const [name, setName] = useState(status.profile.name ?? "");
@@ -444,7 +445,7 @@ function ReceiptDetails({ status, username, onSaved }: DetailsProps) {
             value={name}
             maxLength={100}
             autoComplete="name"
-            placeholder={username}
+            placeholder={placeholder}
             aria-invalid={error ? true : undefined}
             onChange={(event) => setName(event.target.value)}
           />
@@ -627,7 +628,7 @@ export default function PlanBillingTab({ user, onClose }: { user: Me; onClose: (
         {status.payments.email_reminders ? <Emails user={user} /> : null}
         <ReceiptDetails
           status={status}
-          username={user.username}
+          placeholder={user.display_name ?? user.username}
           onSaved={() => {
             if (live.current) setSavedAt(Date.now());
           }}

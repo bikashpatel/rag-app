@@ -774,6 +774,9 @@ def stored_names_of(doc_ids: list[int]) -> dict[int, str]:
     return {int(doc_id): name for doc_id, name in sql(f"select id, stored_name from documents where id in ({ids})")}
 
 
+# Migration 0006 (names) undone, as the schema was at 0005 (pending_signups goes with 0004). 0005 needs no undo: its
+# columns are on billing_orders, which 0003's undo drops.
+UNDO_0006 = "ALTER TABLE users DROP COLUMN display_name; "
 # Migration 0004 (sign-up and mail) undone, as the schema was at 0003: its tables and columns dropped, the password
 # hash back to NOT NULL and the billing profile's email back.
 UNDO_0004 = (
@@ -817,7 +820,7 @@ psql -X -q -v ON_ERROR_STOP=1 -d scratch_old -c "{undo}" &&
 pg_dump --format=custom --file=$d/postgres.dump scratch_old && psql -X -q -d postgres -c 'DROP DATABASE scratch_old' &&
 (. /opt/backup/lib.sh && count_rows $d/postgres.dump $d/postgres.rows) &&
 sed -i 's/^  "alembic_revision": .*,$/  "alembic_revision": "0001",/' $d/manifest.json && reseal $d
-""".replace("{undo}", UNDO_0004 + UNDO_0003)
+""".replace("{undo}", UNDO_0006 + UNDO_0004 + UNDO_0003)
 
 
 @pytest.mark.deadline(600)

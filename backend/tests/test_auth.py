@@ -183,6 +183,7 @@ async def test_login_returns_me_sets_the_session_cookie_and_records_the_login(
         "preferences": DEFAULT_PREFERENCES,
         "plan": body["plan"],
         "email": None,
+        "display_name": None,
     }
     assert (body["plan"]["state"], body["plan"]["access"], body["plan"]["open_ended"]) == ("active", True, True)
     assert body["plan"]["plan"]["code"] == "professional"
@@ -570,6 +571,7 @@ async def test_me_reports_the_users_limits_and_this_months_usage(create_user: Cr
         "preferences": DEFAULT_PREFERENCES,
         "plan": body["plan"],
         "email": None,
+        "display_name": None,
     }
     assert body["usage"]["cost_usd"] == pytest.approx(0.78)  # every kind
     assert body["usage"]["monthly_token_limit"] == 5000
@@ -596,6 +598,7 @@ async def test_me_reports_the_admin_as_unlimited(admin_client: ApiClient) -> Non
         "preferences": DEFAULT_PREFERENCES,
         "plan": response.json()["plan"],
         "email": None,
+        "display_name": None,
     }
     plan = response.json()["plan"]
     assert (plan["state"], plan["access"], plan["plan"]) == ("exempt", True, None)

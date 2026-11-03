@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import PolicyLinks from "../../components/billing/PolicyLinks";
 import { useMediaQuery } from "../../components/chat/useMediaQuery";
 import HeroArt from "./HeroArt";
-import { Deck, Headline, Pitch } from "./LoginCopy";
+import { Deck, Headline, Pitch, Tagline } from "./LoginCopy";
 import ProductTour from "./ProductTour";
 import "../login.css";
 
@@ -49,13 +49,18 @@ export default function AuthSplit({
                 {compactOnPhone ? null : <HeroArt phone />}
               </div>
               <div className="login-about">
+                <Tagline />
                 <Deck />
                 <Pitch />
               </div>
             </>
           ) : null}
 
-          <p className="login-credit">This application is designed, developed &amp; maintained by ELARXSYS.COM</p>
+          <p className="login-credit">
+            Designed and developed by Elarxsys AI Hub Pvt. Ltd.{" "}
+            <span className="login-credit-motto">(Intelligent : Innovation : Intellect)</span>
+            <span className="login-copyright">© {new Date().getFullYear()} asknuvexusdoc.com. All rights reserved.</span>
+          </p>
           <PolicyLinks compact className="login-policies" />
         </div>
       </main>
@@ -65,6 +70,7 @@ export default function AuthSplit({
           <div className="login-hero">
             <Brand />
             <Headline />
+            <Tagline />
             <HeroArt />
             <Deck />
           </div>

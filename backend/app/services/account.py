@@ -9,7 +9,7 @@ from collections.abc import Mapping
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException, Request, status
 from pydantic import ValidationError
 from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
@@ -40,9 +40,9 @@ from app.schemas_account import (
     UsageCosts,
 )
 from app.schemas_account import LoginEvent as LoginEventInfo
-from app.schemas_auth import EmailChangeNeeds, GoogleLink, PendingEmailInfo
+from app.schemas_auth import DisplayName, EmailChangeNeeds, GoogleLink, PendingEmailInfo
 from app.services import storage, usage
-from app.services.auth import stepup
+from app.services.auth import stepup, throttle
 from app.services.billing.entitlements import Entitlements, allows_model
 
 LOGIN_HISTORY_LIMIT = 20  # sign-ins kept per user
@@ -304,6 +304,7 @@ async def account_info(db: AsyncSession, user: User, session_id: int | None) -> 
         last_login_at=user.last_login_at,
         conversation_count=int(conversations or 0),
         recent_logins=await recent_logins(db, user, session_id),
+        display_name=user.display_name,
         email=user.email,
         email_verified_at=user.email_verified_at,
         pending_email=PendingEmailInfo(
@@ -325,6 +326,14 @@ async def account_info(db: AsyncSession, user: User, session_id: int | None) -> 
         email_change_needs=email_change_needs(user),
         stepup_until=None if user.is_admin else await stepup.until(user.id, session_id),
     )
+
+
+async def set_name(db: AsyncSession, request: Request, user: User, name: str) -> DisplayName:
+    """PUT /me/name: the caller's name (normalized by the schema), within the per-user limit."""
+    await throttle.check(request, "name_change", subject=str(user.id))
+    user.display_name = name
+    await db.commit()
+    return DisplayName(display_name=name)
 
 
 # ---------------- Usage ----------------

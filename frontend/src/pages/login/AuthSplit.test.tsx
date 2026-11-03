@@ -35,8 +35,15 @@ describe("AuthSplit", () => {
     expect(within(aside).getByRole("img", { name: HERO_ALT })).toBeInTheDocument();
     expect(within(aside).getByRole("region", { name: "Product tour" })).toBeInTheDocument();
     expect(within(aside).getByRole("heading", { level: 2 })).toHaveTextContent("Your documents. Your AI. Your answers.");
+    // The "pure RAG" tagline sits under the brand, before the picture.
+    const tagline = within(aside).getByText(/A modern, pure & powerful/);
+    expect(tagline).toHaveTextContent("A modern, pure & powerful RAG application.");
+    expect(within(aside).getByText("Pure RAG")).toBeInTheDocument();
+    expect(within(aside).getByText(/Retrieval-Augmented Generation: answers drawn from your own documents/)).toBeInTheDocument();
+    expect(precedes(tagline, within(aside).getByRole("img", { name: HERO_ALT }))).toBe(true);
     // The card's own content, then the credit line and the policy links.
-    const credit = within(main).getByText(/designed, developed & maintained by ELARXSYS.COM/);
+    const credit = within(main).getByText(/Designed and developed by Elarxsys AI Hub Pvt\. Ltd\./);
+    expect(credit).toHaveTextContent(/\(Intelligent : Innovation : Intellect\)© \d{4} asknuvexusdoc\.com\. All rights reserved\./);
     const policies = within(main).getByRole("navigation", { name: "Policies" });
     expect(precedes(button, credit) && precedes(credit, policies)).toBe(true);
     expect(within(policies).getAllByRole("link")).toHaveLength(5);
@@ -66,6 +73,10 @@ describe("AuthSplit", () => {
     expect(hero.closest(".login-mobile-hero")).not.toBeNull();
     expect(precedes(screen.getByRole("button", { name: "Create account" }), hero)).toBe(true);
     expect(within(main).getByText("No endless searching.")).toBeInTheDocument();
+    // The tagline leads the copy below the card, so the form keeps the first screen.
+    const tagline = within(main).getByText(/A modern, pure & powerful/);
+    expect(tagline.closest(".login-about")).not.toBeNull();
+    expect(precedes(screen.getByRole("button", { name: "Create account" }), tagline)).toBe(true);
   });
 
   it("on phones, leaves the picture out in the compact states: the brand alone leads, the copy stays", () => {

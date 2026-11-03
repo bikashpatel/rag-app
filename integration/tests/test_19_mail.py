@@ -130,6 +130,7 @@ def browser() -> httpx.Client:
 
 def sign_up(email: str) -> httpx.Response:
     body = {
+        "name": "Mail Tester",
         "email": email,
         "password": f"Wide-{unique('')}-lantern",
         "accept_terms": True,

@@ -59,9 +59,10 @@ async function renderSignup(route = "/signup") {
   return view;
 }
 
-async function fillForm(email = "maya@example.com", password = "correct horse battery") {
+async function fillForm(email = "maya@example.com", password = "correct horse battery", name = "  Maya   Chen ") {
   const user = userEvent.setup();
-  await user.type(await screen.findByRole("textbox", { name: "Email" }), email);
+  await user.type(await screen.findByRole("textbox", { name: "Your name" }), name);
+  await user.type(screen.getByRole("textbox", { name: "Email" }), email);
   await user.type(screen.getByLabelText("Password"), password);
   await user.click(screen.getByRole("checkbox", { name: /I agree to the Terms/ }));
   return user;
@@ -75,7 +76,7 @@ beforeEach(() => {
 });
 
 describe("SignupPage: the form", () => {
-  it("offers Google first, then email, password, the terms and the robot check", async () => {
+  it("offers Google first, then name, email, password, the terms and the robot check", async () => {
     stubFetch(routes());
     await renderSignup();
 
@@ -84,8 +85,12 @@ describe("SignupPage: the form", () => {
     expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
     const google = screen.getByRole("button", { name: "Continue with Google" });
     expect(screen.getByRole("separator", { name: "or sign up with email" })).toBeInTheDocument();
+    const name = screen.getByRole("textbox", { name: "Your name" });
     const email = screen.getByRole("textbox", { name: "Email" });
-    expect(google.compareDocumentPosition(email) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(google.compareDocumentPosition(name) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(name.compareDocumentPosition(email) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(name).toHaveAttribute("autocomplete", "name");
+    expect(name).toBeRequired();
     expect(email).toHaveAttribute("autocomplete", "email");
     expect(screen.getByLabelText("Password")).toHaveAttribute("autocomplete", "new-password");
     expect(screen.getByText("At least 8 characters")).toBeInTheDocument();
@@ -99,9 +104,23 @@ describe("SignupPage: the form", () => {
     await renderSignup();
     await user.click(await screen.findByRole("button", { name: "Create account" }));
 
+    expect(screen.getByText("Enter your name.").closest("p")).toHaveAttribute("role", "alert");
     expect(screen.getByText("Enter your email.")).toBeInTheDocument();
     expect(screen.getByText("Use at least 8 characters.")).toBeInTheDocument();
     expect(screen.getByText("Tick the box to accept the terms.")).toBeInTheDocument();
+    const name = screen.getByRole("textbox", { name: "Your name" });
+    expect(name).toHaveFocus();
+    expect(name).toHaveAttribute("aria-invalid", "true");
+    expect(name).toHaveAccessibleDescription("Enter your name.");
+
+    await user.type(name, "Maya <b>");
+    await user.click(createButton());
+    expect(screen.getByText("Leave out < and >.")).toBeInTheDocument();
+    expect(name).toHaveFocus();
+    await user.clear(name);
+    await user.type(name, "Maya");
+    await user.click(createButton());
+    expect(screen.queryByText("Enter your name.")).not.toBeInTheDocument();
     expect(screen.getByRole("textbox", { name: "Email" })).toHaveFocus();
 
     await user.type(screen.getByRole("textbox", { name: "Email" }), "maya@");
@@ -131,6 +150,7 @@ describe("SignupPage: the form", () => {
     await waitFor(() => expect(heading).toHaveFocus());
     expect(posts(calls, "/auth/signup")).toEqual([
       {
+        name: "Maya Chen",
         email: "maya@example.com",
         password: "correct horse battery",
         accept_terms: true,
@@ -197,6 +217,29 @@ describe("SignupPage: the form", () => {
 
     await user.type(screen.getByLabelText("Password"), "!");
     expect(screen.getByText("Not a common or leaked password, and not your email")).toBeInTheDocument();
+  });
+
+  it("puts a refused name under the name field", async () => {
+    void installTurnstile().solve();
+    const detail = [{ loc: ["body", "name"], msg: "Value error, Use at most 80 characters." }];
+    stubFetch(routes({ "POST /auth/signup": () => jsonResponse({ detail }, { status: 422 }) }));
+    await renderSignup();
+    const user = await fillForm();
+    await user.click(createButton());
+    expect((await screen.findByText("Use at most 80 characters.")).closest("p")).toHaveAttribute("role", "alert");
+    expect(screen.getByRole("textbox", { name: "Your name" })).toHaveFocus();
+    expect(screen.getByRole("textbox", { name: "Email" })).not.toHaveAttribute("aria-invalid");
+  });
+
+  it("brings the typed name back with Start again", async () => {
+    void installTurnstile().solve();
+    stubFetch(routes({ "POST /auth/signup": ACCEPTED }));
+    await renderSignup();
+    const user = await fillForm();
+    await user.click(createButton());
+    await user.click(await screen.findByRole("button", { name: "Start again" }));
+    expect(await screen.findByRole("textbox", { name: "Your name" })).toHaveValue("  Maya   Chen ");
+    expect(screen.getByRole("textbox", { name: "Email" })).toHaveValue("maya@example.com");
   });
 
   it("puts a refused address under the email field", async () => {

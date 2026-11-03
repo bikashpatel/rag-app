@@ -1,13 +1,15 @@
-import { useEffect, useState, type FormEvent } from "react";
-import { authApi, authErrorCode } from "../api/client";
+import { useEffect, useId, useState, type FormEvent } from "react";
+import { ApiError, authApi, authErrorCode } from "../api/client";
 import type { GooglePending } from "../api/types";
 import AuthCard from "../components/auth/AuthCard";
 import GoogleButton from "../components/auth/GoogleButton";
 import IdentityRow from "../components/auth/IdentityRow";
+import NameField from "../components/auth/NameField";
 import TermsCheck from "../components/auth/TermsCheck";
 import { AlertCircleIcon, ClockIcon, InfoIcon, MailIcon, UserIcon } from "../components/ui/icons";
 import { ButtonSpinner } from "../components/ui/Spinner";
 import { leaveForApp } from "../lib/authDocument";
+import { nameProblem, nameRefusal, normalizeName } from "../lib/names";
 import {
   BackToSignIn,
   CheckingLink,
@@ -49,12 +51,15 @@ function Expired() {
 
 /**
  * /signup/google (docs/briefs/signup-auth.md 4.5 and 13.4): back from Google with an address no account uses yet. The
- * account is created only after the terms are accepted here; from the sign-in page, "I already have an account" is an
- * equal choice. Success signs in and leaves for the app with a full page load.
+ * account is created only after the person gives their name and accepts the terms here; from the sign-in page, "I
+ * already have an account" is an equal choice. Success signs in and leaves for the app with a full page load.
  */
 export default function GoogleSignupPage() {
+  const nameId = useId();
   const [state, setState] = useState<State>({ kind: "checking" });
   const [round, setRound] = useState(0);
+  const [name, setName] = useState("");
+  const [nameError, setNameError] = useState<string | null>(null);
   const [terms, setTerms] = useState(false);
   const [termsError, setTermsError] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
@@ -81,19 +86,30 @@ export default function GoogleSignupPage() {
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (busy) return;
-    if (!terms) {
-      setTermsError("Tick the box to accept the terms.");
-      const box = event.currentTarget.elements.namedItem("accept_terms");
-      if (box instanceof HTMLElement) box.focus();
+    const form = event.currentTarget;
+    const badName = nameProblem(name);
+    setNameError(badName);
+    setTermsError(terms ? null : "Tick the box to accept the terms.");
+    const first = badName ? "name" : terms ? null : "accept_terms";
+    if (first) {
+      const field = form.elements.namedItem(first);
+      if (field instanceof HTMLElement) field.focus();
       return;
     }
     setFailure(null);
     setBusy("finish");
     try {
-      await authApi.googleFinish({ accept_terms: true });
+      await authApi.googleFinish({ name: normalizeName(name), accept_terms: true });
       leaveForApp(recallGoogleNext() ?? "/plans");
     } catch (err) {
       setBusy(null);
+      const refusal = err instanceof ApiError && err.status === 422 ? nameRefusal(err.message, name) : null;
+      if (refusal) {
+        setNameError(refusal);
+        const field = form.elements.namedItem("name");
+        if (field instanceof HTMLElement) field.focus();
+        return;
+      }
       switch (authErrorCode(err)) {
         case "link_invalid":
           setState({ kind: "expired" });
@@ -206,6 +222,16 @@ export default function GoogleSignupPage() {
             </span>
           </div>
         )}
+        <NameField
+          id={nameId}
+          label="Your name"
+          value={name}
+          onChange={(value) => {
+            setName(value);
+            setNameError(null);
+          }}
+          error={nameError}
+        />
         <TermsCheck
           checked={terms}
           onChange={(checked) => {

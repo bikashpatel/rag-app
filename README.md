@@ -4,7 +4,7 @@ AskNuvexusDoc ([asknuvexusdoc.com](https://asknuvexusdoc.com)) is a self-hosted,
 Retrieval-Augmented-Generation app: upload documents and chat with them on a prepaid plan, and manage users, plans,
 payments, models and usage from an admin page.
 
-This application is designed, developed & maintained by ELARXSYS.COM.
+Designed and developed by Elarxsys AI Hub Pvt. Ltd. (Intelligent : Innovation : Intellect). © 2026 asknuvexusdoc.com. All rights reserved.
 
 - **Backend:** FastAPI (Python 3.13) · Postgres 17 · Redis 7.4 · Qdrant 1.19 · a separate ingestion worker
 - **Frontend:** React 19 + Vite 8 (TypeScript), served by nginx
@@ -594,11 +594,11 @@ Been Pwned** in its default run, so they cost nothing:
 
 | Suite | Where | What it covers | Needs | Size |
 |---|---|---|---|---|
-| Backend | `backend/tests/` ([README](backend/tests/README.md)) | the whole API in-process: SQLite, fakeredis, in-memory Qdrant, LiteLLM mocked, a fake Google (Gmail and OpenID Connect sign-in), a fake Razorpay, a fake SMTP sink, a fake Turnstile and a fake breach check, the real PDF and file render children; route guards and deletion checks that cover new routes and tables without being edited; the migrations, the monitor, alerts and channels, readiness and Admin → System, and the restore's reconcile step; plans, entitlements on every route, checkout, payments, refunds, disputes, receipts and reminders; direct UPI (the request and its QR codes, the UTR, the admin's confirm and reject, the caps, migration 0005); sign-up, sign-in by email, Google sign-in and linking, password reset, email changes and undo, the password policy, throttles, enumeration (the same response for every address), the mail outbox, templates, bounces and the `mail` check | Python 3.13 | 3,965 tests plus the 62 `postgres`-marked ones (skipped without Postgres); coverage 95.84 % (statements and branches) |
-| Backend on Postgres | the `postgres`-marked tests in `backend/tests/` (with `TEST_DATABASE=postgres`, all of them) | the migrations (adopting a database made before them, repairs and refusals, the advisory lock across two processes), row locks under parallel uploads, UTC sessions, the image reservation race, the account tests, payments applied and checkouts started at once, receipt numbering, the plans, sign-up and direct-UPI migrations, sign-up races (two completions, a completion against a Google finish, two accounts confirming one address), two mail loops never sending one mail twice, two confirms of one UPI payment and two orders sending one UTR at once | a throwaway Postgres 17 (e.g. in Docker) | 62 tests |
-| Frontend | `frontend/src/**/*.test.ts(x)` ([README](frontend/src/test/README.md)) | components, hooks, stores and the API client (the SSE parser included) with Vitest, Testing Library and jsdom; `fetch` is stubbed | Node 22+ | 1,488 tests in 101 files; coverage 94.9 % of statements, 90.5 % of branches |
+| Backend | `backend/tests/` ([README](backend/tests/README.md)) | the whole API in-process: SQLite, fakeredis, in-memory Qdrant, LiteLLM mocked, a fake Google (Gmail and OpenID Connect sign-in), a fake Razorpay, a fake SMTP sink, a fake Turnstile and a fake breach check, the real PDF and file render children; route guards and deletion checks that cover new routes and tables without being edited; the migrations, the monitor, alerts and channels, readiness and Admin → System, and the restore's reconcile step; plans, entitlements on every route, checkout, payments, refunds, disputes, receipts and reminders; direct UPI (the request and its QR codes, the UTR, the admin's confirm and reject, the caps, migration 0005); people's names (the rules, sign-up and Google with a name, `PUT /me/name`, the admin's form, migration 0006); sign-up, sign-in by email, Google sign-in and linking, password reset, email changes and undo, the password policy, throttles, enumeration (the same response for every address), the mail outbox, templates, bounces and the `mail` check | Python 3.13 | 4,004 tests plus the 65 `postgres`-marked ones (skipped without Postgres); coverage 95.85 % (statements and branches) |
+| Backend on Postgres | the `postgres`-marked tests in `backend/tests/` (with `TEST_DATABASE=postgres`, all of them) | the migrations (adopting a database made before them, repairs and refusals, the advisory lock across two processes), row locks under parallel uploads, UTC sessions, the image reservation race, the account tests, payments applied and checkouts started at once, receipt numbering, the plans, sign-up, direct-UPI and names migrations, sign-up races (two completions, a completion against a Google finish, two accounts confirming one address), two mail loops never sending one mail twice, two confirms of one UPI payment and two orders sending one UTR at once | a throwaway Postgres 17 (e.g. in Docker) | 65 tests |
+| Frontend | `frontend/src/**/*.test.ts(x)` ([README](frontend/src/test/README.md)) | components, hooks, stores and the API client (the SSE parser included) with Vitest, Testing Library and jsdom; `fetch` is stubbed | Node 22+ | 1,520 tests in 102 files; coverage 94.9 % of statements, 90.6 % of branches |
 | End-to-end | `e2e/` ([README](e2e/README.md)) | a real Chromium (desktop and a phone) against the running stack: sign-in, sign-up, verification, Google's return, forgot and reset password, the email pages (their endpoints mocked, Turnstile stubbed), top bar, chat streaming and Stop, the composer, documents, Settings, the admin page, plans, checkout and the return page (the payment side intercepted), direct UPI (the payment page, the UTR, "Open UPI app" on a phone, the admin's confirm and reject dialogs; intercepted), phone layout, accessibility | the Docker stack up | 80 tests in 13 files (1 `@live`, skipped) |
-| Integration | `integration/` ([README](integration/README.md)) | an isolated copy of the whole stack (nginx, backend, worker, Postgres, Redis, Qdrant, the monitor and the backup service) with a fake OpenAI-compatible model server, the fake Google, a fake alert receiver, a fake SMTP server (`fake_mail`) and a fake Turnstile with the breach check (`fake_turnstile`): ingestion, chat, access, files and images from chat, limits, sessions, the worker, re-indexing, user deletion, export, Gmail, vision, backups and the restore drill, monitoring and alerts, the host watchdog, payments against a fake Razorpay, sign-up, Google sign-in and password reset (`test_18_signup`), the mailer: retries, refusals, the daily cap, receipts, bounces (`test_19_mail`), the web server logs (`test_20_web_logs`), direct UPI from checkout through the UTR, the emails, confirm, reject and a recorded refund (`test_21_upi_direct`) | Docker | 188 tests in 22 files |
+| Integration | `integration/` ([README](integration/README.md)) | an isolated copy of the whole stack (nginx, backend, worker, Postgres, Redis, Qdrant, the monitor and the backup service) with a fake OpenAI-compatible model server, the fake Google, a fake alert receiver, a fake SMTP server (`fake_mail`) and a fake Turnstile with the breach check (`fake_turnstile`): ingestion, chat, access, files and images from chat, limits, sessions, the worker, re-indexing, user deletion, export, Gmail, vision, backups and the restore drill, monitoring and alerts, the host watchdog, payments against a fake Razorpay, sign-up, Google sign-in and password reset (`test_18_signup`), the mailer: retries, refusals, the daily cap, receipts, bounces (`test_19_mail`), the web server logs (`test_20_web_logs`), direct UPI from checkout through the UTR, the emails, confirm, reject and a recorded refund (`test_21_upi_direct`) | Docker | 208 tests in 22 files |
 
 ```bash
 # Backend (from the repo root)
@@ -1177,16 +1177,24 @@ contract is `SPEC.md`. **Sign-up is closed** until the owner opens it.
   account**" sits under the lede, the public top bar has **Sign up**, and `/pricing` reads "Create an account to choose
   a plan". After repeated failed sign-ins from a network a robot check (Turnstile) comes first, never from this
   machine.
-- **Create an account** (`/signup`): **Continue with Google**, or an email and a password (the rules show under the
-  field), the unticked terms box and the robot check. Then "Check your inbox": the emailed link (24 hours,
+- **Create an account** (`/signup`): **Continue with Google**, or **Your name**, an email and a password (the rules
+  show under the field), the unticked terms box and the robot check. Then "Check your inbox": the emailed link (24 hours,
   `/verify-email`) finishes the account in one click in the same browser, or with the chosen password on another
   device. Nothing exists until then. **Resend** waits 60 s between mails. Every address gets the same answer; one that
   already has an account gets a "you already have an account" email instead.
 - **Continue with Google:** an account linked to that Google account is signed in. A new one confirms on
-  `/signup/google` ("Create your account", the terms ticked; from the sign-in page also **I already have an account**).
+  `/signup/google` ("Create your account": **Your name** and the terms ticked; from the sign-in page also **I already
+  have an account**).
   A verified `@gmail.com` address equal to the confirmed email of an account without a Google sign-in is linked to
   it; any other existing address (Workspace ones included) asks for the password and **Connect Google…** in Settings.
   An address Google hasn't verified gets our confirmation email.
+- **Names** (added 2026-11-02): the name given at sign-up is the account's display name (any script, up to 80
+  characters; no `<`, `>` or invisible characters). The chat greets with its first word ("How can I help, Bikash?"),
+  and the avatar, the account menu, Settings and Admin → Users show it with the email under it. People change it in
+  Settings → Account → **Name**; the admin sets or clears it in a user's form (optional for admin-created users).
+  Accounts made before have no name until someone sets one: they show the username, or for a generated
+  `user-xxxxxxxx` handle the email's local part. Receipts name the billing profile's name, else the display name,
+  else the username.
 - **No plan until they pay:** a new account has no plan and lands on `/plans` (or the page it was heading for), with
   only the plan page, checkout, Settings and the public pages open (section 9). Checkout needs a confirmed email. While
   Razorpay isn't live, users other than testers read "Paid plans open soon. Check back in a few days." There is no

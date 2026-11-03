@@ -7,7 +7,7 @@ from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Fie
 
 from app.config import settings
 from app.schemas import MAX_INT, UserLimits
-from app.schemas_auth import SIGNIN_PASSWORD_MAX_LENGTH, PendingEmailRef, SignupSource
+from app.schemas_auth import SIGNIN_PASSWORD_MAX_LENGTH, OptionalPersonName, PendingEmailRef, SignupSource
 from app.schemas_billing import PlanRef, PlanState, UserGrant
 
 # Largest Postgres BIGINT: bigger values would make the driver fail with a 500.
@@ -151,6 +151,7 @@ class AdminUserUsage(BaseModel):
 class AdminUser(BaseModel):
     id: int
     username: str
+    display_name: str | None  # the person's name; None: not given
     is_admin: bool
     is_active: bool
     restrict_models: bool
@@ -185,6 +186,7 @@ class AdminUserCreate(BaseModel):
 
     username: Username
     password: Password
+    display_name: OptionalPersonName = None  # blank: none
     is_active: bool = True
     restrict_models: bool = False
     allowed_model_ids: ModelIds = Field(default_factory=list)
@@ -195,12 +197,14 @@ class AdminUserCreate(BaseModel):
 
 
 class AdminUserUpdate(BaseModel):
-    """Omitted or null fields stay unchanged (overrides: see LimitOverridesInput); an empty password means "keep the
-    current one". An override of 0 for monthly_token_limit needs confirm_unlimited (422 otherwise)."""
+    """Omitted or null fields stay unchanged (overrides: see LimitOverridesInput), except display_name, which a null or
+    blank value clears; an empty password means "keep the current one". An override of 0 for monthly_token_limit needs
+    confirm_unlimited (422 otherwise)."""
 
     model_config = ConfigDict(extra="forbid")
 
     password: Annotated[Password | None, BeforeValidator(_blank_password_to_none)] = None
+    display_name: OptionalPersonName = None
     is_active: bool | None = None
     restrict_models: bool | None = None
     allowed_model_ids: ModelIds | None = None

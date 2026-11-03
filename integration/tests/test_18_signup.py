@@ -4,12 +4,14 @@ Turnstile and the breached-password check are the fake-turnstile service, and Go
 OpenID Connect side, whose consent the tests play as the browser. Sign-up is opened through the admin API first.
 Requests carry a CF-Connecting-IP (the stack trusts it) so each test comes from its own networks.
 
-Covered: an email sign-up finished in the same browser and one finished elsewhere with the password; an existing
+Covered: an email sign-up finished in the same browser and one finished elsewhere with the password, each with the
+name given at sign-up (normalized, kept with the pending row, then the account's) and a name changed later; an existing
 address's "you already have an account" mail; a stranger's sign-up leaving the first link working; resend and its
 limits; sign-in by email and username, the challenge and its outage fallback; forgot and reset (sessions ended, the
 notice, Google disconnected) and forgot for a pending sign-up; Google sign-up, the automatic link of a Gmail address,
 link_required for a Workspace address, an unverified address confirmed only with the session, linking and unlinking
-by hand, the step-up and a first password; an email change, its notice and its undo; the admin's password policy and
+by hand, the step-up and a first password; a Google sign-up's name; an email change, its notice and its undo; the
+admin's password policy and
 retired usernames; the signed-out pages' headers and nginx's per-address zones (in dry-run mode here)."""
 
 import itertools
@@ -26,6 +28,10 @@ FAKE_TURNSTILE_URL = f"http://127.0.0.1:{ENV['IT_FAKE_TURNSTILE_PORT']}"
 MAIL_WAIT = 60
 _LINK = re.compile(r"(https?://[^\s\"'<>]+)#t=([A-Za-z0-9_-]+)")
 _NETWORKS = itertools.count(10)
+TYPED_NAME = "  Ananya   Rāo "  # as typed: normalized to NAME
+NAME = "Ananya Rāo"
+GOOGLE_NAME = "रवि कुमार"
+GOOGLE_FINISH = {"name": GOOGLE_NAME, "accept_terms": True}
 
 
 # ---------------- Browsers, the fakes and the mail ----------------
@@ -86,7 +92,13 @@ def settled(to: str) -> None:
 
 
 def signup(client: httpx.Client, email: str, password: str, **extra: Any) -> httpx.Response:
-    body = {"email": email, "password": password, "accept_terms": True, "turnstile_token": turnstile("signup")}
+    body = {
+        "name": TYPED_NAME,
+        "email": email,
+        "password": password,
+        "accept_terms": True,
+        "turnstile_token": turnstile("signup"),
+    }
     return client.post("/api/auth/signup", json={**body, **extra})
 
 
@@ -136,7 +148,7 @@ def email_signed_up(email: str) -> tuple[httpx.Client, str, dict[str, Any]]:
 def google_signed_up(client: httpx.Client, **account: Any) -> dict[str, Any]:
     choose_google(**account)
     assert google_flow(client, **{"from": "signup"}) == "/signup/google"
-    return check(client.post("/api/auth/google/finish", json={"accept_terms": True})).json()
+    return check(client.post("/api/auth/google/finish", json=GOOGLE_FINISH)).json()
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -158,16 +170,23 @@ def test_an_email_sign_up_finishes_in_the_same_browser_and_on_another_device() -
     email = address("signup")
     client, _, finished = email_signed_up(email)
 
-    assert (finished["email"], finished["plan"]["state"]) == (email, "none")
+    assert (finished["email"], finished["plan"]["state"], finished["display_name"]) == (email, "none", NAME)
     assert check(me(client)).json()["id"] == finished["id"]
     settled(email)
     assert len(mails(email)) == 1  # no welcome mail
-    assert sql_value(f"SELECT signup_source FROM users WHERE id = {finished['id']}") == "email"
+    assert sql_value(f"SELECT signup_source || ':' || display_name FROM users WHERE id = {finished['id']}") == (
+        f"email:{NAME}"
+    )
+    renamed = check(client.put("/api/me/name", json={"name": " Dr.  Ananya Rāo"})).json()
+    assert renamed == {"display_name": "Dr. Ananya Rāo"}
+    assert check(client.get("/api/me/account")).json()["display_name"] == "Dr. Ananya Rāo"
+    assert client.put("/api/me/name", json={"name": "<b>Ananya</b>"}).status_code == 422
 
     other = address("phone")
     first, secret = browser(), password()
     check(signup(first, other, secret), 202)
     token = token_in(wait_mail(other)[-1], "/verify-email")
+    assert sql_value(f"SELECT DISTINCT display_name FROM pending_signups WHERE canonical = '{other.lower()}'") == NAME
     phone = browser()
     checked = check(phone.post("/api/auth/signup/check", json={"token": token})).json()
     assert checked["needs_password"] is True and checked["email"] == other
@@ -175,6 +194,7 @@ def test_an_email_sign_up_finishes_in_the_same_browser_and_on_another_device() -
     assert (wrong.status_code, wrong.json()["code"]) == (400, "wrong_password")
     done = check(phone.post("/api/auth/signup/complete", json={"token": token, "password": secret})).json()
     assert done["email"] == other and check(me(phone)).json()["id"] == done["id"]
+    assert done["display_name"] == NAME
 
 
 def test_an_existing_address_gets_a_you_have_an_account_mail_and_a_stranger_kills_no_link() -> None:
@@ -310,7 +330,8 @@ def test_forgot_and_reset_end_every_session_and_can_disconnect_google() -> None:
 def test_google_sign_up_auto_link_link_required_and_an_unverified_address() -> None:
     gmail = f"{unique('it-google-')}@gmail.com"
     created = google_signed_up(browser(), sub=unique("2"), email=gmail, email_verified=True, clear=["hd", "auth_time"])
-    assert (created["email"], created["plan"]["state"]) == (gmail, "none")
+    assert (created["email"], created["plan"]["state"], created["display_name"]) == (gmail, "none", GOOGLE_NAME)
+    assert sql_value(f"SELECT display_name FROM users WHERE id = {created['id']}") == GOOGLE_NAME
     assert sql_value(
         f"SELECT signup_source || ':' || (password_hash IS NULL) FROM users WHERE id = {created['id']}"
     ) == ("google:true")
@@ -335,7 +356,7 @@ def test_google_sign_up_auto_link_link_required_and_an_unverified_address() -> N
     assert google_flow(session) == "/signup/google"
     pending = check(session.get("/api/auth/google/pending")).json()
     assert (pending["email"], pending["email_verified"]) == (unverified, False)
-    user = check(session.post("/api/auth/google/finish", json={"accept_terms": True})).json()
+    user = check(session.post("/api/auth/google/finish", json=GOOGLE_FINISH)).json()
     assert user["email"] is None
     token = token_in(wait_mail(unverified)[-1], "/confirm-email")
     refused = browser().post("/api/auth/email/verify", json={"token": token})

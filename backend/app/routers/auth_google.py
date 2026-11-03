@@ -107,7 +107,7 @@ async def pending(request: Request) -> GooglePending:
 
 @router.post("/finish")
 async def finish(body: GoogleFinish, request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> Me:
-    user = await google.finish(db, request, response)
+    user = await google.finish(db, request, response, body.name)
     return await login.me(db, user)
 
 

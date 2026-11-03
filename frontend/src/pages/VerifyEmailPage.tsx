@@ -8,6 +8,7 @@ import { AlertCircleIcon, ClockIcon, InfoIcon, KeyIcon, UserIcon } from "../comp
 import PasswordInput from "../components/ui/PasswordInput";
 import { ButtonSpinner } from "../components/ui/Spinner";
 import { leaveForApp, stash } from "../lib/authDocument";
+import { personName } from "../lib/names";
 import { CheckingLink, FormError, IncompleteLink, LinkCheckFailed, messageOf, useFragmentToken } from "./authShared";
 
 /** How long the address waits in this tab for "Sign up again". */
@@ -199,7 +200,7 @@ export default function VerifyEmailPage() {
         {user ? (
           <div className="ui-notice" role="status">
             <InfoIcon size={18} />
-            <span className="ui-notice-text">Finishing signs you out of {user.email ?? user.username}.</span>
+            <span className="ui-notice-text">Finishing signs you out of {personName(user)}.</span>
           </div>
         ) : null}
         <IdentityRow kind="email" primary={check.email} secondary="Confirmed by this link" />

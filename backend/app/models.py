@@ -93,6 +93,8 @@ class User(Base):
     signup_source: Mapped[str] = mapped_column(String(16), default="admin", server_default="admin")
     terms_version: Mapped[str | None] = mapped_column(String(32), nullable=True)  # a self sign-up's consent
     terms_accepted_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    # The person's name as they write it (app.schemas_auth.person_name); None: not given (migration 0006)
+    display_name: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     allowed_models: Mapped[list["LLMModel"]] = relationship(secondary=user_allowed_models, lazy="selectin")
     identities: Mapped[list["UserIdentity"]] = relationship(cascade="all, delete-orphan", lazy="selectin")
@@ -778,6 +780,7 @@ class PendingSignup(Base):
     ip: Mapped[str | None] = mapped_column(String(64), nullable=True)  # approximate, as login_events
     created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=utcnow)
     expires_at: Mapped[datetime] = mapped_column(UTCDateTime(), index=True)
+    display_name: Mapped[str | None] = mapped_column(String(80), nullable=True)  # the account's name (migration 0006)
 
 
 class PendingEmail(Base):

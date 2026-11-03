@@ -32,8 +32,14 @@ function stubAssign() {
 
 const render = () => renderWithAuth(<GoogleSignupPage />, { route: "/signup/google" });
 
+/** The name and the terms, ready to create the account. */
+async function fillIn(user: ReturnType<typeof userEvent.setup>, name = "Maya Chen") {
+  await user.type(await screen.findByRole("textbox", { name: "Your name" }), name);
+  await user.click(screen.getByRole("checkbox"));
+}
+
 describe("GoogleSignupPage", () => {
-  it("creates the account once the terms are accepted, and leaves for the plans", async () => {
+  it("creates the account once the name is given and the terms are accepted, and leaves for the plans", async () => {
     const calls = stubFetch(
       routes({ "GET /auth/google/pending": makeGooglePending(), "POST /auth/google/finish": makeMe() }),
     );
@@ -46,15 +52,29 @@ describe("GoogleSignupPage", () => {
     expect(screen.getByText("Google account")).toBeInTheDocument();
     expect(screen.queryByText(/We'll email that address/)).not.toBeInTheDocument();
 
+    const name = screen.getByRole("textbox", { name: "Your name" });
+    expect(name).toHaveAttribute("autocomplete", "name");
+    expect(name.compareDocumentPosition(screen.getByRole("checkbox")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
     await user.click(screen.getByRole("button", { name: "Create account" }));
+    expect(screen.getByText("Enter your name.")).toBeInTheDocument();
     expect(screen.getByText("Tick the box to accept the terms.")).toBeInTheDocument();
+    expect(name).toHaveFocus();
+    expect(name).toHaveAccessibleDescription("Enter your name.");
+
+    await user.type(name, "  Maya  Chen");
+    await user.click(screen.getByRole("button", { name: "Create account" }));
+    expect(screen.queryByText("Enter your name.")).not.toBeInTheDocument();
     expect(screen.getByRole("checkbox")).toHaveFocus();
     expect(calls.some((call) => call.path === "/auth/google/finish")).toBe(false);
 
     await user.click(screen.getByRole("checkbox"));
     await user.click(screen.getByRole("button", { name: "Create account" }));
     await waitFor(() => expect(leaveForApp).toHaveBeenCalledWith("/plans"));
-    expect(calls.find((call) => call.path === "/auth/google/finish")?.body).toEqual({ accept_terms: true });
+    expect(calls.find((call) => call.path === "/auth/google/finish")?.body).toEqual({
+      name: "Maya Chen",
+      accept_terms: true,
+    });
   });
 
   it("lands on the page the sign-up started for", async () => {
@@ -62,7 +82,7 @@ describe("GoogleSignupPage", () => {
     stubFetch(routes({ "GET /auth/google/pending": makeGooglePending(), "POST /auth/google/finish": makeMe() }));
     const user = userEvent.setup();
     await render();
-    await user.click(await screen.findByRole("checkbox"));
+    await fillIn(user);
     await user.click(screen.getByRole("button", { name: "Create account" }));
     await waitFor(() => expect(leaveForApp).toHaveBeenCalledWith("/plans/checkout/standard"));
   });
@@ -156,9 +176,26 @@ describe("GoogleSignupPage", () => {
     );
     const user = userEvent.setup();
     await render();
-    await user.click(await screen.findByRole("checkbox"));
+    await fillIn(user);
     await user.click(screen.getByRole("button", { name: "Create account" }));
     expect(await screen.findByRole("heading", { name: title })).toBeInTheDocument();
+  });
+
+  it("puts a refused name under the name field", async () => {
+    const detail = [{ loc: ["body", "name"], msg: "Value error, Remove the invisible or control characters." }];
+    stubFetch(
+      routes({
+        "GET /auth/google/pending": makeGooglePending(),
+        "POST /auth/google/finish": () => jsonResponse({ detail }, { status: 422 }),
+      }),
+    );
+    const user = userEvent.setup();
+    await render();
+    await fillIn(user);
+    await user.click(screen.getByRole("button", { name: "Create account" }));
+    expect(await screen.findByText("Remove the invisible or control characters.")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Your name" })).toHaveFocus();
+    expect(screen.getByRole("button", { name: "Create account" })).not.toHaveAttribute("aria-busy");
   });
 
   it("shows another refusal above the button, and Try again when the ticket couldn't be checked", async () => {
@@ -174,7 +211,7 @@ describe("GoogleSignupPage", () => {
     expect(await screen.findByRole("heading", { name: "We couldn't check your link" })).toBeInTheDocument();
     pending = makeGooglePending();
     await user.click(screen.getByRole("button", { name: "Try again" }));
-    await user.click(await screen.findByRole("checkbox"));
+    await fillIn(user);
     await user.click(screen.getByRole("button", { name: "Create account" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Too many attempts.");
   });

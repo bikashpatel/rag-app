@@ -326,6 +326,7 @@ async def _admin_users(db: AsyncSession, users: Sequence[User]) -> list[AdminUse
             AdminUser(
                 id=user.id,
                 username=user.username,
+                display_name=user.display_name,
                 is_admin=user.is_admin,
                 is_active=user.is_active,
                 restrict_models=user.restrict_models,
@@ -377,6 +378,7 @@ async def create_user(
     await passwords.check(body.password, context=(body.username,))
     user = User(
         username=body.username,
+        display_name=body.display_name,
         password_hash=await hash_password_async(body.password),
         is_admin=False,
         is_active=body.is_active,
@@ -408,9 +410,11 @@ async def update_user(
     user_id: Id, body: AdminUserUpdate, admin: User = Depends(get_current_admin), db: AsyncSession = Depends(get_db)
 ) -> AdminUser:
     """Every change of an override, the allowed list, restrict_models or billing_tester writes a user.updated event
-    with the values before and after."""
+    with the values before and after (never the name: billing events outlive the user)."""
     _confirmed(body)
     changes = body.model_dump(exclude_none=True, exclude={"overrides", "confirm_unlimited"})
+    if "display_name" in body.model_fields_set:
+        changes["display_name"] = body.display_name
     password_hash = None
     if "password" in changes:
         # Checked and hashed before the row is locked, so the lock isn't held meanwhile.

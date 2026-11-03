@@ -122,6 +122,7 @@ export function makeMe(overrides: Partial<Me> = {}): Me {
   return {
     id: 7,
     username: "maya.chen",
+    display_name: null,
     is_admin: false,
     limits: makeLimits(),
     usage: {
@@ -343,6 +344,7 @@ export function makeAdminUser(overrides: Partial<AdminUser> = {}): AdminUser {
   return {
     id: 7,
     username: "maya.chen",
+    display_name: null,
     is_admin: false,
     is_active: true,
     restrict_models: false,
@@ -447,6 +449,7 @@ export function makeAccount(overrides: Partial<AccountInfo> = {}): AccountInfo {
   return {
     id: 7,
     username: "maya.chen",
+    display_name: null,
     is_admin: false,
     password_managed_by_env: false,
     created_at: "2026-09-02T11:00:00Z",

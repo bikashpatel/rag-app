@@ -548,11 +548,11 @@ async def cancel(request: Request, response: Response) -> None:
     clear_ticket(response)
 
 
-async def finish(db: AsyncSession, request: Request, response: Response) -> User:
+async def finish(db: AsyncSession, request: Request, response: Response, name: str) -> User:
     """POST /auth/google/finish (the terms accepted): the ticket taken once and everything checked again; the account
-    (no password), its identity and, for a `gmail` or `workspace` address, its verified email; an `unverified`
-    address becomes a pending email with a confirmation queued (when mail can go: else Settings resends it). Signed in
-    with a new session."""
+    (no password, the name given), its identity and, for a `gmail` or `workspace` address, its verified email; an
+    `unverified` address becomes a pending email with a confirmation queued (when mail can go: else Settings resends
+    it). Signed in with a new session."""
     await throttle.check(request, "signup")
     data = await _take_ticket(request)
     if data is None:
@@ -573,6 +573,7 @@ async def finish(db: AsyncSession, request: Request, response: Response) -> User
     user = await signup.new_account(
         db,
         "google",
+        display_name=name,
         password_hash=None,
         address=address if verified else None,
         canonical=canonical if verified else None,
