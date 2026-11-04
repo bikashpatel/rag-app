@@ -211,16 +211,6 @@
   opacity: 0.6;
   cursor: not-allowed;
 }
-.docs-dropzone-icon {
-  display: grid;
-  flex: none;
-  place-items: center;
-  width: 40px;
-  height: 40px;
-  border-radius: 12px;
-  background: var(--accent-soft);
-  color: var(--accent-ink);
-}
 .docs-dropzone-text {
   display: flex;
   flex-direction: column;

@@ -1,5 +1,4 @@
 import { useId, useRef } from "react";
-import { UploadIcon } from "../ui/icons";
 import UploadMark from "../ui/marks/UploadMark";
 
 type UploadDropzoneProps = {
@@ -11,7 +10,7 @@ type UploadDropzoneProps = {
   disabled: boolean;
   /** Files are being dragged over the panel (the panel owns the drop handlers). */
   dragActive: boolean;
-  /** An upload is queued or running: the icon becomes the animated upload mark. */
+  /** An upload is queued or running: the upload mark's arrow rises faster. */
   uploading: boolean;
   onFiles: (files: File[]) => void;
 };
@@ -36,13 +35,7 @@ export default function UploadDropzone({
         disabled={disabled}
         aria-describedby={hintId}
       >
-        {uploading ? (
-          <UploadMark size={40} />
-        ) : (
-          <span className="docs-dropzone-icon" aria-hidden="true">
-            <UploadIcon size={20} />
-          </span>
-        )}
+        <UploadMark size={40} className={uploading ? "mark-busy" : undefined} />
         <span className="docs-dropzone-text">
           <span className="docs-dropzone-title">
             {dragActive ? (

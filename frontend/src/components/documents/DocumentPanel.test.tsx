@@ -84,6 +84,7 @@ describe("DocumentPanel", () => {
     expect(summary()).toBeChecked();
     expect(summary()).toHaveAccessibleDescription("Searching all 3 documents");
     expect(screen.getByRole("complementary", { name: "Documents" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Documents" }).previousElementSibling).toHaveClass("mark mark-documents");
   });
 
   it("shows a placeholder while the list loads", async () => {
@@ -172,13 +173,12 @@ describe("DocumentPanel", () => {
     const { user, state, fileInput } = await setup();
     await screen.findByText("launch-plan.docx");
     const dropzone = screen.getByRole("button", { name: /Drop files here or browse/ });
-    expect(dropzone.querySelector(".docs-dropzone-icon")).not.toBeNull();
-    expect(dropzone.querySelector(".mark-upload")).toBeNull();
+    expect(dropzone.querySelector("svg.mark-upload")).toHaveAttribute("aria-hidden", "true");
+    expect(dropzone.querySelector(".mark-busy")).toBeNull();
     await user.upload(fileInput, makeFile("brief.pdf"));
 
-    // While it uploads, the drop zone's icon is the animated upload mark.
-    expect(dropzone.querySelector(".docs-dropzone-icon")).toBeNull();
-    expect(dropzone.querySelector("svg.mark-upload")).toHaveAttribute("aria-hidden", "true");
+    // While it uploads, the drop zone's upload mark is busy (its arrow rises faster).
+    expect(dropzone.querySelector("svg.mark-upload.mark-busy")).not.toBeNull();
     const queue = screen.getByRole("list", { name: "Uploads" });
     expect(within(queue).getByText("Uploading 0%")).toBeInTheDocument();
     expect(uploads.map((upload) => [upload.file.name, upload.scope])).toEqual([["brief.pdf", "private"]]);
@@ -195,7 +195,7 @@ describe("DocumentPanel", () => {
 
     expect(await screen.findByText("brief.pdf uploaded. It can be searched once indexing finishes.")).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Uploads" })).not.toBeInTheDocument();
-    expect(dropzone.querySelector(".mark-upload")).toBeNull();
+    expect(dropzone.querySelector(".mark-busy")).toBeNull();
     expect(screen.getByRole("region", { name: "My documents (3)" })).toHaveTextContent("Queued");
     await waitFor(() => expect(screen.getByRole("group", { name: "Your document quota" })).toHaveTextContent("5 / 100"));
   });

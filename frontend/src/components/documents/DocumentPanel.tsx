@@ -6,6 +6,7 @@ import GmailImportModal from "../connections/GmailImportModal";
 import { gmailReady, requestConnections, usePlugins } from "../connections/pluginStore";
 import { formatBytes, formatMegabytes, formatNumber } from "../../lib/format";
 import { AlertCircleIcon, AlertIcon, CloseIcon, MailIcon } from "../ui/icons";
+import DocumentsMark from "../ui/marks/DocumentsMark";
 import DocumentList from "./DocumentList";
 import "./documents.css";
 import { BYTES_PER_MB, supportedTypeLabels, uploadRules } from "./fileTypes";
@@ -149,6 +150,7 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
       {...dropHandlers}
     >
       <header className="docs-header">
+        <DocumentsMark size={28} />
         <h2 id={titleId} className="docs-title">
           Documents
         </h2>
