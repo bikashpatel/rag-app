@@ -19,12 +19,17 @@ sets the UPI ID). Later on 2026-11-02 the Cloudflare tunnel stalled (next step 2
 → Account, set by the admin; migration 0006), with the owner's "Pure RAG" tagline and the Elarxsys AI Hub Pvt. Ltd.
 credit and © line on the sign-in pages: committed in `ea08231` and deployed on 2026-11-03 (backup
 `20261103T001750Z-manual` first; 0005 → 0006, every other row count unchanged; the e2e suite against the live stack:
-79 passed, the `@live` one skipped). Sign-up is open (email and password; Google sign-in not set up). `SPEC.md` is the binding contract; `README.md`
+79 passed, the `@live` one skipped). On 2026-11-04 the owner's neon robot icon replaced the "N" mark and the favicon
+(`5289997`), the robot was animated in the chat's welcome and the assistant's avatar (`9217789`), and ten animated marks
+(`frontend/src/components/ui/marks/`, one per screen: documents, upload, plans, UPI, payment check, all set, inbox,
+Settings, Admin, security) were added in `8034cec`; all three were deployed frontend-only (backup
+`20261104T145630Z-manual` before the last; e2e against the live stack: 79 passed, 1 skipped). Sign-up is open (email
+and password; Google sign-in not set up). `SPEC.md` is the binding contract; `README.md`
 has setup, commands, the test suites, operations (section 8), plans and billing (section 9), sign-up and email (section
 10), the architecture and how to use the app.
 
 **Renamed on 2026-10-28:** the product is now **AskNuvexusDoc** (the owner's domain is asknuvexusdoc.com), formerly
-"RAG Assistant". The new name is in the tab titles, the brand (mark "N"), the default business name on receipts and
+"RAG Assistant". The new name is in the tab titles, the brand (mark "N", the neon robot icon since 2026-11-04), the default business name on receipts and
 public pages, generated-file metadata, the data export's file name and README, alert titles and the docs; the sign-in
 page is renamed separately with its rework. Technical identifiers keep `rag` (`CLAUDE.md`). On a running install, an
 `APP_NAME` or `ALERT_NAME` in `.env` and a business name saved in Admin → Billing → Business & payments still show
