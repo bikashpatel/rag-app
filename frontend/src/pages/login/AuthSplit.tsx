@@ -14,7 +14,7 @@ const PHONE_QUERY = "(max-width: 799.98px)";
 function Brand() {
   return (
     <span className="ui-brand" aria-hidden="true">
-      <BrandMark />
+      <BrandMark twinkle />
       <span className="ui-brand-name">AskNuvexusDoc</span>
     </span>
   );

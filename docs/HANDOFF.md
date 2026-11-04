@@ -23,13 +23,16 @@ credit and © line on the sign-in pages: committed in `ea08231` and deployed on 
 (`5289997`), the robot was animated in the chat's welcome and the assistant's avatar (`9217789`), and ten animated marks
 (`frontend/src/components/ui/marks/`, one per screen: documents, upload, plans, UPI, payment check, all set, inbox,
 Settings, Admin, security) were added in `8034cec`; all three were deployed frontend-only (backup
-`20261104T145630Z-manual` before the last; e2e against the live stack: 79 passed, 1 skipped). Sign-up is open (email
+`20261104T145630Z-manual` before the last; e2e against the live stack: 79 passed, 1 skipped). Later that day the
+owner's N logo (golden orbit, star) replaced the robot beside the name and as the favicon, its star glinting on the
+sign-in pages, and a new chat's empty box types example questions (`ComposerExamples`; plain under "reduce motion");
+the robot stays as the chat's assistant. Sign-up is open (email
 and password; Google sign-in not set up). `SPEC.md` is the binding contract; `README.md`
 has setup, commands, the test suites, operations (section 8), plans and billing (section 9), sign-up and email (section
 10), the architecture and how to use the app.
 
 **Renamed on 2026-10-28:** the product is now **AskNuvexusDoc** (the owner's domain is asknuvexusdoc.com), formerly
-"RAG Assistant". The new name is in the tab titles, the brand (mark "N", the neon robot icon since 2026-11-04), the default business name on receipts and
+"RAG Assistant". The new name is in the tab titles, the brand (mark "N"; since 2026-11-04 the owner's N logo with its golden orbit), the default business name on receipts and
 public pages, generated-file metadata, the data export's file name and README, alert titles and the docs; the sign-in
 page is renamed separately with its rework. Technical identifiers keep `rag` (`CLAUDE.md`). On a running install, an
 `APP_NAME` or `ALERT_NAME` in `.env` and a business name saved in Admin → Billing → Business & payments still show

@@ -2,7 +2,9 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { createRef, useRef, useState, type ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { setMediaQueries } from "../../test/browser";
 import Composer, { type ComposerHandle } from "./Composer";
+import { COMPOSER_EXAMPLES, ERASE_MS, GAP_MS, HOLD_MS, TYPE_MS } from "./ComposerExamples";
 import type { AttachmentView } from "./useAttachments";
 
 type Props = ComponentProps<typeof Composer>;
@@ -251,5 +253,51 @@ describe("Composer", () => {
     expect(screen.getByRole("list", { name: "Attached files" })).toHaveTextContent("report.pdf");
     await user.click(screen.getByRole("button", { name: "Remove report.pdf from this message; it stays in your documents" }));
     expect(props.onRemoveAttachment).toHaveBeenCalledExactlyOnceWith(4);
+  });
+
+  describe("typed examples", () => {
+    const hint = () => document.querySelector(".chat-composer-example");
+
+    it("type example questions over an empty box, keeping the placeholder for assistive tech", () => {
+      vi.useFakeTimers();
+      try {
+        render(<Composer {...props()} />);
+        const input = screen.getByRole("textbox", { name: "Message" });
+        expect(input).toHaveAttribute("placeholder", "Ask a question…");
+        expect(input).toHaveClass("chat-composer-input-examples");
+        expect(hint()).toHaveAttribute("aria-hidden", "true");
+        expect(hint()).toHaveTextContent(/^Ask a question…$/);
+
+        // The first character goes when the hold ends, then one per ERASE_MS; the next example types after a gap.
+        const [first, second] = COMPOSER_EXAMPLES;
+        act(() => vi.advanceTimersByTime(HOLD_MS + ERASE_MS * 3));
+        expect(hint()).toHaveTextContent(new RegExp(`^${first.slice(0, -4)}$`));
+        act(() => vi.advanceTimersByTime(ERASE_MS * (first.length - 4) + GAP_MS + TYPE_MS * (second.length - 1)));
+        expect(hint()).toHaveTextContent(new RegExp(`^${second}$`));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("step aside once there is text, and in a chat with messages or a disabled box", async () => {
+      const { user, rerender, input } = setup();
+      await user.type(input, "Hi");
+      expect(hint()).toBeNull();
+      expect(input).not.toHaveClass("chat-composer-input-examples");
+      await user.clear(input);
+      expect(hint()).not.toBeNull();
+      rerender({ replying: true });
+      expect(hint()).toBeNull();
+      rerender({ disabledReason: "No chat model is available." });
+      expect(hint()).toBeNull();
+    });
+
+    it("are left out under reduce motion, so the placeholder shows", () => {
+      setMediaQueries((query) => query === "(prefers-reduced-motion: reduce)");
+      const { input } = setup();
+      expect(hint()).toBeNull();
+      expect(input).not.toHaveClass("chat-composer-input-examples");
+      expect(input).toHaveAttribute("placeholder", "Ask a question…");
+    });
   });
 });

@@ -15,8 +15,10 @@ import { formatNumber } from "../../lib/format";
 import { useFileDrop } from "../documents/useFileDrop";
 import { ArrowUpIcon, DocsIcon, StopIcon } from "../ui/icons";
 import AttachmentChips from "./AttachmentChips";
+import ComposerExamples from "./ComposerExamples";
 import { withStarter } from "./starters";
 import type { AttachmentView } from "./useAttachments";
+import { useMediaQuery } from "./useMediaQuery";
 
 const MAX_MESSAGE_CHARS = 20_000;
 const SHOW_COUNTER_FROM = 18_000;
@@ -158,6 +160,9 @@ export default function Composer({
 
   const dropEnabled = onDropFiles !== undefined && disabledReason === null;
   const { dragActive, dropHandlers } = useFileDrop((files, folders) => onDropFiles?.(files, folders), dropEnabled);
+  const still = useMediaQuery("(prefers-reduced-motion: reduce)");
+  /** A new chat's empty box types example questions in place of its placeholder. */
+  const showExamples = text === "" && disabledReason === null && !replying && !still;
 
   const message = text.trim();
   const tooLong = message.length > MAX_MESSAGE_CHARS;
@@ -207,19 +212,22 @@ export default function Composer({
         <label htmlFor={inputId} className="sr-only">
           Message
         </label>
-        <textarea
-          ref={textareaRef}
-          id={inputId}
-          className="chat-composer-input"
-          rows={1}
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder={disabledReason ?? (replying ? "Reply…" : "Ask a question…")}
-          disabled={disabledReason !== null}
-          aria-describedby={showCounter ? `${hintId} ${counterId}` : hintId}
-          aria-invalid={tooLong || undefined}
-        />
+        <div className="chat-composer-field">
+          <textarea
+            ref={textareaRef}
+            id={inputId}
+            className={showExamples ? "chat-composer-input chat-composer-input-examples" : "chat-composer-input"}
+            rows={1}
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder={disabledReason ?? (replying ? "Reply…" : "Ask a question…")}
+            disabled={disabledReason !== null}
+            aria-describedby={showCounter ? `${hintId} ${counterId}` : hintId}
+            aria-invalid={tooLong || undefined}
+          />
+          {showExamples ? <ComposerExamples /> : null}
+        </div>
         <div className="chat-composer-bar">
           {plusMenu}
           {onScopeClick ? (

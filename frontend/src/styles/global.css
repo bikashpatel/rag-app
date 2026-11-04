@@ -907,12 +907,60 @@ h4 {
   text-decoration: none;
 }
 .ui-brand-mark {
+  position: relative;
   display: block;
   flex: none;
   width: 30px;
   height: 30px;
-  border-radius: 24%; /* the icon's own rounding (BrandMark) */
+  border-radius: 24%; /* the logo's own rounding (BrandMark) */
   box-shadow: var(--shadow-xs);
+}
+.ui-brand-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+/* A glint over the logo's star (right of centre); still under "reduce motion". */
+.ui-brand-mark-twinkle::after {
+  position: absolute;
+  top: 49.4%;
+  left: 83.7%;
+  width: 46%;
+  height: 46%;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    rgba(255, 255, 255, 0.95) 0 10%,
+    rgba(255, 214, 102, 0.75) 22%,
+    rgba(255, 170, 40, 0) 62%
+  );
+  content: "";
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.4);
+  animation: ui-brand-twinkle 3.6s ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes ui-brand-twinkle {
+  0%,
+  62%,
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.4);
+  }
+  74% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+  86% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.6);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ui-brand-mark-twinkle::after {
+    animation: none;
+  }
 }
 .ui-brand-name {
   font-family: var(--font-serif);

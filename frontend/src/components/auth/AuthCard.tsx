@@ -59,7 +59,7 @@ export default function AuthCard({
     <div className="auth-page">
       <header className="auth-page-top">
         <a className="ui-brand" href="/login" aria-label="AskNuvexusDoc, sign in">
-          <BrandMark />
+          <BrandMark twinkle />
           <span className="ui-brand-name">AskNuvexusDoc</span>
         </a>
       </header>

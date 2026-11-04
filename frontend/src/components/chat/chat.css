@@ -1925,6 +1925,43 @@
 .chat-composer-input::placeholder {
   color: var(--text-3);
 }
+/* The empty box's typed examples (ComposerExamples) sit over the input's first line, in place of its placeholder. */
+.chat-composer-field {
+  position: relative;
+}
+.chat-composer-input-examples {
+  caret-color: transparent; /* the examples' own caret stands in until something is typed */
+}
+.chat-composer-input-examples::placeholder {
+  color: transparent;
+}
+.chat-composer-example {
+  position: absolute;
+  top: 2px;
+  right: 6px;
+  left: 6px;
+  overflow: hidden;
+  color: var(--text-3);
+  font-size: 16.5px;
+  line-height: 1.5;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+.chat-composer-example-caret {
+  display: inline-block;
+  width: 1.5px;
+  height: 1.1em;
+  margin-left: 1px;
+  background: var(--accent);
+  vertical-align: -0.17em;
+  animation: chat-caret-blink 1s steps(1) infinite;
+}
+@keyframes chat-caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
 .chat-composer-input:disabled {
   cursor: not-allowed;
 }
@@ -2503,6 +2540,16 @@ button.chat-scope:focus-visible {
 
 /* Windows contrast themes (global.css has the shared rules): these indicators were drawn with box-shadows. */
 @media (forced-colors: active) {
+  /* Forced colours show the input's own placeholder, so the typed examples step aside. */
+  .chat-composer-example {
+    display: none;
+  }
+  .chat-composer-input-examples {
+    caret-color: auto;
+  }
+  .chat-composer-input-examples::placeholder {
+    color: GrayText;
+  }
   .chat-composer:has(.chat-composer-input:focus-visible),
   .ui-menu .chat-plus-formats .chat-plus-format:focus-visible {
     outline: 2px solid Highlight;

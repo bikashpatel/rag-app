@@ -89,7 +89,7 @@ describe("AuthSplit", () => {
     expect(screen.queryByRole("img")).not.toBeInTheDocument();
     const hero = container.querySelector(".login-mobile-hero");
     expect(hero?.querySelector(".ui-brand")).toHaveTextContent("AskNuvexusDoc");
-    expect(hero?.querySelector(".ui-brand img.ui-brand-mark")).toHaveAttribute("alt", "");
+    expect(hero?.querySelector(".ui-brand .ui-brand-mark-twinkle img")).toHaveAttribute("alt", "");
     expect(within(hero as HTMLElement).getByRole("heading", { level: 2 })).toHaveClass("sr-only");
     expect(screen.getByText("No endless searching.")).toBeInTheDocument();
 
