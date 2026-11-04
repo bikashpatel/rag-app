@@ -55,6 +55,9 @@
   margin: 0 auto;
   text-align: center;
 }
+.plans-intro-mark {
+  margin: 0 auto 16px;
+}
 .plans-title {
   margin: 0;
   color: var(--text);
@@ -705,6 +708,13 @@
   box-shadow: 0 0 0 9px color-mix(in srgb, var(--warning-soft) 45%, transparent);
   color: var(--warning);
 }
+/* One of the ui/marks brings its own tile: no tone circle. */
+.plans-result .plans-result-mark:has(> .mark) {
+  width: auto;
+  height: auto;
+  background: none;
+  box-shadow: none;
+}
 .plans-result-spinner {
   width: 28px;
   height: 28px;
@@ -892,6 +902,16 @@
 .plans-main-upi {
   max-width: 760px;
   padding-top: 48px;
+}
+/* The UPI mark beside the title and its line. */
+.plans-upi-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 16px;
+}
+.plans-upi-head > .mark {
+  grid-row: span 2;
 }
 .plans-upi-title {
   margin: 0;
@@ -1237,6 +1257,11 @@
   .plans-title {
     font-size: 34px;
   }
+  .plans-intro-mark {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 12px;
+  }
   .plans-lede {
     font-size: 16.5px;
   }
@@ -1351,6 +1376,10 @@
     width: 60px;
     height: 60px;
   }
+  .plans-result-mark > .mark {
+    width: 64px;
+    height: 64px;
+  }
   /* A column with the primary on top and a ghost action (Cancel this payment) last (visual 6.1). */
   .plans-result-actions {
     flex-direction: column;
@@ -1372,6 +1401,14 @@
   }
   .plans-upi-title {
     font-size: 27px;
+  }
+  .plans-upi-head {
+    align-items: start;
+    column-gap: 12px;
+  }
+  .plans-upi-head > .mark {
+    width: 44px;
+    height: 44px;
   }
   .plans-upi {
     margin-top: 18px;

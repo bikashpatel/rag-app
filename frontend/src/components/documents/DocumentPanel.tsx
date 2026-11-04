@@ -189,6 +189,7 @@ export default function DocumentPanel({ selection, onSelectionChange, onClose }:
           warning={quotaWarning(config)}
           disabled={!canUpload}
           dragActive={dragActive}
+          uploading={uploadsActive}
           onFiles={enqueue}
         />
         {configError ? <ErrorNotice message={configError} onRetry={reloadConfig} /> : null}

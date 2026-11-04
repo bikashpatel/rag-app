@@ -4,6 +4,7 @@ import { personName } from "../../lib/names";
 import { SETTINGS_TABS, type SettingsTab } from "../../lib/settingsLink";
 import Avatar from "../ui/Avatar";
 import { CardIcon, ChartIcon, CloseIcon, PlugIcon, SlidersIcon, UserIcon } from "../ui/icons";
+import SettingsMark from "../ui/marks/SettingsMark";
 import Modal from "../ui/Modal";
 import AccountTab from "./AccountTab";
 import GeneralTab from "./GeneralTab";
@@ -144,6 +145,7 @@ export default function SettingsModal({
     >
       <div className="settings-nav">
         <div className="settings-title-row">
+          <SettingsMark size={36} />
           <h1 className="settings-title" id={titleId}>
             Settings
           </h1>

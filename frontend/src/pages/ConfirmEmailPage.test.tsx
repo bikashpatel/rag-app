@@ -49,6 +49,7 @@ describe("ConfirmEmailPage", () => {
     await user.click(screen.getByRole("button", { name: "Confirm this email" }));
 
     expect(await screen.findByRole("heading", { name: "Your email is confirmed" })).toBeInTheDocument();
+    expect(document.querySelector(".auth-art-result svg.mark-all-set")).not.toBeNull();
     expect(screen.getByText(/is now the email of your account/)).toHaveTextContent("maya.chen@example.org");
     expect(calls.find((call) => call.path === "/auth/email/verify")?.body).toEqual({ token: TOKEN });
     await waitFor(() => expect(calls.filter((call) => call.path === "/auth/me")).toHaveLength(2));

@@ -135,6 +135,7 @@ describe("public pages", () => {
   it("shows pricing: the intro, the plan cards with the recommended one, the compare table and sign-in", async () => {
     openPage("/pricing");
     expect(await screen.findByRole("heading", { level: 1, name: "Pricing" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 }).previousElementSibling).toHaveClass("mark mark-plans");
     expect(screen.getByText("Plans for every team.")).toBeInTheDocument();
     const cards = await screen.findByRole("list", { name: "Plans" });
     expect(within(cards).getAllByRole("listitem", { name: /Starter|Standard|Professional/ })).toHaveLength(3);

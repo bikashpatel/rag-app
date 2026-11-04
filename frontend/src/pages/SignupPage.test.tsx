@@ -148,6 +148,7 @@ describe("SignupPage: the form", () => {
 
     const heading = await screen.findByRole("heading", { name: "Check your inbox" });
     await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading.previousElementSibling).toHaveClass("mark mark-inbox auth-sent-mark");
     expect(posts(calls, "/auth/signup")).toEqual([
       {
         name: "Maya Chen",
@@ -414,6 +415,7 @@ describe("SignupPage: Check your inbox", () => {
     await user.click(screen.getByRole("button", { name: "Send the link again" }));
 
     expect(await screen.findByRole("heading", { name: "Check your inbox" })).toBeInTheDocument();
+    expect(document.querySelector("svg.mark-inbox")).not.toBeNull();
     expect(posts(calls, "/auth/signup/resend")).toEqual([{ email: "maya@example.com", turnstile_token: "TOKEN-R" }]);
   });
 

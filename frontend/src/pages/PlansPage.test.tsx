@@ -83,6 +83,7 @@ describe("PlansPage", () => {
   it("asks a new user to choose, emphasising the recommended plan with the page's only primary button", async () => {
     const { user, view } = await setup(makeMe({ plan: makeLapsedPlanAccess("none") }));
     expect(screen.getByRole("heading", { level: 1, name: "Choose a plan" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 1 }).previousElementSibling).toHaveClass("mark mark-plans");
     expect(
       screen.getByText("Your account is ready. Pick a plan to start chatting with your documents."),
     ).toBeInTheDocument();

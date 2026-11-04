@@ -29,15 +29,7 @@
 
 /* ---------- "Check your inbox", in the split card: left-aligned, the mark leads ---------- */
 .auth-sent-mark {
-  display: grid;
-  place-items: center;
-  width: 56px;
-  height: 56px;
-  margin: 0 0 22px 7px;
-  border-radius: 50%;
-  background: var(--accent-soft);
-  box-shadow: 0 0 0 7px color-mix(in srgb, var(--accent-soft) 45%, transparent);
-  color: var(--accent-ink);
+  margin-bottom: 18px;
 }
 .auth-sent-text {
   margin: 12px 0 0;
@@ -215,9 +207,9 @@
 
 @media (max-width: 799.98px) {
   .auth-sent-mark {
-    width: 50px;
-    height: 50px;
-    margin-bottom: 18px;
+    width: 60px;
+    height: 60px;
+    margin-bottom: 14px;
   }
   .auth-signup > .ui-notice {
     margin-top: 18px;

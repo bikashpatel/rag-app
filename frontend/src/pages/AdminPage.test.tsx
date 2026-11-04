@@ -75,7 +75,8 @@ describe("AdminPage", () => {
   it("shows the overview and opens on the Users tab", async () => {
     await renderAdmin();
 
-    expect(screen.getByRole("heading", { level: 1, name: "Administration" })).toBeInTheDocument();
+    const heading = screen.getByRole("heading", { level: 1, name: "Administration" });
+    expect(heading.previousElementSibling).toHaveClass("mark mark-admin");
     expect(document.title).toBe("Admin · AskNuvexusDoc");
     expect(await overview()).toEqual({
       Users: "3",

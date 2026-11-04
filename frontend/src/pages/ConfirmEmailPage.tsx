@@ -4,7 +4,8 @@ import { authApi, authErrorCode } from "../api/client";
 import type { EmailTokenInfo } from "../api/types";
 import { useAuth } from "../auth/AuthContext";
 import AuthCard from "../components/auth/AuthCard";
-import { AtSignIcon, CheckCircleIcon, ClockIcon, UserIcon } from "../components/ui/icons";
+import { AtSignIcon, ClockIcon, UserIcon } from "../components/ui/icons";
+import AllSetMark from "../components/ui/marks/AllSetMark";
 import { ButtonSpinner } from "../components/ui/Spinner";
 import { stash, take } from "../lib/authDocument";
 import { CheckingLink, FormError, IncompleteLink, LinkCheckFailed, messageOf, useFragmentToken } from "./authShared";
@@ -152,7 +153,7 @@ export default function ConfirmEmailPage() {
               <b>{state.email}</b> is now the email of your account.
             </>
           }
-          mark={{ icon: <CheckCircleIcon />, tone: "success" }}
+          mark={{ art: <AllSetMark /> }}
         >
           {continueAction}
         </AuthCard>

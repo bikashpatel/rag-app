@@ -51,6 +51,9 @@ describe("VerifyEmailPage", () => {
 
     expect(await screen.findByRole("heading", { name: "Finish creating your account" })).toBeInTheDocument();
     expect(screen.getByText("Your email is confirmed. Create your account to continue.")).toBeInTheDocument();
+    // The confirmed email heads the form, which stays a form.
+    expect(screen.getByRole("main")).not.toHaveClass("auth-result");
+    expect(document.querySelector(".auth-art svg.mark-all-set")).not.toBeNull();
     expect(screen.getByText("maya@example.com")).toBeInTheDocument();
     expect(screen.getByText("Confirmed by this link")).toBeInTheDocument();
     expect(screen.queryByLabelText("The password you chose")).not.toBeInTheDocument();
@@ -78,6 +81,7 @@ describe("VerifyEmailPage", () => {
     await openLink();
 
     expect(await screen.findByText("One last step: enter the password you chose when you signed up.")).toBeInTheDocument();
+    expect(document.querySelector(".mark")).toBeNull();
     const password = screen.getByLabelText("The password you chose");
     expect(password).toHaveAttribute("autocomplete", "current-password");
     expect(document.querySelector('input[autocomplete="username"]')).toHaveValue("maya@example.com");

@@ -18,6 +18,7 @@ import {
   PhoneIcon,
   TabletIcon,
 } from "../ui/icons";
+import SecurityMark from "../ui/marks/SecurityMark";
 import { ButtonSpinner } from "../ui/Spinner";
 import EmailSection from "./EmailSection";
 import NameSection from "./NameSection";
@@ -296,11 +297,14 @@ function AdminSections() {
         </p>
       </div>
       <div className="settings-group">
-        <h3>Password</h3>
-        <p className="settings-desc">
-          The admin password is set with <code>ADMIN_PASSWORD</code> in the server's <code>.env</code> file. Change it
-          there and restart the backend.
-        </p>
+        <div className="settings-group-head">
+          <SecurityMark size={36} />
+          <h3>Password</h3>
+          <p className="settings-desc">
+            The admin password is set with <code>ADMIN_PASSWORD</code> in the server's <code>.env</code> file. Change
+            it there and restart the backend.
+          </p>
+        </div>
       </div>
     </>
   );

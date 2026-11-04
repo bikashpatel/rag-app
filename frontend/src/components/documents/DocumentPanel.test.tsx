@@ -171,8 +171,14 @@ describe("DocumentPanel", () => {
   it("uploads chosen files to My documents and lists them once created", async () => {
     const { user, state, fileInput } = await setup();
     await screen.findByText("launch-plan.docx");
+    const dropzone = screen.getByRole("button", { name: /Drop files here or browse/ });
+    expect(dropzone.querySelector(".docs-dropzone-icon")).not.toBeNull();
+    expect(dropzone.querySelector(".mark-upload")).toBeNull();
     await user.upload(fileInput, makeFile("brief.pdf"));
 
+    // While it uploads, the drop zone's icon is the animated upload mark.
+    expect(dropzone.querySelector(".docs-dropzone-icon")).toBeNull();
+    expect(dropzone.querySelector("svg.mark-upload")).toHaveAttribute("aria-hidden", "true");
     const queue = screen.getByRole("list", { name: "Uploads" });
     expect(within(queue).getByText("Uploading 0%")).toBeInTheDocument();
     expect(uploads.map((upload) => [upload.file.name, upload.scope])).toEqual([["brief.pdf", "private"]]);
@@ -189,6 +195,7 @@ describe("DocumentPanel", () => {
 
     expect(await screen.findByText("brief.pdf uploaded. It can be searched once indexing finishes.")).toBeInTheDocument();
     expect(screen.queryByRole("list", { name: "Uploads" })).not.toBeInTheDocument();
+    expect(dropzone.querySelector(".mark-upload")).toBeNull();
     expect(screen.getByRole("region", { name: "My documents (3)" })).toHaveTextContent("Queued");
     await waitFor(() => expect(screen.getByRole("group", { name: "Your document quota" })).toHaveTextContent("5 / 100"));
   });
@@ -260,6 +267,7 @@ describe("DocumentPanel", () => {
   it("shows an empty state naming the supported types", async () => {
     await setup({ documents: [] });
     expect(await screen.findByText("No documents yet")).toBeInTheDocument();
+    expect(screen.getByText("No documents yet").previousElementSibling).toHaveClass("mark mark-documents");
     expect(
       screen.getByText(/^Upload PDF, DOCX, PPTX, XLSX, CSV, HTML, MD, TXT or JSON files and ask about them in chat\./),
     ).toBeInTheDocument();

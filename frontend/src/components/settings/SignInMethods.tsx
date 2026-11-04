@@ -4,6 +4,7 @@ import type { AccountInfo } from "../../api/types";
 import { formatDate } from "../../lib/format";
 import GoogleButton, { GoogleMark } from "../auth/GoogleButton";
 import { AlertCircleIcon, AlertIcon, CheckCircleIcon, ClockIcon, InfoIcon, KeyIcon } from "../ui/icons";
+import SecurityMark from "../ui/marks/SecurityMark";
 import PasswordInput from "../ui/PasswordInput";
 import { ButtonSpinner } from "../ui/Spinner";
 import PasswordForm from "./PasswordForm";
@@ -376,8 +377,11 @@ export default function SignInMethods({
   const headingId = useId();
   return (
     <div className="settings-group">
-      <h3 id={headingId}>Sign-in methods</h3>
-      <p className="settings-desc">Keep at least one way in that you can use.</p>
+      <div className="settings-group-head">
+        <SecurityMark size={36} />
+        <h3 id={headingId}>Sign-in methods</h3>
+        <p className="settings-desc">Keep at least one way in that you can use.</p>
+      </div>
       <ul className="settings-methods" aria-labelledby={headingId}>
         <PasswordRow
           account={account}

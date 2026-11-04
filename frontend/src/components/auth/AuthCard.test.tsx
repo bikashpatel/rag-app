@@ -1,6 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { AtSignIcon, ClockIcon, LinkBrokenIcon, MailCheckIcon } from "../ui/icons";
+import InboxMark from "../ui/marks/InboxMark";
+import SecurityMark from "../ui/marks/SecurityMark";
 import AuthCard from "./AuthCard";
 
 describe("AuthCard", () => {
@@ -68,6 +70,35 @@ describe("AuthCard", () => {
     expect(screen.getByText(/we've emailed it a link/)).toHaveClass("auth-text");
     expect(card).not.toHaveAttribute("aria-busy");
     expect(card.querySelector(".auth-links")).toBeNull();
+  });
+
+  it("lays out a result with an illustrated mark in place of the status icon", () => {
+    render(<AuthCard title="Check your email" lede="We've emailed you a link." mark={{ art: <InboxMark /> }} />);
+    const card = screen.getByRole("main");
+    expect(card).toHaveClass("auth-card auth-result");
+    expect(card.querySelector(".auth-mark")).toBeNull();
+    const art = card.querySelector(".auth-art");
+    expect(art).toHaveClass("auth-art auth-art-result");
+    expect(art).toHaveAttribute("aria-hidden", "true");
+    expect(art?.querySelector("svg.mark-inbox")).toHaveAttribute("aria-hidden", "true");
+    expect(art?.nextElementSibling).toBe(screen.getByRole("heading", { level: 1, name: "Check your email" }));
+    expect(screen.getByText("We've emailed you a link.")).toHaveClass("auth-text");
+  });
+
+  it("heads a form with its illustration, left-aligned over the title", () => {
+    render(
+      <AuthCard title="Choose a new password" lede="Saving it signs you out on every device." art={<SecurityMark />}>
+        <form className="auth-form" aria-label="Choose a new password" />
+      </AuthCard>,
+    );
+    const card = screen.getByRole("main");
+    expect(card).not.toHaveClass("auth-result");
+    const art = card.querySelector(".auth-art");
+    expect(art?.className).toBe("auth-art");
+    expect(art?.querySelector("svg.mark-security")).not.toBeNull();
+    expect(art?.nextElementSibling).toBe(screen.getByRole("heading", { level: 1, name: "Choose a new password" }));
+    expect(screen.getByText("Saving it signs you out on every device.")).toHaveClass("auth-lede");
+    expect(screen.getByRole("heading", { level: 1 })).toHaveFocus();
   });
 
   it("shows a spinner in a neutral mark while it checks a link", () => {

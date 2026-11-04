@@ -29,6 +29,8 @@ async function setup(
 const polls = (calls: FetchCall[]) => calls.filter((call) => call.path === `${ORDER}?refresh=true`).length;
 const advance = (ms: number) => act(() => vi.advanceTimersByTimeAsync(ms));
 const title = () => screen.getByRole("heading", { level: 1 });
+/** The result's illustration of that kind (ui/marks), if it shows one. */
+const markOf = (kind: string) => title().previousElementSibling?.querySelector(`svg.mark-${kind}`);
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"], shouldAdvanceTime: true });
@@ -44,6 +46,7 @@ describe("BillingReturnPage", () => {
     let order: OrderView = makeOrder();
     const { calls, user, view } = await setup(() => order);
     expect(title()).toHaveTextContent("Confirming your payment…");
+    expect(markOf("payment-check")).not.toBeNull();
     expect(screen.getByText("This usually takes a few seconds. You can keep this page open.")).toBeInTheDocument();
     expect(screen.getByText("Standard · ₹2,000")).toBeInTheDocument();
     expect(screen.getByRole("main")).toHaveAttribute("aria-live", "polite");
@@ -52,6 +55,7 @@ describe("BillingReturnPage", () => {
     await advance(3_000);
     expect(title()).toHaveTextContent("Payment received");
     expect(title()).toHaveFocus();
+    expect(markOf("all-set")).not.toBeNull();
     expect(screen.getByText(/^You're on/)).toHaveTextContent("You're on Standard until 19 Nov 2026.");
     const slip = document.querySelector(".plans-receipt") as HTMLElement;
     expect(slip).toHaveTextContent("PlanTest modeStandard, 1 day");
@@ -150,6 +154,7 @@ describe("BillingReturnPage", () => {
   it("asks not to pay again while a payment is being checked", async () => {
     await setup(makeOrder({ status: "review" }));
     expect(title()).toHaveTextContent("We're checking your payment");
+    expect(markOf("payment-check")).not.toBeNull();
     expect(screen.getByText(/Please don't pay again\./)).toBeInTheDocument();
   });
 

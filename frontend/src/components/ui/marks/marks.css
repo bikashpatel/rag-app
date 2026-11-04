@@ -1,0 +1,385 @@
+/* The animated marks (components/ui/marks): small decorative illustrations in the owner's neon robot style, each
+   with one gentle loop. mark- prefix. Their colours are the art's own, set on the SVG like the robot's pixels, so
+   they read the same in both themes and contrast modes. "Reduce motion" keeps them still. */
+.mark {
+  display: block;
+  flex: none;
+  overflow: visible;
+  user-select: none;
+  forced-color-adjust: none;
+}
+/* Every moving part turns and scales about its own centre. */
+.mark :where([class]) {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* ---------- The tile: it floats, each mark a little out of step with the others ---------- */
+.mark-float {
+  animation: mark-float 4.6s ease-in-out infinite;
+}
+.mark-upload .mark-float {
+  animation-delay: -1s;
+}
+.mark-plans .mark-float {
+  animation-delay: -2s;
+}
+.mark-upi-pay .mark-float {
+  animation-delay: -0.6s;
+}
+.mark-payment-check .mark-float {
+  animation-delay: -1.4s;
+}
+.mark-all-set .mark-float {
+  animation-delay: -2.4s;
+}
+.mark-inbox .mark-float {
+  animation-delay: -0.3s;
+}
+.mark-settings .mark-float {
+  animation-delay: -3s;
+}
+.mark-admin .mark-float {
+  animation-delay: -1.8s;
+}
+.mark-security .mark-float {
+  animation-delay: -0.9s;
+}
+
+/* ---------- The parts. A part's own transform is its pose when still. ---------- */
+.mark-documents-fan-left {
+  transform: rotate(-14deg) translateX(-2px);
+  animation: mark-fan-left 3.2s ease-in-out infinite;
+}
+.mark-documents-fan-right {
+  transform: rotate(14deg) translateX(2px);
+  animation: mark-fan-right 3.2s ease-in-out infinite;
+}
+.mark-documents-scan {
+  animation: mark-scan-x 2.6s ease-in-out infinite;
+}
+
+.mark-upload-arrow {
+  animation: mark-rise 2.2s ease-in-out infinite;
+}
+.mark-upload-spark-1 {
+  animation: mark-twinkle 2s infinite;
+}
+.mark-upload-spark-2 {
+  animation: mark-twinkle 2.4s -1.8s infinite;
+}
+.mark-upload-spark-3 {
+  animation: mark-twinkle 1.8s -0.7s infinite;
+}
+
+.mark-plans-shine {
+  transform: translateX(-60px) rotate(20deg);
+  animation: mark-shine 2.8s ease-in-out infinite;
+}
+.mark-plans-star-1 {
+  animation: mark-twinkle 2.2s infinite;
+}
+.mark-plans-star-2 {
+  animation: mark-twinkle 2.6s -1.8s infinite;
+}
+
+.mark-upi-pay-scan {
+  animation: mark-scan-y 2.4s ease-in-out infinite;
+}
+.mark-upi-pay-coin {
+  animation: mark-coin 2.8s ease-in-out infinite;
+}
+
+.mark-payment-check-ping {
+  animation: mark-ping 2.4s ease-out infinite;
+}
+.mark-payment-check-ring {
+  animation: mark-spin 3.5s linear infinite;
+}
+
+.mark-all-set-rays {
+  animation: mark-rays 2.8s ease-out infinite;
+}
+.mark-all-set-pop {
+  animation: mark-pop 2.8s ease-out infinite;
+}
+.mark-all-set-check {
+  animation: mark-draw 2.8s ease-out infinite;
+}
+
+.mark-inbox-letter {
+  animation: mark-letter 3s ease-in-out infinite;
+}
+.mark-inbox-plane {
+  animation: mark-plane 3s ease-in-out infinite;
+}
+
+.mark-settings-big {
+  animation: mark-spin 7s linear infinite;
+}
+.mark-settings-small {
+  animation: mark-spin-back 5s linear infinite;
+}
+
+.mark-admin-bar-1,
+.mark-admin-bar-2,
+.mark-admin-bar-3 {
+  transform-origin: bottom;
+}
+.mark-admin-bar-1 {
+  animation: mark-bar-1 2.6s ease-in-out infinite;
+}
+.mark-admin-bar-2 {
+  animation: mark-bar-2 2.6s ease-in-out infinite;
+}
+.mark-admin-bar-3 {
+  animation: mark-bar-3 2.6s ease-in-out infinite;
+}
+.mark-admin-trend {
+  animation: mark-dash 1.6s linear infinite;
+}
+.mark-admin-ping {
+  animation: mark-ping 1.8s ease-out infinite;
+}
+
+.mark-security-ping {
+  animation: mark-ping 2.6s ease-out infinite;
+}
+.mark-security-keyhole {
+  animation: mark-bob 3s ease-in-out infinite;
+}
+
+@keyframes mark-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+@keyframes mark-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes mark-spin-back {
+  to {
+    transform: rotate(-360deg);
+  }
+}
+@keyframes mark-scan-x {
+  0% {
+    transform: translateX(-34px);
+    opacity: 0;
+  }
+  15%,
+  85% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(34px);
+    opacity: 0;
+  }
+}
+@keyframes mark-scan-y {
+  0%,
+  100% {
+    transform: translateY(-20px);
+  }
+  50% {
+    transform: translateY(20px);
+  }
+}
+@keyframes mark-fan-left {
+  0%,
+  100% {
+    transform: rotate(-14deg) translateX(-2px);
+  }
+  50% {
+    transform: rotate(-20deg) translateX(-6px);
+  }
+}
+@keyframes mark-fan-right {
+  0%,
+  100% {
+    transform: rotate(14deg) translateX(2px);
+  }
+  50% {
+    transform: rotate(20deg) translateX(6px);
+  }
+}
+@keyframes mark-rise {
+  0% {
+    transform: translateY(10px);
+    opacity: 0;
+  }
+  25%,
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(-16px);
+    opacity: 0;
+  }
+}
+@keyframes mark-twinkle {
+  0%,
+  100% {
+    transform: scale(0.4);
+    opacity: 0.2;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+@keyframes mark-shine {
+  0% {
+    transform: translateX(-60px) rotate(20deg);
+  }
+  60%,
+  100% {
+    transform: translateX(60px) rotate(20deg);
+  }
+}
+@keyframes mark-draw {
+  0% {
+    stroke-dashoffset: 60;
+  }
+  35%,
+  80% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+@keyframes mark-pop {
+  0% {
+    transform: scale(0.6);
+    opacity: 0;
+  }
+  30% {
+    transform: scale(1.08);
+    opacity: 1;
+  }
+  45%,
+  80% {
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes mark-rays {
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  35% {
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.25);
+    opacity: 0;
+  }
+}
+@keyframes mark-letter {
+  0%,
+  15% {
+    transform: translateY(14px);
+  }
+  45%,
+  75% {
+    transform: translateY(-10px);
+  }
+  100% {
+    transform: translateY(14px);
+  }
+}
+@keyframes mark-plane {
+  0% {
+    transform: translate(-30px, 18px) rotate(-8deg);
+    opacity: 0;
+  }
+  20%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(30px, -22px) rotate(-8deg);
+    opacity: 0;
+  }
+}
+@keyframes mark-bar-1 {
+  0%,
+  100% {
+    transform: scaleY(0.45);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+@keyframes mark-bar-2 {
+  0%,
+  100% {
+    transform: scaleY(0.8);
+  }
+  50% {
+    transform: scaleY(0.5);
+  }
+}
+@keyframes mark-bar-3 {
+  0%,
+  100% {
+    transform: scaleY(0.6);
+  }
+  50% {
+    transform: scaleY(1.05);
+  }
+}
+@keyframes mark-ping {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.9;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+@keyframes mark-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-3deg);
+  }
+  50% {
+    transform: translateY(-3px) rotate(3deg);
+  }
+}
+@keyframes mark-coin {
+  0%,
+  100% {
+    transform: translateY(0) scaleX(1);
+  }
+  25%,
+  75% {
+    transform: translateY(-4px) scaleX(0.2);
+  }
+  50% {
+    transform: translateY(-6px) scaleX(1);
+  }
+}
+@keyframes mark-dash {
+  to {
+    stroke-dashoffset: -40;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mark * {
+    animation: none;
+  }
+}

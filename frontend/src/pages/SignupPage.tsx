@@ -9,7 +9,8 @@ import NameField from "../components/auth/NameField";
 import PasswordRules from "../components/auth/PasswordRules";
 import TermsCheck from "../components/auth/TermsCheck";
 import Turnstile, { TurnstileWait } from "../components/auth/Turnstile";
-import { AlertCircleIcon, CheckIcon, InfoIcon, MailCheckIcon, RefreshIcon } from "../components/ui/icons";
+import { AlertCircleIcon, CheckIcon, InfoIcon, RefreshIcon } from "../components/ui/icons";
+import InboxMark from "../components/ui/marks/InboxMark";
 import PasswordInput from "../components/ui/PasswordInput";
 import Spinner, { ButtonSpinner } from "../components/ui/Spinner";
 import { safeNextPath, take } from "../lib/authDocument";
@@ -574,9 +575,7 @@ export default function SignupPage() {
     compact = true;
     card = (
       <div className="auth-signup auth-signup-short">
-        <div className="auth-sent-mark" aria-hidden="true">
-          <MailCheckIcon size={26} />
-        </div>
+        <InboxMark className="auth-sent-mark" />
         <Title>Check your inbox</Title>
         <p className="auth-sent-text">
           We sent an email to <b>{record.address}</b>.

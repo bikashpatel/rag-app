@@ -67,6 +67,16 @@
   margin: 0 auto;
   padding: 32px 24px 56px;
 }
+/* The admin mark beside the title and its line. */
+.admin-heading {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 16px;
+}
+.admin-heading > .mark {
+  grid-row: span 2;
+}
 .admin-title {
   color: var(--text);
   font-family: var(--font-serif);
@@ -1050,6 +1060,14 @@
   }
   .admin-title {
     font-size: 28px;
+  }
+  .admin-heading {
+    align-items: start;
+    column-gap: 12px;
+  }
+  .admin-heading > .mark {
+    width: 40px;
+    height: 40px;
   }
   .admin-tiles,
   .admin-tiles-overview {

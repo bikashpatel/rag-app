@@ -17,6 +17,8 @@ import {
   InfoIcon,
   RefreshIcon,
 } from "../ui/icons";
+import PaymentCheckMark from "../ui/marks/PaymentCheckMark";
+import UpiPayMark from "../ui/marks/UpiPayMark";
 import { ButtonSpinner } from "../ui/Spinner";
 import { checkoutPath, istDayTime, istMoment } from "./planText";
 
@@ -375,12 +377,15 @@ function PendingPanel({ order, upi, context, onChange, titleRef }: PanelProps & 
 
   return (
     <>
-      <h1 className="plans-upi-title" ref={titleRef} tabIndex={-1}>
-        Pay {amount} by UPI
-      </h1>
-      <p className="plans-upi-sub">
-        {plan} · this request is open until {istDayTime(order.expires_at)} IST
-      </p>
+      <div className="plans-upi-head">
+        <UpiPayMark size={48} />
+        <h1 className="plans-upi-title" ref={titleRef} tabIndex={-1}>
+          Pay {amount} by UPI
+        </h1>
+        <p className="plans-upi-sub">
+          {plan} · this request is open until {istDayTime(order.expires_at)} IST
+        </p>
+      </div>
       <section className="plans-upi" aria-label="Pay by UPI">
         {phone ? (
           <div className="plans-upi-phone">
@@ -558,7 +563,7 @@ function SubmittedCard({ order, upi, context, onChange, titleRef }: PanelProps &
 
   return (
     <>
-      <ResultCard tone="info" mark={<ClockIcon size={32} />} title="We're checking your payment" titleRef={titleRef}>
+      <ResultCard tone="info" mark={<PaymentCheckMark />} title="We're checking your payment" titleRef={titleRef}>
         <p className="plans-result-text">
           We'll match your UTR with the {formatInr(order.amount_paise)} that reached <b>{upi.payee_name}</b>'s account.
           This usually takes a few hours during the day (Indian time). Your {order.plan.name} plan starts as soon as

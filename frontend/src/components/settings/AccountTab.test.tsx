@@ -71,6 +71,9 @@ describe("AccountTab", () => {
     await renderAccount();
     expect(screen.getAllByText("maya.chen").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Member").length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { level: 3, name: "Sign-in methods" }).previousElementSibling).toHaveClass(
+      "mark mark-security",
+    );
     expect(screen.getByText("Your account was created by the administrator")).toBeInTheDocument();
     expect(screen.getByText("Also works for sign-in")).toBeInTheDocument();
     expect(screen.getByText("No email")).toBeInTheDocument();
@@ -153,6 +156,9 @@ describe("AccountTab", () => {
     expect(screen.getByText("The administrator account is set in the server's settings")).toBeInTheDocument();
     expect(screen.getByText("The admin account is managed in .env.")).toBeInTheDocument();
     expect(screen.getByText("ADMIN_PASSWORD")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Password" }).previousElementSibling).toHaveClass(
+      "mark mark-security",
+    );
     expect(screen.queryByText("Also works for sign-in")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Change password…" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /email…/ })).not.toBeInTheDocument();

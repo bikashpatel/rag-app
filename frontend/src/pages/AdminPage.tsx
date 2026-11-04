@@ -23,6 +23,7 @@ import {
   UsersIcon,
   type IconProps,
 } from "../components/ui/icons";
+import AdminMark from "../components/ui/marks/AdminMark";
 import "../components/admin/admin.css";
 
 const TABS = [
@@ -92,6 +93,7 @@ export default function AdminPage() {
       <AdminHeader />
       <main className="admin-main">
         <div className="admin-heading">
+          <AdminMark size={44} />
           <h1 className="admin-title">Administration</h1>
           <p className="admin-lede">
             Accounts, plans and billing, models, usage, the document index, plugins and the system's health.

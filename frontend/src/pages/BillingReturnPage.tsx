@@ -10,15 +10,15 @@ import {
   AlertCircleIcon,
   ArrowRightIcon,
   ArrowUpRightIcon,
-  CheckIcon,
   ClockIcon,
   DownloadIcon,
   FlaskIcon,
   InfoIcon,
   MailIcon,
   RefreshIcon,
-  ShieldIcon,
 } from "../components/ui/icons";
+import AllSetMark from "../components/ui/marks/AllSetMark";
+import PaymentCheckMark from "../components/ui/marks/PaymentCheckMark";
 import { ButtonSpinner } from "../components/ui/Spinner";
 import { formatInr, formatIstDate, formatIstRange, isRazorpayUrl } from "../lib/billing";
 import { useOpenSettings } from "../lib/settingsLink";
@@ -272,7 +272,7 @@ export default function BillingReturnPage() {
   switch (phase) {
     case "paid": {
       tone = "success";
-      mark = <CheckIcon size={32} />;
+      mark = <AllSetMark />;
       title = "Payment received";
       const stacked =
         order?.period_start && order.paid_at && Date.parse(order.period_start) > Date.parse(order.paid_at) + 60_000;
@@ -367,7 +367,7 @@ export default function BillingReturnPage() {
       break;
     case "review":
       tone = "warning";
-      mark = <ShieldIcon size={32} />;
+      mark = <PaymentCheckMark />;
       title = "We're checking your payment";
       text =
         "We received a payment and are checking it. Your plan starts as soon as it's confirmed. Please don't pay again.";
@@ -447,7 +447,7 @@ export default function BillingReturnPage() {
       break;
     default:
       tone = "info";
-      mark = <span className="plans-result-spinner" />;
+      mark = <PaymentCheckMark />;
       title = "Confirming your payment…";
       text = "This usually takes a few seconds. You can keep this page open.";
       extra = (

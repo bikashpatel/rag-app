@@ -98,6 +98,9 @@
   padding-top: 0;
   border-top: 0;
 }
+.public-intro-mark {
+  margin: 0 auto 16px;
+}
 .public-title {
   color: var(--text);
   font-family: var(--font-serif);
@@ -296,6 +299,11 @@
   }
   .public-title {
     font-size: 34px;
+  }
+  .public-intro-mark {
+    width: 48px;
+    height: 48px;
+    margin-bottom: 12px;
   }
   .public-prose {
     font-size: 17px;

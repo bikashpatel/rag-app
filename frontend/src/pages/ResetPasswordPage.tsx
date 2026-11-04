@@ -6,6 +6,7 @@ import AuthCard from "../components/auth/AuthCard";
 import IdentityRow from "../components/auth/IdentityRow";
 import PasswordRules from "../components/auth/PasswordRules";
 import { AlertCircleIcon, CheckCircleIcon, ClockIcon } from "../components/ui/icons";
+import SecurityMark from "../components/ui/marks/SecurityMark";
 import PasswordInput from "../components/ui/PasswordInput";
 import { ButtonSpinner } from "../components/ui/Spinner";
 import {
@@ -153,6 +154,7 @@ export default function ResetPasswordPage() {
     <AuthCard
       title={info.has_password ? "Choose a new password" : "Set your password"}
       lede="Saving it signs you out on every device."
+      art={<SecurityMark size={56} />}
     >
       <form className="auth-form" onSubmit={onSubmit} noValidate aria-label="Choose a new password">
         <IdentityRow kind="user" primary={info.email} secondary={info.username} />

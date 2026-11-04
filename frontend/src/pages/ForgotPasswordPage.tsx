@@ -4,7 +4,8 @@ import { useAuthConfig } from "../auth/AuthContext";
 import AuthCard from "../components/auth/AuthCard";
 import EmailField from "../components/auth/EmailField";
 import Turnstile, { TurnstileWait } from "../components/auth/Turnstile";
-import { InfoIcon, MailCheckIcon } from "../components/ui/icons";
+import { InfoIcon } from "../components/ui/icons";
+import InboxMark from "../components/ui/marks/InboxMark";
 import { ButtonSpinner } from "../components/ui/Spinner";
 import { BackToSignIn, FormError, LinkCheckFailed, messageOf, useChallenge } from "./authShared";
 
@@ -52,7 +53,7 @@ export default function ForgotPasswordPage() {
             minutes.
           </>
         }
-        mark={{ icon: <MailCheckIcon />, tone: "accent" }}
+        mark={{ art: <InboxMark /> }}
         footer={<BackToSignIn />}
       >
         <div className="ui-notice" role="status">

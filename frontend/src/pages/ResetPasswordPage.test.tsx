@@ -44,7 +44,9 @@ describe("ResetPasswordPage", () => {
     const user = userEvent.setup();
     await openLink();
 
-    expect(await screen.findByRole("heading", { name: "Choose a new password" })).toBeInTheDocument();
+    const heading = await screen.findByRole("heading", { name: "Choose a new password" });
+    expect(heading.previousElementSibling).toHaveClass("auth-art");
+    expect(heading.previousElementSibling?.querySelector("svg.mark-security")).not.toBeNull();
     expect(window.location.hash).toBe("");
     expect(screen.getByText("Saving it signs you out on every device.")).toBeInTheDocument();
     expect(screen.getByText("user-k3m7q2xa")).toBeInTheDocument();

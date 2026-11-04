@@ -24,6 +24,9 @@
   gap: var(--space-2);
   padding: 2px 4px 18px 12px;
 }
+.settings-title-row > .mark {
+  margin-right: 4px;
+}
 .settings-title {
   flex: 1;
   min-width: 0;
@@ -227,6 +230,16 @@
   font-size: 16px;
   font-weight: 650;
   line-height: 1.35;
+}
+/* A group's heading and line beside its mark (Sign-in methods, Password). */
+.settings-group-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+}
+.settings-group-head > .mark {
+  grid-row: span 2;
 }
 .settings-desc {
   margin: 2px 0 0;
@@ -1316,6 +1329,10 @@
   }
   .settings-title {
     font-size: 22px;
+  }
+  .settings-title-row > .mark {
+    width: 30px;
+    height: 30px;
   }
   .settings-title-row .settings-close {
     display: inline-flex;

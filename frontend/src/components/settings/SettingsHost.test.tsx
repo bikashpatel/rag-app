@@ -54,6 +54,9 @@ describe("SettingsHost", () => {
   it("opens the tab named in the URL as a named dialog with the tab focused", async () => {
     await renderHost("/?settings=usage");
     const dialog = screen.getByRole("dialog", { name: "Settings" });
+    expect(within(dialog).getByRole("heading", { level: 1, name: "Settings" }).previousElementSibling).toHaveClass(
+      "mark mark-settings",
+    );
     const tab = within(dialog).getByRole("tab", { name: "Usage" });
     expect(tab).toHaveAttribute("aria-selected", "true");
     expect(tab).toHaveFocus();

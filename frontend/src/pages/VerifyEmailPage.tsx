@@ -5,6 +5,7 @@ import { useAuth } from "../auth/AuthContext";
 import AuthCard from "../components/auth/AuthCard";
 import IdentityRow from "../components/auth/IdentityRow";
 import { AlertCircleIcon, ClockIcon, InfoIcon, KeyIcon, UserIcon } from "../components/ui/icons";
+import AllSetMark from "../components/ui/marks/AllSetMark";
 import PasswordInput from "../components/ui/PasswordInput";
 import { ButtonSpinner } from "../components/ui/Spinner";
 import { leaveForApp, stash } from "../lib/authDocument";
@@ -188,6 +189,7 @@ export default function VerifyEmailPage() {
           ? "One last step: enter the password you chose when you signed up."
           : "Your email is confirmed. Create your account to continue."
       }
+      art={check.needs_password ? undefined : <AllSetMark size={56} />}
       footer={
         check.needs_password ? (
           <span className="auth-footer-line">

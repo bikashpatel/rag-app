@@ -277,6 +277,9 @@
   color: var(--text-2);
   box-shadow: var(--shadow-xs);
 }
+.docs-state-mark {
+  margin-bottom: 6px;
+}
 .docs-state-icon-danger {
   border-color: transparent;
   background: var(--danger-soft);
@@ -890,6 +893,10 @@
   .docs-footer {
     padding-right: 16px;
     padding-left: 16px;
+  }
+  .docs-state-mark {
+    width: 56px;
+    height: 56px;
   }
 }
 @media (pointer: coarse) {

@@ -65,6 +65,7 @@ describe("The direct-UPI order page", () => {
     const { calls } = await setup(makeUpiOrder());
     expect(title()).toHaveTextContent("Pay ₹2,000 by UPI");
     await waitFor(() => expect(title()).toHaveFocus());
+    expect(title().previousElementSibling).toHaveClass("mark mark-upi-pay");
     expect(screen.getByText(/this request is open until/)).toHaveTextContent(
       "Standard plan, 30 days · this request is open until 21 Oct, 14:58 IST",
     );
@@ -242,6 +243,8 @@ describe("The direct-UPI order page", () => {
     expect(calls.find((call) => call.path === `${ORDER}/utr`)?.body).toEqual({ utr: "630512345678" });
     const checking = await screen.findByRole("heading", { level: 1, name: "We're checking your payment" });
     await waitFor(() => expect(checking).toHaveFocus());
+    expect(checking.previousElementSibling).toHaveClass("plans-result-mark");
+    expect(checking.previousElementSibling?.querySelector("svg.mark-payment-check")).not.toBeNull();
     expect(screen.getByRole("main")).toHaveAttribute("aria-live", "polite");
     expect(screen.getByText(/We'll match your UTR/)).toHaveTextContent(
       "We'll match your UTR with the ₹2,000 that reached Asha Rao's account. This usually takes a few hours during the day (Indian time). Your Standard plan starts as soon as it's confirmed.",
@@ -393,6 +396,7 @@ describe("A direct-UPI payment waiting for the owner", () => {
     });
     await advance(30_000);
     expect(title()).toHaveTextContent("Payment received");
+    expect(title().previousElementSibling?.querySelector("svg.mark-all-set")).not.toBeNull();
     const slip = document.querySelector(".plans-receipt") as HTMLElement;
     expect(slip).toHaveTextContent("Paid withUPI (direct)");
     expect(screen.getByText("Your receipt is in Settings → Plan & billing.")).toBeInTheDocument();

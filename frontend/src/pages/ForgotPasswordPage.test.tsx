@@ -74,6 +74,7 @@ describe("ForgotPasswordPage", () => {
     await turnstile.solve("TOKEN-1");
 
     expect(await screen.findByRole("heading", { name: "Check your email" })).toBeInTheDocument();
+    expect(document.querySelector(".auth-art-result svg.mark-inbox")).not.toBeNull();
     expect(
       screen.getByText(/we've emailed it a link to reset the password. The link works for 30 minutes./),
     ).toHaveTextContent("If an account uses maya@example.com");

@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, type ReactNode } from "react";
 import type { DocumentItem, DocumentSelection } from "../../api/types";
-import { FileIcon } from "../ui/icons";
+import DocumentsMark from "../ui/marks/DocumentsMark";
 import DocumentRow from "./DocumentRow";
 import { isDocumentSelected, readyDocumentIds, toggleDocument } from "./selection";
 
@@ -110,9 +110,7 @@ function EmptyState({ canShare, supportedTypes }: { canShare: boolean; supported
     supportedTypes.length > 0 ? new Intl.ListFormat("en-GB", { type: "disjunction" }).format(supportedTypes) : null;
   return (
     <div className="docs-state">
-      <span className="docs-state-icon" aria-hidden="true">
-        <FileIcon size={24} />
-      </span>
+      <DocumentsMark size={64} className="docs-state-mark" />
       <p className="docs-state-title">No documents yet</p>
       <p className="docs-state-text">
         {types ? `Upload ${types} files` : "Upload files"} and ask about them in chat. Files you upload are private to

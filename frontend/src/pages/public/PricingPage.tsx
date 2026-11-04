@@ -5,6 +5,7 @@ import type { PublicPlan } from "../../api/types";
 import { useAuth, useAuthConfig } from "../../auth/AuthContext";
 import PlanCard, { PlanGridSkeleton } from "../../components/billing/PlanCard";
 import PlanCompareTable from "../../components/billing/PlanCompareTable";
+import PlansMark from "../../components/ui/marks/PlansMark";
 import { DraftBand, PageError, PolicyProse, usePageTitle, usePolicyDocument } from "./PolicyPage";
 import { usePublicSite } from "./PublicLayout";
 
@@ -42,6 +43,7 @@ export default function PricingPage() {
       {doc?.draft ? <DraftBand /> : null}
       <main className="public-main public-main-wide" id="main">
         <div className="public-intro">
+          <PlansMark size={56} className="public-intro-mark" />
           <h1 className="public-title">{doc?.title ?? "Pricing"}</h1>
           {doc?.updated ? <p className="public-updated">{doc.updated}</p> : null}
           {doc?.body ? <PolicyProse markdown={doc.body} /> : null}

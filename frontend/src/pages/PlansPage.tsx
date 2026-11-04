@@ -23,6 +23,7 @@ import {
   QrIcon,
   ShieldIcon,
 } from "../components/ui/icons";
+import PlansMark from "../components/ui/marks/PlansMark";
 import { formatIstDate } from "../lib/billing";
 import { useOpenSettings } from "../lib/settingsLink";
 import "./plans.css";
@@ -137,6 +138,7 @@ function Intro({ plan }: { plan: PlanAccess }) {
   }
   return (
     <div className="plans-intro">
+      <PlansMark size={56} className="plans-intro-mark" />
       <h1 className="plans-title">{title}</h1>
       <p className="plans-lede">{lede}</p>
       {badges.length > 0 ? <div className="plans-intro-meta">{badges}</div> : null}
