@@ -1,5 +1,6 @@
 import { memo, useCallback, useRef } from "react";
 import type { ConversationSummary } from "../../api/types";
+import BrandMark from "../ui/BrandMark";
 import ConversationItem from "./ConversationItem";
 import { CloseIcon, NewChatIcon, RetryIcon } from "./icons";
 import type { ConversationsState } from "./useConversations";
@@ -77,9 +78,7 @@ function ConversationSidebar({
     >
       <div className="chat-sidebar-header">
         <div className="ui-brand chat-brand">
-          <span className="ui-brand-mark" aria-hidden="true">
-            N
-          </span>
+          <BrandMark />
           <span className="ui-brand-name">AskNuvexusDoc</span>
         </div>
         {drawer ? (

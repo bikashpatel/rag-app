@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import BrandMark from "./BrandMark";
 import Spinner from "./Spinner";
 
 /** The boot spinner: centred on the page ground. */
@@ -25,9 +26,7 @@ export function FullPageMessage({ title, children, action }: FullPageMessageProp
   return (
     <div className="ui-fullpage">
       <div className="card ui-fullpage-card" role="alert">
-        <span className="ui-brand-mark" aria-hidden="true">
-          N
-        </span>
+        <BrandMark />
         <h1 className="ui-fullpage-title">{title}</h1>
         <div className="ui-fullpage-text">{children}</div>
         {action ? <div className="ui-fullpage-actions">{action}</div> : null}

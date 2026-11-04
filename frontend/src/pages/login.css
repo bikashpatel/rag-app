@@ -285,6 +285,14 @@
   margin-top: 1px;
   color: var(--text-3);
 }
+/* The brand leads the page: a bigger icon than in the app's top bars (auth-components.css too). */
+.login-page .ui-brand-mark {
+  width: 40px;
+  height: 40px;
+}
+.login-page .ui-brand-name {
+  font-size: 20px;
+}
 .login-credit {
   margin: 20px 0 0;
   color: var(--text-3);

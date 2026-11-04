@@ -335,6 +335,14 @@
 .auth-page-top .ui-brand {
   width: fit-content;
 }
+/* The front door's pages lead with the brand, so the icon gets more room than in the app's top bars (login.css too). */
+.auth-page-top .ui-brand-mark {
+  width: 40px;
+  height: 40px;
+}
+.auth-page-top .ui-brand-name {
+  font-size: 20px;
+}
 .auth-card {
   align-self: center;
   width: min(440px, 100%);

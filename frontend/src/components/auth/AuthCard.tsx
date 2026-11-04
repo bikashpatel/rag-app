@@ -1,4 +1,5 @@
 import { useEffect, useRef, type ReactNode } from "react";
+import BrandMark from "../ui/BrandMark";
 import "./auth-components.css";
 
 type Mark = { icon: ReactNode; tone: "accent" | "success" | "warning" | "neutral" } | "busy";
@@ -41,9 +42,7 @@ export default function AuthCard({
     <div className="auth-page">
       <header className="auth-page-top">
         <a className="ui-brand" href="/login" aria-label="AskNuvexusDoc, sign in">
-          <span className="ui-brand-mark" aria-hidden="true">
-            N
-          </span>
+          <BrandMark />
           <span className="ui-brand-name">AskNuvexusDoc</span>
         </a>
       </header>

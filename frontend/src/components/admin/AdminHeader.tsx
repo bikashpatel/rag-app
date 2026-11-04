@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { useOpenSettings } from "../../lib/settingsLink";
 import Avatar from "../ui/Avatar";
+import BrandMark from "../ui/BrandMark";
 import { AlertCircleIcon, ArrowLeftIcon, CloseIcon, LogoutIcon, SettingsIcon } from "../ui/icons";
 
 /**
@@ -30,9 +31,7 @@ export default function AdminHeader() {
     <header className="admin-topbar">
       <div className="admin-topbar-inner">
         <Link to="/" className="ui-brand admin-brand" aria-label="AskNuvexusDoc home">
-          <span className="ui-brand-mark" aria-hidden="true">
-            N
-          </span>
+          <BrandMark />
           <span className="ui-brand-name admin-brand-name">AskNuvexusDoc</span>
         </Link>
         <span className="badge badge-accent">Admin</span>

@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import PolicyLinks from "../../components/billing/PolicyLinks";
 import { useMediaQuery } from "../../components/chat/useMediaQuery";
+import BrandMark from "../../components/ui/BrandMark";
 import HeroArt from "./HeroArt";
 import { Deck, Headline, Pitch, Tagline } from "./LoginCopy";
 import ProductTour from "./ProductTour";
@@ -13,7 +14,7 @@ const PHONE_QUERY = "(max-width: 799.98px)";
 function Brand() {
   return (
     <span className="ui-brand" aria-hidden="true">
-      <span className="ui-brand-mark">N</span>
+      <BrandMark />
       <span className="ui-brand-name">AskNuvexusDoc</span>
     </span>
   );

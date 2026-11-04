@@ -4,6 +4,7 @@ import { publicApi } from "../../api/client";
 import type { PublicSite } from "../../api/types";
 import { useAuth, useAuthConfig } from "../../auth/AuthContext";
 import PolicyLinks from "../../components/billing/PolicyLinks";
+import BrandMark from "../../components/ui/BrandMark";
 import "./public.css";
 
 /** Before the business details load (or when they can't): the app's name only. */
@@ -57,9 +58,7 @@ export default function PublicLayout({ children }: { children: ReactNode }) {
         <header className="public-topbar">
           <div className="public-topbar-inner">
             <Link to="/pricing" className="ui-brand public-brand" aria-label={`${site.business_name}: pricing`}>
-              <span className="ui-brand-mark" aria-hidden="true">
-                N
-              </span>
+              <BrandMark />
               <span className="ui-brand-name public-brand-name">{site.business_name}</span>
             </Link>
             <span className="spacer" />

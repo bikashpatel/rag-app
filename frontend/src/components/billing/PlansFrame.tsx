@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../../auth/AuthContext";
 import { useOpenSettings } from "../../lib/settingsLink";
 import AvatarMenu from "../chat/AvatarMenu";
+import BrandMark from "../ui/BrandMark";
 import { AlertCircleIcon, ArrowLeftIcon, CloseIcon } from "../ui/icons";
 import "./billing.css";
 
@@ -45,9 +46,7 @@ export default function PlansFrame({ title, mainClassName, live = false, childre
       <header className="plans-topbar">
         <div className="plans-topbar-inner">
           <Link to={hasAccess ? "/" : "/plans"} className="ui-brand" aria-label={`${APP_TITLE} home`}>
-            <span className="ui-brand-mark" aria-hidden="true">
-              N
-            </span>
+            <BrandMark />
             <span className="ui-brand-name">{APP_TITLE}</span>
           </Link>
           <span className="spacer" />
