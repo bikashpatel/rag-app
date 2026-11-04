@@ -1,8 +1,9 @@
 import type { ComponentType } from "react";
 import type { DocumentSelection } from "../../api/types";
+import robot from "../../assets/brand/mark-192.webp";
 import { formatNumber } from "../../lib/format";
 import { useDocumentList } from "../documents/documentEvents";
-import { ArrowRightIcon, BookIcon, CalendarIcon, FileIcon, ImageIcon, QuoteIcon, SparkleIcon, type IconProps } from "../ui/icons";
+import { ArrowRightIcon, BookIcon, CalendarIcon, FileIcon, ImageIcon, QuoteIcon, type IconProps } from "../ui/icons";
 
 const FILE_PROMPT = "Create a PDF report summarizing my documents";
 const IMAGE_PROMPT = "Draw a watercolor illustration of a lighthouse at dawn";
@@ -61,7 +62,7 @@ export default function EmptyState({
   return (
     <div className="chat-empty">
       <div className="chat-empty-logo" aria-hidden="true">
-        <SparkleIcon size={24} />
+        <img src={robot} width={72} height={72} alt="" />
       </div>
       <h2 className="chat-empty-title">
         {name ? (

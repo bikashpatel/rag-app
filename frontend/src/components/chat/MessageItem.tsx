@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useId, useState } from "react";
 import type { AnswerSource } from "../../api/types";
+import robot from "../../assets/brand/mark-96.webp";
 import { formatNumber } from "../../lib/format";
 import { fileTypeTag, type TagTone } from "../documents/fileTypes";
 import {
@@ -11,7 +12,6 @@ import {
   FileIcon,
   MailIcon,
   RefreshIcon,
-  SparkleIcon,
 } from "../ui/icons";
 import GeneratedFileCard from "./GeneratedFileCard";
 import GeneratedImageCard from "./GeneratedImageCard";
@@ -117,10 +117,17 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
       </button>
     ) : null;
 
+  // Before the first words, and while no card shows its own progress: the dots, and the robot glows.
+  const waiting =
+    streaming &&
+    !content &&
+    !cards.some((card) => card.kind === "writing" || card.kind === "generating") &&
+    !pluginCards.some((card) => pluginCardBusy(card) && !card.stopped);
+
   return (
     <article className="chat-message-assistant" aria-label="Assistant" aria-busy={streaming}>
-      <div className="chat-avatar" aria-hidden="true">
-        <SparkleIcon size={16} />
+      <div className={waiting ? "chat-avatar chat-avatar-thinking" : "chat-avatar"} aria-hidden="true">
+        <img src={robot} width={30} height={30} alt="" />
       </div>
       <div className="chat-message-body">
         {content ? (
@@ -152,10 +159,7 @@ function AssistantMessage({ message, prompt, retryDisabled, onRetry }: MessageIt
         ) : null}
         {/* Below the cards, so they also cover the follow-up call after a file is created or fails. A card being written
             or generated shows its own spinner, and once text streams the cursor at its end takes over. */}
-        {streaming &&
-        !content &&
-        !cards.some((card) => card.kind === "writing" || card.kind === "generating") &&
-        !pluginCards.some((card) => pluginCardBusy(card) && !card.stopped) ? (
+        {waiting ? (
           <div className="chat-typing" aria-hidden="true">
             <span />
             <span />

@@ -35,6 +35,9 @@ describe("EmptyState", () => {
     const user = userEvent.setup();
     const { onPick } = renderEmpty();
     expect(screen.getByRole("heading", { name: /How can I help/ })).toHaveTextContent("How can I help, Maya?");
+    // The neon robot above the greeting is decorative.
+    expect(document.querySelector(".chat-empty-logo img")).toHaveAttribute("alt", "");
+    expect(document.querySelector(".chat-empty-logo")).toHaveAttribute("aria-hidden", "true");
     expect(within(screen.getByRole("list", { name: "Example questions" })).getAllByRole("button")).toHaveLength(3);
     await user.click(example("Which dates, deadlines or figures are mentioned\\?"));
     expect(onPick).toHaveBeenCalledWith("Which dates, deadlines or figures are mentioned?");

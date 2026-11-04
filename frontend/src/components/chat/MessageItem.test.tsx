@@ -124,6 +124,23 @@ describe("MessageItem for the assistant", () => {
     expect(article).not.toHaveTextContent("tokens");
   });
 
+  it("shows the robot as the assistant's avatar, glowing until the first words arrive", () => {
+    const view = (content: string, streaming = true) => (
+      <MessageItem message={threadMessage({ content, sources: [], streaming })} prompt="Q" retryDisabled={false} onRetry={vi.fn()} />
+    );
+    const { container, rerender } = render(view(""));
+    const avatar = container.querySelector(".chat-avatar");
+    expect(avatar).toHaveAttribute("aria-hidden", "true");
+    expect(avatar?.querySelector("img")).toHaveAttribute("alt", "");
+    expect(avatar).toHaveClass("chat-avatar-thinking");
+    expect(container.querySelector(".chat-typing")).not.toBeNull();
+    rerender(view("Revenue gr"));
+    expect(container.querySelector(".chat-avatar")).not.toHaveClass("chat-avatar-thinking");
+    expect(container.querySelector(".chat-typing")).toBeNull();
+    rerender(view("Revenue grew.", false));
+    expect(container.querySelector(".chat-avatar")).not.toHaveClass("chat-avatar-thinking");
+  });
+
   it("names the list of cards by what they are", () => {
     const file = { key: "d205", kind: "created", file: makeGeneratedFile(), alreadyExisted: false } as const;
     const image = {

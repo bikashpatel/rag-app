@@ -714,16 +714,21 @@
   align-items: start;
   gap: 16px;
 }
-/* The assistant's mark: a filled sparkle on the accent's soft fill. */
+/* The assistant's mark: the neon robot; it nods and glows while the answer is being prepared. */
 .chat-avatar {
-  display: grid;
-  place-items: center;
+  flex: none;
   width: 30px;
   height: 30px;
   margin-top: 3px;
-  border-radius: 50%;
-  background: var(--accent-soft);
-  color: var(--accent-ink);
+}
+.chat-avatar img {
+  display: block;
+  width: 30px;
+  height: 30px;
+  border-radius: 24%;
+}
+.chat-avatar-thinking img {
+  animation: chat-robot-think 1.6s var(--ease-in-out) infinite;
 }
 .chat-message-body {
   display: flex;
@@ -1015,6 +1020,17 @@
   display: inline-flex;
   gap: 5px;
   padding: 10px 2px;
+}
+@keyframes chat-robot-think {
+  0%,
+  100% {
+    transform: translateY(0) scale(1);
+    filter: drop-shadow(0 0 0 rgb(56 189 248 / 0));
+  }
+  50% {
+    transform: translateY(-2px) scale(1.05);
+    filter: drop-shadow(0 0 6px rgb(56 189 248 / 0.75));
+  }
 }
 .chat-typing span {
   width: 7px;
@@ -1638,15 +1654,51 @@
   padding: 24px 0 12px;
   text-align: center;
 }
+/* The owner's neon robot (2026-11-04): it floats and its glow breathes, in the icon's own blue and violet. */
 .chat-empty-logo {
-  display: grid;
-  place-items: center;
-  width: 52px;
-  height: 52px;
-  margin-bottom: 22px;
+  position: relative;
+  isolation: isolate;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 24px;
+  animation: chat-robot-float 4.8s var(--ease-in-out) infinite;
+}
+.chat-empty-logo::before {
+  content: "";
+  position: absolute;
+  inset: -14px;
+  z-index: -1;
   border-radius: 50%;
-  background: var(--accent-soft);
-  color: var(--accent-ink);
+  background: radial-gradient(closest-side, rgb(56 189 248 / 0.5), rgb(139 92 246 / 0.32) 62%, transparent);
+  filter: blur(8px);
+  animation: chat-robot-glow 3.2s var(--ease-in-out) infinite;
+}
+.chat-empty-logo img {
+  display: block;
+  width: 72px;
+  height: 72px;
+  border-radius: 24%;
+  box-shadow: 0 10px 24px rgb(79 70 229 / 0.28);
+}
+@keyframes chat-robot-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-7px);
+  }
+}
+@keyframes chat-robot-glow {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.95;
+    transform: scale(1.06);
+  }
 }
 .chat-empty-title {
   color: var(--text);
@@ -2441,7 +2493,10 @@ button.chat-scope:focus-visible {
   .chat-md-streaming > :last-child:not(ul, ol, .chat-code, .chat-md-table)::after,
   .chat-md-streaming > :is(ul, ol):last-child > li:last-child::after,
   .chat-md-streaming > .chat-code:last-child pre > code::after,
-  .chat-typing span {
+  .chat-typing span,
+  .chat-avatar-thinking img,
+  .chat-empty-logo,
+  .chat-empty-logo::before {
     animation: none;
   }
 }
