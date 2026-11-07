@@ -15,6 +15,10 @@ export function metaEvent(conversationId: number, title: string, userMessageId =
   };
 }
 
+export function titleEvent(conversationId: number, title: string): ChatStreamEvent {
+  return { event: "title", data: { conversation_id: conversationId, title } };
+}
+
 export function deltaEvent(content: string): ChatStreamEvent {
   return { event: "delta", data: { content } };
 }
@@ -24,7 +28,7 @@ export function doneEvent(assistantMessageId: number, usage: Partial<TokenUsage>
     event: "done",
     data: {
       assistant_message_id: assistantMessageId,
-      usage: { prompt_tokens: 1_200, completion_tokens: 180, total_tokens: 1_380, cost_usd: 0.0105, ...usage },
+      usage: { prompt_tokens: 1_200, completion_tokens: 180, total_tokens: 1_380, cost_usd: null, ...usage },
     },
   };
 }

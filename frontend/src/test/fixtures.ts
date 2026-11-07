@@ -131,7 +131,7 @@ export function makeMe(overrides: Partial<Me> = {}): Me {
       embedding_tokens: 40_000,
       vision_tokens: 0,
       images: 3,
-      cost_usd: 1.42,
+      cost_usd: null, // the admin's only
       monthly_token_limit: 2_000_000,
       chat_allowance_used: 120_000,
       window_start: "2026-10-01T00:00:00Z",
@@ -158,6 +158,7 @@ export function makeAdminMe(overrides: Partial<Me> = {}): Me {
       vision_monthly_token_limit: 0,
     }),
     plan: makePlanAccess({ state: "exempt", plan: null, complimentary: false, open_ended: false }),
+    usage: { ...makeMe().usage, cost_usd: 1.43 },
     ...overrides,
   });
 }
@@ -472,6 +473,7 @@ export function makeAccount(overrides: Partial<AccountInfo> = {}): AccountInfo {
   };
 }
 
+/** GET /me/usage as a user gets it: without costs, which only the admin's carries. */
 export function makeMyUsage(overrides: Partial<MyUsage> = {}): MyUsage {
   const days = ["2026-10-01", "2026-10-02", "2026-10-03"];
   return {
@@ -485,7 +487,7 @@ export function makeMyUsage(overrides: Partial<MyUsage> = {}): MyUsage {
     embedding_tokens: 40_000,
     requests: 37,
     rate_limit_per_min: 20,
-    cost_usd: { total: 1.42, chat: 1.2, embedding: 0.02, vision: 0, image: 0.2 },
+    cost_usd: null,
     documents: { count: 4, max_documents: 100, storage_bytes: 3_250_000, max_storage_mb: 500, max_upload_mb: 25 },
     daily: days.map((date, i) => ({
       date,
@@ -495,11 +497,31 @@ export function makeMyUsage(overrides: Partial<MyUsage> = {}): MyUsage {
       images: i,
       vision_tokens: 0,
       embedding_tokens: 10_000,
-      cost_usd: 0.4 + i * 0.1,
+      cost_usd: null,
     })),
+    by_model: [
+      { model_name: "Claude Opus 5.5", kind: "chat", tokens: 120_000, allowance_tokens: 120_000, requests: 37, cost_usd: null },
+      { model_name: "GPT Image", kind: "image", tokens: 0, allowance_tokens: 0, requests: 3, cost_usd: null },
+    ],
+    ...overrides,
+  };
+}
+
+/** GET /me/usage as the admin gets it: no limits, and the costs, with the app's title calls. */
+export function makeAdminMyUsage(overrides: Partial<MyUsage> = {}): MyUsage {
+  const usage = makeMyUsage();
+  return {
+    ...usage,
+    chat_allowance: { used: 120_000, limit: 0 },
+    images: { used: 3, limit: 0 },
+    vision_tokens: { used: 0, limit: 0 },
+    rate_limit_per_min: 0,
+    cost_usd: { total: 1.43, chat: 1.2, embedding: 0.02, vision: 0, image: 0.2, title: 0.01 },
+    daily: usage.daily.map((day, i) => ({ ...day, cost_usd: 0.4 + i * 0.1 })),
     by_model: [
       { model_name: "Claude Opus 5.5", kind: "chat", tokens: 120_000, allowance_tokens: 120_000, requests: 37, cost_usd: 1.2 },
       { model_name: "GPT Image", kind: "image", tokens: 0, allowance_tokens: 0, requests: 3, cost_usd: 0.2 },
+      { model_name: "Claude Haiku 5.5", kind: "title", tokens: 4_680, allowance_tokens: 0, requests: 30, cost_usd: 0.01 },
     ],
     ...overrides,
   };

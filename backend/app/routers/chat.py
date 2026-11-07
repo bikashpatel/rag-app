@@ -5,7 +5,7 @@ import json
 import logging
 import re
 from collections import defaultdict
-from collections.abc import AsyncGenerator, AsyncIterator, Mapping, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from typing import Annotated, Any
@@ -13,7 +13,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -36,7 +36,7 @@ from app.plugins.base import LoopEvent, PluginEvent, SideEffect, ToolRunner, too
 from app.plugins.intent import RequestCheck, earlier_user_messages, previous_reply
 from app.routers.conversations import get_owned_conversation
 from app.schemas import MAX_INT, AnswerSource, GeneratedFile, Source
-from app.services import document_tool, image_tool, llm, rag
+from app.services import document_tool, image_tool, llm, rag, titles
 from app.services.billing.entitlements import Entitlements
 from app.services.billing.money import allowance_tokens
 from app.services.model_registry import resolve_chat_model
@@ -53,7 +53,6 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-_TITLE_CHARS = 60
 # Embedding models reject over-long inputs; the tail is kept because it holds the new message.
 _MAX_QUERY_CHARS = 4000
 _STOPPED = "Stopped before completion"
@@ -133,6 +132,7 @@ class _Turn:
     plugin_plan: registry.PluginChatPlan = field(default_factory=registry.PluginChatPlan)
     plugin_notes: dict[int, str] = field(default_factory=dict)  # message id -> the plugins' App note
     history_tainted: bool = False  # an answer of the conversation saw untrusted text (email, plugin output)
+    created: bool = False  # the turn started the conversation: `title` is its placeholder until one is generated
 
 
 @dataclass
@@ -162,6 +162,8 @@ _pending_saves: set[asyncio.Task[int | None]] = set()
 _open_streams: set[asyncio.Future[None]] = set()
 # Strong references to the tasks that produce answers (see _sse_with_keepalive).
 _answer_tasks: set[asyncio.Task[None]] = set()
+# Strong references to the tasks that title new conversations (see _retitle).
+_title_tasks: set[asyncio.Task[None]] = set()
 
 
 def _event(name: str, data: dict[str, Any]) -> str:
@@ -177,11 +179,6 @@ def _loop_event(event: LoopEvent) -> str:
 
 def _sources_data(sources: Sequence[AnswerSource]) -> dict[str, Any]:
     return {"sources": [source.model_dump(mode="json") for source in sources]}
-
-
-def _title_for(message: str) -> str:
-    title = " ".join(message.split())
-    return title if len(title) <= _TITLE_CHARS else title[:_TITLE_CHARS] + "…"
 
 
 def _retrieval_query(history: list[Message], message: str) -> str:
@@ -311,11 +308,11 @@ async def _save_answer_shielded(turn: _Turn, answer: _Answer) -> int | None:
 
 async def drain_answers(timeout: float = 10.0) -> None:
     """On shutdown, give the answer streams uvicorn cancelled (after its graceful timeout) up to `timeout` seconds to
-    store their partial answers and usage, and running image jobs to store their images, before the database and
-    Redis connections close."""
+    store their partial answers and usage, running image jobs to store their images, and title calls their titles,
+    before the database and Redis connections close."""
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
-    while pending := _open_streams | _pending_saves | image_tool.running_jobs():
+    while pending := _open_streams | _pending_saves | image_tool.running_jobs() | _title_tasks:
         remaining = deadline - loop.time()
         if remaining <= 0:
             logger.warning("Shutting down with %d answer(s) not saved", len(pending))
@@ -377,7 +374,7 @@ async def _stream_answer(turn: _Turn) -> AsyncIterator[str]:
                         "prompt_tokens": usage.prompt_tokens,
                         "completion_tokens": usage.completion_tokens,
                         "total_tokens": usage.total_tokens,
-                        "cost_usd": usage.cost_usd,
+                        "cost_usd": usage.cost_usd if turn.user.is_admin else None,
                     },
                 },
             )
@@ -401,7 +398,7 @@ async def _generate(turn: _Turn, retrieval: rag.RetrievalResult, answer: _Answer
         user_message=turn.message,
         sources=SourceRegistry(retrieval.sources),
         cards=CardSink(),
-        taint=Taint(bool(retrieval.imported)),
+        taint=Taint(retrieval.untrusted_text),
         request_check=RequestCheck(
             turn.model,
             latest=turn.message,
@@ -683,6 +680,11 @@ async def _sse_with_keepalive(turn: _Turn) -> AsyncIterator[str]:
     producer = asyncio.create_task(_produce(_stream_answer(turn), queue))
     _answer_tasks.add(producer)
     producer.add_done_callback(_answer_task_done)
+    if turn.created and settings.chat_titles:
+        # Started after the producer, whose first step queues `meta`, so the title event never comes before it.
+        titling = asyncio.create_task(_retitle(turn, queue.put_nowait))
+        _title_tasks.add(titling)
+        titling.add_done_callback(_title_tasks.discard)
     refreshed = loop.time()
     try:
         while True:
@@ -699,6 +701,44 @@ async def _sse_with_keepalive(turn: _Turn) -> AsyncIterator[str]:
                 await refresh_chat_slot(turn.user.id, turn.slot)
     finally:
         producer.cancel()  # a no-op once it finished; otherwise this is Stop
+
+
+async def _retitle(turn: _Turn, emit: Callable[[str], None]) -> None:
+    """Title the conversation the turn started (services/titles.py), beside its answer: record the call's usage as a
+    `title` event, store the title while the conversation still has its placeholder (a rename meanwhile wins), then
+    `emit` the `title` event, which reaches the client while the answer still streams. A failed or late call keeps the
+    placeholder; nothing here touches the answer."""
+    try:
+        async with asyncio.timeout(titles.TIMEOUT_SECONDS):
+            async with SessionLocal() as db:
+                model = await titles.pick_model(db, turn.model)
+                names = await titles.document_names(db, turn.user.id, turn.document_ids)
+            title, usage = await titles.generate(model, turn.message, names)
+        async with SessionLocal() as db:
+            if usage.total_tokens > 0:
+                kept = model if await _existing_model_id(db, model.id) is not None else None
+                await record_usage(
+                    db, user_id=turn.user.id, model=kept, model_name=model.litellm_model, kind="title", usage=usage
+                )
+            if title is None or title == turn.title:
+                return
+            stored = await db.execute(
+                update(Conversation)
+                .where(Conversation.id == turn.conversation_id, Conversation.title == turn.title)
+                .values(title=title)
+            )
+            await db.commit()
+    except TimeoutError:
+        logger.warning("Titling conversation %s took over %s s", turn.conversation_id, titles.TIMEOUT_SECONDS)
+        return
+    except llm.LLMError as exc:
+        logger.warning("Could not title conversation %s: %s", turn.conversation_id, exc)
+        return
+    except Exception:
+        logger.exception("Could not title conversation %s", turn.conversation_id)
+        return
+    if stored.rowcount:  # type: ignore[attr-defined]
+        emit(_event("title", {"conversation_id": turn.conversation_id, "title": title}))
 
 
 @router.post("/stream")
@@ -728,7 +768,7 @@ async def _start_turn(
 
     history: list[Message] = []
     if body.conversation_id is None:
-        conversation = Conversation(user_id=user.id, title=_title_for(body.message))
+        conversation = Conversation(user_id=user.id, title=titles.placeholder(body.message))
         db.add(conversation)
         await db.flush()
     else:
@@ -774,6 +814,7 @@ async def _start_turn(
         plugin_plan=plugin_plan,
         plugin_notes=plugin_notes,
         history_tainted=history_tainted,
+        created=body.conversation_id is None,
     )
     return StreamingResponse(_sse_with_keepalive(turn), media_type="text/event-stream", headers=_SSE_HEADERS)
 

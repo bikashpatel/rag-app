@@ -1,21 +1,23 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { makeMyUsage } from "../../test/fixtures";
+import { makeAdminMyUsage, makeMyUsage } from "../../test/fixtures";
 import DailyUsageChart from "./DailyUsageChart";
 
-const usage = makeMyUsage();
+const usage = makeAdminMyUsage();
 
-function renderChart() {
+/** The admin's chart, with costs; `costs` false renders a user's days, which carry none. */
+function renderChart(costs = true) {
   render(
     <DailyUsageChart
       start={usage.period_start}
       end={usage.resets_at}
-      daily={usage.daily}
+      daily={costs ? usage.daily : makeMyUsage().daily}
       rateLimitPerMin={20}
       windowLabel="October 2026"
       windowWord="this period"
       resetText="Resets 1 Nov, 00:00 UTC"
+      costs={costs}
     />,
   );
   return screen.getByRole("group", { name: /per day, October 2026/ });
@@ -40,6 +42,7 @@ describe("DailyUsageChart", () => {
         windowLabel="6 Nov to 6 Dec 2026"
         windowWord="this period"
         resetText="Starts again 7 Dec"
+        costs
       />,
     );
     expect(screen.getByRole("group", { name: /^Chat tokens per day, 6 Nov to 6 Dec 2026: / })).toBeInTheDocument();
@@ -51,8 +54,11 @@ describe("DailyUsageChart", () => {
     expect(screen.getByText("No request limit")).toBeInTheDocument();
   });
 
-  it("says when nothing was used yet this period", () => {
-    const empty = usage.daily.map((day) => ({ ...day, chat_tokens: 0, chat_allowance: 0, images: 0, cost_usd: 0, requests: 0 }));
+  it.each([
+    ["the admin's", 0, true],
+    ["a user's", null, false],
+  ])("says when nothing was used yet this period (%s days)", (_, cost, costs) => {
+    const empty = usage.daily.map((day) => ({ ...day, chat_tokens: 0, chat_allowance: 0, images: 0, cost_usd: cost, requests: 0 }));
     render(
       <DailyUsageChart
         start={usage.period_start}
@@ -62,6 +68,7 @@ describe("DailyUsageChart", () => {
         windowLabel="October 2026"
         windowWord="this period"
         resetText="Resets 1 Nov, 00:00 UTC"
+        costs={costs}
       />,
     );
     expect(screen.getByText("No usage yet this period.")).toBeInTheDocument();
@@ -97,5 +104,24 @@ describe("DailyUsageChart", () => {
     expect(screen.getByText(/1 October · 40,000 chat tokens · 0 images · \$0\.40/, { selector: "[aria-live]" })).toBeInTheDocument();
     await user.keyboard("{End}{ArrowRight}");
     expect(screen.getByText(/3 October · 120,000 chat tokens · 2 images · \$0\.60/, { selector: "[aria-live]" })).toBeInTheDocument();
+  });
+
+  it("leaves the cost out for a user: no Cost metric, readout or table column", async () => {
+    const user = userEvent.setup();
+    const plot = renderChart(false);
+    expect(screen.getAllByRole("radio")).toHaveLength(2);
+    expect(screen.getByRole("radio", { name: "Images" })).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "Cost" })).not.toBeInTheDocument();
+    const readout = document.querySelector(".settings-chart-readout");
+    expect(readout).toHaveTextContent(/3 October · 120,000 chat tokens · 2 images$/);
+    await user.tab();
+    await user.tab();
+    expect(plot).toHaveFocus();
+    await user.keyboard("{ArrowLeft}");
+    expect(screen.getByText(/ 2 October · 80,000 chat tokens · 1 image$/, { selector: "[aria-live]" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Show as table" }));
+    const table = screen.getByRole("table", { name: /^Usage per day/ });
+    expect(screen.getAllByRole("columnheader").map((header) => header.textContent)).not.toContain("Cost");
+    expect(table).not.toHaveTextContent("$");
   });
 });

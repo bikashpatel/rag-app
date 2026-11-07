@@ -11,6 +11,8 @@ export type ConversationsState = {
   remove: (id: number) => Promise<void>;
   /** Move a conversation to the top (inserting it if new) after it received a message. null keeps the title. */
   touch: (id: number, title: string | null) => void;
+  /** A conversation's generated title: replaced where it is listed, without moving it. */
+  retitle: (id: number, title: string) => void;
   /**
    * Every conversation was deleted (Settings → Delete all chats): empty the list and remember the ids as deleted, so a
    * late `touch` can't bring one back. Until the next load, a conversation the list doesn't know is checked with the
@@ -91,6 +93,10 @@ export function useConversations(): ConversationsState {
     [load],
   );
 
+  const retitle = useCallback((id: number, title: string) => {
+    setConversations((list) => list && list.map((item) => (item.id === id ? { ...item, title } : item)));
+  }, []);
+
   const clearAll = useCallback(() => {
     latestRequest.current += 1; // a list already on its way predates the deletion
     listRef.current?.forEach((item) => deletedIds.current.add(item.id));
@@ -99,7 +105,7 @@ export function useConversations(): ConversationsState {
   }, []);
 
   return useMemo(
-    () => ({ conversations, error, reload, rename, remove, touch, clearAll }),
-    [conversations, error, reload, rename, remove, touch, clearAll],
+    () => ({ conversations, error, reload, rename, remove, touch, retitle, clearAll }),
+    [conversations, error, reload, rename, remove, touch, retitle, clearAll],
   );
 }

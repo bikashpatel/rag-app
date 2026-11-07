@@ -563,7 +563,7 @@ async def test_vision_usage_is_one_event_for_the_owner_outside_the_chat_budget(
     assert len(await events("embedding")) == 1
     me = (await bob.get("/api/auth/me")).json()
     assert (me["usage"]["vision_tokens"], me["usage"]["chat_tokens"]) == (3400, 0)
-    assert me["usage"]["cost_usd"] == pytest.approx(0.01 + (await events("embedding"))[0].cost_usd, abs=1e-6)
+    assert me["usage"]["cost_usd"] is None  # the admin's only
     response, _ = await chat(bob, "What is the invoice total?")
     assert response.status_code == 200  # 3400 vision tokens, but a 1000-token chat budget
 

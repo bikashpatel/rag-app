@@ -145,6 +145,23 @@ async def test_reading_drops_hidden_html_and_defuses_tags(gmail, alice, fake_llm
     assert tags["content"].count("</email>") == 1
 
 
+async def test_emails_that_look_like_instructions_carry_a_warning(gmail, alice, fake_llm) -> None:  # noqa: F811
+    injection = gmail.message("injection").id
+    script(
+        fake_llm,
+        ("gmail_search", {"query": "is:unread"}),
+        ("gmail_read_message", {"message_ids": [injection, gmail.message("invoice").id]}),
+        "Done.",
+    )
+    await chat(alice, "Summarize my unread email")
+    search, read = results(fake_llm)
+    # The newsletter's snippet, like Gmail's, holds the text its HTML hides.
+    flagged = [entry["message_id"] for entry in search["messages"] if entry.get("warning") == tools.WARNING]
+    assert flagged == [injection, gmail.message("html_only").id]
+    assert [entry.get("warning") for entry in read["messages"]] == [tools.WARNING, None]
+    assert INJECTION in read["messages"][0]["content"]  # labelled, never dropped
+
+
 async def test_large_body_parts_are_not_read_in_chat(gmail, alice, fake_llm) -> None:  # noqa: F811
     script(fake_llm, ("gmail_read_message", {"message_ids": [gmail.message("long_body").id]}), "Done.")
     await chat(alice, "Read the long report")

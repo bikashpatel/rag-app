@@ -241,7 +241,8 @@ def usage_window(ent: Entitlements, now: datetime | None = None) -> tuple[dateti
 
 
 async def usage_summary(db: AsyncSession, user: User, ent: Entitlements) -> UsageSummary:
-    """The user's usage in the window (usage_window): what Me.usage and the export report."""
+    """The user's usage in the window (usage_window): what Me.usage and the export report. Only the admin gets the
+    cost."""
     start, end = usage_window(ent)
     rows = await db.execute(
         select(
@@ -269,7 +270,7 @@ async def usage_summary(db: AsyncSession, user: User, ent: Entitlements) -> Usag
         embedding_tokens=tokens.get("embedding", 0),
         vision_tokens=tokens.get("vision", 0),
         images=events.get("image", 0),
-        cost_usd=round(cost, 6),
+        cost_usd=round(cost, 6) if user.is_admin else None,
         monthly_token_limit=ent.limits.monthly_token_limit,
         chat_allowance_used=allowance,
         window_start=start,

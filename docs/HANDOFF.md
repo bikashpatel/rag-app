@@ -26,7 +26,11 @@ Settings, Admin, security) were added in `8034cec`; all three were deployed fron
 `20261104T145630Z-manual` before the last; e2e against the live stack: 79 passed, 1 skipped). Later that day the
 owner's N logo (golden orbit, star) replaced the robot beside the name and as the favicon, its star glinting on the
 sign-in pages, and a new chat's empty box types example questions (`ComposerExamples`; plain under "reduce motion");
-the robot stays as the chat's assistant. Sign-up is open (email
+the robot stays as the chat's assistant. On 2026-11-07: prompt-injection hardening (`services/untrusted.py`: per-prompt
+random passage boundaries, hidden-character stripping, an instruction-like-text detector that labels passages, a priority
+rule in the system prompt, forged "App note:" defused, link hosts shown in answers), generated chat titles (`services/
+titles.py`, `CHAT_TITLES`, the `title` SSE event, `title` usage that counts toward no limit) and costs shown to the admin
+only (null for other users in `Me.usage`, `/me/usage` and the `done` event). Sign-up is open (email
 and password; Google sign-in not set up). `SPEC.md` is the binding contract; `README.md`
 has setup, commands, the test suites, operations (section 8), plans and billing (section 9), sign-up and email (section
 10), the architecture and how to use the app.

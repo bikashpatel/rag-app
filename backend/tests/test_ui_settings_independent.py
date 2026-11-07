@@ -1133,19 +1133,13 @@ async def test_usage_counts_only_this_utc_months_events_of_the_caller(
     assert usage["images"]["used"] == 1
     assert usage["vision_tokens"]["used"] == 1700
     assert usage["embedding_tokens"] == 30
-    assert usage["cost_usd"] == {
-        "total": round(0.001 + 0.0005 + 0.02 + 0.0000006 + 0.006, 6),
-        "chat": 0.0015,
-        "embedding": round(0.0000006, 6),
-        "vision": 0.02,
-        "image": 0.006,
-    }
+    assert usage["cost_usd"] is None  # the admin's only
     days = {entry["date"]: entry for entry in usage["daily"]}
     assert list(days) == [f"2026-10-{n:02d}" for n in range(1, 19)]
     assert (days["2026-10-01"]["chat_tokens"], days["2026-10-01"]["requests"]) == (180, 2)
     assert (days["2026-10-02"]["chat_tokens"], days["2026-10-02"]["requests"]) == (7, 1)
     assert (days["2026-10-05"]["vision_tokens"], days["2026-10-05"]["embedding_tokens"]) == (1700, 30)
-    assert days["2026-10-18"]["images"] == 1 and days["2026-10-18"]["cost_usd"] == 0.006
+    assert days["2026-10-18"]["images"] == 1 and days["2026-10-18"]["cost_usd"] is None
     assert days["2026-10-03"] == {
         "date": "2026-10-03",
         "chat_allowance": 0,
@@ -1154,24 +1148,23 @@ async def test_usage_counts_only_this_utc_months_events_of_the_caller(
         "images": 0,
         "vision_tokens": 0,
         "embedding_tokens": 0,
-        "cost_usd": 0.0,
+        "cost_usd": None,
     }
     assert sum(entry["chat_tokens"] for entry in usage["daily"]) == usage["chat_tokens"]
-    assert round(sum(entry["cost_usd"] for entry in usage["daily"]), 6) == usage["cost_usd"]["total"]
-    # The rows were written without allowance tokens (an answer's are in test_usage_allowance.py)
+    # The rows were written without allowance tokens (an answer's are in test_usage_allowance.py); still by cost
     rows = [{key: value for key, value in row.items() if key != "allowance_tokens"} for row in usage["by_model"]]
     assert rows == [
-        {"model_name": "Claude Sonnet 5.5", "kind": "vision", "tokens": 1700, "requests": 1, "cost_usd": 0.02},
-        {"model_name": "GPT Image 2", "kind": "image", "tokens": 322, "requests": 1, "cost_usd": 0.006},
-        {"model_name": "Claude Haiku 5.5", "kind": "chat", "tokens": 180, "requests": 2, "cost_usd": 0.0015},
+        {"model_name": "Claude Sonnet 5.5", "kind": "vision", "tokens": 1700, "requests": 1, "cost_usd": None},
+        {"model_name": "GPT Image 2", "kind": "image", "tokens": 322, "requests": 1, "cost_usd": None},
+        {"model_name": "Claude Haiku 5.5", "kind": "chat", "tokens": 180, "requests": 2, "cost_usd": None},
         {
             "model_name": "OpenAI text-embedding-3-small",
             "kind": "embedding",
             "tokens": 30,
             "requests": 1,
-            "cost_usd": 0.000001,
+            "cost_usd": None,
         },
-        {"model_name": "Claude Sonnet 5.5", "kind": "chat", "tokens": 7, "requests": 1, "cost_usd": 0.0},
+        {"model_name": "Claude Sonnet 5.5", "kind": "chat", "tokens": 7, "requests": 1, "cost_usd": None},
     ]
     assert {entry["allowance_tokens"] for entry in usage["by_model"]} == {0}
 
@@ -1322,9 +1315,9 @@ async def test_usage_after_a_real_answer_matches_the_events_and_auth_me(create_u
     assert usage["chat_allowance"]["used"] == me["chat_allowance_used"] == allowance == 84
     assert usage["requests"] == len(chats) == 1
     assert usage["images"]["used"] == me["images"] == 0
-    assert usage["cost_usd"]["total"] == round(me["cost_usd"], 6)
+    assert usage["cost_usd"] is None and me["cost_usd"] is None  # the admin's only
     # Claude Opus 5.5 is seeded at $4 / $20 per million prompt / completion tokens: 42 and 5 tokens.
-    assert usage["cost_usd"]["chat"] == round(42 * 4 / 1e6 + 5 * 20 / 1e6, 6)
+    assert sum(event.cost_usd for event in chats) == pytest.approx(42 * 4 / 1e6 + 5 * 20 / 1e6)
     [model] = usage["by_model"]
     assert (model["model_name"], model["kind"], model["requests"]) == ("Claude Opus 5.5", "chat", 1)
     today = datetime.now(UTC).date().isoformat()

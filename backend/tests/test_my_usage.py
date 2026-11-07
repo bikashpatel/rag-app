@@ -82,7 +82,7 @@ async def test_an_empty_month(create_user: CreateUser) -> None:
     assert usage["images"] == {"used": 0, "limit": 6}
     assert usage["vision_tokens"] == {"used": 0, "limit": 1_000_000}  # Professional's
     assert (usage["embedding_tokens"], usage["requests"], usage["rate_limit_per_min"]) == (0, 0, 7)
-    assert usage["cost_usd"] == {"total": 0.0, "chat": 0.0, "embedding": 0.0, "vision": 0.0, "image": 0.0}
+    assert usage["cost_usd"] is None  # the admin's only
     assert [entry["date"] for entry in usage["daily"]] == [f"2026-10-{n:02d}" for n in range(1, 19)]
     assert all(
         entry
@@ -94,15 +94,21 @@ async def test_an_empty_month(create_user: CreateUser) -> None:
             "images": 0,
             "vision_tokens": 0,
             "embedding_tokens": 0,
-            "cost_usd": 0.0,
+            "cost_usd": None,
         }
         for entry in usage["daily"]
     )
     assert usage["by_model"] == []
 
 
-async def test_sums_counts_and_costs_per_kind_day_and_model(create_user: CreateUser) -> None:
-    alice, bob = await create_user("alice"), await create_user("bob")
+@pytest.mark.parametrize("role", ["user", "admin"])
+async def test_sums_counts_and_costs_per_kind_day_and_model(
+    create_user: CreateUser, admin_client: ApiClient, role: str
+) -> None:
+    """Costs and title calls (the app's cost of naming conversations) only for the admin; the order is by cost for
+    everyone."""
+    alice = admin_client if role == "admin" else await create_user("alice")
+    bob = await create_user("bob")
     nepal = timezone(timedelta(hours=5, minutes=45))
     await add_events(
         event(alice.user_id, "chat", day(2), prompt=100, completion=20, cost=0.25, allowance=78_125),
@@ -131,6 +137,7 @@ async def test_sums_counts_and_costs_per_kind_day_and_model(create_user: CreateU
         event(alice.user_id, "image", day(9), prompt=30, completion=1000, cost=0.04, model="openai/gpt-image-2"),
         event(alice.user_id, "image", day(18, 1), cost=0.04, model="openai/gpt-image-2"),
         event(alice.user_id, "chat", day(18, 2), prompt=5, completion=5, cost=1.5, allowance=1, model="custom/gone"),
+        event(alice.user_id, "title", day(9), prompt=150, completion=6, cost=0.03),
         # Not this month, or not alice's
         event(alice.user_id, "chat", datetime(2026, 9, 30, 23, 59, tzinfo=UTC), prompt=9000, cost=9.0, allowance=9),
         event(bob.user_id, "chat", day(2), prompt=7000, cost=7.0, allowance=7),
@@ -142,13 +149,19 @@ async def test_sums_counts_and_costs_per_kind_day_and_model(create_user: CreateU
     assert usage["chat_allowance"]["used"] == 78_125 + 156_250 + 2 + 1
     assert (usage["requests"], usage["images"]["used"], usage["vision_tokens"]["used"]) == (4, 2, 3000)
     assert usage["embedding_tokens"] == 400
-    assert usage["cost_usd"] == {
-        "total": pytest.approx(2.36),
-        "chat": pytest.approx(2.25),
-        "embedding": pytest.approx(0.01),
-        "vision": pytest.approx(0.02),
-        "image": pytest.approx(0.08),
-    }
+    admin = role == "admin"
+    assert usage["cost_usd"] == (
+        {
+            "total": pytest.approx(2.39),
+            "chat": pytest.approx(2.25),
+            "embedding": pytest.approx(0.01),
+            "vision": pytest.approx(0.02),
+            "image": pytest.approx(0.08),
+            "title": pytest.approx(0.03),
+        }
+        if admin
+        else None
+    )
     daily = {entry["date"]: entry for entry in usage["daily"]}
     assert len(daily) == 18
     assert daily["2026-10-02"] == {
@@ -159,8 +172,9 @@ async def test_sums_counts_and_costs_per_kind_day_and_model(create_user: CreateU
         "images": 0,
         "vision_tokens": 0,
         "embedding_tokens": 0,
-        "cost_usd": 0.75,
+        "cost_usd": 0.75 if admin else None,
     }
+    assert daily["2026-10-09"]["cost_usd"] == (pytest.approx(0.09) if admin else None)
     assert (daily["2026-10-05"]["chat_tokens"], daily["2026-10-05"]["embedding_tokens"]) == (20, 400)
     assert daily["2026-10-06"]["chat_tokens"] == 0
     assert (daily["2026-10-09"]["images"], daily["2026-10-09"]["vision_tokens"]) == (1, 3000)
@@ -173,10 +187,12 @@ async def test_sums_counts_and_costs_per_kind_day_and_model(create_user: CreateU
         ("Claude Opus 5.5", "chat", 80, 156_250, 1),
         ("Claude Haiku 5.5", "chat", 140, 78_127, 2),
         ("GPT Image 2", "image", 1030, 0, 2),
+        *([("Claude Haiku 5.5", "title", 156, 0, 1)] if admin else []),
         ("Claude Sonnet 5.5", "vision", 3000, 0, 1),
         ("OpenAI text-embedding-3-small", "embedding", 400, 0, 1),
     ]
-    assert [entry["cost_usd"] for entry in usage["by_model"]] == [1.5, 0.5, 0.25, 0.08, 0.02, 0.01]
+    costs = [1.5, 0.5, 0.25, 0.08, 0.03, 0.02, 0.01] if admin else [None] * 6
+    assert [entry["cost_usd"] for entry in usage["by_model"]] == costs
 
 
 async def test_limits_are_the_plans_with_the_users_overrides_and_the_admin_has_none(

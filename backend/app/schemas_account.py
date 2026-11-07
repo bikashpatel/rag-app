@@ -7,12 +7,20 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, model_validator
 
-from app.schemas import MAX_INT, AccentColor, ChatFontSize, Preferences, ThemePreference, UsageSummary, UserLimits
+from app.schemas import (
+    MAX_INT,
+    AccentColor,
+    ChatFontSize,
+    Preferences,
+    ThemePreference,
+    UsageKind,
+    UsageSummary,
+    UserLimits,
+)
 from app.schemas_auth import EmailChangeNeeds, GoogleLink, PendingEmailInfo, SignupSource
 from app.schemas_billing import PlanAccess
 
 DeviceType = Literal["desktop", "mobile", "tablet", "unknown"]
-UsageKind = Literal["chat", "embedding", "vision", "image"]
 
 LoginMethod = Literal["password", "google"]
 
@@ -114,6 +122,7 @@ class UsageCosts(BaseModel):
     embedding: float
     vision: float
     image: float
+    title: float
 
 
 class DocumentUsage(BaseModel):
@@ -134,7 +143,7 @@ class MyUsageDay(BaseModel):
     images: int
     vision_tokens: int
     embedding_tokens: int
-    cost_usd: float
+    cost_usd: float | None  # the admin's only
 
 
 class MyUsageModel(BaseModel):
@@ -142,8 +151,8 @@ class MyUsageModel(BaseModel):
     kind: UsageKind
     tokens: int  # prompt + completion (image models: prompt text + image tokens)
     allowance_tokens: int  # standard tokens against the chat allowance; 0 for the other kinds
-    requests: int  # chat: answers; image: images; embedding and vision: ingestion runs
-    cost_usd: float
+    requests: int  # chat: answers; image: images; title: titles; embedding and vision: ingestion runs
+    cost_usd: float | None  # the admin's only
 
 
 class MyUsage(BaseModel):
@@ -160,10 +169,10 @@ class MyUsage(BaseModel):
     embedding_tokens: int  # recorded, never limited
     requests: int  # chat answers in the window
     rate_limit_per_min: int  # chat requests per minute; 0 = unlimited
-    cost_usd: UsageCosts
+    cost_usd: UsageCosts | None  # the admin's only (None for everyone else)
     documents: DocumentUsage
     daily: list[MyUsageDay]  # every UTC day of the window through today, zeros included
-    by_model: list[MyUsageModel]  # cost descending
+    by_model: list[MyUsageModel]  # cost descending; "title" only for the admin
 
 
 class ConversationsDeleted(BaseModel):

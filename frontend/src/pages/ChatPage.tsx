@@ -52,6 +52,8 @@ const UPLOAD_SETTINGS_FAILED = "Couldn't check your upload settings, so nothing 
 const LATE_SIDEBAR_RELOAD_MS = 1500;
 /** After Stop or a lost connection the server saves the partial answer's usage a moment later: check it again then. */
 const LATE_USAGE_REFRESH_MS = [1500, 5000];
+/** A new chat's generated title can be stored after its first answer ended (the title call takes at most 10 s). */
+const LATE_TITLE_RELOAD_MS = [2500, 11_000];
 /** The unsent message when the plan ended on the page: put back when that chat (or a new chat) opens with access. */
 const PLAN_DRAFT_KEY = "rag.planDraft";
 
@@ -129,6 +131,7 @@ export default function ChatPage() {
   const documentsRef = useRef<HTMLDivElement>(null);
   const focusComposer = useRef(true);
   const lateReloadTimer = useRef<number | undefined>(undefined);
+  const lateTitleTimers = useRef<number[]>([]);
   const lateUsageTimers = useRef<number[]>([]);
   const routeIdRef = useRef(routeId);
   routeIdRef.current = routeId;
@@ -139,7 +142,7 @@ export default function ChatPage() {
   const conversations = useConversations();
   const models = useModels(preferences.default_model_id);
   const attachments = useAttachments(user?.id ?? null);
-  const { touch, reload: reloadConversations, clearAll: clearConversations } = conversations;
+  const { touch, retitle, reload: reloadConversations, clearAll: clearConversations } = conversations;
   const { selectedId: modelId, reload: reloadModels, resetToDefault: resetModel } = models;
   const { add: addAttachments, take: takeAttachments, restore: restoreAttachments } = attachments;
   usePluginLifecycle();
@@ -187,6 +190,7 @@ export default function ChatPage() {
     () => () => {
       window.clearTimeout(lateReloadTimer.current);
       lateUsageTimers.current.forEach((timer) => window.clearTimeout(timer));
+      lateTitleTimers.current.forEach((timer) => window.clearTimeout(timer));
     },
     [],
   );
@@ -217,11 +221,16 @@ export default function ChatPage() {
       // Through useReplacePath, so Settings opened while the first answer streams stays open (U26).
       replacePath(`/c/${id}`);
     },
+    onTitle: retitle,
     onConversationMissing: showMissing,
     onTurnFinished: (turn, settled) => {
       refreshUsage(settled);
       if (turn) {
         touch(turn.conversationId, turn.title);
+        if (turn.titlePending) {
+          lateTitleTimers.current.forEach((timer) => window.clearTimeout(timer));
+          lateTitleTimers.current = LATE_TITLE_RELOAD_MS.map((ms) => window.setTimeout(() => void reloadConversations(), ms));
+        }
         return;
       }
       // Ended before the conversation was known: the server may still have created one, possibly a moment later.

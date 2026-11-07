@@ -101,7 +101,9 @@ class CardSink:
 
 @dataclass
 class Taint:
-    tainted: bool = False  # the answer has seen untrusted text (email returned by a tool, or an imported document)
+    # The answer has seen untrusted text: email returned by a tool, an imported document, or a passage that looks like
+    # instructions (rag.RetrievalResult.untrusted_text).
+    tainted: bool = False
 
 
 @dataclass

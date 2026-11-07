@@ -227,14 +227,10 @@ async def test_a_pdf_is_created_stored_linked_and_indexed(
 
     done = events[-1][1]
     expected_cost = (2500 * 4.0 + 430 * 20.0) / 1_000_000
-    assert done["usage"] == {
-        "prompt_tokens": 2500,
-        "completion_tokens": 430,
-        "total_tokens": 2930,
-        "cost_usd": pytest.approx(expected_cost),
-    }
+    assert done["usage"] == {"prompt_tokens": 2500, "completion_tokens": 430, "total_tokens": 2930, "cost_usd": None}
     [usage] = await chat_usage(alice.user_id)
     assert (usage.prompt_tokens, usage.completion_tokens) == (2500, 430)
+    assert usage.cost_usd == pytest.approx(expected_cost)
     answer = await answer_of(events[0][1]["conversation_id"])
     assert answer.content == "Creating it.\n\nDone: Q3 report.pdf is in your documents."
     assert (answer.prompt_tokens, answer.completion_tokens, answer.error) == (2500, 430, None)
@@ -1238,8 +1234,12 @@ async def test_a_docx_whose_content_has_characters_xml_cant_hold_is_created(
     assert texts == ["Memo", "A soft break, [1man escape[0m and U+FFFF ."]
 
 
-def test_runs_of_citation_markers_in_generated_passages_are_neutralized() -> None:
+def test_runs_of_citation_markers_in_generated_passages_are_neutralized(monkeypatch: pytest.MonkeyPatch) -> None:
     from datetime import datetime, timezone
+
+    from app.services import untrusted
+
+    monkeypatch.setattr(untrusted, "new_boundary", lambda: "c0de")
 
     from app.schemas import Source
 
@@ -1259,7 +1259,9 @@ def test_runs_of_citation_markers_in_generated_passages_are_neutralized() -> Non
         {10: datetime(2026, 10, 15, tzinfo=timezone.utc)},
     )
 
-    generated, upload = block.removeprefix("<context>\n").removesuffix("\n</context>").split("\n\n")
+    generated, upload = block.removeprefix("<context>\n").removesuffix("\n</passage-c0de>\n</context>").split(
+        "\n</passage-c0de>\n\n"
+    )
     assert generated.endswith(
         "Refunds take 14 days (ref 1)(ref 3). Shipping is free (ref 2), (ref 4). All agree (ref 1)(ref 2)(ref 3). "
         "Code m[0][1] and [label][1] and a link [5](https://example.com) and escaped (ref 6)(ref 7)."

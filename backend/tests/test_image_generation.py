@@ -352,7 +352,7 @@ async def test_one_image_is_generated_shown_saved_and_indexed(
     assert detail["messages"][1]["files"] == [file]
     me = (await alice.get("/api/auth/me")).json()
     assert (me["limits"]["monthly_image_limit"], me["usage"]["images"]) == (60, 1)  # Professional's
-    assert me["usage"]["chat_tokens"] == 2200 and me["usage"]["cost_usd"] > GPT_IMAGE_COST
+    assert me["usage"]["chat_tokens"] == 2200 and me["usage"]["cost_usd"] is None  # the admin's only
 
     indexed = await process(doc_id)
     assert indexed is not None and (indexed.status, indexed.num_pages) == ("ready", None)

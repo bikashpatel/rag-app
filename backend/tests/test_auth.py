@@ -134,8 +134,8 @@ def this_month_window() -> tuple[str, str]:
     return start.isoformat().replace("+00:00", "Z"), end.isoformat().replace("+00:00", "Z")
 
 
-def zero_usage(monthly_token_limit: int) -> dict[str, Any]:
-    """Nothing used in this UTC month: the window of an open-ended plan and of the admin."""
+def zero_usage(monthly_token_limit: int, *, admin: bool = False) -> dict[str, Any]:
+    """Nothing used in this UTC month: the window of an open-ended plan and of the admin (who alone gets the cost)."""
     window_start, window_end = this_month_window()
     return {
         "month": this_month(),
@@ -143,7 +143,7 @@ def zero_usage(monthly_token_limit: int) -> dict[str, Any]:
         "embedding_tokens": 0,
         "vision_tokens": 0,
         "images": 0,
-        "cost_usd": 0.0,
+        "cost_usd": 0.0 if admin else None,
         "monthly_token_limit": monthly_token_limit,
         "chat_allowance_used": 0,
         "window_start": window_start,
@@ -531,6 +531,7 @@ async def test_me_reports_the_users_limits_and_this_months_usage(create_user: Cr
                 UsageEvent(user_id=alice.user_id, model_name="m", kind="chat", total_tokens=80, cost_usd=0.5),
                 UsageEvent(user_id=alice.user_id, model_name="e", kind="embedding", total_tokens=40, cost_usd=0.01),
                 UsageEvent(user_id=alice.user_id, model_name="v", kind="vision", total_tokens=3000, cost_usd=0.02),
+                UsageEvent(user_id=alice.user_id, model_name="h", kind="title", total_tokens=150, cost_usd=0.001),
                 UsageEvent(
                     user_id=alice.user_id,
                     model_name="m",
@@ -573,8 +574,22 @@ async def test_me_reports_the_users_limits_and_this_months_usage(create_user: Cr
         "email": None,
         "display_name": None,
     }
-    assert body["usage"]["cost_usd"] == pytest.approx(0.78)  # every kind
-    assert body["usage"]["monthly_token_limit"] == 5000
+    assert body["usage"]["cost_usd"] is None  # the admin's only
+    assert (body["usage"]["monthly_token_limit"], body["usage"]["chat_allowance_used"]) == (5000, 0)
+
+
+async def test_me_reports_the_admins_cost_of_every_kind(admin_client: ApiClient) -> None:
+    async with SessionLocal() as session:
+        session.add_all(
+            UsageEvent(user_id=admin_client.user_id, model_name="m", kind=kind, total_tokens=10, cost_usd=cost)
+            for kind, cost in (("chat", 0.25), ("embedding", 0.01), ("vision", 0.02), ("image", 0.04), ("title", 0.001))
+        )
+        await session.commit()
+
+    usage = (await admin_client.get("/api/auth/me")).json()["usage"]
+
+    assert usage["cost_usd"] == pytest.approx(0.321)
+    assert (usage["chat_tokens"], usage["images"]) == (10, 1)
 
 
 async def test_me_reports_the_admin_as_unlimited(admin_client: ApiClient) -> None:
@@ -594,7 +609,7 @@ async def test_me_reports_the_admin_as_unlimited(admin_client: ApiClient) -> Non
             "monthly_image_limit": 0,
             "vision_monthly_token_limit": 0,
         },
-        "usage": zero_usage(0),
+        "usage": zero_usage(0, admin=True),
         "preferences": DEFAULT_PREFERENCES,
         "plan": response.json()["plan"],
         "email": None,

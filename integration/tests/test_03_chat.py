@@ -50,9 +50,15 @@ def library(user_factory) -> Library:
 
 
 def _title(message: str) -> str:
-    """A new conversation's title: the whitespace-collapsed message, its first 60 characters + "…" when longer."""
+    """A new conversation's placeholder title: the whitespace-collapsed message, its first 60 characters + "…" when
+    longer."""
     collapsed = " ".join(message.split())
     return collapsed if len(collapsed) <= 60 else collapsed[:60] + "…"
+
+
+def _generated_title(message: str) -> str:
+    """What the fake answers a title call: "Notes on" and the message's first four words (fake_llm/server.py)."""
+    return "Notes on " + " ".join(message.split()[:4]).rstrip(".,;:")
 
 
 def _cost(prompt_tokens: int, completion_tokens: int, kind: str = "chat") -> float:
@@ -100,7 +106,19 @@ def test_answer_streams_with_cited_sources(library: Library, fake, models: dict)
         reported["completion_tokens"],
     )
     assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
-    assert usage["cost_usd"] == pytest.approx(_cost(usage["prompt_tokens"], usage["completion_tokens"]))
+    assert usage["cost_usd"] is None  # the admin's only
+
+    conversation_id = result.meta["conversation_id"]
+    generated = _generated_title(message)
+    assert all(data == {"conversation_id": conversation_id, "title": generated} for data in result.all("title"))
+    [title_call] = wait_until(lambda: fake.log("title", after=mark), 15, "the title call")
+    assert not title_call["stream"] and title_call["messages"][0]["content"].startswith("You name chat conversations.")
+    assert f"<message>\n{message}\n</message>" in title_call["messages"][-1]["content"]
+    wait_until(
+        lambda: check(library.user.client.get(f"/api/conversations/{conversation_id}")).json()["title"] == generated,
+        15,
+        "the generated title",
+    )
 
 
 def test_conversation_and_history_persist(library: Library, fake) -> None:
@@ -121,8 +139,13 @@ def test_conversation_and_history_persist(library: Library, fake) -> None:
     (query,) = fake.log("embedding", after=mark)
     assert first_message in query["input"][0] and second_message in query["input"][0]
 
-    detail = check(library.user.client.get(f"/api/conversations/{conversation_id}")).json()
-    assert detail["title"] == _title(first_message)
+    assert first.meta["title"] == _title(first_message)
+
+    def titled() -> dict | None:
+        found = check(library.user.client.get(f"/api/conversations/{conversation_id}")).json()
+        return found if found["title"] == _generated_title(first_message) else None
+
+    detail = wait_until(titled, 15, "the generated title")
     messages = detail["messages"]
     assert [message["role"] for message in messages] == ["user", "assistant", "user", "assistant"]
     assert messages[0]["id"] == first.meta["user_message_id"] and messages[0]["content"] == first_message
@@ -209,24 +232,37 @@ def test_usage_matches_me_and_the_admin_report(make_user, admin, fake) -> None:
     assert len(chat_calls) == 2
     chat_tokens = sum(result.done["usage"]["total_tokens"] for result in results)
     assert chat_tokens == sum(c["usage"]["prompt_tokens"] + c["usage"]["completion_tokens"] for c in chat_calls)
-    chat_cost = sum(result.done["usage"]["cost_usd"] for result in results)
+    assert all(result.done["usage"]["cost_usd"] is None for result in results)  # the admin's only
+    chat_cost = sum(_cost(c["usage"]["prompt_tokens"], c["usage"]["completion_tokens"]) for c in chat_calls)
     embedding_tokens = sum(entry["usage"]["prompt_tokens"] for entry in fake.log("embedding", after=mark))
     embedding_cost = _cost(embedding_tokens, 0, "embedding")
 
+    # Each new conversation is titled by a fake chat model (both cost the same): the admin's cost, no user limit
+    def two_titles() -> list[dict] | None:
+        found = fake.log("title", after=mark)
+        return found if len(found) == 2 else None
+
+    title_calls = wait_until(two_titles, 15, "the two title calls")
+    title_tokens = sum(c["usage"]["prompt_tokens"] + c["usage"]["completion_tokens"] for c in title_calls)
+    title_cost = sum(_cost(c["usage"]["prompt_tokens"], c["usage"]["completion_tokens"]) for c in title_calls)
+
     me = check(user.client.get("/api/auth/me")).json()["usage"]
     assert me["chat_tokens"] == chat_tokens and me["embedding_tokens"] == embedding_tokens
-    assert me["cost_usd"] == pytest.approx(chat_cost + embedding_cost, abs=1e-6)
+    assert me["cost_usd"] is None
 
     mine = check(user.client.get("/api/me/usage")).json()
     assert mine["chat_tokens"] == chat_tokens and mine["requests"] == 2
     assert mine["embedding_tokens"] == embedding_tokens
-    assert mine["cost_usd"]["chat"] == pytest.approx(chat_cost, abs=1e-6)
+    assert mine["cost_usd"] is None and all(day["cost_usd"] is None for day in mine["daily"])
     assert sum(day["chat_tokens"] for day in mine["daily"]) == chat_tokens
 
-    report = check(admin.get("/api/admin/usage")).json()
-    row = next(row for row in report["by_user"] if row["user_id"] == user.id)
+    def admin_row() -> dict | None:
+        report = check(admin.get("/api/admin/usage")).json()
+        row = next(row for row in report["by_user"] if row["user_id"] == user.id)
+        return row if row["cost_usd"] == pytest.approx(chat_cost + embedding_cost + title_cost, abs=1e-5) else None
+
+    row = wait_until(admin_row, 15, "the title usage in the admin report")
     assert (row["chat_tokens"], row["embedding_tokens"], row["requests"]) == (chat_tokens, embedding_tokens, 2)
-    assert row["cost_usd"] == pytest.approx(chat_cost + embedding_cost, abs=1e-5)
     listed = next(entry for entry in check(admin.get("/api/admin/users")).json() if entry["id"] == user.id)
     assert listed["usage"]["chat_tokens"] == chat_tokens
 
@@ -234,3 +270,4 @@ def test_usage_matches_me_and_the_admin_report(make_user, admin, fake) -> None:
     by_kind = {kind: (int(count), int(total)) for kind, count, total in events}
     assert by_kind["chat"] == (2, chat_tokens)
     assert by_kind["embedding"][1] == embedding_tokens
+    assert by_kind["title"] == (2, title_tokens)

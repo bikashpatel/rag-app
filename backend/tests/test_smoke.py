@@ -6,7 +6,6 @@ import sys
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
-import pytest
 from conftest import ADMIN_PASSWORD, ADMIN_USERNAME, ApiClient, FakeLLM, chat, ingest, txt_bytes
 from sqlalchemy import select
 
@@ -113,7 +112,7 @@ async def test_upload_process_and_chat_round_trip(
         "completion_tokens": 5,
         "total_tokens": 47,
     }
-    assert done["usage"]["cost_usd"] == pytest.approx((42 * 4.0 + 5 * 20.0) / 1_000_000)  # Opus: $4 / $20 per 1M
+    assert done["usage"]["cost_usd"] is None  # the admin's only
 
     detail = (await alice.get(f"/api/conversations/{meta['conversation_id']}")).json()
     assert [message["role"] for message in detail["messages"]] == ["user", "assistant"]

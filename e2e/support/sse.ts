@@ -12,7 +12,7 @@ import type {
 import { fakeId } from "./fakes";
 
 // Canned answers for POST /api/chat/stream, in the event contract of SPEC.md section 6 ("Chat"): meta first, sources
-// once after it, then deltas and file events, and done or error last. No request ever reaches the backend (or a model).
+// once after it, then deltas, file events and a new chat's title, and done or error last. No request ever reaches the backend (or a model).
 
 export const CHAT_STREAM = "**/api/chat/stream";
 
@@ -30,6 +30,9 @@ export const events = {
   },
   sources(sources: AnswerSource[]): ChatStreamEvent {
     return { event: "sources", data: { sources } };
+  },
+  title(conversationId: number, title: string): ChatStreamEvent {
+    return { event: "title", data: { conversation_id: conversationId, title } };
   },
   delta(content: string): ChatStreamEvent {
     return { event: "delta", data: { content } };
@@ -67,7 +70,8 @@ export const events = {
       event: "done",
       data: {
         assistant_message_id: fakeId(),
-        usage: { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion, cost_usd: usage.cost_usd ?? 0.0123 },
+        // The admin's answers carry their cost; everyone else's null.
+        usage: { prompt_tokens: prompt, completion_tokens: completion, total_tokens: prompt + completion, cost_usd: usage.cost_usd ?? null },
       },
     };
   },

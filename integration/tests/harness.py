@@ -507,14 +507,17 @@ def chat(
 
 
 def assert_sse_contract(result: ChatResult) -> None:
-    """The event order of SPEC.md section 6 (Chat)."""
+    """The event order of SPEC.md section 6 (Chat). A new conversation's `title` event may come at any point between
+    `meta` and the end, at most once."""
     assert result.status == 200, result.body
     names = result.names
     assert names and names[0] == "meta", names
-    assert "sources" in names and names.index("sources") == 1, names
+    assert names.count("title") <= 1, names
+    answer = [name for name in names if name != "title"]
+    assert "sources" in answer and answer.index("sources") == 1, names
     terminal = [index for index, name in enumerate(names) if name in ("done", "error")]
     assert terminal == [len(names) - 1], names
-    allowed = {"meta", "sources", "warning", "delta", "file", "plugin", "done", "error"}
+    allowed = {"meta", "sources", "warning", "delta", "file", "plugin", "title", "done", "error"}
     assert set(names) <= allowed, names
     meta = result.meta
     assert {"conversation_id", "title", "user_message_id", "model"} <= set(meta), meta

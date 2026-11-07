@@ -8,7 +8,7 @@ import type {
   GmailImportCard,
   GmailImportItem,
 } from "../../api/types";
-import { deltaEvent, doneEvent, KEEPALIVE, liveStream, metaEvent } from "../../test/chatStream";
+import { deltaEvent, doneEvent, KEEPALIVE, liveStream, metaEvent, titleEvent } from "../../test/chatStream";
 import {
   makeDocument,
   makeEmailSource,
@@ -25,7 +25,12 @@ const request: SendRequest = { message: "How did revenue change?", modelId: 1, d
 function setup(conversationId: number | null = null, routes: Record<string, Route> = {}) {
   const stream = liveStream();
   const calls = stubFetch({ "POST /chat/stream": (call) => stream.respond(call), ...routes });
-  const callbacks = { onConversationCreated: vi.fn(), onConversationMissing: vi.fn(), onTurnFinished: vi.fn() };
+  const callbacks = {
+    onConversationCreated: vi.fn(),
+    onTitle: vi.fn(),
+    onConversationMissing: vi.fn(),
+    onTurnFinished: vi.fn(),
+  };
   const hook = renderHook(({ id }) => useChatStream(id, callbacks), { initialProps: { id: conversationId } });
   return { ...hook, stream, calls, callbacks };
 }
@@ -103,8 +108,33 @@ describe("useChatStream: a new chat", () => {
     expect(await act(() => sent)).toBe(true);
     expect(answer(result)).toMatchObject({ id: 41, prompt_tokens: 1_500, completion_tokens: 220, streaming: false, error: null });
     expect(result.current.streaming).toBe(false);
-    expect(callbacks.onTurnFinished).toHaveBeenCalledWith({ conversationId: 9, title: "How did revenue change?" }, true);
+    expect(callbacks.onTurnFinished).toHaveBeenCalledWith(
+      { conversationId: 9, title: "How did revenue change?", titlePending: true },
+      true,
+    );
     expect(calls[0].body).toEqual({ conversation_id: null, message: "How did revenue change?", model_id: 1, document_ids: null });
+  });
+
+  it("takes the generated title while the answer streams", async () => {
+    const { result, stream, callbacks } = setup();
+    const sent = start(result);
+    act(() => stream.push(metaEvent(9, "How did revenue change?"), deltaEvent("Revenue grew")));
+    await waitFor(() => expect(answer(result).content).toBe("Revenue grew"));
+    expect(callbacks.onTitle).not.toHaveBeenCalled();
+
+    act(() => stream.push(titleEvent(9, "Quarterly revenue growth")));
+    await waitFor(() => expect(callbacks.onTitle).toHaveBeenCalledWith(9, "Quarterly revenue growth"));
+    expect(result.current.title).toBe("Quarterly revenue growth");
+    act(() => {
+      stream.push(deltaEvent(" 18%."), doneEvent(41));
+      stream.end();
+    });
+    expect(await act(() => sent)).toBe(true);
+    expect(answer(result)).toMatchObject({ content: "Revenue grew 18%.", streaming: false });
+    expect(callbacks.onTurnFinished).toHaveBeenCalledWith(
+      { conversationId: 9, title: "Quarterly revenue growth", titlePending: false },
+      true,
+    );
   });
 
   it("keeps the partial answer when the server ends with an error", async () => {
@@ -122,7 +152,7 @@ describe("useChatStream: a new chat", () => {
       error: "The model provider returned an error.",
       streaming: false,
     });
-    expect(callbacks.onTurnFinished).toHaveBeenCalledWith({ conversationId: 9, title: "Revenue" }, true);
+    expect(callbacks.onTurnFinished).toHaveBeenCalledWith({ conversationId: 9, title: "Revenue", titlePending: true }, true);
   });
 
   it("undoes the turn and reports a request rejected before streaming", async () => {
@@ -174,7 +204,7 @@ describe("useChatStream: a new chat", () => {
     act(() => result.current.stop());
     expect(await act(() => sent)).toBe(true);
     expect(answer(result)).toMatchObject({ content: "Revenue grew 18%", stopped: true, streaming: false, error: null });
-    expect(callbacks.onTurnFinished).toHaveBeenCalledWith({ conversationId: 9, title: "Revenue" }, false);
+    expect(callbacks.onTurnFinished).toHaveBeenCalledWith({ conversationId: 9, title: "Revenue", titlePending: true }, false);
   });
 
   it("hands the message back when stopped before the conversation was known", async () => {
@@ -404,6 +434,7 @@ describe("useChatStream: an existing conversation", () => {
     });
     expect(await act(() => sent)).toBe(true);
     expect(callbacks.onConversationCreated).not.toHaveBeenCalled();
+    expect(callbacks.onTurnFinished).toHaveBeenCalledWith({ conversationId: 42, title: "Q3 review", titlePending: false }, true);
     expect(result.current.messages.slice(-2).map((message) => [message.id, message.content])).toEqual([
       [504, "And costs?"],
       [505, "Costs fell."],
@@ -447,6 +478,6 @@ describe("useChatStream: an existing conversation", () => {
     expect(result.current.streaming).toBe(false);
     expect(result.current.title).toBe("Q3 review");
     expect(result.current.messages.map((message) => message.key)).toEqual(["m500", "m501", "m502", "m503"]);
-    expect(callbacks.onTurnFinished).toHaveBeenCalledWith({ conversationId: 9, title: "Revenue" }, false);
+    expect(callbacks.onTurnFinished).toHaveBeenCalledWith({ conversationId: 9, title: "Revenue", titlePending: true }, false);
   });
 });

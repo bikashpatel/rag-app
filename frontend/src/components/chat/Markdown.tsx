@@ -30,6 +30,24 @@ function hastText(node: ElementContent): string {
   return "";
 }
 
+/** The host a web link leads to when its text doesn't show it: a link can't hide where it sends what it carries. */
+function hiddenHost(href: string, text: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(href);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  const host = url.hostname.replace(/^www\./, "");
+  return text.toLowerCase().includes(host) ? null : host;
+}
+
+function LinkHost({ href, text }: { href: string; text: string }) {
+  const host = hiddenHost(href, text);
+  return host ? <span className="chat-link-host"> ({host})</span> : null;
+}
+
 /** "language-ts" → "ts"; only short, plain names are shown. */
 function languageOf(classes: unknown): string | null {
   const list = Array.isArray(classes) ? classes.map(String) : typeof classes === "string" ? classes.split(" ") : [];
@@ -86,7 +104,8 @@ function CodeBlock({ language, text, children }: { language: string | null; text
   );
 }
 
-/** Assistant answer: GFM markdown without raw HTML; links open in a new tab and "[n]" becomes a citation chip. */
+/** Assistant answer: GFM markdown without raw HTML; links open in a new tab (followed by their host when the text
+ * hides it) and "[n]" becomes a citation chip. */
 function Markdown({ content, sources, onCite }: MarkdownProps) {
   // Footnote ids are prefixed per answer, so footnote links in one answer never jump into another.
   const idPrefix = useId();
@@ -97,20 +116,26 @@ function Markdown({ content, sources, onCite }: MarkdownProps) {
     const byIndex = new Map(sources.map((source) => [source.index, source]));
     return {
       // An empty href is what the URL sanitizer leaves of unsafe links (javascript: and the like).
-      a: ({ node: _node, href, ...props }) =>
+      a: ({ node, href, ...props }) =>
         !href ? (
           <span>{props.children}</span>
         ) : href.startsWith("#") ? (
           <a href={href} {...props} />
         ) : (
-          <a href={href} {...props} target="_blank" rel="noopener noreferrer" />
+          <>
+            <a href={href} {...props} target="_blank" rel="noopener noreferrer" />
+            <LinkHost href={href} text={node ? hastText(node) : ""} />
+          </>
         ),
       // Images in answers are shown as links: nothing is loaded from URLs a model (or a document) chose.
       img: ({ src, alt }) =>
         typeof src === "string" && src ? (
-          <a href={src} target="_blank" rel="noopener noreferrer">
-            {alt || "Image"}
-          </a>
+          <>
+            <a href={src} target="_blank" rel="noopener noreferrer">
+              {alt || "Image"}
+            </a>
+            <LinkHost href={src} text={alt ?? ""} />
+          </>
         ) : null,
       table: ({ node: _node, ...props }) => (
         <div className="chat-md-table">

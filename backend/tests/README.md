@@ -186,6 +186,11 @@ written before plugins keep their prompts, tools and queries. Plugin tests opt i
 `FakeLLM` answers the request check's non-streaming calls with `intent_reply` (default: every action asked for; build
 one with `intent_answer("draft", ...)`) and keeps them in `intent_calls`, not `chat_calls`.
 
+Conversation titles (`test_chat_titles.py`): `CHAT_TITLES` is off unless a test requests the `chat_titles` fixture, so
+other tests make no title call. `FakeLLM` answers title calls with `title_reply`, keeps them in `title_calls` (not
+`chat_calls`), and holds them on `title_gate` or fails them with `title_error`; the title tasks are in
+`chat._title_tasks`, to wait for.
+
 Account and settings (docs/briefs/ui-shell-settings.md): `test_preferences.py`, `test_login_history.py` (sign-ins,
 `GET /me/account`; clients from other IPs through `httpx.ASGITransport(client=(ip, port))`), `test_logout_others.py`,
 `test_my_usage.py` (the report's clock is pinned with `account.current_time`), `test_export.py` (the deadline's clock is

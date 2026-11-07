@@ -871,10 +871,10 @@ From `GET /me/usage`, with a "Refresh" button:
   "Unlimited (admin)"), each with used/limit numbers; a 90% warning tone and a 100% danger tone (same as the meter).
 - Facts: chat answers this month, embedding tokens ("not limited"), requests per minute ("20 per minute" or
   "Unlimited"), documents "<count> of <max>", storage "<used> of <max>", largest upload "<max_upload_mb> MB".
-- Estimated cost: the total, with chat, embedding, vision and image parts, and the note "An estimate from the models'
-  prices; the provider's bill may differ."
+- Estimated cost (the admin only): the total, with chat, image, vision, embedding and title parts, and the note "An
+  estimate from the models' prices; the provider's bill may differ."
 - **Daily chart** (`DailyUsageChart`, inline SVG): one bar per day of the month (days after today shown as empty
-  slots), the metric picked by a `SegmentedControl` (Chat tokens, Images, Cost). A y axis with 3 or 4 rounded
+  slots), the metric picked by a `SegmentedControl` (Chat tokens, Images, and Cost for the admin). A y axis with 3 or 4 rounded
   gridlines and compact labels, day numbers on the x axis every few days, bars in `--accent`, today marked.
   - **Text never scales with the chart.** The SVG's `viewBox` is `0 0 <width> <height>` from the plot's measured CSS
     size (a `ResizeObserver`; 1 unit = 1 CSS px; the first render waits for the first measurement, with the skeleton
@@ -891,7 +891,7 @@ From `GET /me/usage`, with a "Refresh" button:
   - **The foot wraps**: the request-rate line, the reset line and "Show as table" are a `flex-wrap: wrap` row with a row
     gap; its icons are sized (15 px), so nothing overflows the card at 390, 800 or 860 px.
   - No animation under `prefers-reduced-motion`. All zeros: "No usage yet this month."
-- **By model**: a table (name, kind, tokens, requests, cost), or "Nothing used yet."
+- **By model**: a table (name, kind, tokens, requests, and cost for the admin), or "Nothing used yet."
 
 ### 10.5 Plugins & data
 
@@ -1304,7 +1304,9 @@ Open points for the user:
    nginx's `set_real_ip_from` is set up for the outer proxy (HANDOFF next step 5).
 2. **Send waits for attached files** to finish indexing (a large scanned PDF read by the vision model can take minutes;
    removing the chip sends without it).
-3. **Users see estimated costs** ($) of their own usage in Settings → Usage. Hide them for non-admins?
+3. **Users see estimated costs** ($) of their own usage in Settings → Usage. Hide them for non-admins? Decided
+   (2026-11-07): only the admin sees costs; `GET /me/usage`, `Me.usage` and the answer's `done` event carry them for
+   the admin only (null for everyone else).
 4. **The top-bar model pick is per chat** and New chat returns to the default (U7), instead of the last pick sticking.
 5. **Unconfigured plugins are listed for every user** as "Not set up yet" (the user's request), which tells users the
    app has a Gmail plugin the admin hasn't set up.

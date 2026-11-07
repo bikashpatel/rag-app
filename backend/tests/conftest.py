@@ -92,7 +92,7 @@ from app.plugins import connections, intent, registry  # noqa: E402
 from app.plugins import http as plugin_http  # noqa: E402
 from app.redis_client import INGEST_QUEUE, close_redis, get_redis, set_redis  # noqa: E402
 from app.schemas_auth import SignupSettings  # noqa: E402
-from app.services import document_tool, image_tool, ingestion, llm, pdf_images, vision  # noqa: E402
+from app.services import document_tool, image_tool, ingestion, llm, pdf_images, titles, vision  # noqa: E402
 from app.services.auth import signup_settings  # noqa: E402
 from app.services.billing import entitlements, periods  # noqa: E402
 from app.services.ingestion import process_document  # noqa: E402
@@ -365,6 +365,10 @@ class FakeLLM:
     `intent_calls` instead of `chat_calls`. They answer `intent_reply` (a string, or a function of the user message
     holding the tagged blocks), default every action true, with `intent_finish_reason` and `intent_usage`; with
     `intent_error` set they raise it.
+
+    Title calls (app.services.titles: non-streaming calls whose system prompt is titles.SYSTEM_PROMPT) go to
+    `title_calls`. Each waits on `title_gate` when set, raises `title_error` when set, and otherwise answers
+    `title_reply` (a string, or a function of the user message holding the tagged blocks) with `title_usage`.
     """
 
     chunks: list[str] = field(default_factory=lambda: ["Hello", " from", " the", " fake", " model."])
@@ -401,6 +405,11 @@ class FakeLLM:
     intent_usage: tuple[int, int] | None = (300, 20)
     intent_error: BaseException | None = None
     intent_calls: list[dict[str, Any]] = field(default_factory=list)
+    title_reply: str | Callable[[str], str] = "Orchid greenhouse care"
+    title_usage: tuple[int, int] | None = (150, 6)
+    title_error: BaseException | None = None
+    title_gate: asyncio.Event | None = None
+    title_calls: list[dict[str, Any]] = field(default_factory=list)
 
     async def acompletion(self, **kwargs: Any) -> Any:
         if not kwargs.get("stream") and vision_part(kwargs, "image_url") is not None:
@@ -408,6 +417,8 @@ class FakeLLM:
         messages = kwargs.get("messages") or []
         if not kwargs.get("stream") and messages and messages[0].get("content") == intent.SYSTEM_PROMPT:
             return self._intent(kwargs)
+        if not kwargs.get("stream") and messages and messages[0].get("content") == titles.SYSTEM_PROMPT:
+            return await self._title(kwargs)
         # A snapshot: the app keeps extending (and may strip) the same message list across the calls of an answer.
         self.chat_calls.append({**kwargs, "messages": copy.deepcopy(kwargs.get("messages"))})
         if kwargs.get("stream") and self.script:
@@ -443,6 +454,26 @@ class FakeLLM:
                 SimpleNamespace(message=SimpleNamespace(content=reply), finish_reason=self.intent_finish_reason)
             ],
             usage=usage,
+        )
+
+    async def _title(self, kwargs: dict[str, Any]) -> Any:
+        self.title_calls.append(kwargs)
+        if self.title_gate is not None:
+            await self.title_gate.wait()
+        if self.title_error is not None:
+            raise self.title_error
+        latest = kwargs["messages"][-1]["content"]
+        reply = self.title_reply(latest) if callable(self.title_reply) else self.title_reply
+        usage = None
+        if self.title_usage is not None:
+            prompt_tokens, completion_tokens = self.title_usage
+            usage = SimpleNamespace(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            )
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=reply), finish_reason="stop")], usage=usage
         )
 
     async def _vision(self, kwargs: dict[str, Any]) -> Any:
@@ -611,7 +642,8 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
     which image models were marked unusable.
 
     CHAT_IMAGE_TOOLS is off by default, so the tests written before images keep their file-only prompts and tool
-    lists; request `image_tools` to turn it on."""
+    lists; request `image_tools` to turn it on. CHAT_TITLES is off by default too, so a new conversation keeps its
+    first message as its title and makes no title call; request `chat_titles` to turn it on."""
     fake = FakeLLM()
     monkeypatch.setattr(litellm, "acompletion", fake.acompletion)
     monkeypatch.setattr(litellm, "aembedding", fake.aembedding)
@@ -622,8 +654,17 @@ def fake_llm(monkeypatch: pytest.MonkeyPatch) -> FakeLLM:
     monkeypatch.setattr(image_tool, "_unusable", {})
     monkeypatch.setattr(image_tool, "_warned_broken", set())
     monkeypatch.setattr(settings, "chat_image_tools", False)
+    monkeypatch.setattr(settings, "chat_titles", False)
     monkeypatch.setattr(intent, "_length_warned", set())
     return fake
+
+
+@pytest.fixture
+def chat_titles(monkeypatch: pytest.MonkeyPatch, fake_llm: FakeLLM) -> FakeLLM:
+    """CHAT_TITLES on, as in production: a new conversation's first answer also makes a title call (FakeLLM's
+    `title_*`)."""
+    monkeypatch.setattr(settings, "chat_titles", True)
+    return fake_llm
 
 
 @pytest.fixture(autouse=True)

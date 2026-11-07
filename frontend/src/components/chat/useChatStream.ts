@@ -96,14 +96,21 @@ export type SendError = { message: string; code: string | null };
 type Callbacks = {
   /** The first message of a new chat created conversation `id` (navigate to it). */
   onConversationCreated: (id: number, title: string) => void;
+  /** The new conversation's generated title was stored (a `title` event): it replaces the placeholder. */
+  onTitle: (id: number, title: string) => void;
   /** GET /conversations/{id} returned 404. */
   onConversationMissing: () => void;
   /**
    * A stream that reached the server ended (done, error or stopped). `null` when it ended before the conversation
-   * was known; `title` is null when it ended before the meta event. `settled`: the server ended it (done or error),
-   * so the answer and its usage are already saved; after Stop or a lost connection they are saved a moment later.
+   * was known; `title` is null when it ended before the meta event. `titlePending`: the stream created the
+   * conversation and its generated title hadn't arrived, so it may be stored a moment later. `settled`: the server
+   * ended it (done or error), so the answer and its usage are already saved; after Stop or a lost connection they are
+   * saved a moment later.
    */
-  onTurnFinished: (turn: { conversationId: number; title: string | null } | null, settled: boolean) => void;
+  onTurnFinished: (
+    turn: { conversationId: number; title: string | null; titlePending: boolean } | null,
+    settled: boolean,
+  ) => void;
 };
 
 export type ChatThread = {
@@ -137,6 +144,9 @@ type ActiveStream = {
   frame: number | null;
   conversationId: number | null;
   title: string | null;
+  /** The stream created its conversation (meta), and then got its generated title (a `title` event). */
+  created: boolean;
+  titled: boolean;
   finished: boolean;
   /** Set when the thread was replaced while streaming: the stream must no longer touch the state. */
   detached: boolean;
@@ -352,6 +362,8 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
       frame: null,
       conversationId,
       title: null,
+      created: false,
+      titled: false,
       finished: false,
       detached: false,
       writing: new Map(),
@@ -378,6 +390,7 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
           const created = stream.conversationId === null;
           stream.conversationId = conversation_id;
           stream.title = conversationTitle;
+          stream.created = created;
           if (stream.detached) return;
           setTitle(conversationTitle);
           setMessages((list) =>
@@ -393,6 +406,15 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
             shownIdRef.current = conversation_id;
             callbacksRef.current.onConversationCreated(conversation_id, conversationTitle);
           }
+          break;
+        }
+        case "title": {
+          const { conversation_id, title: generated } = sse.data;
+          stream.title = generated;
+          stream.titled = true;
+          if (stream.detached) return;
+          setTitle(generated);
+          callbacksRef.current.onTitle(conversation_id, generated);
           break;
         }
         case "sources":
@@ -530,8 +552,9 @@ export function useChatStream(conversationId: number | null, callbacks: Callback
       }
     }
     if (!rejected && mountedRef.current) {
+      const titlePending = stream.created && !stream.titled;
       callbacksRef.current.onTurnFinished(
-        stream.conversationId === null ? null : { conversationId: stream.conversationId, title: stream.title },
+        stream.conversationId === null ? null : { conversationId: stream.conversationId, title: stream.title, titlePending },
         stream.finished,
       );
     }

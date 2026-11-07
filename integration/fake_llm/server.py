@@ -13,7 +13,8 @@ Models reach it through an `api_base` of http://fake-llm:8000/v1 set in the admi
   `tool_calls` deltas). It answers from the <context> block the app puts in the system prompt and cites [1]. When the
   latest user message asks for a file, an image or a Gmail action and the matching tool is offered, it calls that
   tool with arguments built from the tool schema in the request, then answers after the tool result. It also answers
-  the plugins' request check (JSON), vision calls (an image part: `vision_reply`) and the admin Test.
+  the plugins' request check (JSON), conversation titles ("Notes on" and the message's first words), vision calls
+  (an image part: `vision_reply`) and the admin Test.
 - POST /v1/images/generations: a valid PNG of the requested size, as `b64_json`.
 - GET /_log?kind=&after=: every request (path, kind, model, messages, tool names, the reported usage); POST /_reset
   clears it and the knobs; POST /_config sets knobs: `vision_reply` (str), `fail_embeddings` (int: the next n
@@ -43,6 +44,8 @@ DEFAULT_VISION_REPLY = (
     "Scanned page transcript: the cobalt lighthouse inventory lists 4712 brass lamps kept in the north tower."
 )
 REQUEST_CHECK_PROMPT = "You decide which actions a user explicitly asked"
+TITLE_PROMPT = "You name chat conversations."
+_MESSAGE_BLOCK = re.compile(r"<message>\n(.*?)\n</message>", re.DOTALL)
 TEST_PROMPT = "Reply with the single word: OK"
 PROVIDER_KEYS = ("sk-it-fake", "sk-ant-it-fake")
 
@@ -193,6 +196,8 @@ def _kind(messages: list[dict[str, Any]]) -> str:
     system = next((_text(m.get("content")) for m in messages if m.get("role") == "system"), "")
     if system.startswith(REQUEST_CHECK_PROMPT):
         return "request_check"
+    if system.startswith(TITLE_PROMPT):
+        return "title"
     if len(messages) == 1 and _text(messages[0].get("content")) == TEST_PROMPT:
         return "test"
     return "chat"
@@ -359,6 +364,12 @@ def request_check(messages: list[dict[str, Any]]) -> str:
     return json.dumps(answer)
 
 
+def conversation_title(messages: list[dict[str, Any]]) -> str:
+    """A title call's answer: "Notes on" and the first four words of the tagged message."""
+    found = _MESSAGE_BLOCK.search(_text(messages[-1].get("content")))
+    return f"Notes on {_snippet(found.group(1) if found else '', 4)}"
+
+
 def _usage(messages: list[dict[str, Any]], tools: list[Any], output: str) -> dict[str, int]:
     prompt = sum(_tokens(_text(m.get("content")) + json.dumps(m.get("tool_calls") or "")) for m in messages)
     prompt += _tokens(json.dumps(tools)) if tools else 0
@@ -414,6 +425,8 @@ async def chat_completions(request: Request) -> Response:
         text = str(state.config["vision_reply"])
     elif kind == "request_check":
         text = request_check(messages)
+    elif kind == "title":
+        text = conversation_title(messages)
     elif kind == "test":
         text = "OK"
     else:

@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Me, MyUsage } from "../../api/types";
-import { makeAdminMe, makeLapsedPlanAccess, makeMe, makeMyUsage, makePaidPlanAccess } from "../../test/fixtures";
+import { makeAdminMe, makeAdminMyUsage, makeLapsedPlanAccess, makeMe, makeMyUsage, makePaidPlanAccess } from "../../test/fixtures";
 import { deferred, errorResponse, stubFetch, type Route } from "../../test/http";
 import { renderWithRouter } from "../../test/render";
 import UsageTab from "./UsageTab";
@@ -144,22 +144,44 @@ describe("UsageTab", () => {
     expect(fact("Storage")).toHaveTextContent("0 B of 3,000 MB");
   });
 
-  it("lists the other figures and the estimated cost", async () => {
-    await renderUsage();
+  it("lists the other figures, without any cost for a user", async () => {
+    const { view } = await renderUsage();
     expect(fact("Chat answers")).toHaveTextContent("37");
     expect(fact("Requests per minute")).toHaveTextContent("20 per minute");
     expect(fact("Embedding tokens")).toHaveTextContent("40K not limited");
     expect(fact("Documents")).toHaveTextContent("4 of 100");
     expect(fact("Storage")).toHaveTextContent("3.1 MB of 500 MB");
     expect(fact("Largest upload")).toHaveTextContent("25 MB");
-    expect(screen.getByText("$1.42")).toBeInTheDocument();
+    expect(screen.queryByText("Estimated cost")).not.toBeInTheDocument();
+    expect(screen.queryByRole("list", { name: "Cost by kind" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "Cost" })).not.toBeInTheDocument();
+    expect(view.container).not.toHaveTextContent("$");
+  });
+
+  it("shows the admin the estimated cost by kind, the title calls included", async () => {
+    await renderUsage(makeAdminMyUsage(), makeAdminMe());
+    expect(screen.getByText("Estimated cost")).toBeInTheDocument();
+    expect(screen.getByText("$1.43")).toBeInTheDocument();
     const parts = within(screen.getByRole("list", { name: "Cost by kind" })).getAllByRole("listitem");
-    expect(parts.map((part) => part.textContent)).toEqual(["Chat $1.20", "Images $0.20", "Vision $0.00", "Embeddings $0.02"]);
+    expect(parts.map((part) => part.textContent)).toEqual([
+      "Chat $1.20",
+      "Images $0.20",
+      "Vision $0.00",
+      "Embeddings $0.02",
+      "Titles $0.01",
+    ]);
+    expect(screen.getByRole("radio", { name: "Cost" })).toBeInTheDocument();
   });
 
   it("lists the models used this period", async () => {
     await renderUsage();
     const table = screen.getByRole("table", { name: "Usage by model, October 2026" });
+    expect(within(table).getAllByRole("columnheader").map((header) => header.textContent)).toEqual([
+      "Model",
+      "Kind",
+      "Tokens",
+      "Requests",
+    ]);
     const rows = within(table).getAllByRole("row").slice(1);
     expect(rows).toHaveLength(2);
     expect(within(rows[0]).getAllByRole("cell").map((cell) => cell.textContent)).toEqual([
@@ -167,14 +189,18 @@ describe("UsageTab", () => {
       "Chat",
       "120,000",
       "37",
-      "$1.20",
     ]);
-    expect(within(rows[1]).getAllByRole("cell").map((cell) => cell.textContent)).toEqual([
-      "GPT ImageImage",
-      "Image",
-      "—",
-      "3",
-      "$0.20",
+    expect(within(rows[1]).getAllByRole("cell").map((cell) => cell.textContent)).toEqual(["GPT ImageImage", "Image", "—", "3"]);
+  });
+
+  it("lists the admin's models with their cost, the title model too", async () => {
+    await renderUsage(makeAdminMyUsage(), makeAdminMe());
+    const table = screen.getByRole("table", { name: "Usage by model, October 2026" });
+    const rows = within(table).getAllByRole("row").slice(1);
+    expect(rows.map((row) => within(row).getAllByRole("cell").map((cell) => cell.textContent))).toEqual([
+      ["Claude Opus 5.5Chat", "Chat", "120,000", "37", "$1.20"],
+      ["GPT ImageImage", "Image", "—", "3", "$0.20"],
+      ["Claude Haiku 5.5Titles", "Titles", "4,680", "30", "$0.01"],
     ]);
   });
 
@@ -201,8 +227,16 @@ describe("UsageTab", () => {
       "2",
       "0",
       "10,000",
-      "$0.60",
     ]);
+  });
+
+  it("shows the admin each day's cost in the table", async () => {
+    const user = userEvent.setup();
+    await renderUsage(makeAdminMyUsage(), makeAdminMe());
+    await user.click(screen.getByRole("button", { name: "Show as table" }));
+    const table = screen.getByRole("table", { name: "Usage per day, October 2026 (UTC days)" });
+    const rows = within(table).getAllByRole("row").slice(1);
+    expect(within(rows[2]).getAllByRole("cell").map((cell) => cell.textContent).at(-1)).toBe("$0.60");
   });
 
   it("describes the request limit and the reset under the chart", async () => {
@@ -215,7 +249,7 @@ describe("UsageTab", () => {
     const usage = makeMyUsage({ rate_limit_per_min: 0 });
     await renderUsage({
       ...usage,
-      daily: usage.daily.map((day) => ({ ...day, chat_allowance: 0, chat_tokens: 0, requests: 0, images: 0, embedding_tokens: 0, cost_usd: 0 })),
+      daily: usage.daily.map((day) => ({ ...day, chat_allowance: 0, chat_tokens: 0, requests: 0, images: 0, embedding_tokens: 0 })),
     } satisfies MyUsage);
     expect(screen.getByText("No usage yet this period.")).toBeInTheDocument();
     expect(screen.getByText("No request limit")).toBeInTheDocument();

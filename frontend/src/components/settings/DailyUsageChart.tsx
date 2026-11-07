@@ -38,6 +38,8 @@ type DailyUsageChartProps = {
   windowWord: string;
   /** The foot's last line: "Resets 1 Nov, 00:00 UTC", "Starts again 8 Nov". */
   resetText: string;
+  /** The days carry their cost (the admin's usage): the Cost metric, and each day's cost in the readout and table. */
+  costs: boolean;
 };
 
 /** The UTC day (00:00) of an instant. */
@@ -85,11 +87,10 @@ function plural(count: number, one: string, many: string): string {
   return `${formatNumber(count)} ${count === 1 ? one : many}`;
 }
 
-function readout(day: Day): { date: string; rest: string } {
-  return {
-    date: formatUtcDay(day.date, "long"),
-    rest: `${plural(day.chat_tokens, "chat token", "chat tokens")} · ${plural(day.images, "image", "images")} · ${formatCost(day.cost_usd)}`,
-  };
+function readout(day: Day, costs: boolean): { date: string; rest: string } {
+  const parts = [plural(day.chat_tokens, "chat token", "chat tokens"), plural(day.images, "image", "images")];
+  if (costs) parts.push(formatCost(day.cost_usd ?? 0));
+  return { date: formatUtcDay(day.date, "long"), rest: parts.join(" · ") };
 }
 
 /** "8 Oct": the day of the window `index` days after its start (UTC). */
@@ -145,6 +146,7 @@ export default function DailyUsageChart({
   windowLabel,
   windowWord,
   resetText,
+  costs,
 }: DailyUsageChartProps) {
   const id = useId();
   const plotRef = useRef<HTMLDivElement>(null);
@@ -160,7 +162,7 @@ export default function DailyUsageChart({
     (day) =>
       day.chat_tokens === 0 &&
       day.images === 0 &&
-      day.cost_usd === 0 &&
+      (day.cost_usd ?? 0) === 0 &&
       day.requests === 0 &&
       day.vision_tokens === 0 &&
       day.embedding_tokens === 0,
@@ -178,8 +180,9 @@ export default function DailyUsageChart({
 
   const days = Math.max(daysInWindow(start, end), daily.length);
   const startDay = utcDay(Date.parse(start));
-  const metricLabel = METRICS.find((option) => option.value === metric)?.label ?? "";
-  const values = daily.map((day) => day[metric]);
+  const metrics = costs ? METRICS : METRICS.filter((option) => option.value !== "cost_usd");
+  const metricLabel = metrics.find((option) => option.value === metric)?.label ?? "";
+  const values = daily.map((day) => day[metric] ?? 0);
   const max = Math.max(0, ...values);
   const total = values.reduce((sum, value) => sum + value, 0);
   const peakIndex = max > 0 ? values.indexOf(max) : -1;
@@ -199,7 +202,7 @@ export default function DailyUsageChart({
     setHovered(null);
     const day = daily[next];
     if (day) {
-      const text = readout(day);
+      const text = readout(day, costs);
       setSpoken(`${text.date} · ${text.rest}`);
     }
   }
@@ -308,13 +311,13 @@ export default function DailyUsageChart({
     );
   }
 
-  const shown = shownDay ? readout(shownDay) : null;
+  const shown = shownDay ? readout(shownDay, costs) : null;
   return (
     <figure className="settings-chart" aria-labelledby={`${id}-title`}>
       <div className="settings-chart-head">
         <h3 id={`${id}-title`}>Per day</h3>
         {empty ? null : (
-          <SegmentedControl label="Chart metric" size="sm" value={metric} options={METRICS} onChange={setMetric} />
+          <SegmentedControl label="Chart metric" size="sm" value={metric} options={metrics} onChange={setMetric} />
         )}
       </div>
       {empty ? (
@@ -402,9 +405,11 @@ export default function DailyUsageChart({
                 <th scope="col" className="num">
                   Embedding tokens
                 </th>
-                <th scope="col" className="num">
-                  Cost
-                </th>
+                {costs ? (
+                  <th scope="col" className="num">
+                    Cost
+                  </th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -416,7 +421,7 @@ export default function DailyUsageChart({
                   <td className="num">{formatNumber(day.images)}</td>
                   <td className="num">{formatNumber(day.vision_tokens)}</td>
                   <td className="num">{formatNumber(day.embedding_tokens)}</td>
-                  <td className="num">{formatCost(day.cost_usd)}</td>
+                  {costs ? <td className="num">{formatCost(day.cost_usd ?? 0)}</td> : null}
                 </tr>
               ))}
             </tbody>

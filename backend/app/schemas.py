@@ -27,6 +27,10 @@ class UserLimits(BaseModel):
     vision_monthly_token_limit: int  # plain vision tokens (scanned PDF pages)
 
 
+# What a usage event records: a model call of these kinds ("title": naming a new conversation, which no limit counts)
+UsageKind = Literal["chat", "embedding", "vision", "image", "title"]
+
+
 class UsageSummary(BaseModel):
     """The usage counted in the allowance window (the counts the limits use)."""
 
@@ -35,7 +39,7 @@ class UsageSummary(BaseModel):
     embedding_tokens: int
     vision_tokens: int
     images: int  # image usage events
-    cost_usd: float  # every kind
+    cost_usd: float | None  # every kind; the admin's only (None for everyone else)
     monthly_token_limit: int  # counts chat_allowance_used
     chat_allowance_used: int  # standard tokens
     window_start: datetime

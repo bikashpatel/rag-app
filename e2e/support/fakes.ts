@@ -329,7 +329,7 @@ export function fakeNewMe(overrides: Partial<Me> & Pick<Me, "username" | "email"
       embedding_tokens: 0,
       vision_tokens: 0,
       images: 0,
-      cost_usd: 0,
+      cost_usd: null,
       monthly_token_limit: 500_000,
       chat_allowance_used: 0,
       window_start: monthStart.toISOString(),

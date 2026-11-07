@@ -1,10 +1,10 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationDetail, ConversationSummary, Me } from "../api/types";
 import { setMediaQueries } from "../test/browser";
-import { deltaEvent, doneEvent, liveStream, metaEvent } from "../test/chatStream";
+import { deltaEvent, doneEvent, liveStream, metaEvent, titleEvent } from "../test/chatStream";
 import { makeCatalog, makePendingOrder, makeRejectedOrder } from "../test/billing";
 import {
   makeChatModel,
@@ -163,6 +163,50 @@ describe("ChatPage", () => {
       document_ids: null,
     });
     await waitFor(() => expect(calls.filter((call) => call.path === "/auth/me")).toHaveLength(2));
+  });
+
+  it("renames a new chat with its generated title in the sidebar and the tab, in place", async () => {
+    const timeouts = vi.spyOn(window, "setTimeout");
+    const { user, stream } = await setup({ conversations: [hiring] });
+    await user.type(composer(), "How did revenue change?{Enter}");
+    const live = await stream();
+    live.push(metaEvent(9, "How did revenue change?"), deltaEvent("Revenue grew "));
+    await waitFor(() => expect(document.title).toBe("How did revenue change? · AskNuvexusDoc"));
+
+    live.push(titleEvent(9, "Quarterly revenue growth"));
+    await waitFor(() => expect(document.title).toBe("Quarterly revenue growth · AskNuvexusDoc"));
+    expect(screen.getByRole("heading", { level: 1, name: "Quarterly revenue growth" })).toBeInTheDocument();
+    expect(within(sidebar()).getAllByRole("link").map((link) => link.textContent)).toEqual([
+      "Quarterly revenue growth",
+      "Hiring plan",
+    ]);
+
+    live.push(deltaEvent("18%."), doneEvent(41));
+    live.end();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument());
+    expect(within(sidebar()).getAllByRole("link")[0]).toHaveTextContent("Quarterly revenue growth");
+    expect(timeouts.mock.calls.filter(([, ms]) => ms === 2500 || ms === 11_000)).toEqual([]);
+  });
+
+  it("looks for a title stored after the first answer ended", async () => {
+    const timeouts = vi.spyOn(window, "setTimeout");
+    let listed: ConversationSummary[] = [hiring];
+    const { user, stream, calls } = await setup({ routes: { "GET /conversations": () => listed } });
+    await user.type(composer(), "How did revenue change?{Enter}");
+    const live = await stream();
+    live.push(metaEvent(9, "How did revenue change?"), deltaEvent("Revenue grew."), doneEvent(41));
+    live.end();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Send message" })).toBeInTheDocument());
+    await waitFor(() => expect(timeouts.mock.calls.filter(([, ms]) => ms === 2500 || ms === 11_000)).toHaveLength(2));
+    expect(within(sidebar()).getAllByRole("link")[0]).toHaveTextContent("How did revenue change?");
+
+    listed = [{ ...hiring, id: 9, title: "Quarterly revenue growth", updated_at: NOW }, hiring];
+    const loads = calls.filter((call) => call.path === "/conversations").length;
+    const [reload] = timeouts.mock.calls.find(([, ms]) => ms === 2500) ?? [];
+    act(() => (reload as () => void)());
+    await waitFor(() => expect(calls.filter((call) => call.path === "/conversations")).toHaveLength(loads + 1));
+    await waitFor(() => expect(within(sidebar()).getAllByRole("link")[0]).toHaveTextContent("Quarterly revenue growth"));
+    await waitFor(() => expect(document.title).toBe("Quarterly revenue growth · AskNuvexusDoc"));
   });
 
   it("sends an example question at a click", async () => {

@@ -1,7 +1,7 @@
 import { useId, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { getMyUsage } from "../../api/client";
-import type { Me, MyUsage, UsageAmount } from "../../api/types";
+import type { Me, MyUsage, UsageAmount, UsageKind } from "../../api/types";
 import { formatIstRange } from "../../lib/billing";
 import {
   daysUntil,
@@ -20,11 +20,12 @@ import DailyUsageChart from "./DailyUsageChart";
 import { PanelError, PanelHead, plural, UsageSkeleton } from "./PanelParts";
 import { useLoad } from "./useLoad";
 
-const KIND_LABEL: Record<MyUsage["by_model"][number]["kind"], string> = {
+const KIND_LABEL: Record<UsageKind, string> = {
   chat: "Chat",
   embedding: "Embedding",
   vision: "Vision",
   image: "Image",
+  title: "Titles",
 };
 
 /** The tile's big figure: three significant digits ("360K", "22.8K", "1M"); the exact numbers are in the meter. */
@@ -265,19 +266,22 @@ function UsageReport({ user, usage }: { user: Me; usage: MyUsage }) {
         <Fact term="Largest upload">{formatNumber(docs.max_upload_mb)} MB</Fact>
       </dl>
 
-      <div className="settings-cost">
-        <div>
-          <div className="settings-tile-label">Estimated cost</div>
-          <div className="settings-cost-total">{formatCost(cost.total)}</div>
+      {cost ? (
+        <div className="settings-cost">
+          <div>
+            <div className="settings-tile-label">Estimated cost</div>
+            <div className="settings-cost-total">{formatCost(cost.total)}</div>
+          </div>
+          <ul className="settings-cost-parts" aria-label="Cost by kind">
+            <li className="badge">Chat {formatCost(cost.chat)}</li>
+            <li className="badge">Images {formatCost(cost.image)}</li>
+            <li className="badge">Vision {formatCost(cost.vision)}</li>
+            <li className="badge">Embeddings {formatCost(cost.embedding)}</li>
+            <li className="badge">Titles {formatCost(cost.title)}</li>
+          </ul>
+          <p className="settings-cost-note">An estimate from the models' prices; the provider's bill may differ.</p>
         </div>
-        <ul className="settings-cost-parts" aria-label="Cost by kind">
-          <li className="badge">Chat {formatCost(cost.chat)}</li>
-          <li className="badge">Images {formatCost(cost.image)}</li>
-          <li className="badge">Vision {formatCost(cost.vision)}</li>
-          <li className="badge">Embeddings {formatCost(cost.embedding)}</li>
-        </ul>
-        <p className="settings-cost-note">An estimate from the models' prices; the provider's bill may differ.</p>
-      </div>
+      ) : null}
 
       <DailyUsageChart
         start={usage.period_start}
@@ -287,6 +291,7 @@ function UsageReport({ user, usage }: { user: Me; usage: MyUsage }) {
         windowLabel={kind === "period" ? formatIstRange(usage.period_start, usage.resets_at) : formatMonthName(usage.month)}
         windowWord={admin ? "this month" : "this period"}
         resetText={resetText(usage, kind, followed)}
+        costs={cost !== null}
       />
 
       <h3 className="settings-sub">By model</h3>
@@ -310,9 +315,11 @@ function UsageReport({ user, usage }: { user: Me; usage: MyUsage }) {
                 <th scope="col" className="num">
                   Requests
                 </th>
-                <th scope="col" className="num">
-                  Cost
-                </th>
+                {cost ? (
+                  <th scope="col" className="num">
+                    Cost
+                  </th>
+                ) : null}
               </tr>
             </thead>
             <tbody>
@@ -325,7 +332,7 @@ function UsageReport({ user, usage }: { user: Me; usage: MyUsage }) {
                   <td className="settings-models-kind">{KIND_LABEL[row.kind]}</td>
                   <td className="num">{row.kind === "image" && row.tokens === 0 ? "—" : formatNumber(row.tokens)}</td>
                   <td className="num">{formatNumber(row.requests)}</td>
-                  <td className="num">{formatCost(row.cost_usd)}</td>
+                  {cost ? <td className="num">{formatCost(row.cost_usd ?? 0)}</td> : null}
                 </tr>
               ))}
             </tbody>
@@ -338,7 +345,7 @@ function UsageReport({ user, usage }: { user: Me; usage: MyUsage }) {
 
 /**
  * Settings → Usage: the allowance window (this period, or the UTC month for an open-ended plan and the admin) against
- * the limits, the cost estimate, a daily chart and the models used.
+ * the limits, a daily chart and the models used; the cost estimate only for the admin, whose usage alone carries it.
  */
 export default function UsageTab({ user, onClose }: { user: Me; onClose: () => void }) {
   const usage = useLoad((signal) => getMyUsage(signal), "Couldn't load your usage.");

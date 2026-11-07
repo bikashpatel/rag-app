@@ -49,6 +49,7 @@ LOGIN_HISTORY_LIMIT = 20  # sign-ins kept per user
 MODEL_UNAVAILABLE = "That model isn't available to you."
 
 _KINDS = ("chat", "embedding", "vision", "image")
+_ADMIN_KINDS = (*_KINDS, "title")  # naming conversations: the app's cost, which no limit counts
 _DEVICES: tuple[DeviceType, ...] = ("desktop", "mobile", "tablet")
 _UA_MAX_CHARS = 512
 _VERSION = r"([0-9]{1,6})"
@@ -345,7 +346,9 @@ def _cost(value: float) -> float:
 
 async def my_usage(db: AsyncSession, user: User, ent: Entitlements) -> MyUsage:
     """The user's usage in the allowance window (usage.usage_window) against their limits (the counts the limits use),
-    per day and per model."""
+    per day and per model. Only the admin gets the costs, and their title calls."""
+    admin = user.is_admin
+    kinds = _ADMIN_KINDS if admin else _KINDS
     now = current_time()
     start, end = usage.usage_window(ent, now)
     day = usage.utc_day(UsageEvent.created_at)
@@ -371,7 +374,7 @@ async def my_usage(db: AsyncSession, user: User, ent: Entitlements) -> MyUsage:
     daily: defaultdict[str, defaultdict[str, float]] = defaultdict(lambda: defaultdict(float))
     by_model: defaultdict[tuple[str, str], list[float]] = defaultdict(lambda: [0, 0, 0, 0.0])
     for day_value, kind, model_name, total, prompt, completion, counted, cost, count in rows.tuples():
-        if kind not in _KINDS:
+        if kind not in kinds:
             continue
         total, cost, count = int(total or 0), float(cost or 0.0), int(count or 0)
         counted = int(counted or 0) if kind == "chat" else 0
@@ -399,6 +402,10 @@ async def my_usage(db: AsyncSession, user: User, ent: Entitlements) -> MyUsage:
         )
         for litellm_model, display_name in found.tuples():
             names.setdefault(litellm_model, display_name)
+    ranked = sorted(  # cost descending, for everyone
+        by_model.items(),
+        key=lambda item: (-_cost(item[1][3]), -item[1][0], names.get(item[0][0], item[0][0]), item[0][1]),
+    )
     models = [
         MyUsageModel(
             model_name=names.get(model_name, model_name),
@@ -406,11 +413,10 @@ async def my_usage(db: AsyncSession, user: User, ent: Entitlements) -> MyUsage:
             tokens=int(model_tokens),
             allowance_tokens=int(counted),
             requests=int(requests),
-            cost_usd=_cost(cost),
+            cost_usd=_cost(cost) if admin else None,
         )
-        for (model_name, kind), (model_tokens, counted, requests, cost) in by_model.items()
+        for (model_name, kind), (model_tokens, counted, requests, cost) in ranked
     ]
-    models.sort(key=lambda entry: (-entry.cost_usd, -entry.tokens, entry.model_name, entry.kind))
 
     days: list[MyUsageDay] = []
     current: date = start.date()
@@ -426,7 +432,7 @@ async def my_usage(db: AsyncSession, user: User, ent: Entitlements) -> MyUsage:
                 images=int(found_day.get("image_events", 0)),
                 vision_tokens=int(found_day.get("vision_tokens", 0)),
                 embedding_tokens=int(found_day.get("embedding_tokens", 0)),
-                cost_usd=_cost(found_day.get("cost", 0.0)),
+                cost_usd=_cost(found_day.get("cost", 0.0)) if admin else None,
             )
         )
         current += timedelta(days=1)
@@ -450,7 +456,10 @@ async def my_usage(db: AsyncSession, user: User, ent: Entitlements) -> MyUsage:
             embedding=_cost(costs["embedding"]),
             vision=_cost(costs["vision"]),
             image=_cost(costs["image"]),
-        ),
+            title=_cost(costs["title"]),
+        )
+        if admin
+        else None,
         documents=DocumentUsage(
             count=document_count,
             max_documents=limits.max_documents,

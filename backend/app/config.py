@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     parse_timeout_seconds: int = 300
     default_max_output_tokens: int = 16000
     llm_timeout_seconds: int = 300
+    chat_titles: bool = True  # a new conversation's title is generated while its first answer streams (titles.py)
 
     # --- Vision model for PDF pages (services/vision.py) ---
     vision_max_pages: int = Field(default=50, ge=1, le=200)  # units read per document

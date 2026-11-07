@@ -173,11 +173,13 @@ test.describe("Usage", () => {
 
   test("a period with usage shows the meters, the daily chart and its table", async ({ page, context, user }) => {
     // The numbers are intercepted: real ones would need model calls.
+    let served: MyUsage | null = null;
     await page.route("**/api/me/usage", async (route) => {
       const response = await route.fetch();
       const usage = (await response.json()) as MyUsage;
+      served = usage;
       const today = usage.daily[usage.daily.length - 1];
-      Object.assign(today, { chat_allowance: 61_728, chat_tokens: 61_728, requests: 3, cost_usd: 0.42 });
+      Object.assign(today, { chat_allowance: 61_728, chat_tokens: 61_728, requests: 3 });
       await route.fulfill({
         response,
         json: {
@@ -185,8 +187,7 @@ test.describe("Usage", () => {
           chat_allowance: { ...usage.chat_allowance, used: 61_728 },
           chat_tokens: 61_728,
           requests: 3,
-          cost_usd: { ...usage.cost_usd, total: 0.42, chat: 0.42 },
-          by_model: [{ model_name: "Canned Model", kind: "chat", tokens: 61_728, allowance_tokens: 61_728, requests: 3, cost_usd: 0.42 }],
+          by_model: [{ model_name: "Canned Model", kind: "chat", tokens: 61_728, allowance_tokens: 61_728, requests: 3, cost_usd: null }],
         } satisfies MyUsage,
       });
     });
@@ -197,7 +198,10 @@ test.describe("Usage", () => {
       "aria-valuetext",
       "61,728 of 123,456 standard tokens",
     );
-    await expect(dialog.getByText("$0.42").first()).toBeVisible();
+    // Costs are the admin's only: the server sends a user none, and nothing shows one.
+    expect((served as MyUsage | null)?.cost_usd).toBeNull();
+    await expect(dialog.getByText("Estimated cost")).toHaveCount(0);
+    await expect(dialog.getByRole("radio", { name: "Cost" })).toHaveCount(0);
     const perDay = dialog.getByRole("figure", { name: "Per day" });
     await expect(perDay.getByRole("group", { name: /chat tokens/i })).toBeVisible();
     await perDay.getByRole("button", { name: "Show as table" }).click();

@@ -829,6 +829,12 @@
 .chat-md a:hover {
   text-decoration-color: currentColor;
 }
+.chat-link-host {
+  color: var(--text-3);
+  font-family: var(--font-sans);
+  font-size: 0.8em;
+  overflow-wrap: anywhere;
+}
 .chat-md code {
   padding: 0.1em 0.36em;
   border-radius: 5px;

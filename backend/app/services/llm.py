@@ -423,10 +423,11 @@ async def complete(
     reasoning_effort: str = "low",
     timeout: float = 30,
 ) -> Completion:
-    """One non-streaming call without tools, made as one HTTP request (no SDK retries): the plugins' request check.
-    max_tokens is the model's own limit or `output_cap`, whichever is lower; thinking counts toward it, so the effort is
-    kept low (sent to adaptive-thinking Claude models missing from LiteLLM's map too, see _allow_effort). Usage is the
-    provider's, else estimated. Failures are raised as LLMError with a user-safe message."""
+    """One non-streaming call without tools, made as one HTTP request (no SDK retries): the plugins' request check and
+    conversation titles. max_tokens is the model's own limit or `output_cap`, whichever is lower; thinking counts toward
+    it, so the effort is kept low (sent to adaptive-thinking Claude models missing from LiteLLM's map too, see
+    _allow_effort). Usage is the provider's, else estimated. Failures are raised as LLMError with a user-safe
+    message."""
     _allow_effort(model.litellm_model)  # first: it can change what resolve_max_tokens finds in the map
     kwargs = _base_kwargs(model)
     kwargs.update(

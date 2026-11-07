@@ -11,13 +11,16 @@ export type UserLimits = {
   vision_monthly_token_limit: number; // plain vision tokens (scanned PDF pages)
 };
 
+/** What a usage event records (usage_events.kind); "title": naming a new conversation, which no limit counts. */
+export type UsageKind = ModelKind | "title";
+
 export type UsageSummary = {
   month: string; // "YYYY-MM" of the window's start
   chat_tokens: number; // plain tokens of chat answers in the window
   embedding_tokens: number;
   vision_tokens: number;
   images: number; // images generated in the window
-  cost_usd: number; // every kind
+  cost_usd: number | null; // every kind; the admin's only (null for everyone else)
   monthly_token_limit: number; // 0 = unlimited; counts chat_allowance_used
   chat_allowance_used: number; // standard tokens counted in the window
   window_start: string; // the allowance window: the current period, or the UTC calendar month
@@ -363,7 +366,8 @@ export type MyUsage = {
   embedding_tokens: number; // recorded, never limited
   requests: number; // chat answers in the window
   rate_limit_per_min: number; // 0 = unlimited
-  cost_usd: { total: number; chat: number; embedding: number; vision: number; image: number }; // estimated
+  // Estimated; the admin's only (null for everyone else), like every cost below.
+  cost_usd: { total: number; chat: number; embedding: number; vision: number; image: number; title: number } | null;
   documents: { count: number; max_documents: number; storage_bytes: number; max_storage_mb: number; max_upload_mb: number };
   daily: {
     date: string; // "YYYY-MM-DD" (UTC); every day of the window through today, zeros included
@@ -373,16 +377,16 @@ export type MyUsage = {
     images: number;
     vision_tokens: number;
     embedding_tokens: number;
-    cost_usd: number;
+    cost_usd: number | null;
   }[];
   by_model: {
     model_name: string; // display name while the model exists, else its litellm id
-    kind: "chat" | "embedding" | "vision" | "image";
+    kind: UsageKind; // "title" only for the admin
     tokens: number;
     allowance_tokens: number; // 0 for other kinds than chat
-    requests: number; // chat: answers; image: images; embedding and vision: ingestion runs
-    cost_usd: number;
-  }[]; // cost descending
+    requests: number; // chat: answers; image: images; title: titles; embedding and vision: ingestion runs
+    cost_usd: number | null;
+  }[]; // cost descending, for everyone
 };
 
 /** DELETE /conversations: every conversation of the caller is gone (documents are kept). */
@@ -672,7 +676,7 @@ export type TokenUsage = {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
-  cost_usd: number;
+  cost_usd: number | null; // the admin's only (null for everyone else)
 };
 
 /**
@@ -735,6 +739,8 @@ export type ChatStreamEvent =
   | { event: "delta"; data: { content: string } }
   | { event: "file"; data: FileEventData }
   | { event: "plugin"; data: PluginCard } // the card's whole state; replace the card with the same card_id
+  // A new conversation's first answer only, at most once, before done or error: its generated title was stored.
+  | { event: "title"; data: { conversation_id: number; title: string } }
   | { event: "done"; data: { assistant_message_id: number; usage: TokenUsage } } // usage sums every model call
   | { event: "error"; data: { message: string; assistant_message_id: number | null } };
 
@@ -906,7 +912,7 @@ export type UsageReport = {
   }[];
   by_model: {
     model_name: string;
-    kind: ModelKind;
+    kind: UsageKind; // "title": conversation titles
     prompt_tokens: number; // image models: prompt text tokens
     completion_tokens: number; // image models: image tokens
     cost_usd: number;

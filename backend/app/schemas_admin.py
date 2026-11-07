@@ -6,7 +6,7 @@ from typing import Annotated, Any, Literal
 from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, StrictBool, StringConstraints
 
 from app.config import settings
-from app.schemas import MAX_INT, UserLimits
+from app.schemas import MAX_INT, UsageKind, UserLimits
 from app.schemas_auth import SIGNIN_PASSWORD_MAX_LENGTH, OptionalPersonName, PendingEmailRef, SignupSource
 from app.schemas_billing import PlanRef, PlanState, UserGrant
 
@@ -326,7 +326,7 @@ class UserUsage(BaseModel):
 
 class ModelUsage(BaseModel):
     model_name: str
-    kind: ModelKind
+    kind: UsageKind
     prompt_tokens: int
     completion_tokens: int
     cost_usd: float

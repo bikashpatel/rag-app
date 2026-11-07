@@ -98,6 +98,22 @@ describe("Markdown safety", () => {
     const link = screen.getByRole("link", { name: "Revenue chart" });
     expect(link).toHaveAttribute("href", "https://example.com/chart.png");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByText("(example.com)")).toHaveClass("chat-link-host");
+  });
+
+  it("shows the host of a link whose text hides where it goes", () => {
+    renderMarkdown("[Open your report](https://evil.example/collect?d=revenue) and [www.example.com](http://www.example.com/a)");
+    expect(screen.getByRole("link", { name: "Open your report" })).toBeInTheDocument();
+    expect(screen.getByText("(evil.example)")).toHaveClass("chat-link-host");
+    expect(screen.getAllByText(/^\(.*\)$/)).toHaveLength(1);
+  });
+
+  it("adds no host when the text shows it, or for in-page and mail links", () => {
+    const { container } = renderMarkdown(
+      "See https://example.com/docs, [Example.com pricing](https://example.com/pricing), [mail](mailto:a@b.example) " +
+        "and a note[^1].\n\n[^1]: Unaudited.",
+    );
+    expect(container.querySelector(".chat-link-host")).toBeNull();
   });
 });
 

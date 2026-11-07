@@ -1066,7 +1066,8 @@ async def test_one_usage_event_per_image_and_none_in_the_chat_budget(
     assert chat_event.total_tokens == 360  # three chat calls of 120 tokens; the 644 image tokens aren't in it
     me = (await alice.get("/api/auth/me")).json()
     assert me["usage"]["chat_tokens"] == 360 and me["usage"]["images"] == 2
-    assert me["usage"]["cost_usd"] == pytest.approx(2 * GPT_IMAGE_COST + chat_event.cost_usd, abs=1e-6)
+    assert me["usage"]["cost_usd"] is None  # the admin's only
+    assert sum(event.cost_usd for event in image_rows) == pytest.approx(2 * GPT_IMAGE_COST, abs=1e-6)
     assert me["usage"]["chat_allowance_used"] == chat_event.allowance_tokens == 750
     # 250 are left of the chat allowance, so another answer is allowed although images used 644 tokens
     image_tools.script = [text("Still within budget.")]
